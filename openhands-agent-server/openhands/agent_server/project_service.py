@@ -191,11 +191,13 @@ async def _project_prompt(
     stores: ServerStores | None,
     project_hex: str,
     started_by: tuple[str | None, UUID] | None,
+    coordinator_id: UUID | None = None,
 ) -> tuple[str | None, SenderRole]:
     """The ``<PROJECT>`` block for a conversation of ``project_hex``.
 
     ``started_by`` is the title and id of the conversation that starts a
-    worker, or ``None`` for the coordinator. Returns the block's body (``None``
+    worker, or ``None`` for the coordinator, whose id is ``coordinator_id``.
+    Returns the block's body (``None``
     when the project cannot be read) and how the starter relates to the
     project, for the header of the worker's brief.
     """
@@ -226,6 +228,7 @@ async def _project_prompt(
         project.description,
         started_by=None if started_by is None else (*started_by, role),
         memory=memory,
+        coordinator_id=coordinator_id,
     )
     return context, role
 
@@ -568,7 +571,12 @@ class ProjectService:
             )
         extra = dict(options or {})
         tags = {**extra.pop("tags", {}), PROJECT_TAG_KEY: project_hex}
-        context, _ = await _project_prompt(stores, project_hex, None)
+        # The server picks the coordinator's id, so its prompt can name it:
+        # a coordinator that calls the API itself sends as that conversation.
+        conversation_id = uuid4()
+        context, _ = await _project_prompt(
+            stores, project_hex, None, coordinator_id=conversation_id
+        )
         additions = AgentLaunchAdditions.model_validate(
             extra.pop("agent_launch_additions", None) or {}
         ).model_copy(
@@ -579,6 +587,7 @@ class ProjectService:
         )
         start = StartConversationRequest(
             **extra,
+            conversation_id=conversation_id,
             agent_launch_additions=additions,
             workspace=LocalWorkspace(working_dir=working_dir),
             agent_profile_id=profile_id,

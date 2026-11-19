@@ -191,19 +191,28 @@ def project_context(
     *,
     started_by: tuple[str | None, UUID, SenderRole] | None,
     memory: str | None,
+    coordinator_id: UUID | None = None,
 ) -> str:
     """Body of the ``<PROJECT>`` block of a project's coordinator or worker.
 
     ``started_by`` is the title, id and role of the conversation that started
-    a worker, or ``None`` for the coordinator itself. ``memory`` is the
-    project's ``MEMORY.md`` as the conversation starts.
+    a worker, or ``None`` for the coordinator itself, whose own id is
+    ``coordinator_id``. ``memory`` is the project's ``MEMORY.md`` as the
+    conversation starts.
     """
     lines = [f"Project: {' '.join(name.split())}"]
     goal = description.strip()
     if goal:
         lines.append(f"Goal: {goal}")
     if started_by is None:
-        lines.append("You are this project's coordinator.")
+        lines.append(
+            "You are this project's coordinator"
+            + (
+                f", conversation {coordinator_id}."
+                if coordinator_id is not None
+                else "."
+            )
+        )
     else:
         title, conversation_id, role = started_by
         lines.append(

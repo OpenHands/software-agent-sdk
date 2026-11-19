@@ -175,9 +175,11 @@ Preconditions:
 - A baseline run is live and exported (`launch --new`), `doctor` is ok, and
   nothing has touched `/api/projects` on it yet (`F36.list-empty` needs a fresh
   persistence directory). The block below activates the DeepSeek profile
-  (`$DEEPSEEK_API_KEY`): the `F36.tool-*` bullets and `F36.attention` run a
-  model, and the coordinator is started with the active profile. The other
-  REST bullets use placeholder agents.
+  and an active agent profile on it: the `F36.tool-*` bullets and
+  `F36.attention` run a model, and workers start from the predefined worker
+  profile, which the server builds from the active one (with no agent
+  profile, a worker's start is 422). The other REST bullets use placeholder
+  agents.
 - The `projects` experimental feature is on:
   `control-agent-server api PATCH /api/settings/experimental/projects --json '{"enabled": true}' --expect 200`.
   Off, every `/api/projects` route answers 404.
@@ -188,6 +190,9 @@ Preconditions:
 
   ```sh
   control-agent-server llm preset deepseek
+  control-agent-server api POST /api/agent-profiles/qa-f36-agent \
+    --json '{"llm_profile_ref": "deepseek-flash", "tools": [{"name": "terminal"}, {"name": "file_editor"}]}' --expect 201
+  control-agent-server api POST "/api/agent-profiles/$(control-agent-server api GET /api/agent-profiles/qa-f36-agent --field profile.id)/activate" --expect 200
   control-agent-server api PATCH /api/settings/experimental/projects --json '{"enabled": true}' --expect 200
   PJ=home/.openhands/projects.json
   PJ_FILE="$AGENT_SERVER_VERIFY_RUN/$PJ"
@@ -257,8 +262,6 @@ Preconditions:
   endpoint reports it as the coordinator with no conversations yet. Attaching an
   existing conversation does not replace its prompt: this fixture requests the
   built-in coordinator preset at launch, as a server-created coordinator does.
-  It also carries the tools its members need: without a worker agent profile a
-  member copies the coordinator's agent.
 - **Missing coordinator (`F36.coordinator-missing`).**
   Requires: `F36.coordinator`
   ```sh

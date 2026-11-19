@@ -1181,8 +1181,10 @@ async def test_a_coordinator_without_a_named_profile_runs_the_predefined_one(
 
     assert roles == ["coordinator"] and sources == [predefined]
     agent = services[info.id].get_conversation().agent
+    # The server picks the coordinator's id, and its prompt names it.
     assert agent.agent_context.project_context == (
-        "Project: Ship docs\nGoal: Docs for 1.0\nYou are this project's coordinator."
+        "Project: Ship docs\nGoal: Docs for 1.0\n"
+        f"You are this project's coordinator, conversation {info.id}."
     )
     assert "<PROJECT>\nProject: Ship docs" in agent.dynamic_context
 
