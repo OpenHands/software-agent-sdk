@@ -34,6 +34,7 @@ from openhands.sdk.llm.llm_profile_store import (
 )
 from openhands.sdk.llm.llm_registry import LLMRegistry, RegistryEvent
 from openhands.sdk.llm.llm_response import LLMResponse
+from openhands.sdk.llm.llm_session import LLMSession
 from openhands.sdk.llm.message import (
     ImageContent,
     Message,
@@ -50,7 +51,13 @@ from openhands.sdk.llm.meta_profile_store import (
     MetaProfileLimitExceeded,
     MetaProfileStore,
 )
-from openhands.sdk.llm.router import RouterLLM
+from openhands.sdk.llm.router import (
+    ModelRouteInfo,
+    ModelRouterSelection,
+    ModelRouterStatus,
+    ModelRouterUpdateRequest,
+    RouterLLM,
+)
 from openhands.sdk.llm.streaming import (
     AsyncTokenCallbackType,
     LLMStreamChunk,
@@ -95,6 +102,7 @@ __all__ = [
     "LLMCallContext",
     "LLM_PROFILE_SCHEMA_VERSION",
     "LLMRegistry",
+    "LLMSession",
     "LLMProfileLoader",
     "LLMProfileMutator",
     "LLMProfileStore",
@@ -102,6 +110,10 @@ __all__ = [
     "MetaProfileClass",
     "MetaProfileLimitExceeded",
     "MetaProfileStore",
+    "ModelRouteInfo",
+    "ModelRouterSelection",
+    "ModelRouterStatus",
+    "ModelRouterUpdateRequest",
     "RouterLLM",
     "RegistryEvent",
     # Messages

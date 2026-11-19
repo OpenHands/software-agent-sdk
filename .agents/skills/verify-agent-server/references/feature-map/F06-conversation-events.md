@@ -5,13 +5,14 @@ user and agent message, every tool action and observation, and one state
 update per changed field (`execution_status`, `stats`, `last_user_message_id`,
 ...). Consumers append a user message with `POST .../events` (and optionally
 start the agent), read history through search (filters, cursor paging, sort),
-count, get-one and batch-get, and follow the conversation live over
+count, get-one and batch-get (a GET with a JSON body, or its browser-safe
+`POST .../events/batch` form), and follow the conversation live over
 `/sockets/events/{conversation_id}`: first-frame auth, a transient
 `full_state` snapshot, optional replay of history (`resend_mode=all` or
 `since`), then every new event as raw JSON; a message frame sent on the socket
 is appended and runs the agent.
 
-Source: `openhands-agent-server/openhands/agent_server/event_router.py`, `openhands-agent-server/openhands/agent_server/event_service.py`, `openhands-agent-server/openhands/agent_server/sockets.py`, `openhands-agent-server/openhands/agent_server/pub_sub.py`, `openhands-agent-server/openhands/agent_server/dependencies.py`, `openhands-sdk/openhands/sdk/conversation/request.py`, `openhands-sdk/openhands/sdk/conversation/event_store.py`, `openhands-sdk/openhands/sdk/event/`
+Source: `openhands-agent-server/openhands/agent_server/event_router.py`, `openhands-agent-server/openhands/agent_server/event_service.py`, `openhands-agent-server/openhands/agent_server/sockets.py`, `openhands-agent-server/openhands/agent_server/pub_sub.py`, `openhands-agent-server/openhands/agent_server/dependencies.py`, `openhands-sdk/openhands/sdk/conversation/request.py`, `openhands-sdk/openhands/sdk/conversation/message_request.py`, `openhands-agent-server/openhands/agent_server/message_sender.py`, `openhands-sdk/openhands/sdk/conversation/event_store.py`, `openhands-sdk/openhands/sdk/event/`
 
 Needs: `llm`
 
@@ -21,6 +22,7 @@ Routes: `GET /api/conversations/{conversation_id}/events/search`,
 `GET /api/conversations/{conversation_id}/events/count`,
 `GET /api/conversations/{conversation_id}/events/{event_id}`,
 `GET /api/conversations/{conversation_id}/events`,
+`POST /api/conversations/{conversation_id}/events/batch`,
 `POST /api/conversations/{conversation_id}/events`,
 `WS /sockets/events/{conversation_id}`
 
@@ -36,6 +38,7 @@ Routes: `GET /api/conversations/{conversation_id}/events/search`,
 - `F06.get-one`: `GET .../events/{event_id}` returns the event that search lists under that id, and the same event is on disk.
 - `F06.unknown-event`: an unknown event id returns 404 from get-one and `null` in its slot from batch-get.
 - `F06.batch-get`: `GET .../events` with a JSON array of ids as the body returns those events in request order; no body is a 422.
+- `F06.batch-post`: `POST .../events/batch` with the same JSON array returns byte for byte what the GET batch returns (events in request order, `null` for an unknown id, `[]` for `[]`), appends nothing, and answers 422 for no body or a non-array body, 404 for an unknown conversation and 401 without a key.
 - `F06.not-found-auth`: every event route returns 404 for an unknown conversation, 422 for a malformed conversation id and 401 without a valid session key.
 - `F06.send-validation`: a missing body, a message with an unknown role, string content or an unknown content type is rejected with 422 and nothing is appended.
 - `F06.send-image`: a message with a text part and an `image` part (a `data:` URL) is persisted with its `image_urls` intact and returned the same by search, get-one and the socket replay; an `image` part without `image_urls` is a 422 and appends nothing. Same promise: `S01.image-input`.
@@ -52,9 +55,14 @@ Routes: `GET /api/conversations/{conversation_id}/events/search`,
 - `F06.ws-replay-since`: `resend_mode=since` with `after_timestamp` replays exactly the events at or after that timestamp; without `after_timestamp` it replays nothing.
 - `F06.ws-bad-frame`: an invalid inbound frame returns a `ServerErrorEvent` (`ValidationError`, `AssertionError`, `JSONDecodeError` for text that is not JSON), appends nothing and leaves the socket open; a redundant auth frame is ignored.
 - `F06.ws-send`: a user message frame sent on the socket is persisted and runs the agent to `finished`, streaming the run on the same socket.
-- `F06.restart-persist`: event ids, order and count survive a server restart, the socket replays the same log, and new messages append after it. Same promise: `S04.resume`.
+- `F06.restart-persist`: a socket open during a server restart is closed with 1012; event ids, order and count survive the restart, the socket replays the same log, and new messages append after it. Same promise: `S04.resume`.
 - `F06.send-run-limit`: with every run slot taken, `POST .../events` with `run: true` returns 429 `Message saved...` and the message is persisted; a socket send gets a `ConversationRunLimitExceeded` `ServerErrorEvent`.
 - `F06.send-while-running`: `POST .../events` with `run: true` on a conversation that is already running returns 200 (not the 409 of `POST /run`), persists the message, keeps the conversation `running` and starts no second run. Same promise: `S01.message-while-running`.
+
+- `F06.send-sender-conversation`: `POST .../events` with `sender_conversation_id` naming another existing conversation saves the user `MessageEvent` with `sender: "conversation:<sender id hex>"` and a first text part `[Sent by [<sender title>](conversation:<hex>), another conversation, not by the user. ...]` before the posted parts, the same in search, get-one and the socket replay; a message without the field has `sender: null` and no such line. Same promise: `S04.conversation-sender`.
+- `F06.send-sender-errors`: a `sender_conversation_id` naming an unknown conversation (422 `Sender conversation not found`), the receiving conversation itself (422 `A conversation cannot message itself`) or a non-UUID (422 at `sender_conversation_id`) is refused and nothing is appended.
+
+- `F06.send-during-tool-call`: `POST .../events` to a conversation whose agent is inside a long tool call saves the message and answers at once, before the tool call ends.
 
 ## How to get to it (agent POV)
 
@@ -62,7 +70,10 @@ Routes: `GET /api/conversations/{conversation_id}/events/search`,
   `SendMessageRequest` body `{"role": "user", "content": [{"type": "text",
   "text": "..."}], "run": false}` returns `{"success": true}`; `run` defaults
   to `false`, and a content item is either `{"type": "text", "text": ...}`
-  or `{"type": "image", "image_urls": [...]}` (http or `data:` URLs). The Python SDK `RemoteConversation.send_message()` and the
+  or `{"type": "image", "image_urls": [...]}` (http or `data:` URLs). An
+  optional `sender_conversation_id` (a conversation UUID) marks a message
+  that another conversation's agent sends, not the user; it is left out of
+  the request schema's dumps while unset. The Python SDK `RemoteConversation.send_message()` and the
   TypeScript `RemoteConversation.sendMessage()` always send `run: false` and
   then call `POST /run` separately; `ConversationClient.sendEvent()` posts the
   body as given. Recipes drive the route directly (`api POST`), so the body
@@ -79,8 +90,10 @@ Routes: `GET /api/conversations/{conversation_id}/events/search`,
 - REST: `GET .../events/{event_id}` (TypeScript `ConversationClient.getEvent()`,
   `RemoteEventsList.getEventById()`) and `GET .../events` with a JSON array body
   (batch get; no SDK or TypeScript caller, because browsers cannot send a GET
-  body: the TypeScript `getEvents()` fans out to get-one and maps 404 to
-  `null`).
+  body) and its browser-safe form `POST .../events/batch` with the same bare
+  JSON array body (TypeScript `ConversationClient.batchGetEvents()`, driven by
+  `F34.events-batch-post`). The TypeScript `RemoteEventsList.getEventsById()`
+  still fans out to get-one and maps 404 to `null`.
 - WebSocket: `/sockets/events/{conversation_id}` with query `resend_mode`
   (`all` or `since`), `after_timestamp` (ISO 8601, required for `since`) and
   the deprecated `resend_all=true` and `session_api_key`. The SDK's
@@ -278,6 +291,35 @@ Preconditions:
   ```
   Events come back in request order, not log order; without a body the
   route answers 422 `body: Field required`.
+- **Batch get by POST (`F06.batch-post`).** The same ids through the
+  browser-safe form, compared byte for byte with the GET form.
+
+  Requires: `F06.search-time-window`, `F06.get-one`
+  ```sh
+  B6="$AGENT_SERVER_VERIFY_RUN/fixtures/qa-f06-batch"
+  mkdir -p "$B6"
+  N6=$(control-agent-server api GET "/api/conversations/$CID/events/count" --field .)
+  control-agent-server api POST "/api/conversations/$CID/events/batch" --json "[\"$E2\", \"qa-missing-event\", \"$E1\"]" --expect 200 \
+    --check . len-eq 3 --check 0.id eq "$E2" --check 1 missing --check 2.id eq "$E1" --raw-out "$B6/post.json" --save F06.batch-post/three
+  control-agent-server api GET "/api/conversations/$CID/events" --json "[\"$E2\", \"qa-missing-event\", \"$E1\"]" --expect 200 \
+    --quiet --raw-out "$B6/get.json"
+  cmp "$B6/get.json" "$B6/post.json"
+  control-agent-server api POST "/api/conversations/$CID/events/batch" --json '[]' --expect 200 --check . len-eq 0
+  control-agent-server api POST "/api/conversations/$CID/events/batch" --expect 422 --check detail.0.loc contains body \
+    --check detail.0.type eq missing --save F06.batch-post/no-body
+  control-agent-server api POST "/api/conversations/$CID/events/batch" --json "{\"ids\": [\"$E2\"]}" --expect 422 \
+    --check detail.0.type eq list_type --save F06.batch-post/object-body
+  control-agent-server api POST "/api/conversations/$QA_UNKNOWN/events/batch" --json "[\"$E2\"]" --expect 404 \
+    --check detail contains 'Conversation not found' --save F06.batch-post/unknown-conversation
+  control-agent-server api POST "/api/conversations/$CID/events/batch" --json "[\"$E2\"]" --auth none --expect 401
+  control-agent-server api POST "/api/conversations/$CID/events/batch" --json "[\"$E2\"]" --expect 200 --check 0.id eq "$E2"
+  control-agent-server api GET "/api/conversations/$CID/events/count" --check . eq "$N6"
+  ```
+  The POST answers `[<E2>, null, <E1>]`, the same bytes as the GET form
+  for the same ids; `[]` is `[]`. No body is 422 `missing` at `body`, an
+  object instead of the bare array is 422 `list_type`, an unknown
+  conversation 404 `Conversation not found`, no key 401, and the count is
+  unchanged: the POST reads, it appends nothing.
 - **Unknown conversation, bad id, no key (`F06.not-found-auth`).**
 
   Requires: `F06.get-one`
@@ -410,7 +452,7 @@ Preconditions:
   wrong query or header key is refused before the upgrade with HTTP 403, so
   that client sees no close code. A valid key on an unknown conversation
   authenticates, then closes with 4004 `Conversation not found`.
-- **Deleting a conversation closes its sockets (`F06.ws-delete-close`), known bug.**
+- **Deleting a conversation closes its sockets (`F06.ws-delete-close`).**
   A background capture is subscribed (its `full_state` snapshot arrived and
   it is open) before the DELETE; the DELETE, a 404 on REST and a 4004 for a
   new socket all succeed before the open capture is judged.
@@ -422,17 +464,13 @@ Preconditions:
   control-agent-server api DELETE "/api/conversations/$QA_DEL" --expect 200 --save F06.ws-delete-close/delete
   control-agent-server api GET "/api/conversations/$QA_DEL" --expect 404
   control-agent-server ws listen "/sockets/events/$QA_DEL" --expect-close 4004 --duration 5
-  control-agent-server ws stop f06-del --save F06.ws-delete-close/socket | control-agent-server assert --check close.code exists  # bug: value.opened eq true && value.stopped eq stopped && value.close missing
+  control-agent-server ws stop f06-del --save F06.ws-delete-close/socket | control-agent-server assert --check close.code eq 4004
   ```
-  Correct behavior: the server closes the open socket (with any close code)
-  while it deletes the conversation; `EventService.close()` awaits
-  `PubSub.close()` before the DELETE answers, so the close has arrived by the
-  time the capture is stopped. Today the capture is still open with no close
-  frame (`close: null`), although REST answers 404 and a new socket gets
-  4004: `PubSub.close()` calls `Subscriber.close()`, which
-  `_WebSocketSubscriber` does not implement (`pub_sub.py`, `sockets.py`), so
-  an SDK or TypeScript client keeps waiting on a conversation that no longer
-  exists.
+  The server closes the open socket with 4004 while it deletes the
+  conversation: `delete_conversation` calls `EventService.close_connections`,
+  which closes each `_WebSocketSubscriber`'s socket, before the DELETE
+  answers, so the close has arrived by the time the capture is stopped. The
+  SDK treats 4004 as final and stops instead of reconnecting.
 - **Replay everything (`F06.ws-replay-all`).**
   ```sh
   IDS=$(control-agent-server api GET "/api/conversations/$CID/events/search" --field items | jq -c '[.[].id]')
@@ -597,7 +635,11 @@ Preconditions:
   ```sh
   BEFORE=$(control-agent-server api GET "/api/conversations/$CID/events/search" --field items | jq -c '[.[].id]')
   COUNT=$(control-agent-server api GET "/api/conversations/$CID/events/count" --field .)
+  control-agent-server ws start "/sockets/events/$CID" --name f06-restart --duration 120
+  control-agent-server ws read f06-restart --kinds ConversationStateUpdateEvent --contains '"key": "full_state"' \
+    --expect-open --wait 10
   control-agent-server restart
+  control-agent-server ws stop f06-restart --expect-close 1012 --save F06.restart-persist/socket
   control-agent-server api GET "/api/conversations/$CID/events/count" --check . eq "$COUNT" --save F06.restart-persist/count
   AFTER=$(control-agent-server api GET "/api/conversations/$CID/events/search" --field items | jq -c '[.[].id]')
   test "$BEFORE" = "$AFTER"
@@ -610,8 +652,12 @@ Preconditions:
     --check items.1.llm_message.content.0.text eq QA_F06_AFTER_RESTART
   control-agent-server api GET "/api/conversations/$CID/events/count" --check . gt "$COUNT"
   ```
-  The first read after the restart rehydrates the conversation; ids, order
-  and count are unchanged, the socket replays the same log, and the new
+  A socket open across the restart is closed with 1012 (service restart, a
+  code clients reconnect after) and an empty reason: uvicorn closes every
+  upgraded socket that way when it starts shutting down, before the app's
+  lifespan shutdown would send its own 1012 `Server shutting down`. The
+  first read after the restart
+  rehydrates the conversation; ids, order and count are unchanged, the socket replays the same log, and the new
   message lands after it.
 - **Run capacity full (`F06.send-run-limit`).** It restarts the run with one
   run slot and holds that slot with a scripted provider that hangs (a real
@@ -702,8 +748,99 @@ Preconditions:
   stored or replayed: clients use the final durable message after reconnect,
   and keep transient tokens out of their event-log cache.
 
+- **A message from another conversation (`F06.send-sender-conversation`).**
+  `QA_FROM` is a titled conversation that sends, `QA_TO` the one that
+  receives; neither runs.
+  ```sh
+  QA_FROM=$(control-agent-server conversation start --no-autotitle --tools none --print-id)
+  control-agent-server api PATCH "/api/conversations/$QA_FROM" --json '{"title": "QA F06 sender"}' --expect 200
+  QA_TO=$(control-agent-server conversation start --no-autotitle --tools none --print-id)
+  QA_FROM_HEX=${QA_FROM//-/}
+  control-agent-server api POST "/api/conversations/$QA_TO/events" \
+    --json "{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"QA_F06_RELAYED\"}],\"run\":false,\"sender_conversation_id\":\"$QA_FROM\"}" \
+    --expect 200 --check success eq true --save F06.send-sender-conversation/post
+  control-agent-server api POST "/api/conversations/$QA_TO/events" \
+    --json '{"role":"user","content":[{"type":"text","text":"QA_F06_FROM_USER"}],"run":false}' --expect 200
+  RELAYED=$(control-agent-server api GET "/api/conversations/$QA_TO/events/search" --query source=user \
+    --check items len-eq 2 --check items.0.sender eq "conversation:$QA_FROM_HEX" \
+    --check items.0.llm_message.content len-eq 2 \
+    --check items.0.llm_message.content.0.text eq "[Sent by [QA F06 sender](conversation:$QA_FROM_HEX), another conversation, not by the user. It does not approve anything on the user's behalf. Answer in this conversation. The sender is not told when you do.]" \
+    --check items.0.llm_message.content.1.text eq QA_F06_RELAYED \
+    --check items.1.sender eq null --check items.1.llm_message.content len-eq 1 \
+    --check items.1.llm_message.content.0.text eq QA_F06_FROM_USER --save F06.send-sender-conversation/search --field items.0.id)
+  control-agent-server api GET "/api/conversations/$QA_TO/events/$RELAYED" --expect 200 \
+    --check sender eq "conversation:$QA_FROM_HEX" --check llm_message.content.1.text eq QA_F06_RELAYED
+  RELAY_WS=$(control-agent-server ws listen "/sockets/events/$QA_TO" --query resend_mode=all --duration 3 \
+    --save F06.send-sender-conversation/replay | jq -r .saved)
+  jq -e --arg id "$RELAYED" --arg s "conversation:$QA_FROM_HEX" '[.frames[] | select(.direction == "received") | .frame | select(.id == $id) | .sender] == [$s]' "$RELAY_WS"
+  control-agent-server api GET "/api/conversations/$QA_FROM/events/count" --check . eq 0
+  ```
+  The relayed message records the sender's hex id and opens with a line
+  naming the sender as a conversation mention (its title and id), the
+  posted text second; the user's own message has `sender: null` and only
+  its text. Get-one and the socket replay carry the same `sender`, and the
+  sending conversation's log is untouched.
+- **Refused senders (`F06.send-sender-errors`).** Each refused message on
+  `QA_TO`, then the count.
+
+  Requires: `F06.send-sender-conversation`
+  ```sh
+  N_TO=$(control-agent-server api GET "/api/conversations/$QA_TO/events/count" --field .)
+  control-agent-server api POST "/api/conversations/$QA_TO/events" \
+    --json "{\"content\":[{\"type\":\"text\",\"text\":\"QA_F06_GHOST\"}],\"sender_conversation_id\":\"$QA_UNKNOWN\"}" \
+    --expect 422 --check detail eq 'Sender conversation not found' --save F06.send-sender-errors/unknown
+  control-agent-server api POST "/api/conversations/$QA_TO/events" \
+    --json "{\"content\":[{\"type\":\"text\",\"text\":\"QA_F06_SELF\"}],\"sender_conversation_id\":\"$QA_TO\"}" \
+    --expect 422 --check detail eq 'A conversation cannot message itself' --save F06.send-sender-errors/self
+  control-agent-server api POST "/api/conversations/$QA_TO/events" \
+    --json '{"content":[{"type":"text","text":"QA_F06_BADID"}],"sender_conversation_id":"qa-not-a-uuid"}' \
+    --expect 422 --check detail.0.loc contains sender_conversation_id --check detail.0.type eq uuid_parsing
+  control-agent-server api GET "/api/conversations/$QA_TO/events/count" --check . eq "$N_TO" --save F06.send-sender-errors/count
+  control-agent-server api GET "/api/conversations/$QA_TO/events/count" --query body=QA_F06_GHOST --check . eq 0
+  ```
+  All three are 422 and the receiving log keeps its count.
+- **A message during a tool call (`F06.send-during-tool-call`), known bug #6729.**
+  Last bullet. A scripted model asks for `terminal` `sleep 20` on every
+  call (a real model cannot be held inside a tool call on demand); once its
+  `ActionEvent` is logged and no observation is, a message is appended with
+  `run: false`. The run slot is free: `HOLD` was interrupted and the
+  streamed conversation finished.
+
+  Needs: `tmux`
+  ```sh
+  TOOL_STUB=$(control-agent-server fixture llm-stub --name qa-f06-tool --step 'tool:terminal:{"command":"sleep 20"}' --print-path)
+  TOOL_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key\", \"base_url\": \"$TOOL_STUB/v1\", \"num_retries\": 0}, \"tools\": [{\"name\": \"terminal\"}]}"
+  TC=$(control-agent-server conversation start --body-json "{\"agent\": $TOOL_AGENT}" --no-autotitle --print-id)
+  control-agent-server api POST "/api/conversations/$TC/events" \
+    --json '{"content":[{"type":"text","text":"QA_F06_TOOL"}],"run":true}' --expect 200
+  control-agent-server api GET "/api/conversations/$TC/events/count" --query kind=ActionEvent --check . eq 1 --until-ok 30
+  control-agent-server api GET "/api/conversations/$TC/events/count" --query kind=ObservationEvent --check . eq 0
+  control-agent-server api POST "/api/conversations/$TC/events" \
+    --json '{"content":[{"type":"text","text":"QA_F06_DURING_TOOL"}],"run":false}' --expect 200 --expect-max-ms 3000 --timeout 60 \
+    --save F06.send-during-tool-call/post  # bug: status eq 200 && elapsed_ms ge 15000
+  control-agent-server api GET "/api/conversations/$TC/events/count" --query body=QA_F06_DURING_TOOL --check . eq 1
+  control-agent-server api GET "/api/conversations/$TC/events/count" --query kind=ObservationEvent --check . eq 0
+  control-agent-server api POST "/api/conversations/$TC/interrupt" --expect 200
+  control-agent-server conversation wait "$TC" --until paused --timeout 60
+  ```
+  Expected: the POST answers within 3 s and the message is in the log
+  while the command still runs (no observation yet); the agent sees it at
+  its next step. Today the POST waits for the state lock, which the run
+  loop holds for the whole tool call, so it answers 200 only when
+  `sleep 20` ends, about 20 s later (#6729; the same lock makes `/pause`
+  wait, F05). The message is then saved. A user's correction to a busy
+  agent waits as long as the running command.
+
 ## Gotchas
 
+- `RemoteConversation.send_message(...,
+  sender=...)` posts a plain `sender` field, which this route ignores (the
+  message is saved with `sender: null`); only `sender_conversation_id`
+  marks a sender over REST (`F06.send-sender-conversation`). Known bug
+  [#7004](https://github.com/OpenHands/software-agent-sdk/issues/7004): a
+  local conversation records the same `sender` (`S04.conversation-sender`),
+  so the goal runner's, `TaskManager`'s and the delegate tool's senders are
+  lost on a remote conversation.
 - `kind` filters take either the bare class name events carry in `kind`
   (`MessageEvent`) or the fully-qualified class path
   (`openhands.sdk.event.llm_convertible.message.MessageEvent`,
@@ -728,7 +865,9 @@ Preconditions:
   them. Compare ids, not raw JSON.
 - An unknown event id is a 404, and `null` in its slot of a batch
   (`F06.unknown-event`); batch-get is a GET with a JSON body, which browsers
-  cannot send.
+  cannot send, so browser clients use `POST .../events/batch`
+  (`F06.batch-post`). `GET .../events/batch` is not that route: it is
+  get-one for the event id `batch` (404).
 - The `SystemPromptEvent` is written on the first message, not at creation;
   a conversation created without a message has an empty log and count 0.
 - `POST .../events` with `run: false` never runs, even on an idle
@@ -751,9 +890,12 @@ Preconditions:
   after the upgrade; a wrong deprecated query or header key is refused before
   the upgrade (HTTP 403, no close code), which the SDK does not treat as
   fatal.
-- Deleting a conversation does not close its open sockets
-  (`F06.ws-delete-close`); they stay open with no further frames, while a
-  new connection gets 4004.
+- Deleting a conversation closes its open sockets with 4004
+  (`F06.ws-delete-close`), and a new connection gets 4004 too; shutting the
+  server down closes them with 1012 and an empty reason, sent by uvicorn
+  before the app's own shutdown close (`F06.restart-persist`). A sandbox pause leaves them attached
+  (`F12.sandbox-pause-websocket`). A peer that stopped reading delays the
+  DELETE by at most 5 s.
 - `StreamingDeltaEvent` frames reach this socket only when the agent's LLM
   has `stream: true`; they are never persisted, so search never returns them.
 - A per-field `execution_status=finished` frame is a hint, not the end of
@@ -762,7 +904,10 @@ Preconditions:
   recipes that stop at `finished` re-read the status over REST.
 - `POST .../events` with `run: true` on a `running` conversation is a 200,
   not the 409 of `POST /run`: the message joins the running loop. A client
-  that wants to know whether a new run started must watch the socket.
+  that wants to know whether a new run started must watch the socket. The
+  exception is a conversation whose current turn was started by the OpenAI
+  gateway: there the POST is 409 `Gateway run in progress; message not
+  saved` and nothing is stored (`F30.direct-event-during-turn-409`).
 - The body is required (no body is a 422), but every field has a default:
   `{}` is a valid request and appends a user `MessageEvent` with empty
   `content`.

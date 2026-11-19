@@ -124,7 +124,7 @@ Preconditions:
 - Bodies that carry the real key are piped from the shell builtin `printf`
   into `api ... --stdin`, so the key never appears on a command line; the CLI
   redacts it from output and evidence.
-- `F20.store-busy` and `F20.store-busy-responsive` hold the store lock for
+- `F20.store-busy` and `F20.store-busy-responsive` hold the store lock for Same promise: `S03.profile-concurrency-limits`.
   about 34 seconds each; `F20.validate-hang-bounded` waits about 15
   seconds for the server's verdict and hard-restarts the run so no
   server-side request outlives it; `F20.no-cipher` launches and stops a second server;

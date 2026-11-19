@@ -5,6 +5,9 @@ import {
   ConversationManager,
   HttpClient,
   HttpError,
+  isAskUserAnswerEvent,
+  isMessageEditEvent,
+  isReactionEvent,
   RemoteConversation,
   RemoteEventsList,
   RemoteWorkspace,
@@ -568,6 +571,84 @@ describe('Auxiliary API clients', () => {
       expect.objectContaining({
         method: 'POST',
         body: JSON.stringify({ llm: { model: 'gpt-4o', api_key: 'encrypted' } }),
+      })
+    );
+  });
+
+  it('ConversationClient supports model-router endpoints', async () => {
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            enabled: true,
+            selection: { mode: 'manual', manual_route_name: 'primary' },
+            last_route_name: 'primary',
+            routes: [
+              { name: 'primary', model: 'primary-model', label: 'primary' },
+              { name: 'secondary', model: 'secondary-model', label: 'secondary' },
+            ],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            enabled: true,
+            selection: { mode: 'auto', manual_route_name: null },
+            last_route_name: null,
+            routes: [
+              { name: 'primary', model: 'primary-model', label: 'primary' },
+              { name: 'reviewer', model: 'reviewer-model', label: 'reviewer' },
+            ],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        )
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify({ success: true }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ success: true }), { status: 200 }));
+
+    const client = new ConversationClient({ host: 'http://example.com' });
+    const status = await client.getModelRouter('c1');
+    await client.addModelRouterRoute('c1', 'reviewer-profile', 'reviewer');
+    await client.switchModelRouter('c1', 'secondary');
+    await client.resumeAutoModelRouting('c1');
+
+    expect(status.selection?.manual_route_name).toBe('primary');
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      1,
+      'http://example.com/api/conversations/c1/model_router',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      2,
+      'http://example.com/api/conversations/c1/model_router/routes',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          profile_name: 'reviewer-profile',
+          route_name: 'reviewer',
+          base_route_name: 'default',
+        }),
+      })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      3,
+      'http://example.com/api/conversations/c1/model_router',
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({
+          selection: { mode: 'manual', manual_route_name: 'secondary' },
+        }),
+      })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      4,
+      'http://example.com/api/conversations/c1/model_router',
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({ selection: { mode: 'auto' } }),
       })
     );
   });
@@ -1785,6 +1866,89 @@ describe('Auxiliary API clients', () => {
     );
   });
 
+  it('RemoteConversation supports model-router endpoints', async () => {
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            enabled: true,
+            selection: { mode: 'auto' },
+            last_route_name: null,
+            routes: [
+              { name: 'primary', model: 'primary-model', label: 'primary' },
+              { name: 'secondary', model: 'secondary-model', label: 'secondary' },
+            ],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            enabled: true,
+            selection: { mode: 'auto' },
+            last_route_name: null,
+            routes: [
+              { name: 'primary', model: 'primary-model', label: 'primary' },
+              { name: 'reviewer', model: 'reviewer-model', label: 'reviewer' },
+            ],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        )
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify({ success: true }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ success: true }), { status: 200 }));
+
+    const agent = new Agent({ llm: { model: 'gpt-4o', api_key: 'k' } });
+    const workspace = new RemoteWorkspace({ host: 'http://example.com', workingDir: '/tmp' });
+    const conversation = new RemoteConversation(agent, workspace, {
+      conversationId: 'conv-123',
+    });
+
+    const status = await conversation.getModelRouter();
+    await conversation.addModelRouterRoute('reviewer-profile', 'reviewer');
+    await conversation.switchModelRouter('secondary');
+    await conversation.resumeAutoModelRouting();
+
+    expect(status.selection?.mode).toBe('auto');
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      1,
+      'http://example.com/api/conversations/conv-123/model_router',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      2,
+      'http://example.com/api/conversations/conv-123/model_router/routes',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          profile_name: 'reviewer-profile',
+          route_name: 'reviewer',
+          base_route_name: 'default',
+        }),
+      })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      3,
+      'http://example.com/api/conversations/conv-123/model_router',
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({
+          selection: { mode: 'manual', manual_route_name: 'secondary' },
+        }),
+      })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      4,
+      'http://example.com/api/conversations/conv-123/model_router',
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({ selection: { mode: 'auto' } }),
+      })
+    );
+  });
+
   it('RemoteConversation.switchAcpEffort POSTs the effort', async () => {
     global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ success: true }), {
@@ -2322,6 +2486,131 @@ describe('Auxiliary API clients', () => {
         expect.objectContaining({ method: 'GET' })
       );
     }
+  });
+
+  it('SettingsClient lists and switches experimental features', async () => {
+    const feature = {
+      key: 'qa_feature',
+      label: 'QA feature',
+      description: 'A feature for tests.',
+      enabled: true,
+    };
+    const responses = [[{ ...feature, enabled: false }], feature];
+    global.fetch = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify(responses.shift()), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      )
+    ) as typeof fetch;
+
+    const client = new SettingsClient({ host: 'http://example.com' });
+    await expect(client.listExperimentalFeatures()).resolves.toEqual([
+      { ...feature, enabled: false },
+    ]);
+    await expect(client.updateExperimentalFeature('qa_feature', true)).resolves.toEqual(feature);
+
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      1,
+      'http://example.com/api/settings/experimental',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      2,
+      'http://example.com/api/settings/experimental/qa_feature',
+      expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ enabled: true }) })
+    );
+  });
+
+  it('isMessageEditEvent recognizes an edit of an agent message', () => {
+    const edit = {
+      id: 'e1',
+      kind: 'MessageEditEvent',
+      source: 'agent',
+      timestamp: '2026-11-15T00:00:00Z',
+      target_event_id: 'm1',
+      text: '~~Should I run it?~~ [Edit: Running it.]',
+    };
+
+    expect(isMessageEditEvent(edit)).toBe(true);
+    expect(isMessageEditEvent({ ...edit, kind: 'MessageEvent' })).toBe(false);
+  });
+
+  it('ConversationClient.react sends only the fields it is given', async () => {
+    const saved = {
+      id: 'r1',
+      kind: 'ReactionEvent',
+      source: 'user',
+      timestamp: '2026-11-07T00:00:00Z',
+      target_event_id: 'm1',
+      emoji: 'heart',
+      removed: false,
+    };
+    global.fetch = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify(saved), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      )
+    ) as typeof fetch;
+
+    const client = new ConversationClient({ host: 'http://example.com' });
+    const event = await client.react('conv-1', 'heart', { targetEventId: 'm1', removed: true });
+    await client.react('conv-1', '+1');
+
+    expect(isReactionEvent(event)).toBe(true);
+    expect(isReactionEvent({ ...saved, kind: 'MessageEvent' })).toBe(false);
+    const fetchMock = global.fetch as Mock;
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'http://example.com/api/conversations/conv-1/reactions'
+    );
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      emoji: 'heart',
+      target_event_id: 'm1',
+      removed: true,
+    });
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ emoji: '+1' });
+  });
+
+  it('ConversationClient answers an ask_user question', async () => {
+    const saved = {
+      id: 'a1',
+      timestamp: '2026-11-14T00:00:00',
+      source: 'user',
+      kind: 'AskUserAnswerEvent',
+      ask_id: 'q1',
+      option_index: 1,
+      option_label: 'SQLite',
+      text: null,
+    };
+    global.fetch = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify(saved), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      )
+    ) as typeof fetch;
+
+    const client = new ConversationClient({ host: 'http://example.com' });
+    const event = await client.answerAskUser('conv-1', 'q1', { optionIndex: 1 });
+    await client.answerAskUser('conv-1', 'q1', { text: 'Neither' });
+
+    expect(isAskUserAnswerEvent(event)).toBe(true);
+    const fetchMock = global.fetch as Mock;
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'http://example.com/api/conversations/conv-1/ask_user/answer'
+    );
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      ask_id: 'q1',
+      option_index: 1,
+    });
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({
+      ask_id: 'q1',
+      text: 'Neither',
+    });
   });
 
   it('SettingsClient fetches and updates settings and secrets', async () => {

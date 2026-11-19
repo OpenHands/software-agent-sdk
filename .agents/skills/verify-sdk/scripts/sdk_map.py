@@ -868,7 +868,8 @@ def run_bullet(
     if result["skipped_model"]:
         skipped = result["skipped_model"]
         result["notes"].append(
-            f"{skipped} model-backed block(s) skipped (no DEEPSEEK_API_KEY)"
+            f"{skipped} model-backed block(s) skipped"
+            " (no DEEPSEEK_API_KEY or LLM_API_KEY)"
         )
     if ran == 0 and result["outcome"] == "pass":
         result["outcome"] = "blocked"

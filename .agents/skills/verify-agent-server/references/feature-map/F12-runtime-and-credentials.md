@@ -367,11 +367,12 @@ control-agent-server api GET "/api/conversations/$R" --check execution_status eq
   `QA_F12_AFTER_PAUSE` message that the fresh sockets get (the events socket
   keeps its one initial `ConversationStateUpdateEvent`, the session socket
   its `sync` frame and initial state; still the same 20 s later). The pause
-  closes the conversation's pub/sub without closing the socket subscribers
-  (`_WebSocketSubscriber` and the session socket's `_SessionSubscriber`
-  inherit the no-op `Subscriber.close()`), leaving the clients attached to a
-  discarded `EventService`. Idle eviction avoids this by never evicting a
-  conversation with an external subscriber; the pause has no such guard.
+  exits each `EventService` without calling its `close_connections` (which
+  delete and shutdown use, with 4004 and 1012), so the clients stay attached
+  to a discarded service; the code skips the close on purpose, so that a
+  reconnect does not load the conversation again before the sandbox freezes.
+  Idle eviction avoids this by never evicting a conversation with an
+  external subscriber; the pause has no such guard.
   Both captures are saved before the assertions, so the evidence holds both.
 - **Unsupported secret names (`F12.binding-unsupported-secret`).** Only
   `CODEX_AUTH_JSON` is a file credential.

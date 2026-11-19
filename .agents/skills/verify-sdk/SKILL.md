@@ -40,7 +40,10 @@ export SDK_VERIFY_RUN=$(control-sdk new --llm deepseek-flash --field run) # live
 A run has its own HOME, `OH_PERSISTENCE_DIR`, conversation store, workspace
 and tmux server, and drops the caller's `LLM_*` and `OH_*` variables, so it
 never touches a developer's `~/.openhands`. Live runs read `DEEPSEEK_API_KEY`
-when a model is called; without it they exit 3 and report `blocked`.
+when a model is called, or, with `LLM_BASE_URL` and `LLM_API_KEY` set, send
+`deepseek-flash` through that LiteLLM proxy (the run carries the pair as
+`SDK_VERIFY_LLM_BASE_URL`/`SDK_VERIFY_LLM_API_KEY`); without either they exit 3
+and report `blocked`.
 
 ## Doctor
 
@@ -82,7 +85,8 @@ sdk-map run --all --out "$SDK_VERIFY_HOME/full"         # the whole map
 
 A bullet passes when every block it ran exits 0; exit 3 means blocked. A block
 that needs a real model (a live run, `--model-env`, an example script or the
-integration runner) runs only with `DEEPSEEK_API_KEY` set and is skipped whole
+integration runner) runs only with `DEEPSEEK_API_KEY` (or the proxy's
+`LLM_API_KEY`) set and is skipped whole
 otherwise. An integration run passes only when its `results.json` shows every
 requested test succeeded, because the runner exits 0 on failed tests. Each
 block runs in its own process group, which is killed when the block ends or

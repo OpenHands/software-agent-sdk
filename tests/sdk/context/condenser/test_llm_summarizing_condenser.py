@@ -79,6 +79,7 @@ def mock_llm() -> LLM:
     mock_llm.metrics = None
     mock_llm.model = "test-model"
     mock_llm.log_completions = False
+    mock_llm.log_completions_to_file = False
     mock_llm.log_completions_folder = None
     mock_llm.custom_tokenizer = None
     mock_llm.base_url = None
@@ -93,8 +94,7 @@ def mock_llm() -> LLM:
     mock_llm.input_cost_per_token = None
     mock_llm.output_cost_per_token = None
 
-    mock_llm._metrics = None
-    mock_llm._telemetry = None
+    mock_llm._session = None
 
     # Helper method to set mock response content
     def set_mock_response_content(content: str):

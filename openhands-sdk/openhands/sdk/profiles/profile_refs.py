@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from openhands.sdk.errors import Invalid
 from openhands.sdk.llm.llm_profile_store import canonical_profile_name
 from openhands.sdk.logger import get_logger
 from openhands.sdk.profiles.agent_profile_store import PROFILE_NAME_REGEX
@@ -49,7 +50,7 @@ class ProfileReferenced(Exception):
 def _validate_name(name: str) -> None:
     """Reject names that are not legal profile keys (path traversal etc.)."""
     if not PROFILE_NAME_REGEX.match(name):
-        raise ValueError(f"Invalid profile name: {name!r}.")
+        raise Invalid(f"Invalid profile name: {name!r}.")
 
 
 def _scan_referrers(

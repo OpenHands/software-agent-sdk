@@ -377,7 +377,7 @@ jobs:
 
                   echo "Invoking test runner with TEST_TYPE_ARGS='$TEST_TYPE_ARGS' TOOL_PRESET='$TOOL_PRESET'"
 
-                  uv run python tests/integration/run_infer.py \
+                  uv run python -m tests.integration.run_infer \
                     --llm-config "$LLM_CONFIG" \
                     --num-workers $N_PROCESSES \
                     --eval-note "$EVAL_NOTE" \
@@ -491,14 +491,14 @@ jobs:
                   GITHUB_REPOSITORY: ${{ github.repository }}
                   GITHUB_RUN_ID: ${{ github.run_id }}
               run: |
-                  uv run python tests/integration/utils/consolidate_json_results.py \
+                  uv run python -m tests.integration.utils.consolidate_json_results \
                     --results-dir all_results \
                     --artifacts-dir artifacts \
                     --output-file consolidated_results.json
 
                   echo "Consolidated results generated successfully"
 
-                  uv run python tests/integration/utils/generate_markdown_report.py \
+                  uv run python -m tests.integration.utils.generate_markdown_report \
                     --input-file consolidated_results.json \
                     --output-file consolidated_report.md
 
@@ -564,7 +564,7 @@ jobs:
                   LLM_API_KEY: ${{ secrets.LLM_API_KEY_EVAL }}
                   LLM_BASE_URL: https://llm-proxy.eval.all-hands.dev
               run: |
-                  uv run python tests/integration/api_compliance/run_compliance.py \
+                  uv run python -m tests.integration.api_compliance.run_compliance \
                     --output-dir compliance-results
 
             - name: Add report to workflow summary

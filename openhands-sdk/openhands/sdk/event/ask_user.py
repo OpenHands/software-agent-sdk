@@ -1,0 +1,177 @@
+"""The user's answers to the agent's ``ask_user`` questions.
+
+The question itself needs no event of its own: it is the agent's ``ask_user``
+call (an :class:`ActionEvent` whose action holds the question and its
+options), and the call's result says it was shown. The call ends the agent's
+turn, so a question is never waiting inside a run.
+
+A question is *pending* until a message of the user's own comes after it.
+Because that is read from the event log, a restart cannot lose a question or
+leave it half-answered: a tap saves an :class:`AskUserAnswerEvent` and then
+the message the agent reads, and only that message closes the question, so a
+process that dies between the two leaves it pending and the tap can be sent
+again.
+
+The user answers either way:
+
+- by picking an option (and optionally adding words), which a client sends to
+  ``POST /api/conversations/{id}/ask_user/answer``. That records an
+  :class:`AskUserAnswerEvent` for the card and a user message, built by
+  :func:`answer_message_text`, which starts the agent's next turn;
+- by writing in the chat. That is an ordinary message; it closes the question
+  as answered in words.
+
+Messages relayed from other conversations carry a ``sender`` and do not close
+a question: only the user can answer it. A ``/goal`` loop stops when the agent
+asks, rather than sending its next round over the question.
+"""
+
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
+from typing import Final
+
+from pydantic import Field, model_validator
+from rich.text import Text
+
+from openhands.sdk.event.base import Event
+from openhands.sdk.event.llm_convertible import (
+    ActionEvent,
+    MessageEvent,
+    ObservationEvent,
+)
+from openhands.sdk.event.types import EventID, SourceType
+
+
+ASK_USER_TOOL_NAME: Final[str] = "ask_user"
+"""Name of the tool registered by ``openhands.tools.ask_user``."""
+
+ANSWER_HEADER_PREFIX: Final[str] = "[Answer to your question"
+"""Opening of the message an answer becomes, so clients can recognise it."""
+
+
+class AskUserAnswerEvent(Event):
+    """The user picked an option of a pending ``ask_user`` question.
+
+    It is recorded just before the user message that carries the answer to
+    the agent, so clients can show the question's card as answered. The LLM
+    never sees this event; it reads that message.
+    """
+
+    source: SourceType = "user"
+    ask_id: EventID = Field(description="The `ask_user` call answered.")
+    option_index: int | None = Field(
+        default=None, ge=0, description="The option picked, counted from 0."
+    )
+    option_label: str | None = Field(
+        default=None, description="The picked option's label, as it was shown."
+    )
+    text: str | None = Field(
+        default=None, description="The user's own words, when they added any."
+    )
+
+    @model_validator(mode="after")
+    def _option_or_text(self) -> "AskUserAnswerEvent":
+        if self.option_index is None and not (self.text or "").strip():
+            raise ValueError("An answer picks an option, gives text, or both.")
+        return self
+
+    @property
+    def visualize(self) -> Text:
+        picked = self.option_label or ""
+        words = f" — {self.text}" if self.text else ""
+        return Text(f"Answered: {picked}{words}".strip(), style="bold")
+
+
+@dataclass(frozen=True)
+class PendingAsk:
+    """A question the user has not answered yet."""
+
+    ask_id: EventID
+    question: str
+    option_labels: tuple[str, ...]
+    recommended: int | None
+
+
+def is_from_user(event: Event) -> bool:
+    """Whether an event is the user's own message, the only thing that closes
+    a question.
+
+    Messages relayed from another conversation carry a ``sender``; the user's
+    own messages have none. An :class:`AskUserAnswerEvent` does not close the
+    question by itself: the message saved right after it does.
+    """
+    return (
+        isinstance(event, MessageEvent)
+        and event.source == "user"
+        and event.sender is None
+    )
+
+
+def _as_pending(action_event: ActionEvent) -> PendingAsk | None:
+    if action_event.action is None:
+        return None
+    # The action type lives in openhands-tools; read its fields as data.
+    data = action_event.action.model_dump()
+    question = data.get("question")
+    if not isinstance(question, str):
+        return None
+    labels = tuple(
+        str(o.get("label", "")) if isinstance(o, dict) else str(o)
+        for o in data.get("options") or ()
+    )
+    recommended = data.get("recommended")
+    if not isinstance(recommended, int) or not 0 <= recommended < len(labels):
+        recommended = None
+    return PendingAsk(
+        ask_id=action_event.id,
+        question=question,
+        option_labels=labels,
+        recommended=recommended,
+    )
+
+
+def find_pending_ask(events: Sequence[Event]) -> PendingAsk | None:
+    """The agent's latest ``ask_user`` question, unless the user answered it.
+
+    Args:
+        events: The conversation's events, oldest first (its active branch).
+    """
+    return find_pending_ask_back(reversed(events))
+
+
+def find_pending_ask_back(events_newest_first: Iterable[Event]) -> PendingAsk | None:
+    """:func:`find_pending_ask` over the events newest first, in one pass.
+
+    It stops at the user's latest message or at the question, so a caller that
+    walks the log back lazily (``state.walk_back()``) reads only that far.
+    """
+    asked_action_id: EventID | None = None
+    for event in events_newest_first:
+        if asked_action_id is not None:
+            # The question's call comes before its observation.
+            if isinstance(event, ActionEvent) and event.id == asked_action_id:
+                return _as_pending(event)
+            continue
+        if is_from_user(event):
+            return None
+        if (
+            isinstance(event, ObservationEvent)
+            and event.tool_name == ASK_USER_TOOL_NAME
+            and not event.observation.is_error
+        ):
+            asked_action_id = event.action_id
+    return None
+
+
+def answer_message_text(
+    pending: PendingAsk, option_index: int | None, text: str | None
+) -> str:
+    """The message the agent reads for an answer picked on the card."""
+    lines = [f'{ANSWER_HEADER_PREFIX}: "{pending.question}"]']
+    if option_index is not None:
+        lines.append(
+            f"Option {option_index + 1}: {pending.option_labels[option_index]}"
+        )
+    if text and text.strip():
+        lines.append(text.strip())
+    return "\n".join(lines)
