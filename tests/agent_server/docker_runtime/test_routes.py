@@ -878,8 +878,15 @@ def test_invalid_container_options_are_rejected(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("enabled", [False, True])
-def test_reactions_follow_the_host_switch_before_reaching_the_runtime(
-    tmp_path, monkeypatch, enabled
+@pytest.mark.parametrize(
+    ("feature", "tail", "body"),
+    [
+        ("conversation_reactions", "reactions", {"emoji": "+1"}),
+        ("ask_user", "ask_user/answer", {"ask_id": "a", "option_index": 0}),
+    ],
+)
+def test_features_follow_the_host_switch_before_reaching_the_runtime(
+    tmp_path, monkeypatch, enabled, feature, tail, body
 ):
     monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "persistence"))
     config = Config(
@@ -888,7 +895,7 @@ def test_reactions_follow_the_host_switch_before_reaching_the_runtime(
     )
 
     def apply(settings: PersistedSettings) -> PersistedSettings:
-        settings.experimental_features = {"conversation_reactions": enabled}
+        settings.experimental_features = {feature: enabled}
         return settings
 
     stores = ServerStores.from_config(config)
@@ -920,12 +927,12 @@ def test_reactions_follow_the_host_switch_before_reaching_the_runtime(
 
     with TestClient(app) as client:
         response = client.post(
-            f"/api/conversations/{conversation_id}/reactions", json={"emoji": "+1"}
+            f"/api/conversations/{conversation_id}/{tail}", json=body
         )
 
     if enabled:
         assert response.status_code == 200
-        assert forwarded == [f"/api/conversations/{conversation_id}/reactions"]
+        assert forwarded == [f"/api/conversations/{conversation_id}/{tail}"]
     else:
         assert response.status_code == 409
         assert forwarded == []

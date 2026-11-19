@@ -38,20 +38,21 @@ from collections.abc import (
 )
 from concurrent.futures import Future
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple
+from typing import TYPE_CHECKING, Annotated, Any, Final, Literal, NamedTuple
 
 from acp.client.connection import ClientSideConnection
 from acp.exceptions import RequestError as ACPRequestError
-from acp.helpers import image_block, text_block
 from acp.meta import AGENT_METHODS
 from acp.schema import (
     AcpMcpServer,
     AgentMessageChunk,
     AgentThoughtChunk,
     AllowedOutcome,
+    ConnectMcpResponse,
     CreateElicitationResponse,
     CreateTerminalResponse,
     DeclineElicitationResponse,
+    DisconnectMcpResponse,
     ElicitationMode,
     EnvVariable,
     HttpHeader,
@@ -81,10 +82,7 @@ from acp.utils import request_model
 from pydantic import (
     Field,
     PrivateAttr,
-    SecretStr,
     ValidationError,
-    ValidationInfo,
-    field_serializer,
     field_validator,
 )
 
@@ -147,10 +145,7 @@ from openhands.sdk.settings.acp_providers import (
 from openhands.sdk.tool import Tool  # noqa: TC002
 from openhands.sdk.tool.builtins.finish import FinishAction, FinishObservation
 from openhands.sdk.utils import maybe_truncate
-from openhands.sdk.utils.pydantic_secrets import (
-    serialize_secret,
-    validate_secret,
-)
+from openhands.sdk.utils.pydantic_secrets import SecretField
 from openhands.sdk.utils.redact import redact_text_secrets
 
 
@@ -1079,13 +1074,13 @@ def _image_url_to_acp_block(url: str) -> ImageContentBlock | None:
         try:
             header, data = url.split(",", 1)
             mime_type = header.split(":", 1)[1].split(";", 1)[0]
-            return image_block(data=data, mime_type=mime_type)
+            return ImageContentBlock(data=data, mime_type=mime_type)
         except (ValueError, IndexError):
             logger.warning("Failed to parse data URI for ACP image block")
             return None
     # Plain URL — pass as uri with a generic MIME type; the ACP server
     # can fetch and detect the actual type.
-    return image_block(data="", mime_type="image/png", uri=url)
+    return ImageContentBlock(data="", mime_type="image/png", uri=url)
 
 
 def _mask_json_value(value: Any, mask: Callable[[str], str]) -> Any:
@@ -1870,6 +1865,41 @@ class _OpenHandsACPBridge:
     ) -> KillTerminalResponse | None:
         raise NotImplementedError("ACP server handles terminal operations")
 
+    # MCP-over-ACP methods — part of the unstable ``Client`` protocol in
+    # agent-client-protocol 1.0.0. The bridge never proxies MCP servers to the
+    # ACP server, so these are defensive stubs.
+    async def connect_mcp(
+        self,
+        server_id: str,
+        **kwargs: Any,  # noqa: ARG002
+    ) -> ConnectMcpResponse:
+        raise NotImplementedError("ACP server manages its own MCP connections")
+
+    async def disconnect_mcp(
+        self,
+        connection_id: str,
+        **kwargs: Any,  # noqa: ARG002
+    ) -> DisconnectMcpResponse:
+        raise NotImplementedError("ACP server manages its own MCP connections")
+
+    async def mcp_message(
+        self,
+        connection_id: str,  # noqa: ARG002
+        method: str,  # noqa: ARG002
+        params: dict[str, Any] | None = None,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002
+    ) -> Any:
+        raise NotImplementedError("ACP server manages its own MCP connections")
+
+    async def notify_mcp(
+        self,
+        connection_id: str,  # noqa: ARG002
+        method: str,  # noqa: ARG002
+        params: dict[str, Any] | None = None,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002
+    ) -> None:
+        raise NotImplementedError("ACP server manages its own MCP connections")
+
     async def ext_method(
         self,
         method: str,  # noqa: ARG002
@@ -1981,7 +2011,7 @@ class ACPAgent(AgentBase):
             "the server keeps its own."
         ),
     )
-    acp_resume_session_id: str | None = Field(
+    acp_resume_session_id: Annotated[str | None, SecretField()] = Field(
         default=None,
         description=(
             "Optional explicit ACP session id to resume. When set, takes "
@@ -1999,46 +2029,6 @@ class ACPAgent(AgentBase):
             "trip) when the value must cross a serialization boundary."
         ),
     )
-
-    @field_serializer("acp_resume_session_id", when_used="always")
-    def _serialize_acp_resume_session_id(self, value: str | None, info):
-        """Mask ``acp_resume_session_id`` via :func:`serialize_secret`.
-
-        Default ``model_dump`` / ``model_dump_json`` redacts the id so it
-        cannot leak into logs, trace exports, or PR review attachments.
-        Trusted backend callers opt into plaintext via Pydantic's context
-        (``expose_secrets='plaintext'``); frontend round-trips use the
-        ``"encrypted"`` mode with a cipher in the context.
-        """
-        if value is None:
-            return None
-        return serialize_secret(SecretStr(value), info)
-
-    @field_validator("acp_resume_session_id", mode="before")
-    @classmethod
-    def _validate_acp_resume_session_id(
-        cls, value: Any, info: ValidationInfo
-    ) -> str | None:
-        """Reverse :meth:`_serialize_acp_resume_session_id` on load.
-
-        Without this validator, ``model_validate_json`` of a previously
-        serialized agent would put garbage in ``acp_resume_session_id``:
-
-        - Default-redacted dumps would reload as the literal ``"**********"``
-          sentinel — calling ``session/load`` with that fails server-side and
-          we fall back to a fresh session every time, defeating the whole
-          point of the durable mirror.
-        - Encrypted dumps (frontend round-trip) would reload as the raw
-          Fernet ciphertext — same failure mode, plus the ciphertext sits
-          in ``state.agent_state`` on disk.
-
-        :func:`validate_secret` returns ``None`` for empty/redacted values
-        and decrypts when a cipher is present in the validation context.
-        We unwrap the returned ``SecretStr`` so the field's runtime type
-        stays ``str | None`` (the rest of the SDK reads it directly).
-        """
-        secret = validate_secret(value, info)
-        return secret.get_secret_value() if secret is not None else None
 
     acp_file_secrets: list[ACPFileSecretSpec] = Field(
         default_factory=lambda: list(default_acp_file_secrets()),
@@ -3909,7 +3899,7 @@ class ACPAgent(AgentBase):
         blocks: list[TextContentBlock | ImageContentBlock] = []
         for content in message.content:
             if isinstance(content, TextContent) and content.text.strip():
-                blocks.append(text_block(content.text))
+                blocks.append(TextContentBlock(text=content.text))
             elif isinstance(content, ImageContent):
                 for url in content.image_urls:
                     acp_block = _image_url_to_acp_block(url)
@@ -3919,7 +3909,7 @@ class ACPAgent(AgentBase):
             self._suffix_install_state == "pending_first_prompt"
             and self._installed_suffix
         ):
-            blocks.append(text_block(self._installed_suffix))
+            blocks.append(TextContentBlock(text=self._installed_suffix))
             # NOTE: do NOT flip ``_suffix_install_state`` here.  If the
             # caller (step/astep) is cancelled or fails before the ACP
             # server persists this first turn (more likely on the async
@@ -4718,7 +4708,7 @@ class ACPAgent(AgentBase):
                 usage_sync = client.prepare_usage_sync(fork_session_id)
                 response = await conn.prompt(
                     session_id=fork_session_id,
-                    prompt=[text_block(question)],
+                    prompt=[TextContentBlock(text=question)],
                 )
                 if client.get_turn_usage_update(fork_session_id) is None:
                     try:

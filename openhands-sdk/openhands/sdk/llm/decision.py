@@ -26,8 +26,6 @@ from pydantic import (
     Field,
     PrivateAttr,
     SecretStr,
-    field_serializer,
-    field_validator,
     model_validator,
 )
 
@@ -44,7 +42,7 @@ from openhands.sdk.llm.llm import LLM_RETRY_EXCEPTIONS
 from openhands.sdk.llm.utils.metrics import Metrics, MetricsSnapshot
 from openhands.sdk.llm.utils.retry_mixin import RetryMixin, transient_error_condition
 from openhands.sdk.logger import get_logger
-from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
+from openhands.sdk.utils.pydantic_secrets import SecretField
 
 
 logger = get_logger(__name__)
@@ -66,12 +64,6 @@ __all__ = [
 ]
 
 _MAX_SCORE_LEVELS: Final[int] = 10
-_SECRET_FIELDS: Final[tuple[str, ...]] = (
-    "api_key",
-    "aws_access_key_id",
-    "aws_secret_access_key",
-    "aws_session_token",
-)
 # LiteLLM's ChoiceQuestion caps criteria at 255 but exports no constant for it.
 _LITELLM_MAX_CHOICE_OPTIONS: Final[int] = 255
 
@@ -229,7 +221,9 @@ class DecisionModel(BaseModel, RetryMixin):
     model: str = Field(
         description="Decision model name; a LiteLLM model string by default."
     )
-    api_key: str | SecretStr | None = Field(default=None, description="API key.")
+    api_key: Annotated[str | SecretStr | None, SecretField()] = Field(
+        default=None, description="API key."
+    )
     base_url: str | None = Field(default=None, description="Custom API base URL.")
     custom_llm_provider: str | None = Field(
         default=None, description="LiteLLM provider, when the model string lacks it."
@@ -240,9 +234,9 @@ class DecisionModel(BaseModel, RetryMixin):
     safety_identifier: str | None = Field(
         default=None, description="Stable end-user identifier for abuse monitoring."
     )
-    aws_access_key_id: str | SecretStr | None = None
-    aws_secret_access_key: str | SecretStr | None = None
-    aws_session_token: str | SecretStr | None = None
+    aws_access_key_id: Annotated[str | SecretStr | None, SecretField()] = None
+    aws_secret_access_key: Annotated[str | SecretStr | None, SecretField()] = None
+    aws_session_token: Annotated[str | SecretStr | None, SecretField()] = None
     aws_region_name: str | None = None
     aws_profile_name: str | None = None
     aws_role_name: str | None = None
@@ -259,15 +253,6 @@ class DecisionModel(BaseModel, RetryMixin):
     _metrics: Metrics = PrivateAttr()
 
     model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
-
-    @field_validator(*_SECRET_FIELDS)
-    @classmethod
-    def _validate_secrets(cls, v: str | SecretStr | None, info) -> SecretStr | None:
-        return validate_secret(v, info)
-
-    @field_serializer(*_SECRET_FIELDS, when_used="always")
-    def _serialize_secrets(self, v: SecretStr | None, info):
-        return serialize_secret(v, info)
 
     def model_post_init(self, __context: Any) -> None:
         self._metrics = Metrics(model_name=self.model)

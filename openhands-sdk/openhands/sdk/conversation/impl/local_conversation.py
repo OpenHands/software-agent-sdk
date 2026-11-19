@@ -3,9 +3,10 @@ import atexit
 import contextlib
 import copy
 import json
+import threading
 import uuid
 from collections.abc import Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 from datetime import datetime
 from pathlib import Path, PurePath
 from typing import Any, Final, TypeGuard, cast
@@ -20,7 +21,7 @@ from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.cancellation import CancellationToken
 from openhands.sdk.conversation.event_store import ROOT_PARENT_ID, EventLog
 from openhands.sdk.conversation.exceptions import ConversationRunError
-from openhands.sdk.conversation.secret_registry import SecretValue
+from openhands.sdk.conversation.secret_registry import SecretRegistry, SecretValue
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
@@ -53,8 +54,14 @@ from openhands.sdk.event import (
     ReactionEvent,
     UserRejectObservation,
 )
+from openhands.sdk.event.ask_user import (
+    AskUserAnswerEvent,
+    answer_message_text,
+    find_pending_ask_back,
+)
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.error_classification import AGENT_OUTCOME
+from openhands.sdk.event.message_edit import message_text
 from openhands.sdk.event.reaction import (
     check_reaction_emoji,
     find_reaction_target,
@@ -67,7 +74,15 @@ from openhands.sdk.hooks import (
     create_hook_callback,
 )
 from openhands.sdk.io import FileStore, LocalFileStore
-from openhands.sdk.llm import LLM, Message, TextContent, content_to_str
+from openhands.sdk.llm import (
+    LLM,
+    Message,
+    ModelRouterSelection,
+    ModelRouterStatus,
+    RouterLLM,
+    TextContent,
+    content_to_str,
+)
 from openhands.sdk.llm.auth.openai import create_subscription_llm_from_config
 from openhands.sdk.llm.call_context import LLMCallContext, llm_call_context_scope
 from openhands.sdk.llm.exceptions import LLMAuthenticationError
@@ -80,6 +95,7 @@ from openhands.sdk.mcp.config import (
     MCPServer,
     enabled_mcp_servers,
 )
+from openhands.sdk.mcp.exceptions import MCPError, MCPServerStartError
 from openhands.sdk.mcp.tool import MCPToolDefinition
 from openhands.sdk.mcp.utils import (
     DefaultMCPToolProvider,
@@ -127,7 +143,9 @@ from openhands.sdk.tool.builtins import InvokeSkillTool
 from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
+from openhands.sdk.utils.pydantic_secrets import client_context
 from openhands.sdk.utils.redact import (
+    redact_text_secrets,
     redact_url_credentials,
     redact_url_credentials_in_text,
 )
@@ -224,7 +242,7 @@ def _same_llm_config(a: LLM, b: LLM) -> bool:
     """Return whether two LLMs serialize to the same config, secrets included."""
     if a is b:
         return True
-    context = {"expose_secrets": True}
+    context = client_context("plaintext")
     return a.model_dump(mode="json", context=context) == b.model_dump(
         mode="json", context=context
     )
@@ -267,6 +285,9 @@ class LocalConversation(BaseConversation):
     _plugins_loaded: bool
     _pending_hook_config: HookConfig | None  # Hook config to combine with plugin hooks
     _mcp_tool_provider: MCPToolProvider
+    _mcp_startup_budget: float | None
+    _late_mcp_lock: threading.Lock
+    _late_mcp_ready: list[threading.Event]
     _mcp_config_from_parent: bool
     _llm_call_context: LLMCallContext
 
@@ -306,6 +327,7 @@ class LocalConversation(BaseConversation):
         mcp_tool_provider: MCPToolProvider | None = None,
         profile_store_dir: str | Path | None = None,
         stream_callbacks: list[StreamProgressCallbackType] | None = None,
+        mcp_startup_budget: float | None = None,
         _parent_llm_call_context: LLMCallContext | None = None,
         _mcp_config_from_parent: bool = False,
         **_: object,
@@ -332,6 +354,10 @@ class LocalConversation(BaseConversation):
             token_callbacks: Optional list of callbacks invoked for streaming deltas
             stream_callbacks: Optional list of callbacks invoked with the
                 stream-progress frames minted by ``StreamContext``.
+            mcp_startup_budget: Seconds agent startup waits for MCP servers.
+                Tools of servers still starting after that are added when they
+                are ready, and the agent's first step waits for them. None (the
+                default) waits for every server at startup.
             hook_config: Optional hook configuration to auto-wire session hooks.
                 If plugins are loaded, their hooks are combined with this config.
             max_iteration_per_run: Maximum number of iterations per run
@@ -383,6 +409,8 @@ class LocalConversation(BaseConversation):
         # Mark cleanup as initiated as early as possible to avoid races or partially
         # initialized instances during interpreter shutdown.
         self._cleanup_initiated = False
+        self._late_mcp_lock = threading.Lock()
+        self._late_mcp_ready = []
         self._cleanup_complete = False
         self._arun_task = None
         self._cancel_token = None
@@ -396,6 +424,7 @@ class LocalConversation(BaseConversation):
         self._pending_hook_config = hook_config  # Will be combined with plugin hooks
         self._agent_ready = False  # Agent initialized lazily after plugins loaded
         self._mcp_tool_provider = mcp_tool_provider or DefaultMCPToolProvider()
+        self._mcp_startup_budget = mcp_startup_budget
         self._mcp_config_from_parent = _mcp_config_from_parent
 
         # Create-or-resume: factory inspects BASE_STATE to decide
@@ -533,7 +562,7 @@ class LocalConversation(BaseConversation):
         def _flush_pending_reactions(e):
             if not self._pending_reactions or not isinstance(e, ObservationBaseEvent):
                 return
-            if ConversationState.get_unmatched_actions(self._state.active_branch()):
+            if self._state.waiting_actions():
                 return
             pending, self._pending_reactions = self._pending_reactions, []
             for reaction in pending:
@@ -998,7 +1027,7 @@ class LocalConversation(BaseConversation):
         source_agent = agent if agent is not None else self.agent
         agent_cls = type(source_agent)
         fork_agent = agent_cls.model_validate(
-            source_agent.model_dump(context={"expose_secrets": True}),
+            source_agent.model_dump(context=client_context("plaintext")),
         )
 
         # Hold the state lock while reading mutable state from the source
@@ -1032,6 +1061,9 @@ class LocalConversation(BaseConversation):
                 visualizer=type(self._visualizer) if self._visualizer else None,
                 delete_on_close=self.delete_on_close,
                 tags=tags,
+                # Same cipher as the source, so the fork's base_state.json keeps
+                # secrets encrypted rather than redacted (#5465).
+                cipher=self._cipher,
                 _parent_llm_call_context=self._llm_call_context,
             )
 
@@ -1078,6 +1110,19 @@ class LocalConversation(BaseConversation):
                 self._state.activated_path_rules
             )
             fork_conv._state.agent_state = copy.deepcopy(self._state.agent_state)
+            # Conversation secrets (``secrets=`` / update_secrets) live in the
+            # registry, not the agent. Assigning the field (rather than
+            # mutating the registry) autosaves them, encrypted with the cipher.
+            source_secrets = self._state.secret_registry.secret_sources
+            fork_conv._state.secret_registry = SecretRegistry(
+                secret_sources={
+                    **fork_conv._state.secret_registry.secret_sources,
+                    **{
+                        name: source.model_copy(deep=True)
+                        for name, source in source_secrets.items()
+                    },
+                }
+            )
 
             # Reset or copy metrics
             if not reset_metrics:
@@ -1632,6 +1677,7 @@ class LocalConversation(BaseConversation):
         *,
         on_tools_changed: ToolsChangedCallback | None = None,
         on_tools_reconciled: ToolsReconciledCallback | None = None,
+        startup_budget: float | None = None,
     ) -> list[ToolDefinition]:
         # Servers the user switched off stay in the settings map but must not
         # be connected to. Filter before the emptiness check so an all-disabled
@@ -1652,21 +1698,37 @@ class LocalConversation(BaseConversation):
         # costs only its own tools. They start side by side: startup takes as
         # long as the slowest server, not all of them in a row.
         prefixed = len(mcp_config) > 1
-        with ThreadPoolExecutor(
+        pool = ThreadPoolExecutor(
             max_workers=len(mcp_config), thread_name_prefix="mcp-startup"
-        ) as pool:
-            started = {
-                name: pool.submit(
-                    self._start_runtime_mcp_server,
-                    name,
-                    server,
-                    create_kwargs,
-                    prefixed,
-                )
-                for name, server in mcp_config.items()
-            }
+        )
+        started = {
+            name: pool.submit(
+                self._start_runtime_mcp_server,
+                name,
+                server,
+                create_kwargs,
+                prefixed,
+            )
+            for name, server in mcp_config.items()
+        }
+        pool.shutdown(wait=False)
+        _, still_starting = wait(started.values(), timeout=startup_budget)
         tools: list[ToolDefinition] = []
         for name, future in started.items():
+            if future in still_starting:
+                logger.info(
+                    "MCP server %s is still starting; its tools will be added "
+                    "when it is ready",
+                    name,
+                )
+                ready = threading.Event()
+                self._late_mcp_ready.append(ready)
+                future.add_done_callback(
+                    lambda done, name=name, ready=ready: self._add_late_mcp_tools(
+                        name, done, ready
+                    )
+                )
+                continue
             try:
                 tools.extend(future.result())
             except Exception as exc:
@@ -1706,6 +1768,46 @@ class LocalConversation(BaseConversation):
         )
         return named(client.tools)
 
+    def _add_late_mcp_tools(
+        self,
+        name: str,
+        started: Future[list[MCPToolDefinition]],
+        ready: threading.Event,
+    ) -> None:
+        """Register a server that finished starting after the startup budget."""
+        try:
+            try:
+                tools = started.result()
+            except Exception as exc:
+                logger.warning(
+                    "MCP server startup failed for %s; continuing without its "
+                    "tools: %s",
+                    name,
+                    exc,
+                )
+                return
+            # Under the lock, close() either sees these tools in the agent or
+            # this method sees the conversation closing; nothing is left running.
+            with self._late_mcp_lock:
+                if self._cleanup_initiated:
+                    self._close_runtime_tools(tools)
+                    return
+                try:
+                    self.agent._on_mcp_tools_changed(tools)
+                except Exception as exc:
+                    logger.warning("Could not add MCP tools of %s: %s", name, exc)
+                    self._close_runtime_tools(tools)
+                    return
+            logger.info("MCP server %s is ready; added %d tools", name, len(tools))
+        finally:
+            ready.set()
+
+    def _wait_for_late_mcp_tools(self) -> None:
+        """Let servers that missed the startup budget join before the agent's
+        first step, so its first LLM call already has their tools."""
+        for ready in self._late_mcp_ready:
+            ready.wait(_RUNTIME_MCP_TIMEOUT_SECS)
+
     def _on_mcp_tools_reconciled(
         self,
         client: MCPClient,
@@ -1720,6 +1822,86 @@ class LocalConversation(BaseConversation):
             self.agent.mcp_config,
             on_tools_changed=lambda tools: self.agent._on_mcp_tools_changed(tools),
             on_tools_reconciled=self._on_mcp_tools_reconciled,
+            startup_budget=self._mcp_startup_budget,
+        )
+
+    def _runtime_mcp_create_kwargs(self) -> dict[str, Any]:
+        create_kwargs: dict[str, Any] = {
+            "on_tools_changed": lambda tools: self.agent._on_mcp_tools_changed(tools)
+        }
+        if provider_supports_on_tools_reconciled(self._mcp_tool_provider):
+            create_kwargs["on_tools_reconciled"] = self._on_mcp_tools_reconciled
+        return create_kwargs
+
+    def add_mcp_servers(self, servers: Mapping[str, MCPServer]) -> None:
+        """Add modern MCP servers to this conversation without legacy session reuse.
+
+        Raises:
+            ValueError: The servers cannot be added (SSE transport, a name the
+                agent already has, or an agent without OpenHands MCP support).
+            MCPServerStartError: A server failed to start; nothing is added and
+                the servers already started are closed. ``server_name`` names
+                it and the original error is the ``__cause__``.
+        """
+        if not self.agent.supports_openhands_mcp:
+            raise ValueError("Runtime MCP additions require an OpenHands agent")
+        mcp_config = expand_mcp_servers(
+            dict(servers), self._state.secret_registry.get_secret_value
+        )
+        for name, server in mcp_config.items():
+            if server.effective_transport == "sse":
+                raise ValueError(
+                    f"Runtime MCP additions do not support SSE transport: {name}"
+                )
+
+        with self._state:
+            duplicates = mcp_config.keys() & self.agent.mcp_config.keys()
+            if duplicates:
+                raise ValueError(f"MCP server already exists: {sorted(duplicates)}")
+            agent_ready = self._agent_ready
+
+        runtime_tools: list[ToolDefinition] = []
+        if agent_ready:
+            create_kwargs = self._runtime_mcp_create_kwargs()
+            for name, server in enabled_mcp_servers(mcp_config).items():
+                try:
+                    runtime_tools.extend(
+                        self._start_runtime_mcp_server(
+                            name, server, create_kwargs, prefixed=True
+                        )
+                    )
+                except Exception as exc:
+                    self._close_runtime_tools(runtime_tools)
+                    raise MCPServerStartError(
+                        name,
+                        f"Could not start MCP server {name}: "
+                        f"{self._mcp_start_failure_reason(exc)}",
+                    ) from exc
+
+        with self._state:
+            duplicates = mcp_config.keys() & self.agent.mcp_config.keys()
+            if duplicates:
+                self._close_runtime_tools(runtime_tools)
+                raise ValueError(f"MCP server already exists: {sorted(duplicates)}")
+            updated_agent = self.agent.model_copy(
+                update={"mcp_config": {**self.agent.mcp_config, **mcp_config}}
+            )
+            try:
+                updated_agent.add_runtime_tools(runtime_tools)
+            except Exception:
+                self._close_runtime_tools(runtime_tools)
+                raise
+            self.agent = self._state.agent = updated_agent
+
+    def _mcp_start_failure_reason(self, exc: Exception) -> str:
+        """One line saying why a server did not start, without its secrets."""
+        # The client's bare "MCP Connection Failure" hides the cause, e.g. a
+        # missing executable; report the cause instead.
+        cause = exc.__cause__ if type(exc) is MCPError else None
+        lines = str(cause or exc).strip().splitlines()
+        text = lines[0] if lines else type(exc).__name__
+        return redact_text_secrets(
+            self._state.secret_registry.mask_secrets_in_output(text)
         )
 
     def _runtime_skill_tools_for_agent(self) -> list[ToolDefinition]:
@@ -1941,12 +2123,12 @@ class LocalConversation(BaseConversation):
 
         current_config = current_llm.model_dump(
             mode="json",
-            context={"expose_secrets": True},
+            context=client_context("plaintext"),
             exclude={"usage_id"},
         )
         condenser_config = condenser.llm.model_dump(
             mode="json",
-            context={"expose_secrets": True},
+            context=client_context("plaintext"),
             exclude={"usage_id"},
         )
         if condenser_config != current_config:
@@ -1965,6 +2147,89 @@ class LocalConversation(BaseConversation):
                 "switch_llm and switch_profile are not supported for ACP "
                 "conversations; use switch_acp_model instead."
             )
+
+    def _register_agent_llms(self, agent: AgentBase) -> None:
+        registered = set(self.llm_registry.list_usage_ids())
+        for llm in agent.get_all_llms():
+            if llm.usage_id in registered:
+                continue
+            self.llm_registry.add(llm)
+            registered.add(llm.usage_id)
+
+    def _replace_agent_llm(self, new_llm: LLM) -> None:
+        # Tool-triggered switches may run on a worker while the run loop holds
+        # the state lock awaiting that tool; re-acquiring would deadlock (#3485).
+        skip_lock = self._step_holds_state_lock and not self._state.owned()
+        lock = contextlib.nullcontext() if skip_lock else self._state
+        with lock:
+            update: dict[str, object] = {"llm": new_llm}
+            update["condenser"] = self._condenser_for_switched_llm(
+                self.agent.llm,
+                new_llm,
+            )
+            self.agent = self.agent.model_copy(update=update)
+            self._register_agent_llms(self.agent)
+            self._state.agent = self.agent
+            self.llm_registry.remove(ASK_AGENT_LLM_USAGE_ID)
+
+    def _add_model_router_route_llm(
+        self,
+        route_name: str,
+        llm: LLM,
+        *,
+        base_route_name: str = "default",
+    ) -> ModelRouterStatus:
+        self._reject_llm_switch_on_acp()
+        if llm.usage_id == "default" and route_name != "default":
+            llm = llm.model_copy(update={"usage_id": route_name})
+        llm = create_subscription_llm_from_config(llm) if type(llm) is LLM else llm
+
+        current_llm = self.agent.llm
+        if isinstance(current_llm, RouterLLM):
+            updated_llm = current_llm.with_route(route_name, llm)
+        else:
+            router = RouterLLM(llms_for_routing={base_route_name: current_llm})
+            updated_llm = router.with_route(route_name, llm)
+        self._replace_agent_llm(updated_llm)
+        return updated_llm.status()
+
+    def add_model_router_route(
+        self,
+        profile_name: str,
+        *,
+        route_name: str | None = None,
+        base_route_name: str = "default",
+    ) -> ModelRouterStatus:
+        """Add a saved LLM profile as a model-router route."""
+        resolved_route_name = route_name or profile_name
+        usage_id = f"profile:{profile_name}"
+        try:
+            llm = self.llm_registry.get(usage_id)
+        except KeyError:
+            loaded = self._profile_store.load(profile_name, cipher=self._cipher)
+            llm = loaded.model_copy(update={"usage_id": usage_id})
+        return self._add_model_router_route_llm(
+            resolved_route_name,
+            llm,
+            base_route_name=base_route_name,
+        )
+
+    def update_model_router_selection(self, selection: ModelRouterSelection) -> None:
+        """Update route selection for a RouterLLM-backed conversation."""
+        self._reject_llm_switch_on_acp()
+        if not isinstance(self.agent.llm, RouterLLM):
+            raise ValueError("Current agent LLM is not a RouterLLM.")
+        self._replace_agent_llm(self.agent.llm.with_selection(selection))
+
+    def switch_routed_llm(self, route_name: str) -> None:
+        """Switch a RouterLLM-backed conversation to a manual route."""
+        self.update_model_router_selection(
+            ModelRouterSelection(mode="manual", manual_route_name=route_name)
+        )
+
+    def resume_auto_llm_routing(self) -> None:
+        """Return a RouterLLM-backed conversation to automatic routing."""
+        self.update_model_router_selection(ModelRouterSelection(mode="auto"))
 
     def switch_llm(self, llm: LLM) -> None:
         """Swap the agent's LLM to the given object.
@@ -1995,26 +2260,7 @@ class LocalConversation(BaseConversation):
             if registered is not None:
                 self.llm_registry.remove(usage_id)
             self.llm_registry.add(new_llm)
-        # A switch_llm tool runs on a worker thread while run()/arun() holds the
-        # state lock across the agent step on another thread, blocked awaiting
-        # this very tool. Re-acquiring _state here would deadlock, so skip it:
-        # the run loop is parked and no other mutator can run, so the swap is
-        # safe without the lock (#3485). Only skip when the lock is held by a
-        # different thread (the run loop); when the caller already owns it (a
-        # sync step, or the switch endpoint reentering on the event-loop thread)
-        # acquire normally — FIFOLock is reentrant for the owning thread.
-        skip_lock = self._step_holds_state_lock and not self._state.owned()
-        lock = contextlib.nullcontext() if skip_lock else self._state
-        with lock:
-            update: dict[str, object] = {"llm": new_llm}
-            update["condenser"] = self._condenser_for_switched_llm(
-                self.agent.llm,
-                new_llm,
-            )
-            self.agent = self.agent.model_copy(update=update)
-            self._state.agent = self.agent
-            # Invalidate the cached ask-agent LLM so it re-clones.
-            self.llm_registry.remove(ASK_AGENT_LLM_USAGE_ID)
+        self._replace_agent_llm(new_llm)
 
     def switch_profile(self, profile_name: str) -> None:
         """Switch the agent's LLM to a profile loaded from disk.
@@ -2276,10 +2522,17 @@ class LocalConversation(BaseConversation):
         """
         checked = check_reaction_emoji(emoji)
         with self._state:
+            # The user may react to a message the agent no longer sees, so
+            # this walks the active branch back from the end, only as far as
+            # the message (or the agent's latest one), never the whole log.
             target = find_reaction_target(
-                self._state.active_branch(), target_event_id, source="user"
+                self._state.walk_back(until=target_event_id),
+                target_event_id,
+                source="user",
             )
-            ending, clipped = reaction_target_text(target)
+            ending, clipped = reaction_target_text(
+                message_text(self._state.walk_back(until=target.id), target)
+            )
             event = ReactionEvent(
                 source="user",
                 target_event_id=target.id,
@@ -2288,7 +2541,7 @@ class LocalConversation(BaseConversation):
                 target_text_ending=ending,
                 target_text_clipped=clipped,
             )
-            if ConversationState.get_unmatched_actions(self._state.active_branch()):
+            if self._state.waiting_actions():
                 self._pending_reactions.append(event)
             else:
                 # Stamp here, as the log will, so the caller gets the event as
@@ -2296,6 +2549,58 @@ class LocalConversation(BaseConversation):
                 event = cast(ReactionEvent, self._state._stamp_parent_id(event))
                 self._on_event(event)
         return event
+
+    def answer_ask(
+        self,
+        ask_id: EventID,
+        option_index: int | None = None,
+        text: str | None = None,
+    ) -> tuple[AskUserAnswerEvent, Message]:
+        """Record the user's answer to the agent's pending ``ask_user`` question.
+
+        Saves an :class:`AskUserAnswerEvent` (what a client shows on the card)
+        and returns it with the message that carries the answer to the agent.
+        The caller sends that message (``send_message``) and runs the agent;
+        that message is what closes the question, so until it is saved the
+        question stays pending and an answer can be sent again. Writing in
+        the chat instead needs none of this: any message of the user's closes
+        the question.
+
+        Raises:
+            ValueError: ``ask_id`` is not the pending question, the option does
+                not exist, or the answer has neither an option nor text.
+        """
+        with self._state:
+            pending = find_pending_ask_back(self._state.walk_back())
+            if pending is None or pending.ask_id != ask_id:
+                raise ValueError("That question is not waiting for an answer.")
+            if option_index is not None and not (
+                0 <= option_index < len(pending.option_labels)
+            ):
+                raise ValueError(
+                    f"The question has {len(pending.option_labels)} options; "
+                    f"there is no option {option_index}."
+                )
+            words = (text or "").strip() or None
+            event = AskUserAnswerEvent(
+                ask_id=ask_id,
+                option_index=option_index,
+                option_label=(
+                    None
+                    if option_index is None
+                    else pending.option_labels[option_index]
+                ),
+                text=words,
+            )
+            event = cast(AskUserAnswerEvent, self._state._stamp_parent_id(event))
+            self._on_event(event)
+        message = Message(
+            role="user",
+            content=[
+                TextContent(text=answer_message_text(pending, option_index, words))
+            ],
+        )
+        return event, message
 
     def _on_event_with_state_lock(self, event: Event) -> None:
         """Emit an event while holding the conversation state lock."""
@@ -2364,6 +2669,7 @@ class LocalConversation(BaseConversation):
         """Implement :meth:`run` inside the active LLM context scope."""
         # Ensure agent is fully initialized (loads plugins and initializes agent)
         self._ensure_agent_ready()
+        self._wait_for_late_mcp_tools()
         self._cancel_token = CancellationToken()
 
         with self._state:
@@ -2398,6 +2704,8 @@ class LocalConversation(BaseConversation):
                         self._state.execution_status
                         == ConversationExecutionStatus.FINISHED
                     ):
+                        if find_pending_ask_back(self._state.walk_back()) is not None:
+                            break
                         if self._hook_processor is not None:
                             should_stop, feedback = self._hook_processor.run_stop(
                                 reason="agent_finished"
@@ -2582,6 +2890,7 @@ class LocalConversation(BaseConversation):
         # self-deadlock that ReadTimeouts after 30s (agent-canvas#1072).
         # _ensure_agent_ready is thread-safe and already runs off-loop in run().
         await asyncio.to_thread(self._ensure_agent_ready)
+        await asyncio.to_thread(self._wait_for_late_mcp_tools)
 
         with self._state:
             if isinstance(self.agent, ACPAgent) and self._state.execution_status in (
@@ -2631,6 +2940,8 @@ class LocalConversation(BaseConversation):
                         self._state.execution_status
                         == ConversationExecutionStatus.FINISHED
                     ):
+                        if find_pending_ask_back(self._state.walk_back()) is not None:
+                            break
                         if self._hook_processor is not None:
                             should_stop, feedback = self._hook_processor.run_stop(
                                 reason="agent_finished"
@@ -3303,7 +3614,8 @@ class LocalConversation(BaseConversation):
             return
         first_attempt = not self._cleanup_initiated
         if first_attempt:
-            self._cleanup_initiated = True
+            with self._late_mcp_lock:
+                self._cleanup_initiated = True
 
             # Best-effort: hand the accumulated LLM cost to the workspace so it
             # can be included in the automation completion callback. State is
@@ -3359,6 +3671,8 @@ class LocalConversation(BaseConversation):
         This bypasses the normal conversation flow and does **not** modify, persist,
         or become part of the conversation state. The request is not remembered by
         the main agent, no events are recorded, and execution status is untouched.
+        Only the usage of the call is kept: it is counted in the conversation's
+        stats under ``ask-agent-llm`` and saved with them.
         It is also thread-safe and may be called while `conversation.run()` is
         executing in another thread.
 
@@ -3411,13 +3725,17 @@ class LocalConversation(BaseConversation):
             )
             self.llm_registry.add(question_llm)
 
-        # Pass agent tools so LLM can understand tool_calls in conversation history
+        # Tool schemas are part of the cached prefix even for a text-only question.
         response = question_llm.generate(
             messages=messages,
             tools=list(self.agent.tools_map.values()),
+            add_security_risk_prediction=True,
             store=False,
             call_context=self._llm_call_context,
         )
+        # The call recorded its usage inside ``state.stats``; nothing else
+        # changes here that would save it.
+        self._state.save_soon()
 
         message = response.message
 

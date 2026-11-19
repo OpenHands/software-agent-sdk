@@ -8,6 +8,7 @@ Usage: lifecycle.py MODE
   persist      the on-disk layout, written event by event
   corrupt      reloading a conversation whose event files were damaged
   resume       a new Conversation with the same id continues with memory
+  ask-usage    ask_agent usage: in memory, in base_state.json, after a reload
   compat       which agent changes a resume accepts
   file-store   an injected FileStore instead of persistence_dir
   callbacks    order, delivery after persistence, a failed write
@@ -280,6 +281,86 @@ elif mode == "resume":
             "events_after": len(second.state.events),
         }
         second.close()
+
+elif mode == "ask-usage":
+    cid = uuid.uuid4()
+    with FakeProvider(
+        [{"finish": "turn done"}, {"text": "A side answer."}, {"finish": "unused"}]
+    ) as server:
+
+        def priced_llm() -> LLM:
+            # 100 prompt + 20 completion tokens per call: 0.14.
+            return LLM(
+                model="openai/gpt-4o-mini",
+                base_url=server.url,
+                api_key=SecretStr("sk-test"),
+                usage_id="agent",
+                num_retries=1,
+                input_cost_per_token=0.001,
+                output_cost_per_token=0.002,
+            )
+
+        def in_memory(conversation) -> dict:
+            return {
+                usage_id: {
+                    "cost": round(m.accumulated_cost, 4),
+                    "calls": len(m.costs),
+                }
+                for usage_id, m in (
+                    conversation.conversation_stats.usage_to_metrics.items()
+                )
+            }
+
+        def on_disk(directory: Path) -> dict:
+            state = json.loads((directory / cid.hex / "base_state.json").read_text())
+            return {
+                usage_id: {
+                    "cost": round(m.get("accumulated_cost", 0.0), 4),
+                    "calls": len(m.get("costs", [])),
+                }
+                for usage_id, m in state["stats"]["usage_to_metrics"].items()
+            }
+
+        conversation = Conversation(
+            agent=Agent(llm=priced_llm(), tools=[]),
+            workspace=WORKSPACE,
+            persistence_dir=str(BASE),
+            conversation_id=cid,
+            visualizer=None,
+        )
+        conversation.send_message("One turn.")
+        conversation.run()
+        disk_after_turn = on_disk(BASE)
+        answer = conversation.ask_agent("What did you do?")
+        memory_after_ask = in_memory(conversation)
+        disk_after_ask = on_disk(BASE)
+        # Reload what is on disk right now, from a copy, so nothing the first
+        # conversation saves later (on close) can reach the reloaded one.
+        copy = paths["run"] / "lifecycle-ask-usage-copy"
+        shutil.rmtree(copy, ignore_errors=True)
+        shutil.copytree(BASE, copy)
+        reloaded = Conversation(
+            agent=Agent(llm=priced_llm(), tools=[]),
+            workspace=WORKSPACE,
+            persistence_dir=str(copy),
+            conversation_id=cid,
+            visualizer=None,
+        )
+        out |= {
+            "status": conversation.state.execution_status.value,
+            "answer": answer,
+            "requests": len(server.requests),
+            "disk_after_turn": disk_after_turn,
+            "memory_after_ask": memory_after_ask,
+            "disk_after_ask": disk_after_ask,
+            "reloaded": in_memory(reloaded),
+            "reloaded_combined_cost": round(
+                reloaded.conversation_stats.get_combined_metrics().accumulated_cost, 4
+            ),
+            "reloaded_events": len(reloaded.state.events),
+        }
+        reloaded.close()
+        conversation.close()
 
 elif mode == "compat":
     from openhands.tools.file_editor import FileEditorTool
