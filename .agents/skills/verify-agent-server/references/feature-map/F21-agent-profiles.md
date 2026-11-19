@@ -60,6 +60,7 @@ Routes: `GET /api/agent-profiles`, `GET /api/agent-profiles/{name}`,
 - `F21.dangling-llm-report`: how materialize reports a dangling LLM reference must match what the server's seed code documents: the documented `dangling_llm_profile_ref` field (the one the launch's 422 carries) is in the materialize body, or the documentation stops promising it.
 - `F21.ts-payload-types`: the TypeScript client's exported `AgentProfileSummary`, `AgentProfileDiagnostics`, `OpenHandsAgentProfile` and `ACPAgentProfile` types accept the payloads the server sends, as its generated contract does: every field the server sends is declared and every required field is sent.
 - `F21.json-suffix-identity`: saving a name that ends in `.json` twice must keep one `id` and bump `revision`, like any other name, and deleting it while active must move the pointer off it (to `default`) (or the name must be refused with 422 and nothing stored).
+- `F21.sandbox-metadata`: both profile kinds take an optional `sandbox: {"spec_id": "..."}` (a sandbox spec the provisioning host offers): it is stored and served back by GET, absent means `null`, an empty or missing `spec_id`, an extra key or a non-object is 422 and saves nothing; it never enters the resolved launch (materialize gives the same `resolved_settings` as the same profile without it), and a conversation still starts from such a profile on a server that does not provision sandboxes.
 
 ## How to get to it (agent POV)
 
@@ -74,7 +75,9 @@ Routes: `GET /api/agent-profiles`, `GET /api/agent-profiles/{name}`,
   `POST /api/agent-profiles/{name}/rename` (`{"new_name": ...}`),
   `POST /api/agent-profiles/{profile_id}/activate` (the uuid, not the name),
   `POST /api/agent-profiles/{name}/materialize` (no body or `{}` for the
-  stored profile, `{"profile": {...}}` for a draft). Every recipe below
+  stored profile, `{"profile": {...}}` for a draft). A profile body may
+  carry `sandbox: {"spec_id": ...}` (`ProfileSandboxSettings`, the
+  same name in the TypeScript client). Every recipe below
   drives these routes directly.
 - REST (other families, used here as second views or setup):
   `GET /api/settings` and `PATCH /api/settings` (`active_agent_profile_id`,
@@ -700,6 +703,60 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
   the text), and the stored profile is unchanged. An unknown key and a
   32769-character value (the limit is 32768) are 422, and the conversation
   count does not move.
+- **Sandbox metadata (`F21.sandbox-metadata`).** Self-contained: an LLM
+  profile of its own (no key, never called), an OpenHands and an ACP
+  profile with a sandbox spec, a twin without one, the refused shapes, two
+  previews and a conversation start; everything it creates is deleted at
+  the end.
+  ```sh
+  SBX_SPEC=registry.example/agent-server:qa-f21
+  control-agent-server llm set --profile qa-f21-sbx-llm --model openai/qa-f21-sbx --base-url http://127.0.0.1:9/v1 \
+    --no-api-key --no-validate --no-activate --num-retries 0
+  control-agent-server api POST /api/agent-profiles/qa-f21-sbx --expect 201 \
+    --json "{\"llm_profile_ref\": \"qa-f21-sbx-llm\", \"tools\": [], \"sandbox\": {\"spec_id\": \"$SBX_SPEC\"}}"
+  SBX=$(control-agent-server api GET /api/agent-profiles/qa-f21-sbx --check profile.sandbox.spec_id eq "$SBX_SPEC" \
+    --save F21.sandbox-metadata/get --field profile.id)
+  control-agent-server state cat home/.openhands/agent-profiles/qa-f21-sbx.json --check sandbox.spec_id eq "$SBX_SPEC"
+  control-agent-server api POST /api/agent-profiles/qa-f21-sbx-acp --expect 201 \
+    --json "{\"agent_kind\": \"acp\", \"acp_server\": \"codex\", \"sandbox\": {\"spec_id\": \"$SBX_SPEC\"}}"
+  control-agent-server api GET /api/agent-profiles/qa-f21-sbx-acp --check profile.agent_kind eq acp \
+    --check profile.sandbox.spec_id eq "$SBX_SPEC" --save F21.sandbox-metadata/acp
+  control-agent-server api POST /api/agent-profiles/qa-f21-nosbx --expect 201 --json '{"llm_profile_ref": "qa-f21-sbx-llm", "tools": []}'
+  control-agent-server api GET /api/agent-profiles/qa-f21-nosbx --check profile.sandbox eq null
+  control-agent-server api POST /api/agent-profiles/qa-f21-sbx-bad --json '{"llm_profile_ref": "qa-f21-sbx-llm", "sandbox": {"spec_id": ""}}' \
+    --expect 422 --check detail.0.type eq string_too_short --check detail.0.loc contains spec_id --save F21.sandbox-metadata/empty-spec
+  control-agent-server api POST /api/agent-profiles/qa-f21-sbx-bad --json '{"llm_profile_ref": "qa-f21-sbx-llm", "sandbox": {}}' \
+    --expect 422 --check detail.0.type eq missing --check detail.0.loc contains spec_id
+  control-agent-server api POST /api/agent-profiles/qa-f21-sbx-bad --json '{"llm_profile_ref": "qa-f21-sbx-llm", "sandbox": {"spec_id": "img", "size": "large"}}' \
+    --expect 422 --check detail.0.type eq extra_forbidden --check detail.0.loc contains size
+  control-agent-server api POST /api/agent-profiles/qa-f21-sbx-bad --json '{"llm_profile_ref": "qa-f21-sbx-llm", "sandbox": "img"}' \
+    --expect 422 --check detail.0.type eq model_type --check detail.0.loc contains sandbox
+  control-agent-server api GET /api/agent-profiles/qa-f21-sbx-bad --expect 404
+  control-agent-server state ls 'home/.openhands/agent-profiles/qa-f21-sbx-bad*' --expect-count 0
+  SBX_DIR="$AGENT_SERVER_VERIFY_RUN/fixtures/qa-f21-sbx"
+  mkdir -p "$SBX_DIR"
+  control-agent-server api POST /api/agent-profiles/qa-f21-sbx/materialize --expect 200 --quiet --check valid eq true \
+    --check resolved_settings.llm.model eq openai/qa-f21-sbx --raw-out "$SBX_DIR/with.json" --save F21.sandbox-metadata/materialize
+  control-agent-server api POST /api/agent-profiles/qa-f21-nosbx/materialize --expect 200 --quiet --check valid eq true \
+    --raw-out "$SBX_DIR/without.json"
+  jq -e -s --arg spec "$SBX_SPEC" '[.[] | .resolved_settings | del(.agent_context.current_datetime)] | (.[0] == .[1]) and ((.[0] | tostring | contains($spec)) | not)' \
+    "$SBX_DIR/with.json" "$SBX_DIR/without.json"
+  SBX_CONV=$(control-agent-server api POST /api/conversations \
+    --json "{\"workspace\": {\"working_dir\": \"$SBX_DIR\"}, \"agent_profile_id\": \"$SBX\", \"autotitle\": false}" \
+    --expect 201 --check launched_agent_profile.agent_profile_id eq "$SBX" --check agent.llm.model eq openai/qa-f21-sbx \
+    --check execution_status eq idle --save F21.sandbox-metadata/conversation --field id)
+  control-agent-server api DELETE "/api/conversations/$SBX_CONV" --expect 200
+  control-agent-server api DELETE /api/agent-profiles/qa-f21-sbx --expect 200
+  control-agent-server api DELETE /api/agent-profiles/qa-f21-sbx-acp --expect 200
+  control-agent-server api DELETE /api/agent-profiles/qa-f21-nosbx --expect 200
+  control-agent-server api DELETE /api/profiles/qa-f21-sbx-llm --expect 200
+  ```
+  GET and the stored file carry the spec id on both kinds and `null` on
+  the twin; the four bad shapes are 422 at `sandbox` or `spec_id` and leave
+  no file. The two previews are valid and their `resolved_settings` are
+  identical (the preview's clock aside) and never mention the spec; the
+  conversation starts `idle` from the profile on this local server, which
+  provisions no sandbox.
 - **TypeScript client (`F21.ts-client`).** Every `AgentProfilesClient`
   method from the built client (built here when missing), plus the same
   client reached through `AgentServerClient.agentProfiles`.
