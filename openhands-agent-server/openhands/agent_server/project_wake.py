@@ -113,7 +113,7 @@ async def project_sender_line(
     """The line a message from a project member opens with, or ``None`` when
     the sender is in no project (the generic sender line applies).
 
-    Called beside :func:`~openhands.agent_server.message_sender.sender_message_header`,
+    Called beside :func:`~openhands.agent_server.message_sender.sender_message_line`,
     which checks the sender exists and is not the target.
 
     Raises :class:`SenderError` when the target is not in the sender's

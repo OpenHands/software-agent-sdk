@@ -35,7 +35,7 @@ def _name(title: str | None, conversation_id: UUID) -> str:
 SenderRole = Literal["coordinator", "worker"]
 """How a sender in the receiver's project relates to it: the project's
 coordinator, or another conversation of the project. A sender outside any
-project gets :func:`openhands.agent_server.message_sender.sender_header`."""
+project gets :func:`openhands.agent_server.message_sender.sender_line`."""
 
 _SENDER_ROLES: dict[SenderRole, str] = {
     "coordinator": "the coordinator of your project",
