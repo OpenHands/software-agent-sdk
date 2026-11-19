@@ -252,7 +252,8 @@ Preconditions:
   control-agent-server api GET "/api/conversations/$CAT" --check tags.project eq "$P2" --check tags.insidercat eq self \
     --check execution_status eq idle --check agent.system_prompt_filename eq system_prompt_project_coordinator.j2 \
     --check . contains list_workers --check . contains message_worker --save F36.coordinator/get
-  control-agent-server conversation events "$CAT" --kinds SystemPromptEvent --contains "$CAT" --expect-count 1
+  control-agent-server api GET "/api/conversations/$CAT" \
+    --check agent.agent_context.project_context contains "You are this project's coordinator, conversation $(python3 -c 'import sys, uuid; print(uuid.UUID(sys.argv[1]))' "$CAT")."
   control-agent-server api GET "/api/projects/$P2/conversations" --check coordinator.title eq qa-f36-cat --check conversations len-eq 0 \
     --save F36.coordinator/conversations
   ```
