@@ -10,7 +10,7 @@ recipe.
 
 Maintenance baseline: main@0275e714df62d3dd66eb51d518dd1da953ec2c16 (2026-11-17). The next maintenance pass starts from this commit, a pass proposes the next baseline in its PR, and merging that PR accepts it.
 
-The map has **1077 sub-features**.
+The map has **1078 sub-features**.
 
 ## Baseline preconditions
 
@@ -68,7 +68,7 @@ them honest: [../maintenance.md](../maintenance.md).
 | F01 | [Server status, info and contract](F01-server-status.md) | liveness, health, readiness, server info and its `/` alias, uptime and idle time, OpenAPI document, the static-files mode, DEBUG tracebacks, tool preloading | `GET /alive`, `/health`, `/ready`, `/server_info`, `/`, `/openapi.json` | baseline | 11 |
 | F02 | [Authentication and workspace sessions](F02-auth-and-sessions.md) | session keys on HTTP and on WebSockets (first frame, deprecated query and header forms, close codes), several and rotated keys, no-auth and legacy modes, the default bind address, the workspace session cookie, CORS | `X-Session-API-Key`, `POST`/`DELETE /api/auth/workspace-session`, WebSocket auth on every socket | recipes: tmux | 22 |
 | F03 | [Deferred init (warm-pool dormant mode)](F03-deferred-init.md) | warm-pool dormant mode: the gate on `/api`, `/v1`, `/app-backends` and every socket (checked before auth), init key auth, validation and redaction, rollback, one-shot init, and every field the init body delivers (keys, secret key, paths, worktree root, run limit, CORS, webhooks, env, web URL) | `GET`/`POST /api/init`, `X-Init-API-Key` | git; launch `--no-auth --deferred-init` | 26 |
-| F04 | [Conversation lifecycle and catalog](F04-conversation-lifecycle.md) | create from settings, an agent profile or an inline agent; client ids, parents, worktrees, start-time secrets, 422 redaction; get, batch get, search, count; PATCH; final response; DELETE; restart | `POST`/`GET`/`PATCH`/`DELETE /api/conversations[/{id}]`, `/search`, `/count`, `/agent_final_response`, `/children` | llm, git | 36 |
+| F04 | [Conversation lifecycle and catalog](F04-conversation-lifecycle.md) | create from settings, an agent profile or an inline agent; client ids, parents, worktrees, start-time secrets, 422 redaction; get, batch get, search, count; PATCH; final response; DELETE; restart | `POST`/`GET`/`PATCH`/`DELETE /api/conversations[/{id}]`, `/search`, `/count`, `/agent_final_response`, `/children` | llm, git | 37 |
 | F05 | [Run, pause, interrupt and status transitions](F05-run-pause-interrupt.md) | run, pause and interrupt during model and tool calls; status transitions on every view; stuck detection and max_iterations stops; 409 and 429; graceful and SIGKILL restarts | `POST /api/conversations/{id}/run`, `/pause`, `/interrupt` | llm, tmux; launch `--config-json '{"max_concurrent_runs": 1}'` | 32 |
 | F06 | [Conversation events and the events WebSocket](F06-conversation-events.md) | appending messages, event search, count, get and batch get (GET with a body, or the browser-safe POST) with filters and paging, the events WebSocket (auth, snapshot, replay, live frames), history across restart | `POST`/`GET /api/conversations/{id}/events[...]`, `POST /api/conversations/{id}/events/batch`, `WS /sockets/events/{id}` | llm; launch `--env TZ=UTC` | 31 |
 | F07 | [Session WebSocket protocol](F07-session-socket.md) | the resumable session socket: sync, durable and transient frames, seq replay, inbound messages, error and close codes, streaming deltas, backpressure, subscriber cap | `WS /sockets/session/{id}` | llm | 27 |

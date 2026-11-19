@@ -46,6 +46,7 @@ Routes: `GET /api/conversations/search`, `GET /api/conversations/count`,
 - `F04.search-page`: `limit` and `next_page_id` page newest first by default; `sort_order=CREATED_AT` reverses it; skills are trimmed unless `include_skills=true`; bad limits and sort orders are 422.
 - `F04.search-filter`: `status` filters search and count consistently; an unknown status is 422.
 - `F04.count`: `GET /api/conversations/count` equals the number of conversations search lists.
+- `F04.search-at-scale`: with 2,000 conversations, search pages through every one exactly once in both orders, count is 2,000, the last page answers within 4× the first page's p95 (first page under 2 s), 50 listings grow the server's RSS by under 300 MB, and all 2,000 are listed again after a restart.
 - `F04.patch-title`: PATCH `title` is stripped, stored in `meta.json`, bumps `updated_at` and moves the conversation to the top of `UPDATED_AT_DESC`.
 - `F04.patch-tags`: PATCH `tags` replaces the whole map in `meta.json` and `base_state.json` and pushes a `tags` state update on the events socket.
 - `F04.patch-errors`: an empty or 201-character title, a bad tag key and a malformed id are 422; no key is 401; the stored values are untouched.
@@ -853,6 +854,142 @@ EOF
   control-agent-server stop --run "$CRUN"
   ```
   No child appears in the catalog or the parent, and no child worktree exists.
+
+- **Search at scale (`F04.search-at-scale`).** Its own run, so the 2,000
+  conversations stay out of the main catalog. A helper seeds them over
+  `POST /api/conversations` (eight at a time, offline agent, no first
+  message), walks every page in both orders, checks the count, times the
+  first and the last page, and samples the server's RSS from `/proc` over 50
+  listings. It prints `QA_SCALE_OK` when every check holds and the first
+  failure otherwise. About 35 s to seed and check, and 12 s to restart.
+  ```sh
+  cat > "$F/qa-f04-scale.py" <<'EOF'
+  """Seed N conversations over REST, then check search, count and their cost.
+
+  Prints QA_SCALE_OK when every check holds, else the first failure.
+  """
+  import json, os, statistics, sys, time, urllib.parse, urllib.request
+  from concurrent.futures import ThreadPoolExecutor
+
+  n, workspace, server_pid = int(sys.argv[1]), sys.argv[2], int(sys.argv[3])
+  first_page_budget_s = float(os.environ.get("QA_FIRST_PAGE_P95_S", "2.0"))
+  PAGE, DEEP_FACTOR, RSS_BUDGET_MB = 50, 4.0, 300.0
+  URL, KEY = os.environ["AGENT_SERVER_URL"], os.environ["SESSION_API_KEY"]
+  AGENT = {
+      "llm": {"model": "openai/qa-offline", "api_key": "qa-offline-key",
+              "base_url": "http://127.0.0.1:9/v1", "num_retries": 0},
+      "tools": [],
+  }
+
+
+  def call(method, path, body=None, **query):
+      url = f"{URL}{path}" + (f"?{urllib.parse.urlencode(query)}" if query else "")
+      data = None if body is None else json.dumps(body).encode()
+      request = urllib.request.Request(url, data=data, method=method, headers={
+          "X-Session-API-Key": KEY, "Content-Type": "application/json"})
+      with urllib.request.urlopen(request, timeout=120) as response:
+          return json.loads(response.read())
+
+
+  def check(ok, message):
+      if not ok:
+          print(f"QA_SCALE_FAIL {message}")
+          sys.exit(1)
+
+
+  def create(_):
+      body = {"workspace": {"working_dir": workspace}, "agent": AGENT, "autotitle": False}
+      return call("POST", "/api/conversations", body)["id"]
+
+
+  def walk(sort_order):
+      seen, page_id = [], None
+      for _ in range(n // PAGE + 10):
+          query = {"limit": PAGE, "sort_order": sort_order}
+          if page_id:
+              query["page_id"] = page_id
+          body = call("GET", "/api/conversations/search", **query)
+          seen += [(item["id"], item["created_at"]) for item in body["items"]]
+          page_id = body.get("next_page_id")
+          if not page_id:
+              return seen
+      check(False, f"{sort_order}: next_page_id never ended")
+
+
+  def last_page_id():
+      page_id, previous = None, None
+      while True:
+          query = {"limit": PAGE, "sort_order": "CREATED_AT_DESC"}
+          if page_id:
+              query["page_id"] = page_id
+          previous, page_id = page_id, call("GET", "/api/conversations/search", **query).get("next_page_id")
+          if not page_id:
+              return previous
+
+
+  def p95_search(**extra):
+      samples = []
+      for _ in range(10):
+          start = time.monotonic()
+          call("GET", "/api/conversations/search", limit=PAGE, sort_order="CREATED_AT_DESC", **extra)
+          samples.append(time.monotonic() - start)
+      return statistics.quantiles(samples, n=20)[-1]
+
+
+  def rss_mb():
+      with open(f"/proc/{server_pid}/status") as status:
+          line = next(line for line in status if line.startswith("VmRSS:"))
+      return int(line.split()[1]) / 1024
+
+
+  start = time.monotonic()
+  with ThreadPoolExecutor(8) as pool:
+      seeded = set(pool.map(create, range(n)))
+  print(f"seeded {len(seeded)} conversations in {time.monotonic() - start:.1f} s")
+  check(len(seeded) == n, f"seeded {len(seeded)} distinct ids, wanted {n}")
+
+  for order, descending in (("CREATED_AT_DESC", True), ("CREATED_AT", False)):
+      listed = walk(order)
+      ids = [i for i, _ in listed]
+      check(len(ids) == n and set(ids) == seeded, f"{order}: listed {len(ids)} ({len(set(ids))} distinct), seeded {n}")
+      stamps = [t for _, t in listed]
+      pairs = list(zip(stamps, stamps[1:]))
+      bad = next((p for p in pairs if (p[0] < p[1] if descending else p[0] > p[1])), None)
+      check(bad is None, f"{order}: out of order at {bad}")
+  check(call("GET", "/api/conversations/count") == n, "count differs from the seeded number")
+
+  first = p95_search()
+  deep = p95_search(page_id=last_page_id())
+  print(f"first page p95 {first * 1000:.0f} ms, last page p95 {deep * 1000:.0f} ms")
+  check(first < first_page_budget_s, f"first page p95 {first:.3f} s over {first_page_budget_s} s")
+  check(deep < first * DEEP_FACTOR, f"last page p95 {deep:.3f} s over {DEEP_FACTOR}x the first page")
+
+  before, peak = rss_mb(), 0.0
+  for _ in range(50):
+      call("GET", "/api/conversations/search", limit=PAGE, sort_order="CREATED_AT_DESC")
+      peak = max(peak, rss_mb())
+  print(f"server RSS {before:.0f} MB before 50 listings, peak {peak:.0f} MB")
+  check(peak - before < RSS_BUDGET_MB, f"RSS grew {peak - before:.0f} MB over 50 listings")
+  print("QA_SCALE_OK")
+  EOF
+  SRUN=$(control-agent-server launch --new --name f04-search-scale --print-run)
+  trap 'control-agent-server stop --run "$SRUN" >/dev/null' EXIT
+  control-agent-server doctor --run "$SRUN"
+  SW="$SRUN/fixtures/qa-f04-scale-ws"
+  mkdir -p "$SW"
+  control-agent-server exec --run "$SRUN" --timeout 900 --expect-output QA_SCALE_OK --save F04.search-at-scale/probe \
+    -- python3 "$F/qa-f04-scale.py" 2000 "$SW" "$(jq -r .pid "$SRUN/run.json")"
+  control-agent-server restart --run "$SRUN"
+  control-agent-server api GET /api/conversations/count --run "$SRUN" --check . eq 2000 --save F04.search-at-scale/count-after-restart
+  control-agent-server api GET /api/conversations/search --run "$SRUN" --query limit=50 --check items len-eq 50 --check next_page_id exists
+  control-agent-server stop --run "$SRUN"
+  ```
+  The helper's output names the seeding time, both p95 latencies and the RSS
+  before and at peak. `QA_FIRST_PAGE_P95_S` raises the first-page budget on a
+  slow machine; the last-page ratio and the RSS budget hold everywhere. A
+  listing that went O(N) per page, a cursor that rescans from the start, a
+  duplicate or missing page, an ignored `sort_order` or a listing that
+  materializes the whole store per call fails here.
 
 ## Gotchas
 
