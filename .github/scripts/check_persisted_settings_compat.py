@@ -62,6 +62,9 @@ _FIXTURE_SURFACE_PREFIXES = {
     "persisted_settings": "persisted_settings",
 }
 _PYPI_USER_AGENT = "openhands-persisted-settings-compat/1.0"
+# 1.63.0 imports OpenAIGPT5Config from a module removed by LiteLLM 1.109.2.
+# Reproduce its working release environment without inheriting current constraints.
+_BASELINE_DEPENDENCIES = {"1.63.0": ("litellm==1.108.3",)}
 _BASELINE_PAYLOAD_SCRIPT = r"""
 from __future__ import annotations
 
@@ -703,7 +706,14 @@ def generate_baseline_payloads(
             ]
             if agent_server_version is not None:
                 install_args.extend(["--refresh-package", "openhands-agent-server"])
-            install_args.extend(["--exclude-newer", exclude_newer, *packages])
+            install_args.extend(
+                [
+                    "--exclude-newer",
+                    exclude_newer,
+                    *packages,
+                    *_BASELINE_DEPENDENCIES.get(sdk_version, ()),
+                ]
+            )
             _uv_run(install_args)
             result = _uv_run([str(python), "-c", _BASELINE_PAYLOAD_SCRIPT])
         except subprocess.CalledProcessError as exc:
