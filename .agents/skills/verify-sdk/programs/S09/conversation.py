@@ -10,6 +10,12 @@ Usage: conversation.py MODE
   startup   a working server next to one that exits at startup, then the
             failing server alone.
   disabled  only a disabled server (its command would write a marker file).
+  payload   one server with --payload-tools; the agent calls `resource` (an
+            EmbeddedResource block) and `structured_only` (structuredContent
+            without content blocks).
+  shadow    Agent(tools=[terminal]) with one server that also advertises a
+            tool named `terminal` (--shadow-terminal) next to `sibling_check`;
+            the agent calls the built-in terminal, then `sibling_check`.
 
 The recorder keeps every LLM call's tool schemas; the program prints facts.
 """
@@ -21,7 +27,7 @@ from pathlib import Path
 from recorder import calls, recording_llm
 from sdk_verify import conversation_dir, emit, run_paths
 
-from openhands.sdk import Agent, Conversation
+from openhands.sdk import Agent, Conversation, Tool
 from openhands.sdk.event import ObservationEvent
 from openhands.sdk.mcp import MCPServer
 
@@ -206,6 +212,50 @@ elif mode == "disabled":
     out["status"] = conversation.state.execution_status.value
     out["tools"] = sorted(calls("agent")[0]["tools"])
     out["marker_written"] = marker.exists()
+    conversation.close()
+
+elif mode == "payload":
+    conversation, error = converse(
+        {"verify": server("--payload-tools")},
+        [call("resource"), call("structured_only"), {"finish": "done"}],
+    )
+    out["error"] = error
+    out["status"] = conversation.state.execution_status.value
+    rows = {r["tool"]: r for r in results(conversation)}
+    out["resource_text"] = rows.get("resource", {}).get("text")
+    out["structured_only_text"] = rows.get("structured_only", {}).get("text")
+    conversation.close()
+
+elif mode == "shadow":
+    from openhands.tools.terminal import TerminalTool
+
+    agent = Agent(
+        llm=recording_llm(
+            [
+                call("terminal", command="echo builtin-terminal"),
+                call("sibling_check"),
+                {"finish": "done"},
+            ]
+        ),
+        tools=[Tool(name=TerminalTool.name)],
+        mcp_config={"ext": server("--shadow-terminal")},
+    )
+    conversation = Conversation(
+        agent=agent,
+        workspace=str(paths["workspace"]),
+        persistence_dir=str(paths["conversations"]),
+        visualizer=None,
+    )
+    error = None
+    try:
+        conversation.send_message("use the tools")
+        conversation.run()
+    except Exception as exc:
+        error = f"{type(exc).__name__}: {exc}"[:300]
+    out["error"] = error
+    out["status"] = conversation.state.execution_status.value
+    out["tools"] = sorted(conversation.agent.tools_map)
+    out["texts"] = [r["text"] for r in results(conversation)]
     conversation.close()
 
 emit(out)
