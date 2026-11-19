@@ -711,9 +711,20 @@ def _forwards_substitution(
         return output_reaches_pipeline
     if direct_command.basename in _FETCH_OUTPUT_FORWARDERS:
         return True
-    if argument_index == 0 or not direct_command.arguments:
+    if not direct_command.arguments:
         return False
-    format_string = direct_command.arguments[0]
+    format_index = 1 if direct_command.arguments[0] == "--" else 0
+    if argument_index < format_index or format_index >= len(direct_command.arguments):
+        return False
+    format_string = direct_command.arguments[format_index]
+    if (
+        format_index == 0
+        and format_string is not None
+        and format_string.startswith("-")
+    ):
+        return None
+    if argument_index == format_index:
+        return True
     if format_string is None or "\\" in format_string:
         return None
     return _printf_format_consumes_argument(format_string)
