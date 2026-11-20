@@ -7,10 +7,14 @@ how the agent's last message ended (``turn=asking`` or ``turn=finished``) and,
 when a turn leaves nothing for the user to do, marks it resolved
 (``resolved=auto``). Two signals can resolve a turn: the resolution judge
 (:mod:`openhands.sdk.conversation.resolution`), which asks whether anything is
-left for the user, and a confident critic score. A turn that asked the user
-something is never resolved automatically. Only the judge says a reply
-waits on the user (or a question card, by construction); the end of that
-reply is saved, in one short line, as ``ask``. A new
+left for the user, and, only when no judge is available, a confident critic
+score. A turn that asked the user something is never resolved automatically.
+Only the judge says a reply waits on the user (or a question card, by
+construction); the end of that reply is saved, in one short line, as ``ask``.
+When the judge fails or times out, nobody has read the reply, so it waits on
+the user too, and is never resolved. The coordinator's turns are recorded
+but never judged or resolved: the coordinator is how the user steers the
+project, so it stays open. A new
 user message removes these tags, since the conversation is open again. It also
 tells the coordinator what it needs to hear: finished turns, stops on the
 user, the user's own messages and answers to cards.
@@ -89,7 +93,7 @@ says what it waits on: the pending action, the error, or the last message."""
 
 ResolutionJudge = Callable[[ResolutionState], Awaitable[ResolutionVerdict | None]]
 """Judges whether a finished turn leaves anything for the user; ``None``
-when no judge model is available or the call failed."""
+when no judge model is available. Raises when the call fails."""
 
 TurnSenderLookup = Callable[[], Awaitable[str | None]]
 """Reads who started the current turn from the event log, for a subscriber
@@ -102,6 +106,9 @@ IsMember = Callable[[], Awaitable[bool]]
 The subscriber is Projects' one hook into a conversation's events, so this is
 its one check: otherwise the board is left as it is (no outcome, judge or
 reopen) and the coordinator hears nothing."""
+
+IsCoordinator = Callable[[], Awaitable[bool]]
+"""Whether the conversation is its project's coordinator right now."""
 
 
 @dataclass
@@ -125,6 +132,7 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
     turn_sender_lookup: TurnSenderLookup | None = None
     judge: ResolutionJudge | None = None
     is_member: IsMember | None = None
+    is_coordinator: IsCoordinator | None = None
     tracker: TurnTracker = field(default_factory=TurnTracker)
     _tail: asyncio.Task | None = field(default=None, init=False)
     _notify_tail: asyncio.Task | None = field(default=None, init=False)
@@ -249,7 +257,14 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
             await self._set_turn(turn, ask)
             self._notify_finished(project, turn, ended)
             return
+        if await self._coordinator():
+            # The coordinator's turns show as they ended; nothing judges or
+            # resolves the conversation the user steers the project from.
+            await self._set_turn(turn, ask)
+            self._notify_finished(project, turn, ended)
+            return
         verdict = None
+        judge_failed = False
         shown = False
         if ended.judged is not None and RESOLVED_TAG_KEY not in self.tags():
             # The judge can take a while; the board shows the turn as
@@ -261,9 +276,28 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
             await asyncio.wait({judging})
             self._judging = None
             # Cancelled by a new user message: keep it finished.
-            verdict = None if judging.cancelled() else judging.result()
+            if not judging.cancelled():
+                error = judging.exception()
+                if error is None:
+                    verdict = judging.result()
+                else:
+                    judge_failed = True
+                    # The error goes in the message too: some log handlers
+                    # drop tracebacks.
+                    logger.warning(
+                        "Resolution judge failed for conversation %s: %s: %s",
+                        self.conversation_id,
+                        type(error).__name__,
+                        error,
+                        exc_info=error,
+                    )
         shown_turn = (turn, ask)
-        if verdict is not None:
+        if judge_failed:
+            # Nobody read the reply: it may hold a question, so the user
+            # looks at it, and nothing resolves it.
+            turn = "asking"
+            ask = ask or ask_line(text)
+        elif verdict is not None:
             # The judge alone decides whether the reply waits on the user.
             # A question for the user goes on the board in a turn the
             # coordinator started too: the coordinator gets the reply, and
@@ -288,7 +322,8 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
         if verdict is not None and verdict.resolved:
             note = verdict.note()
         elif verdict is None and score is not None and score >= AUTO_RESOLVE_THRESHOLD:
-            # Without a judge, a confident critic still resolves.
+            # Without a judge, a confident critic still resolves. (A failed
+            # judge left the turn asking, above.)
             note = f"{score:.2f} critic"
         if verdict is not None and note is None:
             logger.debug(
@@ -311,19 +346,10 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
     async def _judge(self, state: ResolutionState) -> ResolutionVerdict | None:
         if self.judge is None:
             return None
-        try:
-            return await self.judge(state)
-        except Exception as e:
-            # The error goes in the message too: some log handlers drop
-            # tracebacks.
-            logger.warning(
-                "Resolution judge failed for conversation %s: %s: %s",
-                self.conversation_id,
-                type(e).__name__,
-                e,
-                exc_info=True,
-            )
-            return None
+        return await self.judge(state)
+
+    async def _coordinator(self) -> bool:
+        return self.is_coordinator is not None and await self.is_coordinator()
 
     def _notify_finished(
         self, project: str, turn: TurnOutcome, ended: TurnEnded

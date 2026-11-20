@@ -961,6 +961,70 @@ async def test_without_a_verdict_a_confident_critic_still_resolves():
 
 
 @pytest.mark.asyncio
+async def test_a_failed_judge_shows_the_turn_as_needs_you_and_never_resolves():
+    """Nobody read the reply, so it may hold a question: the user looks, and
+    even a confident critic does not resolve it."""
+    store = _Tags({"project": "p1"})
+
+    async def judge(state: ResolutionState) -> ResolutionVerdict | None:
+        raise TimeoutError("judge timed out")
+
+    subscriber = ConversationOutcomeSubscriber(
+        conversation_id=uuid4(),
+        tags=lambda: store.tags,
+        set_tag=store.set_tag,
+        judge=judge,
+    )
+
+    await _feed(
+        subscriber,
+        _message("user", "Fix it"),
+        _status("running"),
+        _finish("Fixed, but should I also bump the version?", score=0.95),
+        _status("finished"),
+    )
+
+    assert store.tags == {
+        "project": "p1",
+        "turn": "asking",
+        "ask": "Fixed, but should I also bump the version?",
+    }
+
+
+@pytest.mark.asyncio
+async def test_the_coordinator_is_never_judged_or_resolved():
+    store = _Tags({"project": "p1"})
+    seen: list[ResolutionState] = []
+    verdict = ResolutionVerdict(probability=0.99, owed="nothing")
+
+    async def judge(state: ResolutionState) -> ResolutionVerdict | None:
+        seen.append(state)
+        return verdict
+
+    async def is_coordinator() -> bool:
+        return True
+
+    subscriber = ConversationOutcomeSubscriber(
+        conversation_id=uuid4(),
+        tags=lambda: store.tags,
+        set_tag=store.set_tag,
+        judge=judge,
+        is_coordinator=is_coordinator,
+    )
+
+    await _feed(
+        subscriber,
+        _message("user", "Plan the release"),
+        _status("running"),
+        _finish("Two workers are on it.", score=0.95),
+        _status("finished"),
+    )
+
+    assert seen == []
+    assert store.tags == {"project": "p1", "turn": "finished"}
+
+
+@pytest.mark.asyncio
 async def test_a_user_message_clears_the_resolve_note():
     store = _Tags(
         {"project": "p1", "turn": "finished", "resolved": "auto", "resolvenote": "x"}

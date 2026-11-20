@@ -329,6 +329,7 @@ class ProjectService:
             on_user_answer=functools.partial(pass_on_answer, service, conversation_id),
             turn_sender_lookup=functools.partial(_logged_turn_sender, event_service),
             is_member=functools.partial(self._is_member, event_service),
+            is_coordinator=functools.partial(self._is_coordinator, event_service),
             judge=make_resolution_judge(
                 functools.partial(_agent_llm, event_service),
                 lambda: self.stores,
@@ -343,6 +344,13 @@ class ProjectService:
 
     async def _is_member(self, event_service: EventService) -> bool:
         return await self.member_of(event_service.stored.tags) is not None
+
+    async def _is_coordinator(self, event_service: EventService) -> bool:
+        project = await self.member_of(event_service.stored.tags)
+        return (
+            project is not None
+            and project.coordinator_conversation_id == event_service.stored.id
+        )
 
     # Tags
 
@@ -415,21 +423,30 @@ class ProjectService:
             PROJECT_TAG_KEY, project_hex
         )
         for stored, _ in members:
-            async with self._tag_lock(stored.id):
-                event_service = await self.conversations.get_event_service(stored.id)
-                if event_service is None:
-                    continue
-                tags = event_service.stored.tags
-                if tags.get(PROJECT_TAG_KEY) != project_hex:
-                    continue
-                await self.conversations.update_conversation(
-                    stored.id,
-                    UpdateConversationRequest(
-                        tags={
-                            k: v for k, v in tags.items() if k not in RESERVED_TAG_KEYS
-                        }
-                    ),
-                )
+            await self.release_member(stored.id, project_hex)
+
+    async def release_member(self, conversation_id: UUID, project_hex: str) -> bool:
+        """Take a conversation out of project ``project_hex``: remove the
+        ``project`` tag and the board's state, so no stale chip stays. Its
+        other tags stay.
+
+        Returns:
+            Whether the conversation was a member of that project.
+        """
+        async with self._tag_lock(conversation_id):
+            event_service = await self.conversations.get_event_service(conversation_id)
+            if event_service is None:
+                return False
+            tags = event_service.stored.tags
+            if tags.get(PROJECT_TAG_KEY) != project_hex:
+                return False
+            await self.conversations.update_conversation(
+                conversation_id,
+                UpdateConversationRequest(
+                    tags={k: v for k, v in tags.items() if k not in RESERVED_TAG_KEYS}
+                ),
+            )
+            return True
 
     async def update_conversation_from_client(
         self, conversation_id: UUID, request: UpdateConversationRequest
