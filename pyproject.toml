@@ -17,7 +17,7 @@ constraint-dependencies = [
     "rich>=14.3.3", # Version 14.3.2 essentially has a denial-of-service vulnerability which is outlined in https://github.com/Textualize/rich/issues/3958
     "lupa>=2.8",
     "cryptography<49; sys_platform == 'darwin' and platform_machine == 'x86_64'",  # 49.0.0 dropped x86_64 macOS wheels; release-binaries.yml still builds on macos-15-intel
-    "litellm==1.105.1",  # first stable release exposing litellm.systemone is 1.104.3
+    "litellm==1.108.3",  # first release allowing filelock>=4.2.1 (CVE-2026-112940); litellm.systemone needs >=1.104.3
     "anyio>=4.14.2",
     "pyjwt>=2.14.0",
 ]
@@ -47,7 +47,7 @@ dev = [
     "pyinstaller>=6.22.3",
     "streamlit>=1.67.0",
     "pytest-timeout>=2.4.0",
-    "griffe[pypi]>=2.3.0",
+    "griffe[pypi]>=2.4.1",
 ]
 
 # Ruff configuration
@@ -66,6 +66,7 @@ select = [
     "I",    # isort
     "UP",   # pyupgrade
     "ARG",  # flake8-unused-arguments
+    "ASYNC",  # flake8-async: no blocking calls on the event loop
 ]
 # Enforce rules that catch mutable defaults and related pitfalls
 # - B006: mutable-argument-default
@@ -78,7 +79,11 @@ ignore = ["UP042"]
 
 [tool.ruff.lint.per-file-ignores]
 # Test files often have unused arguments (fixtures, mocks, interface implementations)
-"tests/**/*.py" = ["ARG"]
+# and poll or block on purpose while driving threads and subprocesses.
+"tests/**/*.py" = ["ARG", "ASYNC"]
+# Benchmark drivers start and probe an agent-server subprocess; their setup blocks
+# on purpose, outside the timed sections.
+"scripts/agent_server_benchmarks/*.py" = ["ASYNC"]
 
 
 # Allowlist safe default calls for flake8-bugbear rules (e.g., FastAPI Depends)

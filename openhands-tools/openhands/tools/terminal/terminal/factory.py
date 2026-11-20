@@ -61,6 +61,7 @@ def _create_windows_terminal(
     no_change_timeout_seconds: int | None,
     shell_path: str | None,
     env: Mapping[str, str] | None,
+    max_observation_wait_seconds: float | None = None,
 ) -> TerminalSession:
     from openhands.tools.terminal.terminal.windows_terminal import WindowsTerminal
 
@@ -74,7 +75,9 @@ def _create_windows_terminal(
         shell_path=resolved_shell_path,
         env=env,
     )
-    return TerminalSession(terminal, no_change_timeout_seconds)
+    return TerminalSession(
+        terminal, no_change_timeout_seconds, max_observation_wait_seconds
+    )
 
 
 def create_terminal_session(
@@ -84,6 +87,7 @@ def create_terminal_session(
     terminal_type: Literal["tmux", "subprocess", "powershell"] | None = None,
     shell_path: str | None = None,
     env: Mapping[str, str] | None = None,
+    max_observation_wait_seconds: float | None = None,
 ) -> TerminalSession:
     """Create an appropriate terminal session based on system capabilities.
 
@@ -96,6 +100,8 @@ def create_terminal_session(
         shell_path: Path to the shell binary. On Unix this is used for the
             subprocess backend; on Windows it can point to a PowerShell binary.
         env: Extra environment variables to add to the terminal session.
+        max_observation_wait_seconds: Optional finite positive observation-loop
+            wait cap. Does not kill commands; None preserves existing behavior.
 
     Returns:
         TerminalSession instance
@@ -111,7 +117,9 @@ def create_terminal_session(
 
             logger.info("Using forced TmuxTerminal")
             terminal = TmuxTerminal(work_dir, username, env=env)
-            return TerminalSession(terminal, no_change_timeout_seconds)
+            return TerminalSession(
+                terminal, no_change_timeout_seconds, max_observation_wait_seconds
+            )
 
         if terminal_type == "powershell":
             logger.info("Using forced WindowsTerminal")
@@ -121,6 +129,7 @@ def create_terminal_session(
                 no_change_timeout_seconds,
                 shell_path,
                 env,
+                max_observation_wait_seconds,
             )
 
         if terminal_type == "subprocess":
@@ -136,6 +145,7 @@ def create_terminal_session(
                     no_change_timeout_seconds,
                     shell_path,
                     env,
+                    max_observation_wait_seconds,
                 )
             from openhands.tools.terminal.terminal.subprocess_terminal import (
                 SubprocessTerminal,
@@ -143,7 +153,9 @@ def create_terminal_session(
 
             logger.info("Using forced SubprocessTerminal")
             terminal = SubprocessTerminal(work_dir, username, shell_path, env=env)
-            return TerminalSession(terminal, no_change_timeout_seconds)
+            return TerminalSession(
+                terminal, no_change_timeout_seconds, max_observation_wait_seconds
+            )
 
         raise ValueError(f"Unknown session type: {terminal_type}")
 
@@ -155,6 +167,7 @@ def create_terminal_session(
             no_change_timeout_seconds,
             shell_path,
             env,
+            max_observation_wait_seconds,
         )
 
     if _is_tmux_available():
@@ -162,7 +175,9 @@ def create_terminal_session(
 
         logger.info("Auto-detected: Using TmuxTerminal (tmux available)")
         terminal = TmuxTerminal(work_dir, username, env=env)
-        return TerminalSession(terminal, no_change_timeout_seconds)
+        return TerminalSession(
+            terminal, no_change_timeout_seconds, max_observation_wait_seconds
+        )
 
     from openhands.tools.terminal.terminal.subprocess_terminal import (
         SubprocessTerminal,
@@ -176,4 +191,6 @@ def create_terminal_session(
     logger.warning(_tmux_warning)
     warnings.warn(_tmux_warning, stacklevel=2)
     terminal = SubprocessTerminal(work_dir, username, shell_path, env=env)
-    return TerminalSession(terminal, no_change_timeout_seconds)
+    return TerminalSession(
+        terminal, no_change_timeout_seconds, max_observation_wait_seconds
+    )

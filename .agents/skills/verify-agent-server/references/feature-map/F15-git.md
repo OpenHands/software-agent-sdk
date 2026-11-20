@@ -108,7 +108,11 @@ Routes: `GET /api/conversations/{runtime_conversation_id}/git/changes`,
   `gitDiff(path, {ref})` (scoped through the runtime transport when a
   `conversationId` is set); `GitClient.searchRepositories({provider, query,
   limit, pageId})`. Driven by `F15.ts-client` (a `node` program on
-  `clients/typescript/dist`).
+  `clients/typescript/dist`). `GitClient.getCommits(path, {limit})` and
+  `getCommitChanges(path, sha)` (`GET /api/git/commits` and
+  `.../commits/{sha}/changes`, through the runtime transport, so scoped
+  when a `conversationId` is set), also as `ConversationManager.git` and
+  `AgentServerClient.git`; driven by `F34.git-commits`.
 - Agent Canvas (context only): the Changes tab (changes and diff), the
   Commits tab (commits, commit changes, diff with `commit`), the
   repository picker (search) and pull-request status badges.

@@ -57,7 +57,7 @@ from openhands.agent_server.dependencies import (
     check_session_api_key,
     check_workspace_session,
 )
-from openhands.agent_server.errors import status_for
+from openhands.agent_server.errors import GatewayTimeout, status_for
 from openhands.agent_server.experimental_features_router import (
     experimental_features_router,
 )
@@ -78,7 +78,7 @@ from openhands.agent_server.openai.router import (
     check_openai_api_key,
     openai_router,
 )
-from openhands.agent_server.persistence import reencrypt_stale_stores
+from openhands.agent_server.persistence import reencrypt_stale_stores, run_store
 from openhands.agent_server.plugins_router import plugins_router
 from openhands.agent_server.profiles_router import profiles_router
 from openhands.agent_server.provider_connections_router import (
@@ -420,7 +420,7 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
 
         # Non-deferred (legacy) path: build and enter the conversation
         # service as part of the lifespan, exactly as before.
-        await asyncio.to_thread(reencrypt_stale_stores, context.stores)
+        await run_store(reencrypt_stale_stores, context.stores)
         #
         # A key that came from the config file is visible only in ``config``;
         # in-process callers of this server read it from the environment.
@@ -783,11 +783,16 @@ def _sanitize_validation_errors(errors: Sequence[Any]) -> list[dict]:
 
 async def _domain_error_handler(request: Request, exc: DomainError) -> JSONResponse:
     """Map a domain error to its status from ``ERROR_STATUS``, the only map."""
-    headers = {"Retry-After": exc.retry_after} if exc.retry_after else None
+    headers = {"Retry-After": exc.retry_after} if exc.retry_after else {}
+    if isinstance(exc, GatewayTimeout):
+        headers["x-should-retry"] = "true" if exc.retry_safe else "false"
+        if exc.conversation_id is not None:
+            headers["X-OpenHands-ServerConversation-ID"] = str(exc.conversation_id)
     return _error_response(
         request,
         HTTPException(status_for(exc), exc.detail, headers),
         exc.extra,
+        show_detail=isinstance(exc, GatewayTimeout),
     )
 
 
@@ -901,9 +906,13 @@ def _add_exception_handlers(api: FastAPI) -> None:
 
 
 def _error_response(
-    request: Request, exc: HTTPException, extra: Mapping[str, object]
+    request: Request,
+    exc: HTTPException,
+    extra: Mapping[str, object],
+    *,
+    show_detail: bool = False,
 ) -> JSONResponse:
-    """Render an error with logging; 5xx details are not shown to clients."""
+    """Log an error and hide 5xx details unless the caller marks them safe."""
     # Log 4xx errors at info level (expected client errors like auth failures)
     if 400 <= exc.status_code < 500:
         logger.info(
@@ -930,6 +939,12 @@ def _error_response(
             exc.detail,
             exc_info=(type(exc), exc, exc.__traceback__) if DEBUG else None,
         )
+        if show_detail:
+            return JSONResponse(
+                status_code=exc.status_code,
+                content={"detail": exc.detail},
+                headers=exc.headers,
+            )
         content = {
             "detail": "Internal Server Error",
             "exception": str(exc),

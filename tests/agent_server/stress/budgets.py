@@ -23,34 +23,6 @@ class ParallelSubagentBudget:
 
 
 @dataclass(frozen=True, slots=True)
-class ConversationListingBudget:
-    # 2000 surfaces O(N) regressions strongly in pagination/listing while
-    # keeping the test under a minute on a developer laptop. We tried 10k
-    # behind a --stress-full flag (with a tarball cache to skip the seed
-    # cost) but ConversationService.__aenter__ still loads each meta.json
-    # into a LocalConversation sequentially — that load alone takes minutes
-    # at N=10k, so the cache didn't actually buy anything.
-    n_conversations: int = 2000
-    page_size: int = 50
-    # First-page p95 latency must be < this many seconds. Tuned for a
-    # developer laptop; the suite is opt-in (excluded from default CI
-    # collection in pyproject.toml), so shared CI runners that need looser
-    # numbers should override the budget at the call site rather than
-    # loosening it here for everyone.
-    p95_first_page_s: float = 0.5
-    # Deep-page p95 must be < first-page p95 × this (graceful degradation).
-    deep_page_factor: float = 4.0
-    # 50 sequential list calls. Peak RSS during listing must stay below the
-    # snapshot at listing-start + this delta. `_search_conversations` today
-    # materialises a ConversationInfo for every conversation in the store
-    # per call, so at N=2000 we observe ~4 MB allocator high-water per call
-    # → ~200 MB across the loop. The 300 MB budget gives ~50% headroom over
-    # current behaviour and would fire on a ~1.5× per-call retention
-    # regression (e.g., per-call growth jumping from 4 to 6 MB).
-    listing_rss_delta_mb: float = 300.0
-
-
-@dataclass(frozen=True, slots=True)
 class ConcurrentConversationsBudget:
     n_conversations: int = 16
     per_call_latency_s: float = 0.1
@@ -143,7 +115,6 @@ class LeaseContentionBudget:
 
 
 PARALLEL_SUBAGENTS = ParallelSubagentBudget()
-CONVERSATION_LISTING = ConversationListingBudget()
 CONCURRENT_CONVERSATIONS = ConcurrentConversationsBudget()
 LONG_RUNNING_COMMAND = LongRunningCommandBudget()
 EVENT_LOOP_RESPONSIVENESS = EventLoopResponsivenessBudget()

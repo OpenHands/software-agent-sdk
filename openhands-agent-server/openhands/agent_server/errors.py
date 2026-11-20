@@ -9,6 +9,7 @@ categories; they never build ``HTTPException`` (a guard test enforces it).
 
 from collections.abc import Mapping
 from typing import Any
+from uuid import UUID
 
 from fastapi import status
 
@@ -75,6 +76,28 @@ class ForwardedStatus(DomainError):
     ) -> None:
         super().__init__(detail, retry_after=retry_after)
         self.status_code = status_code
+
+
+class GatewayTimeout(UpstreamTimeout):
+    """A gateway timeout whose turn may still run.
+
+    ``retry_safe`` is true only when no user message was saved.
+    """
+
+    def __init__(
+        self,
+        *,
+        retry_safe: bool,
+        conversation_id: UUID | None = None,
+        runtime_timeout: bool = False,
+    ) -> None:
+        super().__init__(
+            "Conversation runtime timed out"
+            if runtime_timeout
+            else "Agent run timed out"
+        )
+        self.retry_safe = retry_safe
+        self.conversation_id = conversation_id
 
 
 def _category_status(error_type: type[DomainError]) -> int:
