@@ -40,7 +40,6 @@ def _probe_auto_title_spans() -> dict[str, Any]:
     from openhands.sdk.conversation.impl.local_conversation import LocalConversation
     from openhands.sdk.event.llm_convertible import MessageEvent
     from openhands.sdk.llm import LLM, Message, TextContent
-    from openhands.sdk.security.confirmation_policy import NeverConfirm
     from openhands.sdk.workspace import LocalWorkspace
 
     Laminar.initialize(
@@ -73,7 +72,6 @@ def _probe_auto_title_spans() -> dict[str, Any]:
     stored = StoredConversation(
         id=uuid4(),
         workspace=LocalWorkspace(working_dir="workspace/project"),
-        confirmation_policy=NeverConfirm(),
         initial_message=None,
         metrics=None,
         title=None,

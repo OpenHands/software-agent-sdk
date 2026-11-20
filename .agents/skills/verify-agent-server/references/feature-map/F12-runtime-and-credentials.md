@@ -55,7 +55,7 @@ Routes: `GET /api/conversations/{conversation_id}/runtime`,
 - `F12.binding-source-unavailable`: a source answering 5xx is probed three times with backoff (at least 0.75 s), then the activation fails with 502; an unreachable source also gives 502.
 - `F12.binding-native-too-late`: binding a loaded regular (non-ACP) conversation is refused with 409 `Credential binding activation arrived after ACP initialization` and records nothing.
 - `F12.binding-native-cold`: a binding sent while a regular (non-ACP) conversation is not loaded never makes that conversation demand a credential binding after the next pause.
-- `F12.binding-live-acp`: binding a loaded ACP Codex conversation that has not run yet answers 204, records `required_runtime_credential_bindings: ["CODEX_AUTH_JSON"]` in `meta.json` and removes the stored `CODEX_AUTH_JSON` secret.
+- `F12.binding-live-acp`: binding a loaded ACP Codex conversation that has not run yet answers 204, records `required_runtime_credential_bindings: ["CODEX_AUTH_JSON"]` in `meta.json` and removes the stored `CODEX_AUTH_JSON` secret from `base_state.json`.
 - `F12.binding-rebind`: a second activation with the same URL and new headers is accepted (the probe carries the new headers, which are never written to disk); a different URL is refused with 409.
 - `F12.binding-required-after-pause`: after a pause, a conversation that requires a binding is still listed and reports runtime `available`, but event access and `/run` answer 409 `{"detail": "credential_binding_activation_required", "retryable": true}` and both conversation sockets close with 1013, until a new activation, after which events load again.
 - `F12.binding-required-after-restart`: the requirement survives a restart (409 until a new activation, then 200), and deleting such a conversation needs no activation.
@@ -507,20 +507,23 @@ control-agent-server api GET "/api/conversations/$R" --check execution_status eq
   ```sh
   A=$(control-agent-server conversation start --body-json "{\"agent\": $ACP_AGENT}" --secret CODEX_AUTH_JSON=qa-f12-request-copy --no-autotitle --print-id)
   control-agent-server api GET "/api/conversations/$A" --check agent.kind eq ACPAgent --check agent.acp_server eq codex
-  control-agent-server state cat meta.json --conversation "$A" --check secrets.CODEX_AUTH_JSON exists --check required_runtime_credential_bindings len-eq 0
+  control-agent-server state cat meta.json --conversation "$A" --check required_runtime_credential_bindings len-eq 0
+  control-agent-server state cat base_state.json --conversation "$A" --max-chars 200 --check secret_registry.secret_sources.CODEX_AUTH_JSON exists
   control-agent-server api PUT "/api/conversations/$A/credential-bindings/CODEX_AUTH_JSON" \
     --json "{\"url\": \"$SRC/cred\", \"headers\": {\"Authorization\": \"Bearer qa-f12-first\"}}" --expect 204 --save F12.binding-live-acp/put
   control-agent-server sink read --name qa-f12-cred --contains 'Bearer qa-f12-first' --expect-min 1 --expect-max 1
-  control-agent-server state cat meta.json --conversation "$A" \
-    --check required_runtime_credential_bindings eq '["CODEX_AUTH_JSON"]' --check secrets.CODEX_AUTH_JSON missing
+  control-agent-server state cat meta.json --conversation "$A" --check required_runtime_credential_bindings eq '["CODEX_AUTH_JSON"]'
+  control-agent-server state cat base_state.json --conversation "$A" --max-chars 200 \
+    --check agent.kind eq ACPAgent --check secret_registry.secret_sources.CODEX_AUTH_JSON missing
   control-agent-server state grep qa-f12-request-copy --glob 'server/**/*' --expect-none
   control-agent-server state grep qa-f12-request-copy --glob 'home/**/*' --expect-none
   control-agent-server api GET "/api/conversations/$A/events/count" --expect 200
   ```
-  204; `meta.json` now records the requirement and no longer holds the
-  conversation's own `CODEX_AUTH_JSON` secret (stored encrypted before, so
-  the plaintext greps hold either way; the `secrets` check is the proof of
-  the scrub), and the conversation stays readable.
+  204; `meta.json` now records the requirement and `base_state.json` no
+  longer holds the conversation's own `CODEX_AUTH_JSON` secret (stored
+  encrypted before, so the plaintext greps hold either way; the
+  `secret_registry` check is the proof of the scrub), and the conversation
+  stays readable.
 - **Re-bind (`F12.binding-rebind`).** Same URL with new headers, then a
   different URL.
 
@@ -591,8 +594,9 @@ control-agent-server api GET "/api/conversations/$R" --check execution_status eq
   control-agent-server api PUT "/api/conversations/$U2/credential-bindings/CODEX_AUTH_JSON" --json "{\"url\": \"$SRC/cred\"}" --expect 204
   C2=$(control-agent-server conversation start --body-json "{\"conversation_id\": \"$U2\", \"agent\": $ACP_AGENT}" --secret CODEX_AUTH_JSON=qa-f12-create-copy --no-autotitle --print-id)
   test "$C2" = "$U2"
-  control-agent-server state cat meta.json --conversation "$U2" \
-    --check required_runtime_credential_bindings eq '["CODEX_AUTH_JSON"]' --check secrets.CODEX_AUTH_JSON missing
+  control-agent-server state cat meta.json --conversation "$U2" --check required_runtime_credential_bindings eq '["CODEX_AUTH_JSON"]'
+  control-agent-server state cat base_state.json --conversation "$U2" --max-chars 200 \
+    --check agent.kind eq ACPAgent --check secret_registry.secret_sources.CODEX_AUTH_JSON missing
   control-agent-server state grep qa-f12-create-copy --glob 'server/**/*' --expect-none
   control-agent-server state grep qa-f12-create-copy --glob 'home/**/*' --expect-none
   ```
@@ -606,8 +610,8 @@ control-agent-server api GET "/api/conversations/$R" --check execution_status eq
   control-agent-server api POST /api/conversations/prepare-for-sandbox-pause --expect 204
   C3=$(control-agent-server conversation start --body-json "{\"conversation_id\": \"$U3\", \"agent\": $ACP_AGENT}" --secret CODEX_AUTH_JSON=qa-f12-kept-copy --no-autotitle --print-id)
   test "$C3" = "$U3"
-  control-agent-server state cat meta.json --conversation "$U3" \
-    --check required_runtime_credential_bindings len-eq 0 --check secrets.CODEX_AUTH_JSON exists
+  control-agent-server state cat meta.json --conversation "$U3" --check required_runtime_credential_bindings len-eq 0
+  control-agent-server state cat base_state.json --conversation "$U3" --max-chars 200 --check secret_registry.secret_sources.CODEX_AUTH_JSON exists
   ```
   Compare with `F12.binding-pending-on-create`: the pending binding is gone,
   so the conversation keeps its own (encrypted) secret and needs no binding.

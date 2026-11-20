@@ -22,7 +22,6 @@ from openhands.agent_server.models import (
 from openhands.agent_server.utils import utc_now
 from openhands.sdk import LLM, Agent, Tool
 from openhands.sdk.conversation.state import ConversationExecutionStatus
-from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.workspace import LocalWorkspace
 from tests.agent_server.conftest import install_test_context
 
@@ -241,7 +240,6 @@ async def test_event_service_start_forwards_tags_to_local_conversation(tmp_path)
     stored = StoredConversation(
         id=uuid4(),
         workspace=LocalWorkspace(working_dir=str(tmp_path)),
-        confirmation_policy=NeverConfirm(),
         tags=tags,
         created_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
         updated_at=datetime(2025, 1, 1, 12, 30, 0, tzinfo=UTC),
@@ -282,7 +280,6 @@ async def test_event_service_start_forwards_observability_span_name(tmp_path):
     stored = StoredConversation(
         id=uuid4(),
         workspace=LocalWorkspace(working_dir=str(tmp_path)),
-        confirmation_policy=NeverConfirm(),
         observability_span_name="pr_review_evaluation",
         created_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
         updated_at=datetime(2025, 1, 1, 12, 30, 0, tzinfo=UTC),

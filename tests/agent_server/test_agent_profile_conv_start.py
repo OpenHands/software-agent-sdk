@@ -140,11 +140,26 @@ async def _start(
     browser: bool = False,
 ) -> tuple[StoredConversation, LaunchedAgent]:
     """Start ``request`` through the real pipeline; return what reached the service."""
+    captured = await _start_capturing(
+        tmp_path, request, stores=stores, persisted=persisted, browser=browser
+    )
+    return captured["stored"], captured["launched"]
+
+
+async def _start_capturing(
+    tmp_path,
+    request: StartConversationRequest,
+    *,
+    stores: LaunchStores | None = None,
+    persisted: PersistedSettings | None = None,
+    browser: bool = False,
+) -> dict[str, Any]:
+    """Like :func:`_start`, but return every argument that reached the service."""
     captured: dict[str, Any] = {}
 
     async def capture_start(stored, **kwargs):
         captured["stored"] = stored
-        captured["launched"] = kwargs["launched"]
+        captured.update(kwargs)
         return _event_service_for(stored, kwargs["launched"].agent)
 
     service = ConversationService(
@@ -162,7 +177,7 @@ async def _start(
         ),
     ):
         await service.start_conversation(request)
-    return captured["stored"], captured["launched"]
+    return captured
 
 
 def _profile_request(tmp_path, profile, **kwargs) -> StartConversationRequest:
@@ -851,9 +866,11 @@ class TestProfileSecretScope:
             },
         )
 
-        stored, _ = await _start(tmp_path, request, stores=fakes.stores(profile))
+        captured = await _start_capturing(
+            tmp_path, request, stores=fakes.stores(profile)
+        )
 
-        assert set(stored.secrets) == expected
+        assert set(captured["secrets"]) == expected
 
     @pytest.mark.asyncio
     async def test_a_scoped_acp_profile_gets_no_implicit_provider_credentials(
@@ -867,9 +884,11 @@ class TestProfileSecretScope:
             secrets={"ANTHROPIC_API_KEY": StaticSecret(value=SecretStr("sk"))},
         )
 
-        stored, _ = await _start(tmp_path, request, stores=fakes.stores(profile))
+        captured = await _start_capturing(
+            tmp_path, request, stores=fakes.stores(profile)
+        )
 
-        assert stored.secrets == {}
+        assert captured["secrets"] == {}
 
     @pytest.mark.asyncio
     async def test_mcp_servers_outside_the_profile_scope_are_not_attached(

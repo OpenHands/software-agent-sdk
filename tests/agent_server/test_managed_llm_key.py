@@ -33,7 +33,6 @@ from openhands.sdk.secret import (
     register_local_secret_resolver,
     unregister_local_secret_resolver,
 )
-from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -284,7 +283,6 @@ async def test_switched_llm_keeps_refresh_hook(monkeypatch, tmp_path):
         stored=StoredConversation(
             id=uuid4(),
             workspace=LocalWorkspace(working_dir=str(workspace)),
-            confirmation_policy=NeverConfirm(),
         ),
         agent=_agent(_llm("loaded", MANAGED_BASE_URL)),
         conversations_dir=tmp_path / "conversations",
