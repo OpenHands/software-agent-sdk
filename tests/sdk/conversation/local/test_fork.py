@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Self
 
 import pytest
-from pydantic import PrivateAttr, SecretStr
+from pydantic import Field, PrivateAttr, SecretStr
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.context import AgentContext
@@ -53,6 +53,24 @@ class _LockedSecretSource(SecretSource):
     def get_value(self) -> str:
         with self._lock:
             return "locked-source-value"
+
+
+class _PrivateValueSecretSource(SecretSource):
+    """A secret source that keeps its value outside its fields."""
+
+    _value: str | None = PrivateAttr(default=None)
+
+    def get_value(self) -> str | None:
+        return self._value
+
+
+class _ExcludedFieldSecretSource(SecretSource):
+    """A secret source that keeps its value in a field a dump leaves out."""
+
+    token: str = Field(default="", exclude=True)
+
+    def get_value(self) -> str | None:
+        return self.token or None
 
 
 class ForkCopyMockAction(Action):
@@ -577,6 +595,55 @@ def test_fork_copies_a_secret_source_that_cannot_be_deep_copied():
         )
         fork_source = fork.state.secret_registry.secret_sources["LOCKED"]
         assert fork_source is not src.state.secret_registry.secret_sources["LOCKED"]
+
+
+def _private_value_source() -> SecretSource:
+    source = _PrivateValueSecretSource()
+    source._value = "held-outside-the-fields"
+    return source
+
+
+@pytest.mark.parametrize(
+    "make_source",
+    [
+        _private_value_source,
+        lambda: _ExcludedFieldSecretSource(token="held-outside-the-fields"),
+    ],
+    ids=["private-attribute", "excluded-field"],
+)
+def test_fork_keeps_what_a_secret_source_holds_outside_its_fields(make_source):
+    """A custom secret source may keep its value in a private attribute or in
+    a field a dump leaves out; the fork's copy still resolves."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = Conversation(
+            agent=_agent(), workspace=tmpdir, secrets={"HELD": make_source()}
+        )
+
+        fork = src.fork()
+
+        assert fork.state.secret_registry.get_secret_value("HELD") == (
+            "held-outside-the-fields"
+        )
+        fork_source = fork.state.secret_registry.secret_sources["HELD"]
+        assert fork_source is not src.state.secret_registry.secret_sources["HELD"]
+
+
+def test_fork_keeps_such_a_secret_source_from_the_agents_context():
+    """The agent goes through a dump, which drops what such a source holds;
+    the fork's registry still has the working copy."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        agent = _agent().model_copy(
+            update={
+                "agent_context": AgentContext(secrets={"CTX": _private_value_source()})
+            }
+        )
+        src = Conversation(agent=agent, workspace=tmpdir)
+
+        fork = src.fork()
+
+        assert fork.state.secret_registry.get_secret_value("CTX") == (
+            "held-outside-the-fields"
+        )
 
 
 def test_fork_copies_invoked_skills():
