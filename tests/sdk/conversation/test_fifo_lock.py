@@ -5,9 +5,11 @@ Test FIFO lock implementation for fairness and correctness.
 import threading
 import time
 from collections import deque
+from typing import Any
 
 import pytest
 
+from openhands.sdk.conversation import fifo_lock as fifo_lock_module
 from openhands.sdk.conversation.fifo_lock import FIFOLock
 
 
@@ -99,6 +101,115 @@ def test_fifo_lock_timeout():
     assert 0.09 <= duration <= 0.2  # Should be close to timeout value
 
     lock.release()
+
+
+class _SimulatedInterrupt(BaseException):
+    """Stands in for KeyboardInterrupt hitting a thread blocked in acquire()."""
+
+
+class _ThreadingProxy:
+    """Delegates to the real threading module, substituting Condition.
+
+    Patching the stdlib module itself would also hit ``Event.wait()`` in
+    ``Thread.start()``; only FIFOLock's own conditions may be interrupted.
+    """
+
+    def __init__(self, condition: type[threading.Condition]) -> None:
+        self.Condition = condition
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(threading, name)
+
+
+def test_interrupted_waiter_leaves_lock_usable(monkeypatch: pytest.MonkeyPatch):
+    """A waiter whose wait() raises (e.g. Ctrl+C on the main thread) must be
+    removed from the FIFO queue; a stale entry jams the lock permanently."""
+    lock = FIFOLock()
+    lock.acquire()  # held by the test thread, so the waiter must queue
+
+    class InterruptingCondition(threading.Condition):
+        def wait(self, timeout: float | None = None) -> bool:
+            raise _SimulatedInterrupt
+
+    monkeypatch.setattr(
+        fifo_lock_module, "threading", _ThreadingProxy(InterruptingCondition)
+    )
+
+    outcome: list[str] = []
+
+    def waiter():
+        try:
+            lock.acquire()
+            outcome.append("acquired")
+        except _SimulatedInterrupt:
+            outcome.append("interrupted")
+
+    t = threading.Thread(target=waiter, daemon=True)
+    t.start()
+    t.join(timeout=5)
+    assert not t.is_alive()
+    assert outcome == ["interrupted"]
+
+    lock.release()
+
+    # The interrupted waiter must be gone: the lock is acquirable again.
+    assert lock.acquire(blocking=False)
+    lock.release()
+
+
+def test_interrupted_front_waiter_hands_off_to_next_waiter(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """If the interrupted waiter was at the front of the queue while the lock
+    is free, the next waiter must be woken — nobody is left to notify it."""
+    lock = FIFOLock()
+    lock.acquire()  # held by the test thread
+
+    interrupted_once = False
+
+    class InterruptAfterWakeCondition(threading.Condition):
+        def wait(self, timeout: float | None = None) -> bool:
+            nonlocal interrupted_once
+            if interrupted_once:
+                return super().wait(timeout)
+            interrupted_once = True
+            # Block until the holder releases and notifies us, then simulate
+            # the interrupt landing right after wake-up, before the re-check.
+            super().wait(timeout)
+            raise _SimulatedInterrupt
+
+    monkeypatch.setattr(
+        fifo_lock_module, "threading", _ThreadingProxy(InterruptAfterWakeCondition)
+    )
+
+    outcome: list[str] = []
+
+    def waiter(name: str):
+        try:
+            lock.acquire()
+        except _SimulatedInterrupt:
+            outcome.append(f"{name}:interrupted")
+            return
+        outcome.append(f"{name}:acquired")
+        lock.release()
+
+    first = threading.Thread(target=waiter, args=("first",), daemon=True)
+    first.start()
+    _wait_for_waiter_count(lock, 1)  # first is queued and inside wait()
+
+    second = threading.Thread(target=waiter, args=("second",), daemon=True)
+    second.start()
+    _wait_for_waiter_count(lock, 2)  # second queued behind first
+
+    lock.release()  # wakes first; first is interrupted before acquiring
+
+    first.join(timeout=5)
+    second.join(timeout=5)
+    assert not first.is_alive()
+    assert not second.is_alive()
+    # The first thread yields inside its exception cleanup after notifying the
+    # successor, so "second:acquired" may land before "first:interrupted".
+    assert sorted(outcome) == ["first:interrupted", "second:acquired"]
 
 
 def _wait_for_waiter_count(lock: FIFOLock, expected: int) -> None:
