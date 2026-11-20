@@ -118,7 +118,7 @@ from openhands.sdk.plugin import (
     load_available_plugins,
 )
 from openhands.sdk.plugin.strict_fetch import expand_plugin_source
-from openhands.sdk.secret import StaticSecret
+from openhands.sdk.secret import SecretSource, StaticSecret
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
@@ -143,7 +143,7 @@ from openhands.sdk.tool.builtins import InvokeSkillTool
 from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
-from openhands.sdk.utils.pydantic_secrets import client_context
+from openhands.sdk.utils.pydantic_secrets import client_context, copy_keeping_secrets
 from openhands.sdk.utils.redact import (
     redact_text_secrets,
     redact_url_credentials,
@@ -220,6 +220,19 @@ def _copy_event_for_fork(event: Event, source: EventLog) -> Event:
     return copied.model_copy(update={"parent_id": bridged})
 
 
+def _copy_secret_source_for_fork(source: SecretSource) -> SecretSource:
+    """A copy of a secret source that the fork owns.
+
+    A deep copy keeps what a custom source holds outside its fields, such as a
+    value in a private attribute. A source with a member that cannot be copied
+    (a lock, an open client) is rebuilt from its fields instead.
+    """
+    try:
+        return source.model_copy(deep=True)
+    except Exception:
+        return copy_keeping_secrets(source)
+
+
 def _hooks_not_in(hooks: HookConfig, existing: HookConfig) -> HookConfig:
     """Return the matchers of ``hooks`` that ``existing`` does not already hold."""
 
@@ -284,6 +297,9 @@ class LocalConversation(BaseConversation):
     _resolved_plugins: list[ResolvedPluginSource] | None
     _plugins_loaded: bool
     _pending_hook_config: HookConfig | None  # Hook config to combine with plugin hooks
+    # The caller's hook_config, never merged with plugin hooks, so a fork can
+    # be given it without receiving the plugin hooks twice.
+    _explicit_hook_config: HookConfig | None
     _mcp_tool_provider: MCPToolProvider
     _mcp_startup_budget: float | None
     _late_mcp_lock: threading.Lock
@@ -422,6 +438,7 @@ class LocalConversation(BaseConversation):
         self._resolved_plugins = None
         self._plugins_loaded = False
         self._pending_hook_config = hook_config  # Will be combined with plugin hooks
+        self._explicit_hook_config = hook_config
         self._agent_ready = False  # Agent initialized lazily after plugins loaded
         self._mcp_tool_provider = mcp_tool_provider or DefaultMCPToolProvider()
         self._mcp_startup_budget = mcp_startup_budget
@@ -992,6 +1009,9 @@ class LocalConversation(BaseConversation):
         Events are copied so the source remains immutable. The fork starts
         in ``execution_status='idle'``; calling ``run()`` resumes from the
         copied state — meaning the agent has full event memory of the source.
+        It also keeps the source's confirmation policy, the ``hook_config`` the
+        source was created with, its own copy of the security analyzer and of
+        the secrets, and the source's cipher.
 
         Args:
             conversation_id: ID for the forked conversation (auto-generated
@@ -1018,17 +1038,12 @@ class LocalConversation(BaseConversation):
         """
         del title  # no local title storage; see docstring
         fork_id = conversation_id or uuid.uuid4()
-        # Always deep-copy the agent (supplied or source) so the fork owns
+        # Always copy the agent (supplied or source) so the fork owns
         # its own object graph. Required because __init__ binds
         # per-conversation call context on the LLM (#2917, #3443): a
         # shared/aliased agent would clobber the source conversation's
-        # context. Round-trip via JSON avoids thread-lock pickling issues
-        # with model_copy(deep=True).
-        source_agent = agent if agent is not None else self.agent
-        agent_cls = type(source_agent)
-        fork_agent = agent_cls.model_validate(
-            source_agent.model_dump(context=client_context("plaintext")),
-        )
+        # context.
+        fork_agent = copy_keeping_secrets(agent if agent is not None else self.agent)
 
         # Hold the state lock while reading mutable state from the source
         # conversation to avoid torn reads if run() is executing concurrently.
@@ -1037,6 +1052,17 @@ class LocalConversation(BaseConversation):
             # does not leave an orphaned persistence directory behind.
             if from_event_id is not None and from_event_id not in self._state.events:
                 raise ValueError(f"Unknown from_event_id: {from_event_id}")
+            # Copied before the fork exists too, for the same reason.
+            source_analyzer = self._state.security_analyzer
+            fork_analyzer = (
+                copy_keeping_secrets(source_analyzer)
+                if source_analyzer is not None
+                else None
+            )
+            fork_secrets = {
+                name: _copy_secret_source_for_fork(source)
+                for name, source in self._state.secret_registry.secret_sources.items()
+            }
 
             # Determine persistence_dir for the fork.
             # Pass the *base* directory only — __init__ calls
@@ -1053,6 +1079,7 @@ class LocalConversation(BaseConversation):
                 agent=fork_agent,
                 workspace=self.workspace,
                 plugins=self._plugin_specs,
+                hook_config=self._explicit_hook_config,
                 persistence_dir=fork_persistence,
                 conversation_id=fork_id,
                 max_iteration_per_run=self.max_iteration_per_run,
@@ -1110,17 +1137,40 @@ class LocalConversation(BaseConversation):
                 self._state.activated_path_rules
             )
             fork_conv._state.agent_state = copy.deepcopy(self._state.agent_state)
+            fork_conv._state.invoked_skills = list(self._state.invoked_skills)
+            # A hook's verdict on a copied action or message still holds in the
+            # fork: without it the fork would run an action a hook denied.
+            copied_ids = {event.id for event in source_events}
+            fork_conv._state.blocked_actions = {
+                event_id: reason
+                for event_id, reason in self._state.blocked_actions.items()
+                if event_id in copied_ids
+            }
+            fork_conv._state.blocked_messages = {
+                event_id: reason
+                for event_id, reason in self._state.blocked_messages.items()
+                if event_id in copied_ids
+            }
+            last_user_message_id = self._state.last_user_message_id
+            if last_user_message_id not in copied_ids:
+                last_user_message_id = next(
+                    (
+                        event.id
+                        for event in reversed(source_events)
+                        if isinstance(event, MessageEvent) and event.source == "user"
+                    ),
+                    None,
+                )
+            fork_conv._state.last_user_message_id = last_user_message_id
+            fork_conv._state.confirmation_policy = self._state.confirmation_policy
+            fork_conv._state.security_analyzer = fork_analyzer
             # Conversation secrets (``secrets=`` / update_secrets) live in the
             # registry, not the agent. Assigning the field (rather than
             # mutating the registry) autosaves them, encrypted with the cipher.
-            source_secrets = self._state.secret_registry.secret_sources
             fork_conv._state.secret_registry = SecretRegistry(
                 secret_sources={
                     **fork_conv._state.secret_registry.secret_sources,
-                    **{
-                        name: source.model_copy(deep=True)
-                        for name, source in source_secrets.items()
-                    },
+                    **fork_secrets,
                 }
             )
 

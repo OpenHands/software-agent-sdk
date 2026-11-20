@@ -466,3 +466,15 @@ def decrypt_str_with_cipher_or_keep(
         )
         return value
     return decrypted
+
+
+def copy_keeping_secrets[ModelT: BaseModel](model: ModelT) -> ModelT:
+    """A copy that shares nothing with ``model`` and keeps its credentials.
+
+    A dump/validate round trip rather than ``model_copy(deep=True)``: a deep
+    copy carries private runtime state along (an analyzer's history) and fails
+    on members that cannot be copied (a lock, an open client).
+    """
+    return type(model).model_validate(
+        model.model_dump(context=client_context("plaintext"))
+    )

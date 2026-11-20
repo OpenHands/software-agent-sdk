@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Sequence
-from typing import Any
+from typing import Annotated, Any
 
 import httpx
 from pydantic import Field, PrivateAttr, SecretStr, model_validator
@@ -20,6 +20,7 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.grayswan.utils import convert_events_to_openai_messages
 from openhands.sdk.security.risk import SecurityRisk
+from openhands.sdk.utils.pydantic_secrets import SecretField
 
 
 logger = get_logger(__name__)
@@ -66,7 +67,7 @@ class GraySwanAnalyzer(SecurityAnalyzerBase):
         default="https://api.grayswan.ai/cygnal/monitor",
         description="GraySwan Cygnal API endpoint",
     )
-    api_key: SecretStr | None = Field(
+    api_key: Annotated[SecretStr | None, SecretField()] = Field(
         default=None,
         description="GraySwan API key (via GRAYSWAN_API_KEY env var)",
     )
