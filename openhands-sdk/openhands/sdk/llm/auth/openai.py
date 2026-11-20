@@ -11,11 +11,15 @@ callback server.
 from __future__ import annotations
 
 import asyncio
+import os
 import platform
 import sys
 import threading
 import time
 import webbrowser
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -31,6 +35,7 @@ from joserfc.errors import JoseError
 from openhands.sdk.llm.auth.credentials import (
     CredentialStore,
     OAuthCredentials,
+    SubscriptionBrokerCredentialStore,
     get_credentials_dir,
 )
 from openhands.sdk.llm.utils.openhands_provider import (
@@ -461,6 +466,58 @@ _HTML_ERROR = """<!DOCTYPE html>
 </html>"""
 
 
+class _DisabledCredentialStore(CredentialStore):
+    def __init__(self) -> None:
+        pass
+
+    def get(self, vendor: str) -> OAuthCredentials | None:  # noqa: ARG002
+        raise RuntimeError(
+            "OpenAI subscription credentials are disabled in this process"
+        )
+
+    def save(self, credentials: OAuthCredentials) -> None:  # noqa: ARG002
+        raise RuntimeError(
+            "OpenAI subscription credentials are disabled in this process"
+        )
+
+    def delete(self, vendor: str) -> bool:  # noqa: ARG002
+        raise RuntimeError(
+            "OpenAI subscription credentials are disabled in this process"
+        )
+
+
+_subscription_credential_store: ContextVar[CredentialStore | None] = ContextVar(
+    "subscription_credential_store", default=None
+)
+
+
+@contextmanager
+def subscription_credential_store_scope(store: CredentialStore) -> Iterator[None]:
+    token = _subscription_credential_store.set(store)
+    try:
+        yield
+    finally:
+        _subscription_credential_store.reset(token)
+
+
+def _default_subscription_credential_store() -> CredentialStore:
+    scoped = _subscription_credential_store.get()
+    if scoped is not None:
+        return scoped
+    mode = os.getenv("OH_OPENAI_SUBSCRIPTION_MODE", "local")
+    if mode == "disabled":
+        raise RuntimeError(
+            "OpenAI subscription credentials are disabled in this process"
+        )
+    if mode == "broker":
+        url = os.getenv("OH_OPENAI_SUBSCRIPTION_BROKER_URL", "")
+        key = os.getenv("OH_SESSION_API_KEYS_0") or os.getenv("SESSION_API_KEY", "")
+        return SubscriptionBrokerCredentialStore(url, key)
+    if mode != "local":
+        raise RuntimeError("Invalid OpenAI subscription credential mode")
+    return CredentialStore()
+
+
 class OpenAISubscriptionAuth:
     """Handle OAuth authentication for OpenAI ChatGPT subscription access."""
 
@@ -475,7 +532,11 @@ class OpenAISubscriptionAuth:
             credential_store: Optional custom credential store.
             oauth_port: Port for the local OAuth callback server.
         """
-        self._credential_store = credential_store or CredentialStore()
+        self._credential_store = (
+            credential_store
+            if credential_store is not None
+            else _default_subscription_credential_store()
+        )
         self._oauth_port = oauth_port
 
     @property
@@ -501,6 +562,8 @@ class OpenAISubscriptionAuth:
         Raises:
             RuntimeError: If token refresh fails.
         """
+        if isinstance(self._credential_store, SubscriptionBrokerCredentialStore):
+            return await self._credential_store.aget(self.vendor)
         creds = self.get_credentials()
         if creds is None:
             return None
@@ -765,6 +828,8 @@ class OpenAISubscriptionAuth:
         model: str = "gpt-5.5",
         credentials: OAuthCredentials | None = None,
         instructions: str | None = None,
+        *,
+        defer_credentials: bool = False,
         **llm_kwargs: Any,
     ) -> LLM:
         """Create an LLM instance configured for Codex subscription access.
@@ -789,14 +854,14 @@ class OpenAISubscriptionAuth:
                 f"Supported models: {', '.join(sorted(OPENAI_CODEX_MODELS))}"
             )
 
-        creds = credentials or self.get_credentials()
-        if creds is None:
+        creds = None if defer_credentials else (credentials or self.get_credentials())
+        if creds is None and not defer_credentials:
             raise ValueError(
                 "No credentials available. Call login() first or provide credentials."
             )
 
-        account_id = _extract_chatgpt_account_id(creds.access_token)
-        if not account_id:
+        account_id = _extract_chatgpt_account_id(creds.access_token) if creds else None
+        if creds is not None and not account_id:
             logger.warning(
                 "Could not extract chatgpt_account_id from access token. "
                 "API requests may fail."
@@ -920,9 +985,15 @@ def create_subscription_llm_from_config(llm: LLM) -> LLM:
     if model.startswith("openai/"):
         model = model.removeprefix("openai/")
 
-    auth = OpenAISubscriptionAuth()
-    credentials = auth.refresh_if_needed_sync()
-    if credentials is None:
+    deferred = (
+        os.getenv("OH_OPENAI_SUBSCRIPTION_MODE", "local") == "disabled"
+        and _subscription_credential_store.get() is None
+    )
+    auth = OpenAISubscriptionAuth(
+        credential_store=_DisabledCredentialStore() if deferred else None
+    )
+    credentials = None if deferred else auth.refresh_if_needed_sync()
+    if credentials is None and not deferred:
         raise ValueError("OpenAI subscription login is required")
 
     llm_kwargs = llm.model_dump(
@@ -946,6 +1017,7 @@ def create_subscription_llm_from_config(llm: LLM) -> LLM:
     return auth.create_llm(
         model=model,
         credentials=credentials,
+        defer_credentials=deferred,
         **llm_kwargs,
     )
 

@@ -8,8 +8,10 @@ import time
 import warnings
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
-from pydantic import BaseModel, Field
+from httpx import AsyncClient, Client, HTTPError, Response
+from pydantic import BaseModel, Field, SecretStr
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.path import get_user_persistence_dir
@@ -160,3 +162,78 @@ class CredentialStore:
         )
         self.save(updated)
         return updated
+
+
+class SubscriptionBrokerCredentialStore(CredentialStore):
+    """Resolve short-lived access tokens from the owning runtime's broker."""
+
+    def __init__(self, url: str, session_key: str) -> None:
+        parsed = urlsplit(url)
+        if (
+            parsed.scheme not in ("http", "https")
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.fragment
+            or (
+                parsed.scheme == "http"
+                and parsed.hostname
+                not in ("127.0.0.1", "localhost", "host.docker.internal")
+            )
+        ):
+            raise ValueError("Invalid subscription broker URL")
+        if not session_key:
+            raise ValueError("Subscription broker session key is required")
+        self._url = url
+        self._session_key = SecretStr(session_key)
+
+    def _parse_response(self, response: Response) -> OAuthCredentials | None:
+        if response.status_code == 404:
+            return None
+        if not response.is_success:
+            raise RuntimeError("Subscription token broker request failed")
+        try:
+            data = response.json()
+            credentials = OAuthCredentials(
+                vendor="openai",
+                access_token=data["access_token"],
+                refresh_token="",
+                expires_at=data["expires_at"],
+            )
+            if not credentials.access_token or credentials.is_expired():
+                raise ValueError("Invalid access token")
+            return credentials
+        except (ValueError, KeyError, TypeError):
+            raise RuntimeError("Invalid subscription token broker response") from None
+
+    def get(self, vendor: str) -> OAuthCredentials | None:
+        if vendor != "openai":
+            return None
+        try:
+            with Client(timeout=10, follow_redirects=False) as client:
+                response = client.get(
+                    self._url,
+                    headers={"X-Session-API-Key": self._session_key.get_secret_value()},
+                )
+        except HTTPError:
+            raise RuntimeError("Subscription token broker request failed") from None
+        return self._parse_response(response)
+
+    async def aget(self, vendor: str) -> OAuthCredentials | None:
+        if vendor != "openai":
+            return None
+        try:
+            async with AsyncClient(timeout=10, follow_redirects=False) as client:
+                response = await client.get(
+                    self._url,
+                    headers={"X-Session-API-Key": self._session_key.get_secret_value()},
+                )
+        except HTTPError:
+            raise RuntimeError("Subscription token broker request failed") from None
+        return self._parse_response(response)
+
+    def save(self, credentials: OAuthCredentials) -> None:  # noqa: ARG002
+        raise RuntimeError("Subscription broker credentials are read-only")
+
+    def delete(self, vendor: str) -> bool:  # noqa: ARG002
+        raise RuntimeError("Subscription broker credentials are read-only")
