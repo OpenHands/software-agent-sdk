@@ -3,6 +3,8 @@
 from collections.abc import Sequence
 from typing import ClassVar
 
+import pytest
+
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
@@ -71,23 +73,37 @@ def _bad_tool_call_message(call_id: str) -> Message:
 
 def _make_conversation(
     scripted_messages: list[Message | Exception],
+    *,
+    stuck_detection_thresholds: dict[str, int] | None = None,
 ) -> LocalConversation:
     register_tool(
         "always_error_tool", _AlwaysErrorTool.create(executor=_AlwaysErrorExecutor())[0]
     )
     llm = TestLLM.from_messages(scripted_messages)
     agent = Agent(llm=llm, tools=[Tool(name="always_error_tool")])
-    conversation = Conversation(agent=agent)
+    conversation = Conversation(
+        agent=agent, stuck_detection_thresholds=stuck_detection_thresholds
+    )
     assert isinstance(conversation, LocalConversation)
     return conversation
 
 
-def test_run_nudges_before_going_stuck_on_repeating_action_error():
-    """4 identical failing calls: nudge after the 3rd, hard STUCK after the 4th."""
+@pytest.mark.parametrize("error_threshold", [3, 5])
+@pytest.mark.parametrize("observation_threshold", [1, 4])
+def test_run_nudges_before_going_stuck_on_repeating_action_error(
+    error_threshold, observation_threshold
+):
+    """The error threshold controls the nudge even with a lower observation limit."""
     scripted_messages: list[Message | Exception] = [
-        _bad_tool_call_message(f"call_{i}") for i in range(4)
+        _bad_tool_call_message(f"call_{i}") for i in range(error_threshold + 1)
     ]
-    conversation = _make_conversation(scripted_messages)
+    conversation = _make_conversation(
+        scripted_messages,
+        stuck_detection_thresholds={
+            "action_error": error_threshold,
+            "action_observation": observation_threshold,
+        },
+    )
     conversation.send_message(
         Message(role="user", content=[TextContent(text="Create /tmp/foo.py")])
     )
@@ -98,7 +114,7 @@ def test_run_nudges_before_going_stuck_on_repeating_action_error():
     error_events = [
         e for e in conversation.state.events if isinstance(e, AgentErrorEvent)
     ]
-    assert len(error_events) == 4
+    assert len(error_events) == error_threshold + 1
 
     nudges = [
         e
@@ -119,7 +135,7 @@ def test_run_nudges_before_going_stuck_on_repeating_action_error():
     following_errors = [
         e for e in events[nudge_index:] if isinstance(e, AgentErrorEvent)
     ]
-    assert len(preceding_errors) == 3
+    assert len(preceding_errors) == error_threshold
     assert len(following_errors) == 1
 
 
