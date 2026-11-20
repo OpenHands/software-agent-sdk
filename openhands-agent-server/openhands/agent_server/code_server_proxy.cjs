@@ -94,8 +94,11 @@ function start(config) {
     }
     // Exchange the existing public token URL for a scoped, token-derived cookie.
     // Restarting with a rotated token invalidates every previous cookie.
-    if (url.searchParams.has("tkn")) {
-      if (!equal(url.searchParams.get("tkn"), config.token)) {
+    // An empty `tkn` is not a handshake. code-server adds `tkn=` to
+    // vscode-remote-resource URLs, which must use the editor cookie.
+    const presentedToken = url.searchParams.get("tkn");
+    if (presentedToken) {
+      if (!equal(presentedToken, config.token)) {
         res.writeHead(401).end();
         return;
       }
