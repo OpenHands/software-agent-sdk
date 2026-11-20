@@ -10,7 +10,7 @@ recipe.
 
 Maintenance baseline: main@0275e714df62d3dd66eb51d518dd1da953ec2c16 (2026-11-17). The next maintenance pass starts from this commit, a pass proposes the next baseline in its PR, and merging that PR accepts it.
 
-The map has **1068 sub-features**.
+The map has **1075 sub-features**.
 
 ## Baseline preconditions
 
@@ -99,6 +99,7 @@ them honest: [../maintenance.md](../maintenance.md).
 | F32 | [Event webhooks and product telemetry](F32-webhooks-and-telemetry.md) | event webhooks (event batches, conversation updates, headers, buffering, flush, limits, retries) and product telemetry (off by default, exporter lifecycle, sanitized payloads, consent) | behavior only: `webhooks` / `OH_WEBHOOKS_*`, `OH_TELEMETRY_*` | llm; launch `--webhook-sink` | 30 |
 | F33 | [Python SDK remote client (RemoteConversation, RemoteWorkspace)](F33-sdk-remote-client.md) | the Python SDK in this checkout against the server: RemoteWorkspace commands, files, git and settings readers; RemoteConversation create, run, callbacks, streaming, reattach, fork, confirmation, pause, interrupt, stop hooks, client tools, completion logs | behavior only: `Workspace(host=...)`, `RemoteWorkspace`, `RemoteConversation` | llm, tmux, git | 43 |
 | F34 | [TypeScript client (@openhands/typescript-client)](F34-typescript-client.md) | the TypeScript client against this checkout: server and version gate, workspace, bash, conversation, state, events and socket clients, hooks and MCP clients, typed batch-events, loadPlugin, git commits, archive and deferred-init clients, endpoint audit and drift | behavior only: `@openhands/typescript-client` (`clients/typescript`) | llm, node, uvx, git, tmux, network | 38 |
+| F35 | [Standalone prompt enhancement](F35-prompt-enhancement.md) | availability, authentication, input/profile rejection, real-model rewriting and compiled TypeScript access | `GET /api/prompt-enhancement/availability/{name}`, `POST /api/prompt-enhancement/enhance`; TypeScript `PromptEnhancementClient` | baseline; per-recipe llm, node, network | 7 |
 | F37 | [Emoji reactions and feature flags](F37-reactions.md) | the `conversation_reactions` feature flag (stored and runtime env), the user's reactions over REST and the TypeScript client, validation, active-branch targets, the agent's `react`/`unreact` tools, what the model sees | `POST /api/conversations/{id}/reactions` (the flag's routes are F18's) | llm | 12 |
 | F38 | [Conversation mentions](F38-conversation-mentions.md) | the `conversation_mentions` feature flag, the agent's read-only `find_conversations` and `read_conversation` tools, mention links `[Title](conversation:<id>)` in its answers | behavior only: agent tools (the flag's routes are F18's) | llm | 5 |
 | F39 | [Message edits](F39-message-edits.md) | the `message_edits` feature flag, the agent's `edit_message` tool (`str_replace` on its own earlier messages), the `MessageEditEvent` clients show in place, what the model sees, reactions on an edited message | behavior only: `edit_message` tool, `MessageEditEvent` (the flag's routes are F18's) | llm | 5 |
