@@ -70,7 +70,7 @@ Routes: `POST /api/mcp/test`, `POST /api/mcp/oauth/start`,
 - `F19.conversation-mcp-add-before-init`: on a conversation without a first message the route only records the server (no process, fast answer), with `env` values encrypted by the settings API decrypted for the child and stored encrypted in `base_state.json`; the first message connects it like any configured server.
 - `F19.conversation-mcp-add-errors`: an unknown conversation is 404, a server name the agent already has and an SSE server are 400 with the reason, a server without `command`/`url`, an unknown field and a non-UUID id are 422, none of them changes the agent's `mcp_config`, and a disabled server is stored without being spawned.
 - `F19.conversation-mcp-add-start-failure`: a server that cannot start (a command that exits at once) is refused with the route's 400 naming the server and the cause (`Could not start MCP server <name>: Connection closed`, since [#6928](https://github.com/OpenHands/software-agent-sdk/pull/6928)) and is not added.
-- `F19.conversation-mcp-add-restart`: a server added at runtime is still in the conversation's agent after a restart, and the tools the agent already called keep working under the same names (known bug [#6927](https://github.com/OpenHands/software-agent-sdk/issues/6927), closed 2026-11-18 with no fix merged; fix proposed in [#6929](https://github.com/OpenHands/software-agent-sdk/pull/6929): with one server the tools come back unprefixed, so `qa-f19-rs_qa_echo` is `Tool ... not found`).
+- `F19.conversation-mcp-add-restart`: a server added at runtime is still in the conversation's agent after a restart, and the tools the agent already called keep working under the same names (`qa-f19-rs_qa_echo`, prefixed even as the agent's only server).
 - `F19.conversation-mcp-slow-start`: a conversation whose stdio server delays its handshake by 8 s is created within a few seconds, the server is spawned, and the agent's first model request waits for it and offers its tools; the agent's call returns its result.
 - `F19.conversation-mcp-late-failure`: a server that fails after the startup budget costs only its own tools: the conversation starts at once, the first step waits for the failure, the other server's tools are offered, the run finishes and the log names the failed server.
 
@@ -1263,7 +1263,7 @@ Preconditions:
   ```
   The 400's `detail` names the server and the cause, and the server is not
   added (`agent.mcp_config` keeps no `qa-f19-dies`).
-- **Added servers after a restart (`F19.conversation-mcp-add-restart`), known bug #6927.**
+- **Added servers after a restart (`F19.conversation-mcp-add-restart`).**
   The stub calls the added tool, finishes, and after a restart and a new
   message calls the same tool again.
   ```sh
@@ -1279,12 +1279,13 @@ Preconditions:
   control-agent-server restart
   control-agent-server api GET "/api/conversations/$RCID" --check agent.mcp_config.qa-f19-rs.command eq "$PY" --save F19.conversation-mcp-add-restart/after-restart
   control-agent-server conversation send "$RCID" --text 'Again.' --wait --until finished --timeout 90
-  control-agent-server conversation events "$RCID" --kinds ObservationEvent --contains QA_MCP_ECHO:two --expect-kind ObservationEvent --save F19.conversation-mcp-add-restart/second-call # bug: matching eq 0 && kinds.AgentErrorEvent ge 1
+  control-agent-server conversation events "$RCID" --kinds ObservationEvent --contains QA_MCP_ECHO:two --expect-kind ObservationEvent --save F19.conversation-mcp-add-restart/second-call
   ```
   The server survives the restart in the conversation's agent and is
-  reconnected on the next message, but as the agent's only server its tools
-  come back bare (`qa_echo`), so the second call by the name the agent was
-  given ends in an `AgentErrorEvent` `Tool 'qa-f19-rs_qa_echo' not found`.
+  reconnected on the next message under the name the agent was given: the
+  conversation state records it as added at runtime (`runtime_mcp_servers`),
+  so its tools stay `qa-f19-rs_qa_echo` although it is the agent's only
+  server, and the second call returns `QA_MCP_ECHO:two`.
 - **A slow server does not hold up the start (`F19.conversation-mcp-slow-start`).**
   The F19 tools fixture with a handshake delayed by 8 s, inline on the
   conversation's agent; the stub reads one variable through it.
@@ -1357,10 +1358,13 @@ Preconditions:
   request (`sink read --name <stub> --contains '"name": "<tool>"'`), not the
   first event. Tools added through `POST /api/conversations/{id}/mcp` are not
   in it either.
-- Tools of a server added through the conversation route are always named
-  `<server>_<tool>` while the agent is running, but a restart (or an add
-  before the first message) names them like configured servers: bare when it
-  is the agent's only server (`F19.conversation-mcp-add-restart`).
+- Tools of a server added through the conversation route once the
+  conversation has started (its agent is initialized or it has events) are
+  named `<server>_<tool>`, and keep that name across a restart
+  (`F19.conversation-mcp-add-restart`); the other servers are counted without
+  it for the two-or-more prefix rule. An add to a brand-new conversation
+  before it has started is named like a configured server: bare when it is
+  the agent's only server.
 - The conversation MCP route runs the connection inside the request: an
   initialized conversation answers only after the server has started (or
   failed, up to 30 s). Explicit `transport: sse` is refused, but a `/sse` URL
