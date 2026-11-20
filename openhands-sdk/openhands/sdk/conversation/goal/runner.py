@@ -21,6 +21,7 @@ from openhands.sdk.conversation.goal.controller import (
     GoalDone,
     GoalOutcome,
 )
+from openhands.sdk.conversation.types import GOAL_LOOP_SENDER
 from openhands.sdk.event.ask_user import find_pending_ask
 
 
@@ -54,7 +55,7 @@ def run_goal(
     pending = find_pending_ask(conversation.state.events)
     if pending is not None:
         return GoalAsked(ask_id=pending.ask_id, question=pending.question)
-    conversation.send_message(controller.start(), sender="goal")
+    conversation.send_message(controller.start(), sender=GOAL_LOOP_SENDER)
     while True:
         conversation.run()
         step = controller.on_run_finished(conversation.state.events)
@@ -62,4 +63,4 @@ def run_goal(
             return step.outcome
         if isinstance(step, GoalAsked):
             return step
-        conversation.send_message(step.followup, sender="goal")
+        conversation.send_message(step.followup, sender=GOAL_LOOP_SENDER)

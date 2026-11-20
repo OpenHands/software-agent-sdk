@@ -49,6 +49,9 @@ Routes: `GET /v1/models`, `POST /v1/chat/completions`, `POST /v1/responses`, `PO
 - `F30.chat-run-limit-429`: when `max_concurrent_runs` is full a new gateway conversation is refused with 429 and nothing is created; the same request succeeds once a slot is free.
 - `F30.chat-reuse-run-limit-429`: on a continued conversation a 429 also leaves nothing behind, so a client retry is safe.
 - `F30.chat-timeout-504`: a run longer than the fixed 120 s answers 504 `Agent run timed out`, and the run keeps going server-side.
+- `F30.chat-timeout-no-retry`: the official OpenAI Python client with its default retries sends a run that outlives the gateway's 120 s exactly once: the post-send 504 carries `X-Should-Retry: false` and the conversation id, the client raises `InternalServerError` (504) after one HTTP request, and the conversation holds one user message and one model call.
+- `F30.inner-gateway-presend-504`: an inner gateway turn that cannot start before its 120 s deadline (the conversation's direct run is still going) answers 504 `Agent run timed out` with `X-Should-Retry: true` and no conversation header, and saves no message.
+- `F30.inner-gateway-no-sender`: the inner gateway route refuses a body with `sender_conversation_id` with 422 `A gateway turn is not sent by another conversation` before running anything.
 - `F30.responses-basic`: `POST /v1/responses` on a real model returns a completed `response` with one `output_text` message equal to the agent's final answer, echoes `instructions` and `metadata`, and puts the instructions in the system suffix.
 - `F30.responses-stateless-replay`: every responses call is a new conversation (the conversation header is ignored); replayed items become one user message wrapped in `<message role="...">` markers, and developer items go to the system suffix.
 - `F30.responses-errors`: `stream`, `store: true` and `previous_response_id` are 400 before anything else is checked, bad input is 400 or 422, an unknown model 404, and nothing is created.
@@ -923,6 +926,99 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
   The 504 arrives after 115 to 140 s with the reason in `detail`. The run
   is not cancelled: right after the 504 the conversation is still `running`
   on its single model call, so the bullet deletes it.
+- **The default OpenAI client sends a timed-out turn once (`F30.chat-timeout-no-retry`).**
+  The same hanging stub as the timeout bullet, behind its own profile, and
+  a program using `openai` with its default `max_retries` (2); an `httpx`
+  request hook counts the HTTP requests the client really sends. Two
+  minutes: the server's own timer is under test.
+  ```sh
+  SLOW_SDK=$(control-agent-server fixture llm-stub --name qa-f30-slow-sdk --step hang:170 --print-path)
+  control-agent-server llm set --profile qa-f30-slow-sdk --model openai/qa-stub --base-url "$SLOW_SDK/v1" \
+    --no-api-key --no-validate --no-activate --num-retries 0 --llm-timeout 300
+  NR_ID=$(python3 -c 'import uuid; print(uuid.uuid4())')
+  control-agent-server exec --openai --timeout 600 --expect-output QA_F30_NO_RETRY_OK --save F30.chat-timeout-no-retry/program -- \
+    .venv/bin/python - "$NR_ID" <<'PY'
+  import sys
+  import time
+
+  import openai
+  from openai import DefaultHttpxClient, OpenAI
+
+  sent = []
+  client = OpenAI(timeout=300, http_client=DefaultHttpxClient(event_hooks={"request": [sent.append]}))
+  assert client.max_retries == 2, client.max_retries
+  started = time.monotonic()
+  try:
+      client.chat.completions.create(
+          model="openhands_qa-f30-slow-sdk",
+          messages=[{"role": "user", "content": "QA_F30_NO_RETRY"}],
+          extra_headers={"X-OpenHands-ServerConversation-ID": sys.argv[1]},
+      )
+      raise SystemExit("expected a 504")
+  except openai.InternalServerError as exc:
+      headers = exc.response.headers
+      print(exc.status_code, headers.get("x-should-retry"), headers.get("x-openhands-serverconversation-id"), len(sent), round(time.monotonic() - started))
+      assert exc.status_code == 504, exc.status_code
+      assert headers.get("x-should-retry") == "false", dict(headers)
+      assert headers.get("x-openhands-serverconversation-id") == sys.argv[1], dict(headers)
+      assert len(sent) == 1, len(sent)
+  print("QA_F30_NO_RETRY_OK")
+  PY
+  control-agent-server api GET "/api/conversations/$NR_ID/events/search" --query source=user --check items len-eq 1 \
+    --check items.0.llm_message.content.0.text eq QA_F30_NO_RETRY --save F30.chat-timeout-no-retry/user-messages
+  control-agent-server api GET "/api/conversations/$NR_ID" --check execution_status eq running --quiet
+  control-agent-server sink read --name qa-f30-slow-sdk --expect-min 1 --expect-max 1
+  control-agent-server api DELETE "/api/conversations/$NR_ID" --expect 200
+  control-agent-server api DELETE /api/profiles/qa-f30-slow-sdk --expect 200
+  ```
+  The client raises `InternalServerError` with status 504,
+  `X-Should-Retry: false` and the id it chose, after one HTTP request,
+  although its default would retry a 5xx twice. The conversation holds the
+  one user message, the stub saw one model call, and the run is still
+  going, so the bullet deletes it.
+- **A turn that cannot start in time is retryable (`F30.inner-gateway-presend-504`).**
+  A conversation whose direct run hangs in its model call; the inner
+  gateway turn on it waits for that run to end and gives up at its
+  deadline without saving its message. Two minutes.
+  ```sh
+  PRE_SLOW=$(control-agent-server fixture llm-stub --name qa-f30-presend --step hang:170 --print-path)
+  PRE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key\", \"base_url\": \"$PRE_SLOW/v1\", \"num_retries\": 0, \"timeout\": 300}, \"tools\": []}"
+  PRE=$(control-agent-server conversation start --body-json "{\"agent\": $PRE_AGENT}" --no-autotitle --print-id)
+  control-agent-server api POST "/api/conversations/$PRE/events" \
+    --json '{"role":"user","content":[{"type":"text","text":"QA_F30_DIRECT"}],"run":true}' --expect 200
+  control-agent-server conversation wait "$PRE" --until running --timeout 30
+  control-agent-server sink read --name qa-f30-presend --expect-min 1
+  T0=$SECONDS
+  control-agent-server api POST "/api/conversations/$PRE/events/_gateway/run" --timeout 200 \
+    --json '{"role":"user","content":[{"type":"text","text":"QA_F30_PRESEND"}],"run":true}' \
+    --expect 504 --check detail eq 'Agent run timed out' --check-header x-should-retry eq true \
+    --check-header x-openhands-serverconversation-id missing --expect-max-ms 140000 --save F30.inner-gateway-presend-504/timeout
+  test $((SECONDS - T0)) -ge 115
+  control-agent-server api GET "/api/conversations/$PRE/events/count" --query body=QA_F30_PRESEND --check . eq 0 \
+    --save F30.inner-gateway-presend-504/no-message
+  control-agent-server api GET "/api/conversations/$PRE/events/count" --query source=user --check . eq 1
+  control-agent-server sink read --name qa-f30-presend --expect-min 1 --expect-max 1
+  control-agent-server api DELETE "/api/conversations/$PRE" --expect 200
+  ```
+  The 504 arrives after 115 to 140 s with `X-Should-Retry: true` and
+  without a conversation header; the gateway's message was never saved
+  (only the direct run's user message is in the log) and no second model
+  call was made, so a client retry is safe.
+- **No sender on a gateway turn (`F30.inner-gateway-no-sender`).** The
+  field that marks a message from another conversation, on the inner
+  route.
+  ```sh
+  NS_FROM=$(control-agent-server conversation start --no-autotitle --tools none --print-id)
+  NS_TO=$(control-agent-server conversation start --no-autotitle --tools none --print-id)
+  control-agent-server api POST "/api/conversations/$NS_TO/events/_gateway/run" \
+    --json "{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"QA_F30_NS\"}],\"run\":true,\"sender_conversation_id\":\"$NS_FROM\"}" \
+    --expect 422 --check detail eq 'A gateway turn is not sent by another conversation' --save F30.inner-gateway-no-sender/refused
+  control-agent-server api GET "/api/conversations/$NS_TO/events/count" --check . eq 0
+  control-agent-server api GET "/api/conversations/$NS_TO" --check execution_status eq idle --quiet
+  control-agent-server api DELETE "/api/conversations/$NS_TO" --expect 200
+  control-agent-server api DELETE "/api/conversations/$NS_FROM" --expect 200
+  ```
+  422 at once; the target's log is still empty and it never ran.
 - **Responses (`F30.responses-basic`).** One real-model call with
   instructions, metadata and an ignored client tool. `RID` names its
   conversation.

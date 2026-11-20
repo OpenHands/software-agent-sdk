@@ -10,9 +10,9 @@ agent-server map
 and follows its layout. Family IDs here are `Snn`, so they never collide with
 that map's `Fnn`.
 
-Maintenance baseline: main@0275e714df62d3dd66eb51d518dd1da953ec2c16 (2026-11-17). The next maintenance pass starts from this commit, a pass proposes the next baseline in its PR, and merging that PR accepts it.
+Maintenance baseline: main@141423921fdaeb08cd5f53464a69e860da70b66f (2026-11-19). The next maintenance pass starts from this commit, a pass proposes the next baseline in its PR, and merging that PR accepts it.
 
-The map has **496 sub-features**, **34 of them untested** (no unit or cross
+The map has **504 sub-features**, **36 of them untested** (no unit or cross
 test exercises the behavior; most of those have an example script).
 
 ## What each sub-feature links
@@ -38,9 +38,13 @@ the way a user's program does (see [recipes.md](../recipes.md)).
 ## Baseline preconditions
 
 - `uv sync --dev` has run in the repository root.
-- Live bullets: `DEEPSEEK_API_KEY` is exported. `control-sdk new --llm
-  deepseek-flash` runs use it, and `control-sdk exec --model-env` hands it to
-  examples and the integration runner as `LLM_API_KEY`/`LLM_MODEL`.
+- Live bullets: `DEEPSEEK_API_KEY` is exported, or `LLM_BASE_URL` and
+  `LLM_API_KEY` name a LiteLLM proxy that serves `deepseek-v4.1-flash` (then
+  `deepseek-flash` goes through the proxy, as `control-agent-server llm preset
+  deepseek` does; `deepseek-pro` still needs `DEEPSEEK_API_KEY`). `control-sdk
+  new --llm deepseek-flash` runs use it, and `control-sdk exec --model-env`
+  hands it to examples and the integration runner as
+  `LLM_API_KEY`/`LLM_MODEL`/`LLM_BASE_URL`.
 - Run commands from the repository root.
 - `control-sdk` and `sdk-map` are on `PATH`:
   `export PATH="$PWD/.agents/skills/verify-sdk/scripts:$PATH"`.
@@ -73,8 +77,8 @@ an interactive login are labeled **blocked**.
 |---|---|---|---|---|---|---|
 | S01 | [Agent step loop](S01-agent-loop.md) | step handling (tool calls, text, empty replies), iteration and budget limits, stuck detector, parallel tools, messages sent mid-run, image input, `ask_agent`, structured output, recovery from bad tool calls and context overflow | `Conversation(max_iteration_per_run=, stuck_detection=, max_budget_per_run=)`, `Agent(tool_concurrency_limit=)`, `ask_agent()`, `response_schema` | llm, tmux, network | 24 | 1 |
 | S02 | [LLM core](S02-llm-core.md) | completion, responses and `generate`; streaming; reasoning and thinking blocks; native and prompted tool calling; metrics, stats and pricing; retries and error mapping; caching, token counts, image inlining, completion logs | `LLM(...)`, `llm.completion`/`responses`, `Conversation(token_callbacks=)`, `llm.metrics` | llm, network | 28 | 0 |
-| S03 | [LLM registry, routing, fallback, profiles and model switching](S03-llm-routing-profiles.md) | `LLMRegistry`, multimodal and random routers, `FallbackStrategy`, `LLMProfileStore`, `switch_profile`/`switch_llm`, the switch-LLM tool, `route_task_to_model`, subscription login | `LLMRegistry`, `MultimodalRouter`, `FallbackStrategy`, `LLMProfileStore`, `LLM.subscription_login()` | llm, network | 26 | 3 |
-| S04 | [Local conversation lifecycle](S04-local-conversation.md) | factory and ids, persistence and resume, callbacks, close, pause, `arun` and interrupt, secrets, visualizers, fork and branches, goal loop (and its stop on a pending `ask_user` question, `GoalAsked`), final response, stats, title and tags | `Conversation(persistence_dir=, callbacks=, visualizer=, secrets=)`, `run`/`pause`/`arun`/`interrupt`/`fork`/`run_goal` | llm, tmux, network, uvx | 31 | 3 |
+| S03 | [LLM registry, routing, fallback, profiles and model switching](S03-llm-routing-profiles.md) | `LLMRegistry`, multimodal and random routers, `FallbackStrategy`, `LLMProfileStore`, `switch_profile`/`switch_llm`, the switch-LLM tool, `route_task_to_model`, subscription login | `LLMRegistry`, `MultimodalRouter`, `FallbackStrategy`, `LLMProfileStore`, `LLM.subscription_login()` | llm, network | 30 | 4 |
+| S04 | [Local conversation lifecycle](S04-local-conversation.md) | factory and ids, persistence and resume, callbacks, close, pause, `arun` and interrupt, secrets, visualizers, fork and branches, goal loop (and its stop on a pending `ask_user` question, `GoalAsked`), final response, stats, title and tags | `Conversation(persistence_dir=, callbacks=, visualizer=, secrets=)`, `run`/`pause`/`arun`/`interrupt`/`fork`/`run_goal` | llm, tmux, network, uvx | 34 | 4 |
 | S05 | [Events and the event log](S05-events.md) | event model, JSON round trip, conversion to LLM messages and OpenAI formats, unmatched actions, the `EventLog`, error classification, completion and token events | `Event.model_validate_json`, `events_to_messages`, `conversation.state.events` | llm, tmux | 18 | 1 |
 | S06 | [Agent context, system prompt, condensers and memory](S06-context-condensers.md) | `AgentContext`, system prompt sections and vendor files, persona, persistent memory, the condenser `View`, `LLMSummarizingCondenser`, `condense()`, overflow condensation, no-op and pipeline condensers | `Agent(agent_context=, system_prompt=, condenser=)`, `AgentContext(load_memory=)`, `conversation.condense()` | llm, tmux | 24 | 1 |
 | S07 | [Skills](S07-skills.md) | skill sources (programmatic, Markdown, AGENTS.md, SKILL.md, user, project, public, installed), keyword, task and path triggers, `<available_skills>`, `invoke_skill`, inline commands, disabling, install and marketplace, the `OH_PUBLIC_SKILLS_ENABLED` switch | `AgentContext(skills=, load_*_skills=, disabled_skills=)`, `.agents/skills/`, `install_skill`, `OH_PUBLIC_SKILLS_ENABLED` | llm, git, network | 25 | 0 |
@@ -89,7 +93,7 @@ an interactive login are labeled **blocked**.
 | S16 | [Planning, task tracking, oracle, ToM, workflow, reaction, message-edit, mention and ask-user tools](S16-planning-workflow-tools.md) | task tracker, planning preset and PLAN.md editor, plan-then-execute, `ask_oracle`, `tom_consult`, sleeptime compute, the workflow tool, emoji reactions (`react`/`unreact`, `conversation.react`), message edits (`edit_message`, `MessageEditEvent`, `message_text`), `ask_user` questions and answers, conversation mention links and the `find_conversations`/`read_conversation` tools (server-backed, F38) | `Tool(name="task_tracker" \| "ask_oracle" \| "tom_consult" \| "workflow_tool_set" \| "react" \| "unreact" \| "edit_message" \| "ask_user" \| "find_conversations" \| "read_conversation")`, `get_planning_agent`, `LocalConversation.react`, `LocalConversation.answer_ask`, `conversation_mention` | llm | 30 | 6 |
 | S17 | [Custom tools, client-defined tools and the tool registry](S17-custom-and-client-tools.md) | custom tool classes and tool sets, registration and naming, tool schemas, injected fields, catalog seal, module qualnames, client tools, `execute_tool` | `register_tool`, `Tool(name, params)`, `Conversation(client_tools=)`, `execute_tool` | llm | 24 | 1 |
 | S18 | [Workspaces and sandbox backends](S18-workspace-backends.md) | the `Workspace` factory, `LocalWorkspace`, `RemoteWorkspace`, and the Docker, API-remote, Cloud, Apptainer and agent-sandbox backends (start, health, commands, files, pause, cleanup) | `Workspace(...)`, `LocalWorkspace`, `openhands.workspace.*Workspace` | docker, apptainer, cloud, k8s, network, llm, git | 24 | 3 |
-| S19 | [Agent settings, persisted schema migrations and agent profiles](S19-settings.md) | `OpenHandsAgentSettings`, ACP settings, schema migrations v0 to v8, settings diffs and export, the persisted-settings compatibility gate, agent profiles and their store | `openhands.sdk.settings`, `openhands.sdk.profiles`, `~/.openhands/agent-profiles/` | llm, tmux, network | 25 | 0 |
+| S19 | [Agent settings, persisted schema migrations and agent profiles](S19-settings.md) | `OpenHandsAgentSettings`, ACP settings, schema migrations v0 to v8, settings diffs and export, the persisted-settings compatibility gate, agent profiles and their store | `openhands.sdk.settings`, `openhands.sdk.profiles`, `~/.openhands/agent-profiles/` | llm, tmux, network | 26 | 0 |
 | S20 | [Observability, tracing and logging](S20-observability.md) | enabling tracing, Laminar and OTLP backends, conversation, step, tool and LLM spans, sub-agent trace links, automation helpers, the logger | `LMNR_*`/`OTEL_*` env vars, `Conversation(observability_*=)`, `get_logger` | llm, network | 22 | 5 |
 | S21 | [ACP agent (in-process)](S21-acp-agent.md) | construction, provider registry, handshake, turns and tool-call events, permission auto-approval, timeouts and cancel, session resume, model switching, usage, MCP forwarding, secrets, cleanup | `ACPAgent(acp_command=...)`, `switch_acp_model`, `ACPAgentSettings` | node, network, llm | 27 | 2 |
 

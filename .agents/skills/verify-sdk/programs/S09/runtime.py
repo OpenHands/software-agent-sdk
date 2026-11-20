@@ -27,7 +27,7 @@ from sdk_verify import emit, run_paths
 from openhands.sdk import Agent
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.event import AgentErrorEvent, ObservationEvent
-from openhands.sdk.mcp import MCPServer
+from openhands.sdk.mcp import MCPError, MCPServer, MCPServerStartError
 
 
 mode = sys.argv[1]
@@ -98,7 +98,15 @@ if mode == "add":
     out["sse_error"] = refusal(
         conv, {"remote": MCPServer(url="http://127.0.0.1:9/sse", transport="sse")}
     )
-    out["start_failure_error"] = refusal(conv, {"broken": server("--fail-start")})
+    try:
+        conv.add_mcp_servers({"broken": server("--fail-start")})
+        out["start_failure_error"] = None
+    except Exception as exc:
+        out["start_failure_error"] = f"{type(exc).__name__}: {exc}"[:200]
+        out["start_failure_is_mcp_error"] = isinstance(exc, MCPError)
+        if isinstance(exc, MCPServerStartError):
+            out["start_failure_server_name"] = exc.server_name
+            out["start_failure_cause"] = type(exc.__cause__).__name__
     out["disabled_error"] = refusal(
         conv, {"off": MCPServer(command="sh", args=["-c", "exit 1"], enabled=False)}
     )
