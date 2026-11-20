@@ -170,6 +170,14 @@ Preconditions:
     --check models.https_url eq "https://img.example/?k=<secret-hidden>" --check models.text eq "<secret-hidden>"
   ```
   `token.txt` holds the request's value, not the `AgentContext` one, so the request wins. The values reach the terminal, but every observation shows `<secret-hidden>`. The failing `BROKEN` lookup is skipped, and masking again inside the back-off window sends no new request.
+- **A secret rotated mid-conversation (`S13.secret-registry`, `S13.mask-output`).** `programs/S13/secret_rotation.py`: `Conversation(secrets={"DEPLOY_TOKEN": "dep-v1-s13", "OAUTH_TOKEN": <own SecretSource answering oauth-v<n>-s13>})`; a scripted agent cats a file holding both first values, then `update_secrets({"DEPLOY_TOKEN": "dep-v2-s13"})` and a second run cats a file holding the new value (never named by a command), exports both names (`echo $DEPLOY_TOKEN $OAUTH_TOKEN | wc -c`), and cats the first file again.
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  control-sdk program S13/secret_rotation --check status eq finished --check observations eq 4 \
+    --check before_rotation_leaks len-eq 0 --check export_wc eq 24 --check source_lookups eq 2 \
+    --check new_value_leaks len-eq 0 --check previous_values_leaks len-eq 0 --check persisted_leaks len-eq 0
+  ```
+  Expected: every value the registry ever resolved for a name stays masked: the updated value is masked before any command names it, and after the export (which resolves `dep-v2-s13` and `oauth-v2-s13`) the earlier values are still masked, in the observations and in the persisted events. Known failure (reproduced 2026-11-20, [#7002](https://github.com/OpenHands/software-agent-sdk/issues/7002)): the first run is masked, but `new_value_leaks` is `["dep-v2-s13"]` (`update_secrets` leaves the old value cached in `_exported_values`, so `resolve_uncached_values` never resolves the new one), `previous_values_leaks` is `["dep-v1-s13", "oauth-v1-s13"]` (the export overwrites the single cached value per name), and `persisted_leaks` is `["dep-v1-s13", "dep-v2-s13", "oauth-v1-s13"]`.
 - **Masking in `arun()` with a lookup the running loop serves (`S13.mask-async`).** The event loop that runs `arun()` also answers the `LookupSecret`, and while answering it registers `NESTED` on the conversation. In the first case the lookup first happens while an agent message is being masked; in the second, while a terminal observation is being masked.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
