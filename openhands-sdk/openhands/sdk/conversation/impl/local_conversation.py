@@ -118,7 +118,7 @@ from openhands.sdk.plugin import (
     load_available_plugins,
 )
 from openhands.sdk.plugin.strict_fetch import expand_plugin_source
-from openhands.sdk.secret import StaticSecret
+from openhands.sdk.secret import SecretSource, StaticSecret
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
@@ -218,6 +218,19 @@ def _copy_event_for_fork(event: Event, source: EventLog) -> Event:
     # event the source's own branch walk bridges to instead.
     bridged = source._effective_parent_id(source.get_index(event.id), event)
     return copied.model_copy(update={"parent_id": bridged})
+
+
+def _copy_secret_source_for_fork(source: SecretSource) -> SecretSource:
+    """A copy of a secret source that the fork owns.
+
+    A deep copy keeps what a custom source holds outside its fields, such as a
+    value in a private attribute. A source with a member that cannot be copied
+    (a lock, an open client) is rebuilt from its fields instead.
+    """
+    try:
+        return source.model_copy(deep=True)
+    except Exception:
+        return copy_keeping_secrets(source)
 
 
 def _hooks_not_in(hooks: HookConfig, existing: HookConfig) -> HookConfig:
@@ -1047,7 +1060,7 @@ class LocalConversation(BaseConversation):
                 else None
             )
             fork_secrets = {
-                name: copy_keeping_secrets(source)
+                name: _copy_secret_source_for_fork(source)
                 for name, source in self._state.secret_registry.secret_sources.items()
             }
 
