@@ -60,9 +60,11 @@ def _manager_with_parent(
 
 class TestTaskStatusEnum:
     def test_all_values(self):
+        assert TaskStatus.QUEUED == "queued"
         assert TaskStatus.RUNNING == "running"
         assert TaskStatus.COMPLETED == "completed"
         assert TaskStatus.ERROR == "error"
+        assert TaskStatus.CANCELLED == "cancelled"
 
     def test_is_str_enum(self):
         assert isinstance(TaskStatus.RUNNING, str)
@@ -252,16 +254,17 @@ class TestTaskManager:
                 resume="task_nonexistent", subagent_type="general-purpose"
             )
 
-    def test_resume_after_evict(self, tmp_path):
-        """A task that was created, evicted, and then resumed should work."""
+    def test_resume_after_settlement(self, tmp_path):
+        """A settled task should resume its persisted conversation."""
         manager, _ = _manager_with_parent(tmp_path)
         register_builtins_agents()
 
-        # Create and evict a task (simulating a completed first run)
+        # Complete settlement, including eviction, before resuming.
         task = manager._create_task(subagent_type="general-purpose", description=None)
         original_id = task.id
         original_uuid = task.conversation_id
-        manager._evict_task(task)
+        task.set_result("first run")
+        manager._settle_task(task)
         assert original_id in manager._tasks
 
         # Resume it
@@ -448,7 +451,8 @@ class TestTaskManager:
         register_builtins_agents()
 
         task = manager._create_task(subagent_type="general-purpose", description=None)
-        manager._evict_task(task)
+        task.set_result("first run")
+        manager._settle_task(task)
 
         with (
             patch("lmnr.Laminar") as mock_laminar,
@@ -735,10 +739,11 @@ class TestStartTask:
         manager, parent = _manager_with_parent(tmp_path)
         register_builtins_agents()
 
-        # Create and evict a task to simulate a prior completed run
+        # Settle a task to simulate a prior completed run.
         first = manager._create_task(subagent_type="general-purpose", description=None)
         original_id = first.id
-        manager._evict_task(first)
+        first.set_result("first run")
+        manager._settle_task(first)
 
         with patch.object(manager, "_run_task", side_effect=self._fake_run_task):
             result = manager.start_task(
@@ -949,13 +954,14 @@ class TestTaskManagerHooks:
 
         manager, _ = _manager_with_parent(tmp_path)
 
-        # Create and evict a task
+        # Complete a run so its history can be resumed.
         task = manager._create_task(
             subagent_type="hooked_resume",
             description="test",
         )
         original_id = task.id
-        manager._evict_task(task)
+        task.set_result("first run")
+        manager._settle_task(task)
 
         # Resume it
         resumed = manager._resume_task(
