@@ -17,7 +17,7 @@ constraint-dependencies = [
     "rich>=14.3.3", # Version 14.3.2 essentially has a denial-of-service vulnerability which is outlined in https://github.com/Textualize/rich/issues/3958
     "lupa>=2.8",
     "cryptography<49; sys_platform == 'darwin' and platform_machine == 'x86_64'",  # 49.0.0 dropped x86_64 macOS wheels; release-binaries.yml still builds on macos-15-intel
-    "litellm==1.105.1",  # first stable release exposing litellm.systemone is 1.104.3
+    "litellm==1.108.3",  # first release allowing filelock>=4.2.1 (CVE-2026-112940); litellm.systemone needs >=1.104.3
     "anyio>=4.14.2",
     "pyjwt>=2.14.0",
 ]
@@ -112,7 +112,8 @@ asyncio_mode = "auto"
 markers = [
     "stress: stress / scale tests, deselected by default. Run with `pytest -m stress` (see tests/agent_server/stress/__init__.py for details).",
     "acp_live: live ACP conformance/pin-installability tests that launch real npx subprocesses and hit the npm registry, deselected by default. Run with `pytest -m acp_live` (see tests/sdk/agent/test_acp_conformance.py).",
-    "projects_off: agent-server test that keeps the Projects experimental feature at its shipped default (off); see tests/agent_server/conftest.py.",
+    "projects_on: agent-server test (or file, via pytestmark) that runs with the Projects experimental feature on; see tests/agent_server/conftest.py.",
+    "projects_off: test in a projects_on file that keeps the Projects experimental feature at its shipped default (off).",
     "docker_live: scenarios against a real Docker daemon and agent-server image, deselected by default. Run with `pytest -m docker_live` (see tests/agent_server/docker_runtime/STORAGE_SCENARIO.md).",
 ]
 

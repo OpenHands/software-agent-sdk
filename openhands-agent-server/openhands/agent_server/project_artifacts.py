@@ -239,7 +239,8 @@ def open_workspace_file(working_dir: Path, path: str) -> BinaryIO:
     resolved = candidate.resolve()
     if not resolved.is_relative_to(root):
         raise ValueError("Path is outside the conversation's workspace")
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    nonblock = getattr(os, "O_NONBLOCK", 0)
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | nonblock
     try:
         fd = os.open(resolved, flags)
     except OSError:
@@ -252,7 +253,9 @@ def open_workspace_file(working_dir: Path, path: str) -> BinaryIO:
             opened = Path(os.readlink(proc_link))
             if not opened.is_relative_to(root):
                 raise ValueError("Path is outside the conversation's workspace")
-        if hasattr(os, "set_blocking"):
+        if nonblock:
+            # Opened without blocking on a FIFO; read the file normally. Only
+            # where O_NONBLOCK exists: Windows cannot set it on a file.
             os.set_blocking(fd, True)
         return os.fdopen(fd, "rb")
     except BaseException:

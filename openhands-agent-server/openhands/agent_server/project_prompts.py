@@ -1,7 +1,7 @@
 """What a project conversation is told about the conversations that steer it.
 
 A coordinator starts workers with ``start_child_conversation`` and
-steers them with ``message_project_conversation``. Each of those agents should
+steers them with ``message_worker``. Each of those agents should
 know who is talking to it, so it does not take the coordinator's words for the
 user's, and so it knows its final message is what gets relayed.
 
@@ -11,10 +11,10 @@ particular to one project and one conversation:
 
 - :func:`project_context` is the ``<PROJECT>`` block of a coordinator or
   worker: the project's name and goal, its coordinator, and its memory index.
-- :func:`sender_header` opens every message one conversation sends another,
+- :func:`sender_line` opens every message one conversation sends another,
   including a worker's brief, because a summary of earlier events can
   otherwise lose who wrote it.
-- :func:`update_header` opens the update a coordinator receives when one of
+- :func:`update_line` opens the update a coordinator receives when one of
   its project's conversations finishes a run.
 """
 
@@ -28,14 +28,14 @@ def _name(title: str | None, conversation_id: UUID) -> str:
     # A conversation mention, ``[Title](conversation:<hex>)``: the agent can
     # copy it into its own messages, and UIs render it as a link. The title is
     # sanitized there (one line, no brackets, parentheses or quotes), so it
-    # cannot end the header or the guidance early.
+    # cannot end the line or the guidance early.
     return conversation_mention(title, conversation_id)
 
 
 SenderRole = Literal["coordinator", "worker"]
 """How a sender in the receiver's project relates to it: the project's
 coordinator, or another conversation of the project. A sender outside any
-project gets :func:`openhands.agent_server.message_sender.sender_header`."""
+project gets :func:`openhands.agent_server.message_sender.sender_line`."""
 
 _SENDER_ROLES: dict[SenderRole, str] = {
     "coordinator": "the coordinator of your project",
@@ -51,7 +51,7 @@ _SENDER_REPLY: dict[SenderRole, str] = {
 }
 
 
-def sender_header(title: str | None, conversation_id: UUID, *, role: SenderRole) -> str:
+def sender_line(title: str | None, conversation_id: UUID, *, role: SenderRole) -> str:
     """First line of a message a conversation sends another of its project."""
     return (
         f"[Sent by {_name(title, conversation_id)}, {_SENDER_ROLES[role]}, not "
@@ -64,7 +64,7 @@ UPDATE_TEXT_MAX = 4000
 """Longest final message passed on in an update; the rest is cut."""
 
 
-def update_header(title: str | None, conversation_id: UUID, *, asked: bool) -> str:
+def update_line(title: str | None, conversation_id: UUID, *, asked: bool) -> str:
     """First line of the update a coordinator gets when a member finishes."""
     if asked:
         return (
@@ -82,12 +82,12 @@ def update_header(title: str | None, conversation_id: UUID, *, asked: bool) -> s
         "project, not from the user. It finished its turn; its final message follows. "
         "Pass on to the user what they need to know, send that conversation "
         "a follow-up only if the work needs one (it already has what the "
-        "user told it), or read more of it with read_project_conversation. "
+        "user told it), or read more of it with read_worker. "
         "If nothing needs doing, end your turn.]"
     )
 
 
-def card_header(title: str | None, conversation_id: UUID) -> str:
+def card_line(title: str | None, conversation_id: UUID) -> str:
     """First line of the update a coordinator gets when a member it started
     ends its turn on an ``ask_user`` card: the user answers it through the
     coordinator."""
@@ -99,9 +99,6 @@ def card_header(title: str | None, conversation_id: UUID) -> str:
         "answer then reaches it. Do not answer it yourself.]"
     )
 
-
-RESTART_STOP = "restart"
-"""The stop :func:`stop_header` names for a run a server shutdown paused."""
 
 _STOPS = {
     "waiting_for_confirmation": (
@@ -117,23 +114,17 @@ _STOPS = {
         "It got stuck and stopped; its last message follows. It will not run "
         "for your messages until the user restarts it. Tell the user"
     ),
-    RESTART_STOP: (
-        "A server restart interrupted it, not the user, and left it paused; "
-        "its last message follows. It will not run for your messages until the "
-        "user resumes it. Tell the user it needs resuming"
-    ),
 }
 
 
-def stop_header(title: str | None, conversation_id: UUID, *, status: str) -> str:
+def stop_line(title: str | None, conversation_id: UUID, *, status: str) -> str:
     """First line of the update a coordinator gets when a member it started
-    stops on the user (confirmation, error or stuck), or that a server
-    restart paused (:data:`RESTART_STOP`)."""
+    stops on the user (confirmation, error or stuck)."""
     outcome = _STOPS[status]
     return (
         f"[Update from {_name(title, conversation_id)}, a conversation in your "
         f"project, not from the user. {outcome}, or read more of it with "
-        "read_project_conversation. If nothing needs doing, end your turn.]"
+        "read_worker. If nothing needs doing, end your turn.]"
     )
 
 
@@ -145,7 +136,7 @@ AWARENESS_PREFIXES = (USER_MESSAGE_PREFIX, USER_TURN_PREFIX, PAUSED_PREFIX)
 without a run and do not start a turn: the board ignores them."""
 
 
-def user_message_header(title: str | None, conversation_id: UUID) -> str:
+def user_message_line(title: str | None, conversation_id: UUID) -> str:
     """First line of the copy a coordinator gets of the user's message to a member."""
     return (
         f"{USER_MESSAGE_PREFIX}{_name(title, conversation_id)}, a "
@@ -155,7 +146,7 @@ def user_message_header(title: str | None, conversation_id: UUID) -> str:
     )
 
 
-def user_turn_header(title: str | None, conversation_id: UUID, *, asked: bool) -> str:
+def user_turn_line(title: str | None, conversation_id: UUID, *, asked: bool) -> str:
     """First line of a member's final message on a turn the user started."""
     outcome = "with a question for the user" if asked else "of a turn"
     return (
@@ -166,7 +157,7 @@ def user_turn_header(title: str | None, conversation_id: UUID, *, asked: bool) -
     )
 
 
-def paused_header(title: str | None, conversation_id: UUID) -> str:
+def paused_line(title: str | None, conversation_id: UUID) -> str:
     """First line of the note a coordinator gets when the user pauses a
     member during a turn the coordinator started."""
     return (
@@ -200,19 +191,28 @@ def project_context(
     *,
     started_by: tuple[str | None, UUID, SenderRole] | None,
     memory: str | None,
+    coordinator_id: UUID | None = None,
 ) -> str:
     """Body of the ``<PROJECT>`` block of a project's coordinator or worker.
 
     ``started_by`` is the title, id and role of the conversation that started
-    a worker, or ``None`` for the coordinator itself. ``memory`` is the
-    project's ``MEMORY.md`` as the conversation starts.
+    a worker, or ``None`` for the coordinator itself, whose own id is
+    ``coordinator_id``. ``memory`` is the project's ``MEMORY.md`` as the
+    conversation starts.
     """
     lines = [f"Project: {' '.join(name.split())}"]
     goal = description.strip()
     if goal:
         lines.append(f"Goal: {goal}")
     if started_by is None:
-        lines.append("You are this project's coordinator.")
+        lines.append(
+            "You are this project's coordinator"
+            + (
+                f", conversation {coordinator_id}."
+                if coordinator_id is not None
+                else "."
+            )
+        )
     else:
         title, conversation_id, role = started_by
         lines.append(

@@ -19,7 +19,7 @@ from openhands.agent_server.docker_runtime.hybrid import HybridConversationRegis
 from openhands.agent_server.docker_runtime.registry import DockerConversationRegistry
 from openhands.agent_server.errors import GatewayTimeout, status_for
 from openhands.agent_server.event_router import run_gateway_message
-from openhands.agent_server.event_service import ConversationRunLimitExceeded
+from openhands.agent_server.exceptions import ConversationRunLimitExceeded
 from openhands.agent_server.openai import service as gateway
 from openhands.agent_server.persistence import ServerStores
 from openhands.sdk.conversation.conversation_stats import ConversationStats

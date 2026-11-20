@@ -19,7 +19,8 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import UUID, uuid4
 from weakref import WeakValueDictionary
 
-from openhands.agent_server.event_service import EventService, RunSlot, ServiceInactive
+from openhands.agent_server.event_service import EventService
+from openhands.agent_server.exceptions import ServiceInactive
 from openhands.agent_server.experimental_features import (
     ASK_USER,
     feature_enabled_now,
@@ -40,11 +41,13 @@ from openhands.agent_server.project_board import (
     ConversationOutcomeSubscriber,
 )
 from openhands.agent_server.project_memory import MEMORY_INDEX, ProjectMemoryStore
-from openhands.agent_server.project_profiles import ensure_project_profile
+from openhands.agent_server.project_profiles import (
+    ensure_project_profile,
+    runs_in_a_project,
+)
 from openhands.agent_server.project_prompts import (
     SenderRole,
     project_context,
-    sender_header,
 )
 from openhands.agent_server.project_wake import (
     conversation_context,
@@ -57,19 +60,19 @@ from openhands.agent_server.project_wake import (
 )
 from openhands.agent_server.resolution_judge import make_resolution_judge
 from openhands.sdk import LLM, TextContent
-from openhands.sdk.context.prompts.presets import PromptPreset
+from openhands.sdk.agent.base import PROJECT_COORDINATOR_PROMPT, PROJECT_WORKER_PROMPT
 from openhands.sdk.conversation.message_request import SendMessageRequest
-from openhands.sdk.conversation.request import AgentLaunchAdditions, ConversationConfig
+from openhands.sdk.conversation.request import ConversationConfig
 from openhands.sdk.conversation.types import (
     ACTIVITY_TAG_KEYS,
     BOARD_TAG_KEYS,
     PROJECT_TAG_KEY,
     RESOLVE_NOTE_TAG_KEY,
     RESOLVED_TAG_KEY,
-    conversation_sender,
 )
-from openhands.sdk.errors import Conflict
+from openhands.sdk.errors import Conflict, Unprocessable
 from openhands.sdk.event.ask_user import ASK_USER_TOOL_NAME
+from openhands.sdk.launch.finalize import ProjectRole
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool import Tool
 from openhands.sdk.workspace import LocalWorkspace
@@ -100,9 +103,9 @@ coordinator is not on the board, so it does not."""
 
 
 PROJECT_COORDINATOR_TOOLS = (
-    "list_project_conversations",
-    "message_project_conversation",
-    "read_project_conversation",
+    "list_workers",
+    "message_worker",
+    "read_worker",
     "start_child_conversation",
     *PROJECT_MEMBER_TOOLS,
 )
@@ -110,11 +113,13 @@ PROJECT_COORDINATOR_TOOLS = (
 
 
 RESERVED_TAG_KEYS = BOARD_TAG_KEYS | ACTIVITY_TAG_KEYS | {PROJECT_TAG_KEY}
-"""Tags the server owns: project membership, the board's state and what a
-member did.
+"""Tags the server owns on a project's members: membership, the board's state
+and what a member did.
 
-A client's tag ``PATCH`` keeps their current values (see :func:`_client_tags`);
-the projects routes change them.
+Only on a conversation whose ``project`` tag names an existing project, with
+Projects on (:meth:`ProjectService.member_of`). There a client's tag ``PATCH``
+keeps their current values (see :func:`_client_tags`), and the projects routes
+change them. On any other conversation they are ordinary client tags.
 """
 
 
@@ -159,6 +164,13 @@ def _coordinator_profile_id(stores: ServerStores) -> UUID | None:
     )
 
 
+def _project_profile(stores: ServerStores, profile_id: UUID | None) -> UUID | None:
+    """``profile_id`` when it can run in a project (not an ACP agent)."""
+    if profile_id is None or not runs_in_a_project(stores, profile_id):
+        return None
+    return profile_id
+
+
 def _active_agent_profile_id(stores: ServerStores) -> UUID | None:
     settings = stores.settings.load() or PersistedSettings()
     active = settings.active_agent_profile_id
@@ -181,13 +193,15 @@ async def _project_prompt(
     stores: ServerStores | None,
     project_hex: str,
     started_by: tuple[str | None, UUID] | None,
+    coordinator_id: UUID | None = None,
 ) -> tuple[str | None, SenderRole]:
     """The ``<PROJECT>`` block for a conversation of ``project_hex``.
 
     ``started_by`` is the title and id of the conversation that starts a
-    worker, or ``None`` for the coordinator. Returns the block's body (``None``
+    worker, or ``None`` for the coordinator, whose id is ``coordinator_id``.
+    Returns the block's body (``None``
     when the project cannot be read) and how the starter relates to the
-    project, for the header of the worker's brief.
+    project, for the sender line of the worker's brief.
     """
     try:
         project = (
@@ -216,6 +230,7 @@ async def _project_prompt(
         project.description,
         started_by=None if started_by is None else (*started_by, role),
         memory=memory,
+        coordinator_id=coordinator_id,
     )
     return context, role
 
@@ -246,6 +261,20 @@ class ProjectService:
         return await feature_enabled_now(
             "projects", self.stores.settings if self.stores else None
         )
+
+    async def member_of(self, tags: Mapping[str, str]) -> ProjectItem | None:
+        """The project a conversation with ``tags`` is a member of.
+
+        A member's ``project`` tag names an existing project, and Projects is
+        on. Only a member has board state, reserved tags and workers; any
+        other ``project`` tag (a client's own metadata, or a deleted project)
+        is an ordinary tag.
+        """
+        project_hex = tags.get(PROJECT_TAG_KEY)
+        stores = self.stores
+        if not project_hex or stores is None or not await self.enabled():
+            return None
+        return await asyncio.to_thread(_load_project, stores, project_hex)
 
     # Lifecycle
 
@@ -283,6 +312,8 @@ class ProjectService:
         conversation_id = event_service.stored.id
         if self._watched.get(conversation_id) is event_service:
             return
+        if await self.member_of(event_service.stored.tags) is None:
+            return
         self._watched[conversation_id] = event_service
         service = self.conversations
         board = ConversationOutcomeSubscriber(
@@ -298,7 +329,7 @@ class ProjectService:
             ),
             on_user_answer=functools.partial(pass_on_answer, service, conversation_id),
             turn_sender_lookup=functools.partial(_logged_turn_sender, event_service),
-            projects_enabled=self.enabled,
+            is_member=functools.partial(self._is_member, event_service),
             judge=make_resolution_judge(
                 functools.partial(_agent_llm, event_service),
                 lambda: self.stores,
@@ -310,6 +341,9 @@ class ProjectService:
         except BaseException:
             self._watched.pop(conversation_id, None)
             raise
+
+    async def _is_member(self, event_service: EventService) -> bool:
+        return await self.member_of(event_service.stored.tags) is not None
 
     # Tags
 
@@ -375,14 +409,42 @@ class ProjectService:
                 await self.watch(event_service)
             return dict(event_service.stored.tags)
 
+    async def release_members(self, project_hex: str) -> None:
+        """Remove a deleted project's tags from its conversations: the
+        ``project`` tag and the board's state. Their other tags stay."""
+        members = await self.conversations.list_tagged_conversations(
+            PROJECT_TAG_KEY, project_hex
+        )
+        for stored, _ in members:
+            async with self._tag_lock(stored.id):
+                event_service = await self.conversations.get_event_service(stored.id)
+                if event_service is None:
+                    continue
+                tags = event_service.stored.tags
+                if tags.get(PROJECT_TAG_KEY) != project_hex:
+                    continue
+                await self.conversations.update_conversation(
+                    stored.id,
+                    UpdateConversationRequest(
+                        tags={
+                            k: v for k, v in tags.items() if k not in RESERVED_TAG_KEYS
+                        }
+                    ),
+                )
+
     async def update_conversation_from_client(
         self, conversation_id: UUID, request: UpdateConversationRequest
     ) -> bool:
         """``update_conversation`` for a client's ``PATCH``.
 
-        Its tags are merged under the conversation's tag lock, so the
-        server-owned keys (:data:`RESERVED_TAG_KEYS`) keep their values; see
-        :func:`_client_tags`.
+        On a project's member, its tags are merged under the conversation's
+        tag lock, so the server-owned keys (:data:`RESERVED_TAG_KEYS`) keep
+        their values; see :func:`_client_tags`. No other conversation joins a
+        project this way: only its coordinator starts a project's
+        conversations.
+
+        Raises:
+            Unprocessable: If the tags would make the conversation a member.
         """
         if request.tags is None:
             return await self.conversations.update_conversation(
@@ -392,7 +454,16 @@ class ProjectService:
             event_service = await self.conversations.get_event_service(conversation_id)
             if event_service is None:
                 return False
-            tags = _client_tags(event_service.stored.tags, request.tags)
+            current = event_service.stored.tags
+            if await self.member_of(current) is not None:
+                tags = _client_tags(current, request.tags)
+            elif await self.member_of(request.tags) is not None:
+                raise Unprocessable(
+                    "A conversation joins a project only when the project's "
+                    "coordinator starts it"
+                )
+            else:
+                tags = dict(request.tags)
             return await self.conversations.update_conversation(
                 conversation_id, request.model_copy(update={"tags": tags})
             )
@@ -476,10 +547,9 @@ class ProjectService:
         the server, and joins the project through its ``project`` tag. It gets
         no first message: it waits for the user. ``options`` are more
         ``StartConversationRequest`` fields from the client (its own tags,
-        a reserved ``conversation_id``, launch additions, policies).
+        launch additions, policies).
 
-        Raises ValueError when there is no profile to run, the reserved id is
-        taken, or it cannot start.
+        Raises ValueError when there is no profile to run or it cannot start.
         """
         self.conversations.ensure_active()
         stores = self.stores
@@ -493,41 +563,42 @@ class ProjectService:
                 "No agent profile to start the coordinator from: pass "
                 "agent_profile_id or set an active agent profile"
             )
+        if (
+            stores is not None
+            and await asyncio.to_thread(runs_in_a_project, stores, profile_id) is False
+        ):
+            raise ValueError(
+                f"Agent profile {profile_id} cannot coordinate a project: an "
+                "ACP agent takes neither the coordinator's prompt nor its tools"
+            )
         extra = dict(options or {})
         tags = {**extra.pop("tags", {}), PROJECT_TAG_KEY: project_hex}
-        context, _ = await _project_prompt(stores, project_hex, None)
-        additions = AgentLaunchAdditions.model_validate(
-            extra.pop("agent_launch_additions", None) or {}
-        ).model_copy(
-            update={
-                "prompt_preset": PromptPreset.PROJECT_COORDINATOR,
-                "project_context": context,
-            }
+        # The server picks the coordinator's id, so its prompt can name it:
+        # a coordinator that calls the API itself sends as that conversation.
+        conversation_id = uuid4()
+        context, _ = await _project_prompt(
+            stores, project_hex, None, coordinator_id=conversation_id
         )
         start = StartConversationRequest(
             **extra,
-            agent_launch_additions=additions,
+            conversation_id=conversation_id,
             workspace=LocalWorkspace(working_dir=working_dir),
             agent_profile_id=profile_id,
             tags=tags,
             autotitle=title is None,
         )
-        server_tools = [Tool(name=name) for name in PROJECT_COORDINATOR_TOOLS]
+        tools = [Tool(name=name) for name in PROJECT_COORDINATOR_TOOLS]
         if await feature_enabled_now(ASK_USER.key, stores.settings if stores else None):
             # Its ask_user also passes on the members' questions, so the user
             # answers them all in the coordinator's conversation. It takes the
             # place of the plain ask_user the feature gives every conversation.
-            server_tools.append(
+            tools.append(
                 Tool(name=ASK_USER_TOOL_NAME, params={"for_conversations": True})
             )
         try:
-            return await self.conversations.create_conversation(
+            info, _ = await self.conversations.start_conversation(
                 start,
-                title=title,
-                server_tools=server_tools,
-                # A concurrent create with the same reserved id must not
-                # hand one coordinator to two projects.
-                reuse_existing=False,
+                project_role=ProjectRole(PROJECT_COORDINATOR_PROMPT, context, tools),
             )
         except Exception as exc:
             if not isinstance(exc, LaunchFailure):
@@ -535,45 +606,44 @@ class ProjectService:
             raise ValueError(
                 f"Cannot start the coordinator from agent profile {profile_id}: {exc}"
             ) from exc
+        return await self._titled(info, title)
+
+    async def _titled(
+        self, info: ConversationInfo, title: str | None
+    ) -> ConversationInfo:
+        """``info`` with ``title`` saved, when one was given (a start request
+        has no title of its own)."""
+        if title is None:
+            return info
+        await self.conversations.update_conversation(
+            info.id, UpdateConversationRequest(title=title)
+        )
+        return info.model_copy(update={"title": title})
 
     async def start_worker(
         self,
         coordinator_service: EventService,
         request: StartChildConversationRequest,
-        run_slot: RunSlot,
     ) -> StartChildConversationResponse:
-        """A project's new member: a worker from an agent profile, or, with
-        no profile to start from, a copy of the coordinator's agent that still runs
-        the worker's prompt, project context and tools.
+        """A project's new member: a worker that runs an agent profile.
 
         Only the project's coordinator starts conversations in a project, so
         each member's work is the coordinator's to follow.
 
         Raises:
             Conflict: If the starting conversation is not the project's coordinator.
+            ValueError: If there is no agent profile to start the worker from.
         """
         coordinator = coordinator_service.stored
         await self._require_coordinator(coordinator)
         worker_profile = await self._worker_profile(coordinator)
-        if worker_profile is not None:
-            return await self._start_worker_from_profile(
-                coordinator_service, request, worker_profile, run_slot
+        if worker_profile is None:
+            raise ValueError(
+                "No agent profile to start a worker from: set the project's "
+                "worker profile, or an active agent profile the server can run"
             )
-        project_hex = coordinator.tags[PROJECT_TAG_KEY]
-        context, role = await _project_prompt(
-            self.stores, project_hex, (coordinator.title, coordinator.id)
-        )
-        return await self.conversations.start_copied_child(
-            coordinator_service,
-            request,
-            run_slot,
-            additions=AgentLaunchAdditions(
-                prompt_preset=PromptPreset.PROJECT_WORKER,
-                project_context=context,
-            ),
-            header=sender_header(coordinator.title, coordinator.id, role=role),
-            withheld_tools=(),
-            extra_tags={PROJECT_TAG_KEY: project_hex},
+        return await self._start_worker_from_profile(
+            coordinator_service, request, worker_profile
         )
 
     async def _require_coordinator(self, coordinator: StoredConversation) -> None:
@@ -592,11 +662,11 @@ class ProjectService:
     async def _worker_profile(self, coordinator: StoredConversation) -> UUID | None:
         """The agent profile a new worker starts from.
 
-        A worker is a normal conversation of the user's, not a copy of the
-        coordinator: it runs the project's
-        ``worker_agent_profile_id``, or else the user's active agent
-        profile. ``None`` (no project, no profile, or a workspace a normal
-        start cannot take) keeps the copy of the coordinator's agent.
+        A worker is a normal conversation of the user's: it runs the
+        project's ``worker_agent_profile_id``, or else the predefined
+        "worker" profile, or else the user's active agent profile. ``None``
+        when there is no project, no profile, or a workspace a normal start
+        cannot take.
         """
         project_hex = coordinator.tags.get(PROJECT_TAG_KEY)
         stores = self.stores
@@ -621,19 +691,20 @@ class ProjectService:
                 ),
                 None,
             )
+            # An ACP agent takes neither the worker's prompt nor its tools,
+            # so an ACP profile does not count.
             if project is not None and project.worker_agent_profile_id is not None:
-                return project.worker_agent_profile_id
+                return _project_profile(stores, project.worker_agent_profile_id)
             predefined = ensure_project_profile("worker", stores)
             if predefined is not None:
                 return predefined
-            return _active_agent_profile_id(stores)
+            return _project_profile(stores, _active_agent_profile_id(stores))
 
         try:
             return await asyncio.to_thread(lookup)
         except Exception:
             logger.warning(
-                "Cannot choose a worker agent profile for project %s; the new "
-                "conversation copies its coordinator's agent",
+                "Cannot choose a worker agent profile for project %s",
                 project_hex,
                 exc_info=True,
             )
@@ -644,14 +715,13 @@ class ProjectService:
         coordinator_service: EventService,
         request: StartChildConversationRequest,
         profile_id: UUID,
-        run_slot: RunSlot,
     ) -> StartChildConversationResponse:
         """Start a worker from the project's worker agent profile.
 
         It keeps what makes it part of the project: the ``project`` tag, the
         coordinator's workspace (in a worktree when asked), the parent link to
         the coordinator, the user's confirmation policy, plugins, hooks and
-        secrets, the coordinator as sender of the task (with a header saying
+        secrets, the coordinator as sender of the task (with a sender line saying
         so), the worker's prompt and project context, and the project tools a
         worker uses. It does not take the coordinator's agent, launch
         additions or client tools.
@@ -659,7 +729,7 @@ class ProjectService:
         coordinator = coordinator_service.stored
         coordinator_id = coordinator.id
         worker_id = uuid4()
-        context, role = await _project_prompt(
+        context, _ = await _project_prompt(
             self.stores,
             coordinator.tags[PROJECT_TAG_KEY],
             (coordinator.title, coordinator_id),
@@ -674,18 +744,12 @@ class ProjectService:
             worktree_options=None,
             secrets_encrypted=False,
             client_tools=[],
-            agent_launch_additions=AgentLaunchAdditions(
-                prompt_preset=PromptPreset.PROJECT_WORKER,
-                project_context=context,
-            ),
+            agent_launch_additions=None,
+            # The coordinator sends the task, which opens with its sender line.
             initial_message=SendMessageRequest(
                 role="user",
-                content=[
-                    TextContent(
-                        text=sender_header(coordinator.title, coordinator_id, role=role)
-                    ),
-                    TextContent(text=request.task),
-                ],
+                content=[TextContent(text=request.task)],
+                sender_conversation_id=coordinator_id,
             ),
             # A worker joins the project and nothing else: the coordinator's
             # other tags (an app's role or controller markers) describe it.
@@ -701,12 +765,13 @@ class ProjectService:
             ),
         )
         try:
-            info = await self.conversations.create_conversation(
+            info, _ = await self.conversations.start_conversation(
                 start,
-                run_slot=run_slot,
-                title=request.title,
-                initial_sender=conversation_sender(coordinator_id),
-                server_tools=[Tool(name=name) for name in PROJECT_WORKER_TOOLS],
+                project_role=ProjectRole(
+                    PROJECT_WORKER_PROMPT,
+                    context,
+                    [Tool(name=name) for name in PROJECT_WORKER_TOOLS],
+                ),
             )
         except Exception as exc:
             if not isinstance(exc, LaunchFailure):
@@ -714,6 +779,7 @@ class ProjectService:
             raise ValueError(
                 f"Cannot start the conversation from agent profile {profile_id}: {exc}"
             ) from exc
+        info = await self._titled(info, request.title)
         workspace = cast(LocalWorkspace, info.workspace)
         coordinator_workspace = cast(LocalWorkspace, coordinator.workspace)
         shared = await asyncio.to_thread(

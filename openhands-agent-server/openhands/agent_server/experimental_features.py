@@ -65,6 +65,17 @@ CONVERSATION_REACTIONS = ExperimentalFeatureDefinition(
     ),
 )
 
+ASK_USER = ExperimentalFeatureDefinition(
+    key="ask_user",
+    label="Decision cards",
+    description=(
+        "When a choice is yours to make, the agent can ask you one question "
+        "with a few options and a recommendation, shown as a card you answer "
+        "in one tap or in your own words. Applies to conversations started "
+        "after you turn it on."
+    ),
+)
+
 CONVERSATION_MENTIONS = ExperimentalFeatureDefinition(
     key="conversation_mentions",
     label="Conversation mentions",
@@ -86,14 +97,14 @@ MESSAGE_EDITS = ExperimentalFeatureDefinition(
     ),
 )
 
-ASK_USER = ExperimentalFeatureDefinition(
-    key="ask_user",
-    label="Decision cards",
+# Read by clients only: the agent server gives this feature no tools or routes.
+FACTORIES = ExperimentalFeatureDefinition(
+    key="factories",
+    label="Factories",
     description=(
-        "When a choice is yours to make, the agent can ask you one question "
-        "with a few options and a recommendation, shown as a card you answer "
-        "in one tap or in your own words. Applies to conversations started "
-        "after you turn it on."
+        "Shows Factories in the sidebar: named groups of automations that "
+        "together run a software development process. Needs an automation "
+        "service that supports factories."
     ),
 )
 
@@ -103,31 +114,17 @@ PROJECTS = ExperimentalFeatureDefinition(
     description=(
         "Group conversations into projects: a coordinator conversation hands "
         "work to other conversations, hears back from them, and keeps project "
-        "files and memory. Turned off, the projects API is unavailable and new "
-        "conversations get no project tools; existing projects are kept."
+        "files and memory. Turned off, the projects API is unavailable and project "
+        "tools refuse to run; existing projects are kept."
     ),
 )
-
-PROJECT_TOOL_NAMES: tuple[str, ...] = (
-    "list_project_conversations",
-    "message_project_conversation",
-    "read_project_conversation",
-    "write_artifact",
-    "read_artifact",
-    "list_artifacts",
-    "read_project_memory",
-    "update_project_memory",
-    "resolve_conversation",
-)
-"""Tools registered by openhands.tools.project. A client lists the coordinator's
-in its agent spec and the server adds the workers', so they are withheld from
-new conversations while Projects is off rather than added while it is on."""
 
 EXPERIMENTAL_FEATURES: list[ExperimentalFeatureDefinition] = [
     CONVERSATION_REACTIONS,
     ASK_USER,
     CONVERSATION_MENTIONS,
     MESSAGE_EDITS,
+    FACTORIES,
     PROJECTS,
 ]
 
@@ -170,11 +167,6 @@ def experimental_feature_tools(features: Mapping[str, bool]) -> list[Tool]:
         # Tool name as registered by openhands.tools.message_edit.
         tools.append(Tool(name="edit_message"))
     return tools
-
-
-def experimental_feature_withheld_tools(features: Mapping[str, bool]) -> list[str]:
-    """Tools a new conversation does not get, even if its spec lists them."""
-    return [] if is_enabled(features, PROJECTS.key) else list(PROJECT_TOOL_NAMES)
 
 
 async def feature_enabled_now(key: str, settings_store: "SettingsStore | None") -> bool:

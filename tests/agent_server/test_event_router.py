@@ -91,11 +91,7 @@ def mock_event_service():
     service = AsyncMock(spec=EventService)
     service._gateway_run_lock = asyncio.Lock()
     service._active_gateway_runs = 0
-
-    async def send_message(message, run=False, *args, **kwargs):
-        return "started" if run else None
-
-    service.send_message = AsyncMock(side_effect=send_message)
+    service.send_message = AsyncMock()
     return service
 
 
@@ -168,9 +164,15 @@ class TestSendMessageFromAnotherConversation:
         async def get_conversation(conversation_id):
             return conversations.get(conversation_id)
 
+        async def member_of(tags):
+            return None
+
         update_test_context(
             client.app,
-            conversation_service=SimpleNamespace(get_conversation=get_conversation),
+            conversation_service=SimpleNamespace(
+                get_conversation=get_conversation,
+                projects=SimpleNamespace(member_of=member_of),
+            ),
         )
 
     def test_records_the_sender_and_opens_with_its_header(
@@ -183,13 +185,13 @@ class TestSendMessageFromAnotherConversation:
             {sender_id: SimpleNamespace(title="Release [notes]", tags={})},
         )
 
-        response = self._post(client, sample_conversation_id, sender_id)
+        response = self._post(client, sample_conversation_id, sender_id, run=True)
 
         assert response.status_code == 200
-        assert response.json()["success"] is True
+        assert response.json() == {"success": True}
         (message, run_flag), kwargs = mock_event_service.send_message.call_args
-        assert run_flag is False
-        assert kwargs["sender"] == f"{CONVERSATION_SENDER_PREFIX}{sender_id.hex}"
+        assert run_flag is True
+        assert kwargs == {"sender": f"{CONVERSATION_SENDER_PREFIX}{sender_id.hex}"}
         header, text = message.content
         assert header.text == (
             f"[Sent by [Release notes](conversation:{sender_id.hex}), another "
@@ -236,7 +238,7 @@ class TestSendMessageFromAnotherConversation:
 
         assert response.status_code == 200
         (message, _), kwargs = mock_event_service.send_message.call_args
-        assert kwargs["sender"] is None
+        assert kwargs == {"sender": None}
         assert [c.text for c in message.content] == ["Hi"]
 
 
@@ -263,7 +265,7 @@ class TestSendMessageEndpoint:
             )
 
             assert response.status_code == 200
-            assert response.json() == {"success": True, "run": "started"}
+            assert response.json() == {"success": True}
 
             # Verify send_message was called with correct parameters
             mock_event_service.send_message.assert_called_once()
@@ -443,7 +445,7 @@ class TestSendMessageEndpoint:
             )
 
             assert response.status_code == 200
-            assert response.json() == {"success": True, "run": "started"}
+            assert response.json() == {"success": True}
 
             # Verify system message was processed correctly
             mock_event_service.send_message.assert_called_once()

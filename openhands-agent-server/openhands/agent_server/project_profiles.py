@@ -1,16 +1,18 @@
 """The two predefined agent profiles of Projects: coordinator and worker.
 
 A project's coordinator and its workers are specialized agents. Each one
-runs a built-in system prompt made for its role (the ``project_coordinator``
-and ``project_worker`` prompt presets) and a tool set to match. The server
+runs a built-in system prompt made for its role (the
+``system_prompt_project_coordinator.j2`` and ``system_prompt_project_worker.j2``
+prompt filenames, assembled from sections like the planning prompt) and a tool
+set to match. The server
 creates a profile for each role the first time a project needs it, from the
 user's active agent profile, so both keep the user's model, MCP servers,
 secrets and skills. The user can edit them like any other profile; the
 server never overwrites one that exists.
 
 The role itself does not depend on these profiles: the server assigns the
-preset at launch (``AgentLaunchAdditions.prompt_preset``), so a coordinator
-or worker started from any other profile still gets its role's prompt.
+prompt at launch (``finalize``'s ``project_role``), so a coordinator or worker
+started from any other profile still gets its role's prompt.
 """
 
 from typing import Literal
@@ -20,9 +22,8 @@ from openhands.agent_server.persistence import (
     PersistedSettings,
     ServerStores,
 )
-from openhands.sdk.context.prompts.presets import PromptPreset
 from openhands.sdk.logger import get_logger
-from openhands.sdk.profiles import OpenHandsAgentProfile
+from openhands.sdk.profiles import ACPAgentProfile, OpenHandsAgentProfile
 from openhands.sdk.profiles.agent_profile_store import ProfileLimitExceeded
 from openhands.sdk.tool.spec import Tool
 
@@ -37,11 +38,6 @@ PROJECT_PROFILE_NAMES: dict[ProjectRole, str] = {
 }
 """Names of the predefined profiles. The server looks them up by name, so a
 user who renames one gets a fresh one on the next project."""
-
-PROJECT_ROLE_PRESETS: dict[ProjectRole, PromptPreset] = {
-    "coordinator": PromptPreset.PROJECT_COORDINATOR,
-    "worker": PromptPreset.PROJECT_WORKER,
-}
 
 COORDINATOR_PROFILE_TOOLS = ("terminal", "file_editor", "task_tracker")
 """The coordinator's own tools, besides the project tools the server adds:
@@ -67,7 +63,6 @@ def _profile(role: ProjectRole, base: OpenHandsAgentProfile) -> OpenHandsAgentPr
             "id": uuid4(),
             "name": PROJECT_PROFILE_NAMES[role],
             "revision": 0,
-            "prompt_preset": PROJECT_ROLE_PRESETS[role],
             "tools": tools,
             # The role's prompt carries the job; a persona the user wrote for
             # their everyday agent would replace parts of it.
@@ -107,3 +102,17 @@ def ensure_project_profile(role: ProjectRole, stores: ServerStores) -> UUID | No
             return None
     logger.info("Created the %s agent profile (id=%s)", name, profile.id)
     return profile.id
+
+
+def runs_in_a_project(stores: ServerStores, profile_id: UUID) -> bool | None:
+    """Whether a profile can run a project's coordinator or worker, ``None``
+    when there is no such profile.
+
+    An ACP agent cannot: it builds its own prompt and takes no server tools,
+    so it would get neither the role's prompt nor the project tools.
+    """
+    store = stores.agent_profiles
+    name = store.name_for_id(profile_id)
+    if name is None:
+        return None
+    return not isinstance(store.load(name), ACPAgentProfile)

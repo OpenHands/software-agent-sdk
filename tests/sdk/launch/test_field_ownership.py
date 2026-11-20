@@ -14,7 +14,6 @@ import pytest
 from pydantic import BaseModel, SecretStr
 
 from openhands.sdk.context.agent_context import AgentContext
-from openhands.sdk.context.prompts.presets import PromptPreset
 from openhands.sdk.launch import LaunchStores, resolve
 from openhands.sdk.llm.meta_profile_store import MetaProfile, MetaProfileClass
 from openhands.sdk.mcp.config import MCPServer
@@ -118,7 +117,6 @@ OPENHANDS_FIELDS: dict[str, Any] = {
     "meta_profile_llms": Reference("meta_profile_ref"),
     "tool_concurrency_limit": PROFILE,
     "persona": PROFILE,
-    "prompt_preset": PROFILE,
     "mcp_config": Reference("mcp_server_refs"),
     "agent_context": Nested(OPENHANDS_CONTEXT),
     "condenser": PROFILE,
@@ -163,6 +161,8 @@ ACP_FIELDS: dict[str, Any] = {
 
 PROFILE_IDENTITY = {"schema_version", "id", "name", "revision", "agent_kind"}
 PROFILE_SCOPE = {"secret_refs", "integration_refs"}
+# Read by the host that provisions the sandbox; never resolved into settings.
+PROFILE_HOST = {"sandbox"}
 
 SETTINGS_MODELS: dict[type[BaseModel], dict[str, Any]] = {
     OpenHandsAgentSettings: OPENHANDS_FIELDS,
@@ -227,7 +227,7 @@ def test_every_profile_owned_field_exists_on_the_profile(settings_model, profile
     ids=["openhands", "acp"],
 )
 def test_every_profile_field_has_a_use(settings_model, profile_model):
-    used = PROFILE_IDENTITY | PROFILE_SCOPE
+    used = PROFILE_IDENTITY | PROFILE_SCOPE | PROFILE_HOST
     for path, owner in _leaves(SETTINGS_MODELS[settings_model]):
         if isinstance(owner, Profile):
             used.add(path.removeprefix("agent_context.").split(".")[0])
@@ -243,7 +243,6 @@ def _non_default_openhands_profile() -> OpenHandsAgentProfile:
         agent="PlanningAgent",
         tools=[Tool(name="terminal")],
         persona="persona",
-        prompt_preset=PromptPreset.PROJECT_WORKER,
         system_message_suffix="suffix",
         disabled_skills=["beta"],
         condenser=NoOpCondenserSettings(),

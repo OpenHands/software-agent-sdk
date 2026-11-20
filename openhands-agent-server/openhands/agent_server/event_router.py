@@ -25,25 +25,19 @@ from openhands.agent_server.dependencies import (
     get_settings_store,
 )
 from openhands.agent_server.errors import GatewayTimeout, error_responses
-from openhands.agent_server.event_service import (
-    EventService,
-    HeldForUser,
-    ServiceInactive,
-    admission_refusal,
-)
+from openhands.agent_server.event_service import EventService
+from openhands.agent_server.exceptions import ServiceInactive
 from openhands.agent_server.experimental_features import (
     host_experimental_features,
     is_enabled,
 )
-from openhands.agent_server.message_sender import SenderError
+from openhands.agent_server.message_sender import SenderError, sender_message_line
 from openhands.agent_server.models import (
     AskUserAnswerRequest,
     ConfirmationResponseRequest,
     EventSortOrder,
-    MessageRunOutcome,
     ReactionRequest,
     SendMessageRequest,
-    SendMessageResponse,
     Success,
 )
 from openhands.agent_server.openai.usage import token_usage_delta
@@ -52,7 +46,7 @@ from openhands.agent_server.persistence import (
     SettingsStore,
     run_store,
 )
-from openhands.agent_server.project_wake import sender_message_header
+from openhands.agent_server.project_wake import project_sender_line
 from openhands.agent_server.server_context import ServerContext, get_server_context
 from openhands.sdk import Message, TextContent
 from openhands.sdk.conversation.state import ConversationExecutionStatus
@@ -77,13 +71,6 @@ event_write_router = APIRouter(
 )
 logger = logging.getLogger(__name__)
 _GATEWAY_RUN_TIMEOUT_SECONDS = 120.0
-
-_HELD_DETAIL = {
-    "waiting_for_confirmation": "Conversation is waiting for confirmation",
-    "paused": "Conversation is paused",
-    "error": "Conversation stopped on an error",
-    "stuck": "Conversation is stuck",
-}
 
 
 # Read methods
@@ -278,17 +265,9 @@ async def batch_get_conversation_events_via_post(
 
 @event_write_router.post(
     "",
-    response_model_exclude_none=True,
-    # 422 also answers when the sender conversation cannot send this message;
-    # declaring it here would replace FastAPI's validation error schema in
-    # the published contract.
     responses=error_responses(
         {
-            Conflict: (
-                "A gateway run is in progress, or with "
-                "refuse_pending_confirmation the conversation is waiting for "
-                "confirmation; nothing was saved"
-            ),
+            Conflict: "Gateway run in progress; message not saved",
             RateLimited: "Message saved but server run capacity is full",
         }
     ),
@@ -298,31 +277,19 @@ async def send_message(
     request: SendMessageRequest,
     event_service: EventService = Depends(get_event_service),
     context: ServerContext = Depends(get_server_context),
-) -> SendMessageResponse:
+) -> Success:
     """Send a message to a conversation.
 
-    A 409 response means a gateway run is active, or the guard below refused;
-    the message was not saved.
+    A 409 response means a gateway run is active and the message was not saved.
     If starting the run returns 429, the message is already saved. Retry the
     conversation's /run endpoint instead of resending the message.
 
-    With ``run``, a conversation waiting for confirmation is normally run, which
-    approves its pending actions, and a paused, errored or stuck one is resumed.
-    ``refuse_pending_confirmation`` prevents both, for senders other than the
-    user: a conversation already in one of those states answers 409, with
-    that status in the response's ``status`` field, and nothing is saved;
-    one that reaches one while the message is delivered keeps the message
-    and is not run (``run`` is that status, such as
-    ``"waiting_for_confirmation"`` or ``"paused"``). The refusal is decided
-    under the conversation's run lock.
-
     With ``sender_conversation_id``, the saved message records
     ``sender: "conversation:<id hex>"`` and opens with a line telling the
-    receiving agent which conversation sent it and that it approves nothing on
-    the user's behalf, so UIs can show it as instructions rather than the
-    user's words. A sender in a project may only message its own project's
-    conversations (422 otherwise). A run asked for by a sender conversation is
-    always guarded, as if ``refuse_pending_confirmation`` were set.
+    receiving agent which conversation sent it, so agents and UIs can tell it
+    from the user's words. The sender must be another existing conversation,
+    and a sender in a project may only message its own project's
+    conversations (422 otherwise).
     """
     content = list(request.content)
     sender: str | None = None
@@ -330,55 +297,31 @@ async def send_message(
         if context.conversation_service is None:
             raise Unavailable("Conversation service is not available")
         try:
-            header = await sender_message_header(
+            sender_line = await sender_message_line(
                 context.conversation_service,
                 request.sender_conversation_id,
                 conversation_id,
-                event_service.stored.tags,
+            )
+            sender_line = (
+                await project_sender_line(
+                    context.conversation_service,
+                    request.sender_conversation_id,
+                    event_service.stored.tags,
+                )
+                or sender_line
             )
         except SenderError as e:
             raise Unprocessable(str(e))
-        content.insert(0, TextContent(text=header))
+        content.insert(0, TextContent(text=sender_line))
         sender = conversation_sender(request.sender_conversation_id)
     message = Message(role=request.role, content=content)
-
-    # A message from another conversation never approves or resumes on the
-    # user's behalf, whether or not its sender asked for the guard.
-    guarded = request.run and (
-        request.refuse_pending_confirmation
-        or request.sender_conversation_id is not None
-    )
-    previous_status: ConversationExecutionStatus | None = None
-    if guarded:
-        # An unlocked read: it only spares the user an unrelated message in
-        # a conversation already waiting. The guarded run is the safeguard.
-        state = await event_service.get_state()
-        previous_status = state.execution_status
-        refusal = admission_refusal(state, from_user=False)
-        if isinstance(refusal, HeldForUser):
-            raise Conflict(
-                _HELD_DETAIL[refusal.status], extra={"status": refusal.status}
-            )
-    outcome: MessageRunOutcome | None
     # The inner gateway route holds the lock for its whole turn; refuse before
     # waiting on it so a direct event fails fast instead of queuing behind it.
     _refuse_during_gateway_run(event_service)
     async with event_service._gateway_run_lock:
         _refuse_during_gateway_run(event_service)
-        try:
-            outcome = await event_service.send_message(
-                message,
-                request.run,
-                refuse_pending_confirmation=guarded,
-                sender=sender,
-            )
-        except HeldForUser as e:
-            if not guarded:
-                raise
-            outcome = cast(MessageRunOutcome, e.status)
-    if request.run and outcome is None:
-        outcome = "not_run"
-    return SendMessageResponse(run=outcome, previous_status=previous_status)
+        await event_service.send_message(message, request.run, sender=sender)
+    return Success()
 
 
 def _refuse_during_gateway_run(event_service: EventService) -> None:
@@ -405,8 +348,6 @@ async def _gateway_run_endpoint(
 ) -> dict[str, Any]:
     if request.sender_conversation_id is not None:
         raise Unprocessable("A gateway turn is not sent by another conversation")
-    if request.refuse_pending_confirmation:
-        raise Unprocessable("A gateway turn does not take refuse_pending_confirmation")
     event_service, deadline = context
     return await run_gateway_message(request, event_service, deadline=deadline)
 

@@ -4,7 +4,7 @@ import importlib
 import json
 import logging
 import os
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
@@ -26,12 +26,15 @@ from openhands.agent_server.event_service import (
     LEASE_RENEW_INTERVAL_SECONDS,
     EventService,
     RunSlot,
+)
+from openhands.agent_server.exceptions import (
+    CredentialBindingActivationRequired,
+    InvalidParentConversation,
     ServiceInactive,
+    UnavailableAgentTool,
 )
 from openhands.agent_server.experimental_features import (
-    PROJECT_TOOL_NAMES,
     experimental_feature_tools,
-    experimental_feature_withheld_tools,
     host_experimental_features,
 )
 from openhands.agent_server.launch import (
@@ -48,7 +51,7 @@ from openhands.agent_server.local_storage import (
 from openhands.agent_server.mcp_oauth_store import (
     create_settings_backed_mcp_tool_provider,
 )
-from openhands.agent_server.message_sender import SenderError
+from openhands.agent_server.message_sender import sender_message_line
 from openhands.agent_server.models import (
     ConversationInfo,
     ConversationPage,
@@ -65,8 +68,8 @@ from openhands.agent_server.persistence import (
     ServerStores,
     run_store,
 )
-from openhands.agent_server.project_service import RESERVED_TAG_KEYS, ProjectService
-from openhands.agent_server.project_wake import sender_message_header
+from openhands.agent_server.project_service import ProjectService
+from openhands.agent_server.project_wake import project_sender_line
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.agent_server.telemetry import (
@@ -81,13 +84,12 @@ from openhands.agent_server.utils import safe_rmtree, utc_now
 from openhands.sdk import LLM, Event, Message, TextContent
 from openhands.sdk.agent import ACPAgent
 from openhands.sdk.agent.acp_file_credentials import CODEX_AUTH_SECRET_NAME
-from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.agent.base import (
+    AgentBase,
+)
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.persistence_const import BASE_STATE
-from openhands.sdk.conversation.request import (
-    AgentLaunchAdditions,
-    ConversationWorktreeOptions,
-)
+from openhands.sdk.conversation.request import ConversationWorktreeOptions
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
@@ -105,17 +107,16 @@ from openhands.sdk.credential import (
     CredentialBindingError,
     VersionedCredentialBinding,
 )
-from openhands.sdk.errors import Conflict
 from openhands.sdk.event import MessageEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.launch import LaunchedAgent, LaunchStoreError, LaunchStores, finalize
+from openhands.sdk.launch.finalize import ProjectRole
 from openhands.sdk.llm.call_context import LLMCallContext
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.observability import OPERATION_METADATA_KEY, observe
-from openhands.sdk.tool import Tool
 from openhands.sdk.tool.client_tool import register_client_tools
 from openhands.sdk.tool.registry import get_tool_module_qualnames, is_tool_available
 from openhands.sdk.utils.cipher import Cipher
@@ -133,13 +134,6 @@ _AUTOMATION_TAG_KEYS = ("automationtrigger", "automationid", "automationrunid")
 # before the sandbox freezes.
 CONVERSATION_DELETED_WS_CLOSE = (4004, "Conversation deleted")
 SERVER_SHUTDOWN_WS_CLOSE = (1012, "Server shutting down")
-
-
-class CredentialBindingActivationRequired(Conflict, RuntimeError):
-    """A runtime credential binding must be activated first; retry after it."""
-
-    def __init__(self, detail: str) -> None:
-        super().__init__(detail, extra={"retryable": True})
 
 
 def _build_worktree_guidance(
@@ -348,16 +342,6 @@ def _create_conversation_worktree(plan: _WorktreePlan) -> LocalWorkspace:
 
 
 logger = logging.getLogger(__name__)
-
-
-class InvalidParentConversation(ValueError):
-    """``parent_conversation_id`` is unknown, self-referential, or in
-    a different workspace."""
-
-
-class UnavailableAgentTool(ValueError):
-    """The agent names a tool whose ``tool_module_qualnames`` module the server
-    cannot import, so the agent could never be built."""
 
 
 def _same_workspace(a: LocalWorkspace, b: LocalWorkspace) -> bool:
@@ -1593,9 +1577,18 @@ class ConversationService:
             return await asyncio.to_thread(fn, *args, **kwargs)
 
     async def start_conversation(
-        self, request: StartConversationRequest, *, gateway_run: bool = False
+        self,
+        request: StartConversationRequest,
+        *,
+        gateway_run: bool = False,
+        project_role: ProjectRole | None = None,
     ) -> tuple[ConversationInfo, bool]:
-        return await self._start_conversation(request, gateway_run=gateway_run)
+        """Start a conversation. ``project_role`` gives a project's
+        coordinator or worker its prompt, project context and tools; only the
+        server sets it."""
+        return await self._start_conversation(
+            request, gateway_run=gateway_run, project_role=project_role
+        )
 
     async def start_acp_conversation(
         self, request: StartConversationRequest
@@ -1607,6 +1600,7 @@ class ConversationService:
         request: StartConversationRequest,
         *,
         gateway_run: bool = False,
+        project_role: ProjectRole | None = None,
     ) -> tuple[ConversationInfo, bool]:
         """Start a local event_service and return its id."""
         if self._event_services is None:
@@ -1619,49 +1613,13 @@ class ConversationService:
                 )
 
         with await RunSlot.acquire(self._run_semaphore) as run_slot:
-            if gateway_run:
-                return await self._create_conversation(
-                    request, conversation_id, run_slot, gateway_run=True
-                )
-            return await self._create_conversation(request, conversation_id, run_slot)
-
-    async def create_conversation(
-        self,
-        request: StartConversationRequest,
-        *,
-        run_slot: RunSlot | None = None,
-        title: str | None = None,
-        initial_sender: str | None = None,
-        server_tools: Sequence[Tool] = (),
-        reuse_existing: bool = True,
-    ) -> ConversationInfo:
-        """Create a conversation with what the server adds to ``request``.
-
-        ``title``, the ``initial_sender`` of its first message, and
-        ``server_tools`` the server adds to its agent. It takes a run slot
-        unless the caller holds one. Without ``reuse_existing``, a taken id is
-        refused with ``ValueError``.
-        """
-        self.ensure_active()
-        conversation_id = request.conversation_id or uuid4()
-        if not reuse_existing and self._has_conversation(conversation_id):
-            raise ValueError(f"Conversation {conversation_id} already exists")
-        options: dict[str, Any] = dict(
-            title=title,
-            initial_sender=initial_sender,
-            server_tools=server_tools,
-            reuse_existing=reuse_existing,
-        )
-        if run_slot is not None:
-            info, _ = await self._create_conversation(
-                request, conversation_id, run_slot, **options
+            return await self._create_conversation(
+                request,
+                conversation_id,
+                run_slot,
+                gateway_run=gateway_run,
+                project_role=project_role,
             )
-            return info
-        with await RunSlot.acquire(self._run_semaphore) as slot:
-            info, _ = await self._create_conversation(
-                request, conversation_id, slot, **options
-            )
-        return info
 
     async def _create_conversation(
         self,
@@ -1669,18 +1627,9 @@ class ConversationService:
         conversation_id: UUID,
         run_slot: RunSlot,
         *,
-        title: str | None = None,
-        initial_sender: str | None = None,
-        server_tools: Sequence[Tool] = (),
         gateway_run: bool = False,
-        reuse_existing: bool = True,
+        project_role: ProjectRole | None = None,
     ) -> tuple[ConversationInfo, bool]:
-        """Create a conversation from ``request``.
-
-        See :meth:`create_conversation` for the rest. Without
-        ``reuse_existing``, an id another create took meanwhile is refused
-        instead of reused.
-        """
         # The link is immutable after creation, so cycles beyond self-parent are
         # impossible; allowing reparenting would require a real ancestor walk.
         if request.parent_conversation_id is not None:
@@ -1703,20 +1652,19 @@ class ConversationService:
 
         initial_message = request.initial_message
         first_message: Message | None = None
+        initial_sender: str | None = None
         if initial_message is not None:
             content = list(initial_message.content)
             sender_id = initial_message.sender_conversation_id
             if sender_id is not None:
-                if initial_sender is not None:
-                    raise SenderError("The first message already has a sender")
-                content.insert(
-                    0,
-                    TextContent(
-                        text=await sender_message_header(
-                            self, sender_id, conversation_id, request.tags
-                        )
-                    ),
+                sender_line = await sender_message_line(
+                    self, sender_id, conversation_id
                 )
+                sender_line = (
+                    await project_sender_line(self, sender_id, request.tags)
+                    or sender_line
+                )
+                content.insert(0, TextContent(text=sender_line))
                 initial_sender = conversation_sender(sender_id)
             first_message = Message(role=initial_message.role, content=content)
 
@@ -1803,13 +1751,11 @@ class ConversationService:
                 ),
                 additions=request.agent_launch_additions,
                 extra_suffixes=[worktree.guidance] if worktree else (),
-                client_tools=[*client_tools, *server_tools],
+                client_tools=client_tools,
                 experimental_feature_tools=experimental_feature_tools(
                     experimental_features
                 ),
-                withheld_tools=experimental_feature_withheld_tools(
-                    experimental_features
-                ),
+                project_role=project_role,
                 load_memory=load_memory,
                 managed_secrets=(
                     [CODEX_AUTH_SECRET_NAME] if managed_codex_credential else ()
@@ -1900,8 +1846,6 @@ class ConversationService:
                 launched_agent_profile=launched_agent_profile,
                 **request_data,
             )
-        if title is not None:
-            stored = stored.model_copy(update={"title": title})
         return await self._launch_prepared_conversation(
             stored,
             launched,
@@ -1909,7 +1853,7 @@ class ConversationService:
             gateway_run=gateway_run,
             initial_message=first_message,
             initial_sender=initial_sender,
-            reuse_request=request if reuse_existing else None,
+            reuse_request=request,
             max_budget_per_run=request.max_budget_per_run,
         )
 
@@ -2362,113 +2306,75 @@ class ConversationService:
         if parent_service is None:
             return None
 
+        # Only a member of an existing project, with Projects on, starts
+        # workers; any other conversation starts an ordinary child.
+        if await self.projects.member_of(parent_service.stored.tags) is not None:
+            return await self.projects.start_worker(parent_service, request)
+
         # Admission first, as in a normal start: a full server refuses the
         # launch before a worktree or the child's persistence directory exists.
         with await RunSlot.acquire(self._run_semaphore) as run_slot:
             parent_stored = parent_service.stored
-            # With Projects off, a project member starts an ordinary child, not
-            # a worker: no project tag, tools, guidance or memory (the parent
-            # keeps its own).
-            if PROJECT_TAG_KEY in parent_stored.tags and (
-                await self.projects.enabled()
-            ):
-                return await self.projects.start_worker(
-                    parent_service, request, run_slot
+            parent_agent = cast(AgentBase, parent_service.get_conversation().agent)
+            # A child spends under the same cap as its parent.
+            max_budget_per_run = parent_service.get_conversation().max_budget_per_run
+            child_id = uuid4()
+
+            # Reuse the worktree machinery of a regular start: a worktree is
+            # planned (and its guidance appended to the child's agent) only when
+            # the parent workspace has a usable git base commit; otherwise
+            # the child shares it.
+            worktree = (
+                await self._run_worktree_git(
+                    _plan_conversation_worktree,
+                    parent_stored.workspace,
+                    child_id,
+                    self.conversation_worktree_root,
+                    None,
                 )
-            return await self.start_copied_child(parent_service, request, run_slot)
-
-    async def start_copied_child(
-        self,
-        parent_service: EventService,
-        request: StartChildConversationRequest,
-        run_slot: RunSlot,
-        *,
-        additions: AgentLaunchAdditions | None = None,
-        header: str | None = None,
-        withheld_tools: Sequence[str] = PROJECT_TOOL_NAMES,
-        extra_tags: Mapping[str, str] | None = None,
-    ) -> StartChildConversationResponse:
-        """A child that runs a copy of its parent's agent.
-
-        It keeps the parent's tags except project membership and board state;
-        ``extra_tags`` adds to them. ``header`` opens the task message.
-        """
-        parent_stored = parent_service.stored
-        parent_id = parent_stored.id
-        parent_agent = cast(AgentBase, parent_service.get_conversation().agent)
-        # A child spends under the same cap as its parent.
-        max_budget_per_run = parent_service.get_conversation().max_budget_per_run
-        child_id = uuid4()
-
-        # Reuse the worktree machinery of a regular start: a worktree is
-        # planned (and its guidance appended to the child's agent) only when
-        # the parent workspace has a usable git base commit; otherwise
-        # the child shares it.
-        worktree = (
-            await self._run_worktree_git(
-                _plan_conversation_worktree,
-                parent_stored.workspace,
-                child_id,
-                self.conversation_worktree_root,
-                None,
+                if request.isolation == "worktree"
+                else None
             )
-            if request.isolation == "worktree"
-            else None
-        )
-        suffixes = [worktree.guidance] if worktree else []
-        launched = await asyncio.to_thread(
-            lambda: finalize(
-                parent_agent,
-                live_launch_runtime(
-                    self.acp_skill_sourcing, enable_browser=self.enable_browser
+            launched = await asyncio.to_thread(
+                lambda: finalize(
+                    parent_agent,
+                    live_launch_runtime(
+                        self.acp_skill_sourcing, enable_browser=self.enable_browser
+                    ),
+                    extra_suffixes=[worktree.guidance] if worktree else (),
+                )
+            )
+            workspace = (
+                await self._run_worktree_git(_create_conversation_worktree, worktree)
+                if worktree is not None
+                else parent_stored.workspace
+            )
+            now = utc_now()
+            child_stored = parent_stored.model_copy(
+                update={
+                    "id": child_id,
+                    "workspace": workspace,
+                    "worktree": request.isolation == "worktree",
+                    "title": request.title,
+                    "metrics": None,
+                    "created_at": now,
+                    "updated_at": now,
+                    "parent_conversation_id": parent_id,
+                    "forked_from_conversation_id": None,
+                    "forked_from_event_id": None,
+                }
+            )
+            info, _ = await self._launch_prepared_conversation(
+                child_stored,
+                launched,
+                run_slot=run_slot,
+                max_budget_per_run=max_budget_per_run,
+                initial_message=Message(
+                    role="user", content=[TextContent(text=request.task)]
                 ),
-                additions=additions,
-                extra_suffixes=suffixes,
-                withheld_tools=tuple(withheld_tools),
+                # The parent's agent wrote the task, not the user.
+                initial_sender=conversation_sender(parent_id),
             )
-        )
-        workspace = (
-            await self._run_worktree_git(_create_conversation_worktree, worktree)
-            if worktree is not None
-            else parent_stored.workspace
-        )
-        now = utc_now()
-        child_stored = parent_stored.model_copy(
-            update={
-                "id": child_id,
-                "workspace": workspace,
-                "worktree": request.isolation == "worktree",
-                "title": request.title,
-                "metrics": None,
-                "created_at": now,
-                "updated_at": now,
-                "parent_conversation_id": parent_id,
-                "forked_from_conversation_id": None,
-                "forked_from_event_id": None,
-                "tags": {
-                    **{
-                        key: value
-                        for key, value in parent_stored.tags.items()
-                        if key not in RESERVED_TAG_KEYS
-                    },
-                    **(extra_tags or {}),
-                },
-            }
-        )
-        info, _ = await self._launch_prepared_conversation(
-            child_stored,
-            launched,
-            run_slot=run_slot,
-            max_budget_per_run=max_budget_per_run,
-            initial_message=Message(
-                role="user",
-                content=[
-                    *([TextContent(text=header)] if header else []),
-                    TextContent(text=request.task),
-                ],
-            ),
-            initial_sender=conversation_sender(parent_id),
-        )
 
         return StartChildConversationResponse(
             conversation_id=child_id,

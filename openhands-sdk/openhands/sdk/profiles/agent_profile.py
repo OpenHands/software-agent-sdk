@@ -25,7 +25,6 @@ from pydantic import (
     model_validator,
 )
 
-from openhands.sdk.context.prompts.presets import PromptPreset
 from openhands.sdk.settings.model import (
     ACPServerKind,
     AgentKind,
@@ -81,6 +80,27 @@ def build_profile_verification(
         max_refinement_iterations=v.max_refinement_iterations,
         critic_server_url=v.critic_server_url,
         critic_model_name=v.critic_model_name,
+    )
+
+
+class ProfileSandboxSettings(BaseModel):
+    """Sandbox launch metadata for a profile, read by the host that provisions
+    sandboxes.
+
+    Kept apart from the agent configuration: :func:`~openhands.sdk.launch.resolve`
+    never copies it into ``AgentSettings``, and an agent server that does not
+    create sandboxes ignores it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    spec_id: str = Field(
+        min_length=1,
+        description=(
+            "Id of a sandbox spec (for example an agent-server image) the host "
+            "advertises. Applies only when a new sandbox is created; the host "
+            "decides how a spec it no longer offers is handled."
+        ),
     )
 
 
@@ -176,6 +196,13 @@ class AgentProfileBase(BaseModel):
             "named integrations."
         ),
     )
+    sandbox: ProfileSandboxSettings | None = Field(
+        default=None,
+        description=(
+            "Sandbox to start new conversations with. null = the host's own "
+            "default selection."
+        ),
+    )
 
 
 class OpenHandsAgentProfile(AgentProfileBase):
@@ -227,14 +254,6 @@ class OpenHandsAgentProfile(AgentProfileBase):
             "security policy, risk assessment, browser, external services, process "
             "management, model-specific notes) and the dynamic context are still "
             "included. None keeps the built-in persona."
-        ),
-    )
-    prompt_preset: PromptPreset | None = Field(
-        default=None,
-        description=(
-            "Which built-in system prompt the agent uses: `default`, "
-            "`planning`, `project_coordinator` or `project_worker`. None keeps "
-            "the default."
         ),
     )
     system_message_suffix: str | None = Field(

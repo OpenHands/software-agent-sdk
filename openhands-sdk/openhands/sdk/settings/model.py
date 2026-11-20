@@ -33,7 +33,6 @@ from pydantic.fields import FieldInfo
 
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context.agent_context import AgentContext
-from openhands.sdk.context.prompts.presets import PromptPreset
 from openhands.sdk.conversation.message_request import SendMessageRequest
 from openhands.sdk.conversation.types import (
     ConversationObservabilityMetadata,
@@ -1613,14 +1612,6 @@ class OpenHandsAgentSettings(AgentSettingsBase):
             "included. None keeps the built-in persona."
         ),
     )
-    prompt_preset: PromptPreset | None = Field(
-        default=None,
-        description=(
-            "Which built-in system prompt the agent uses: `default`, "
-            "`planning`, `project_coordinator` or `project_worker`. None keeps "
-            "the default."
-        ),
-    )
     agent_context: AgentContext = Field(
         default_factory=AgentContext,
         description="Context for the agent (skills, secrets, message suffixes).",
@@ -1723,7 +1714,6 @@ class OpenHandsAgentSettings(AgentSettingsBase):
             include_default_tools=include_default_tools,
             agent_context=self.agent_context,
             persona=self.persona,
-            prompt_preset=self.prompt_preset,
             condenser=condenser,
             critic=self.build_critic(),
             tool_concurrency_limit=self.tool_concurrency_limit,

@@ -5,19 +5,21 @@ import httpx
 import pytest
 
 from openhands.sdk import LLM, Agent
-from openhands.sdk.context.prompts.presets import PromptPreset
+from openhands.sdk.agent.base import PROJECT_COORDINATOR_PROMPT
 from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.project import (
-    ListProjectConversationsAction,
-    ListProjectConversationsExecutor,
-    ListProjectConversationsTool,
-    MessageProjectConversationAction,
-    MessageProjectConversationExecutor,
-    MessageProjectConversationTool,
-    ReadProjectConversationAction,
-    ReadProjectConversationExecutor,
-    ReadProjectConversationTool,
+    ListWorkersAction,
+    ListWorkersExecutor,
+    ListWorkersTool,
+    MessageWorkerAction,
+    MessageWorkerExecutor,
+    MessageWorkerTool,
+    ReadProjectMemoryAction,
+    ReadProjectMemoryExecutor,
+    ReadWorkerAction,
+    ReadWorkerExecutor,
+    ReadWorkerTool,
     ResolveConversationAction,
     ResolveConversationExecutor,
     ResolveConversationTool,
@@ -83,16 +85,7 @@ class _Server:
                 raise self.message_response
             if self.message_response is not None:
                 return self.message_response
-            target = path.split("/")[-2]
-            status = next(
-                t["execution_status"]
-                for t in self.conversations
-                if t["conversation_id"] == target
-            )
-            return httpx.Response(
-                200,
-                json={"success": True, "previous_status": status, "run": "started"},
-            )
+            return httpx.Response(200, json={"success": True})
         return httpx.Response(404, json={"detail": "Project not found"})
 
     def posts(self) -> list[httpx.Request]:
@@ -106,23 +99,21 @@ def _server_env(monkeypatch):
 
 
 def test_tool_names():
-    assert ListProjectConversationsTool.name == "list_project_conversations"
-    assert MessageProjectConversationTool.name == "message_project_conversation"
+    assert ListWorkersTool.name == "list_workers"
+    assert MessageWorkerTool.name == "message_worker"
 
 
 def test_tools_bind_to_conversation_and_reject_parameters(tmp_path):
     state = _conv_state(tmp_path)
 
-    (list_tool,) = ListProjectConversationsTool.create(state)
-    (message_tool,) = MessageProjectConversationTool.create(
-        state, server_url="http://x"
-    )
+    (list_tool,) = ListWorkersTool.create(state)
+    (message_tool,) = MessageWorkerTool.create(state, server_url="http://x")
 
-    assert isinstance(list_tool.executor, ListProjectConversationsExecutor)
-    assert isinstance(message_tool.executor, MessageProjectConversationExecutor)
+    assert isinstance(list_tool.executor, ListWorkersExecutor)
+    assert isinstance(message_tool.executor, MessageWorkerExecutor)
     assert list_tool.annotations is not None and list_tool.annotations.readOnlyHint
     with pytest.raises(ValueError, match="does not accept parameters"):
-        ListProjectConversationsTool.create(state, project="x")
+        ListWorkersTool.create(state, project="x")
 
 
 def test_list_reads_project_from_tags_with_session_key(tmp_path):
@@ -131,11 +122,11 @@ def test_list_reads_project_from_tags_with_session_key(tmp_path):
         _conversation("running", "working", "busy"),
     ]
     server = _Server(conversations)
-    executor = ListProjectConversationsExecutor(
+    executor = ListWorkersExecutor(
         _conv_state(tmp_path), transport=httpx.MockTransport(server)
     )
 
-    observation = executor(ListProjectConversationsAction())
+    observation = executor(ListWorkersAction())
 
     assert not observation.is_error
     (request,) = server.requests
@@ -156,22 +147,22 @@ def test_list_leaves_out_the_caller(tmp_path):
     state = _conv_state(tmp_path)
     me = _conversation("running", "working", "me") | {"conversation_id": state.id.hex}
     other = _conversation("idle", "idle", "other")
-    executor = ListProjectConversationsExecutor(
+    executor = ListWorkersExecutor(
         state, transport=httpx.MockTransport(_Server([me, other]))
     )
 
-    observation = executor(ListProjectConversationsAction())
+    observation = executor(ListWorkersAction())
 
     assert [t.title for t in observation.conversations] == ["other"]
 
 
 def test_list_without_project_tag_makes_no_request(tmp_path):
     server = _Server([])
-    executor = ListProjectConversationsExecutor(
+    executor = ListWorkersExecutor(
         _conv_state(tmp_path, tags={}), transport=httpx.MockTransport(server)
     )
 
-    observation = executor(ListProjectConversationsAction())
+    observation = executor(ListWorkersAction())
 
     assert observation.is_error
     assert "not part of a project" in observation.text
@@ -179,30 +170,38 @@ def test_list_without_project_tag_makes_no_request(tmp_path):
 
 
 def test_list_reports_server_errors(tmp_path):
-    executor = ListProjectConversationsExecutor(
+    executor = ListWorkersExecutor(
         _conv_state(tmp_path, tags={"project": uuid4().hex}),
         transport=httpx.MockTransport(_Server([])),
     )
 
-    observation = executor(ListProjectConversationsAction())
+    observation = executor(ListWorkersAction())
 
     assert observation.is_error
     assert "(404): Project not found" in observation.text
 
 
-def test_tools_say_so_when_projects_was_turned_off(tmp_path):
+@pytest.mark.parametrize(
+    ("executor_type", "action"),
+    [
+        (ListWorkersExecutor, ListWorkersAction()),
+        (ReadProjectMemoryExecutor, ReadProjectMemoryAction(name="MEMORY.md")),
+    ],
+)
+def test_tools_say_so_when_projects_was_turned_off(tmp_path, executor_type, action):
     """A coordinator started while Projects was on keeps its tools; once the
-    user turns the feature off, each call tells it so instead of a bare 404."""
+    user turns the feature off, each call tells it so instead of a bare 404
+    (or, for memory, a missing file to create)."""
 
     def projects_off(request: httpx.Request) -> httpx.Response:
         return httpx.Response(404, json={"detail": "Projects are turned off"})
 
-    executor = ListProjectConversationsExecutor(
+    executor = executor_type(
         _conv_state(tmp_path, tags={"project": uuid4().hex}),
         transport=httpx.MockTransport(projects_off),
     )
 
-    observation = executor(ListProjectConversationsAction())
+    observation = executor(action)
 
     assert observation.is_error
     assert "Projects is turned off" in observation.text
@@ -222,15 +221,11 @@ def test_message_posts_to_member_conversation(tmp_path, status, attention):
     conversation = _conversation(status, attention)
     server = _Server([conversation])
     state = _conv_state(tmp_path)
-    executor = MessageProjectConversationExecutor(
-        state, transport=httpx.MockTransport(server)
-    )
+    executor = MessageWorkerExecutor(state, transport=httpx.MockTransport(server))
     hyphenated = str(UUID(conversation["conversation_id"]))
 
     observation = executor(
-        MessageProjectConversationAction(
-            conversation_id=hyphenated, message="Also add docs"
-        )
+        MessageWorkerAction(conversation_id=hyphenated, message="Also add docs")
     )
 
     assert not observation.is_error, observation.text
@@ -242,77 +237,21 @@ def test_message_posts_to_member_conversation(tmp_path, status, attention):
         "role": "user",
         "content": [{"type": "text", "text": "Also add docs"}],
         "run": True,
-        "refuse_pending_confirmation": True,
         "sender_conversation_id": state.id.hex,
     }
     assert observation.conversation_id == conversation["conversation_id"]
-    assert observation.previous_status == status
-    assert observation.run == "started"
-
-
-def test_message_reports_confirmation_reached_during_delivery(tmp_path):
-    conversation = _conversation("running", "working")
-    server = _Server(
-        [conversation],
-        message_response=httpx.Response(
-            200,
-            json={
-                "conversation_id": conversation["conversation_id"],
-                "previous_status": "running",
-                "run": "waiting_for_confirmation",
-            },
-        ),
-    )
-    executor = MessageProjectConversationExecutor(
-        _conv_state(tmp_path), transport=httpx.MockTransport(server)
-    )
-
-    observation = executor(
-        MessageProjectConversationAction(
-            conversation_id=conversation["conversation_id"], message="x"
-        )
-    )
-
-    assert not observation.is_error
-    assert observation.run == "waiting_for_confirmation"
-    assert "it was not run" in observation.text
-
-
-def test_message_maps_server_409_to_refusal(tmp_path):
-    conversation = _conversation("idle", "idle")
-    server = _Server(
-        [conversation],
-        message_response=httpx.Response(
-            409,
-            json={
-                "detail": "Conversation is waiting for confirmation",
-                "status": "waiting_for_confirmation",
-            },
-        ),
-    )
-    executor = MessageProjectConversationExecutor(
-        _conv_state(tmp_path), transport=httpx.MockTransport(server)
-    )
-
-    observation = executor(
-        MessageProjectConversationAction(
-            conversation_id=conversation["conversation_id"], message="x"
-        )
-    )
-
-    assert observation.is_error
-    assert "would approve that action" in observation.text
+    assert "a run was requested" in observation.text
 
 
 def test_message_timeout_says_not_to_resend(tmp_path):
     conversation = _conversation("running", "working")
     server = _Server([conversation], message_response=httpx.ReadTimeout("slow"))
-    executor = MessageProjectConversationExecutor(
+    executor = MessageWorkerExecutor(
         _conv_state(tmp_path), timeout=1, transport=httpx.MockTransport(server)
     )
 
     observation = executor(
-        MessageProjectConversationAction(
+        MessageWorkerAction(
             conversation_id=conversation["conversation_id"], message="x"
         )
     )
@@ -322,83 +261,70 @@ def test_message_timeout_says_not_to_resend(tmp_path):
     assert "Do not send it again" in observation.text
 
 
-@pytest.mark.parametrize(
-    ("status", "says"),
-    [
-        ("waiting_for_confirmation", "would approve that action"),
-        ("paused", "Sending would resume it"),
-        ("error", "Sending would retry it"),
-        ("stuck", "Sending would restart it"),
-    ],
-)
-def test_message_refuses_conversation_waiting_on_the_user(tmp_path, status, says):
-    """Review S3: a paused, failed or stuck worker is the user's to resume,
-    so the coordinator's message must not run it (nor approve an action)."""
-    conversation = _conversation(status, "needs_you")
+def test_message_refuses_conversation_waiting_for_confirmation(tmp_path):
+    """Running it would approve the pending action, so nothing is sent."""
+    conversation = _conversation("waiting_for_confirmation", "needs_you")
     server = _Server([conversation])
-    executor = MessageProjectConversationExecutor(
+    executor = MessageWorkerExecutor(
         _conv_state(tmp_path), transport=httpx.MockTransport(server)
     )
 
     observation = executor(
-        MessageProjectConversationAction(
+        MessageWorkerAction(
             conversation_id=conversation["conversation_id"], message="go ahead"
         )
     )
 
     assert observation.is_error
-    assert says in observation.text
+    assert "would approve that action" in observation.text
     assert server.posts() == []
 
 
-def test_message_maps_a_409_for_a_pause_to_its_refusal(tmp_path):
-    conversation = _conversation("running", "working")
-    server = _Server(
-        [conversation],
-        message_response=httpx.Response(
-            409, json={"detail": "Conversation is paused", "status": "paused"}
-        ),
-    )
-    executor = MessageProjectConversationExecutor(
+@pytest.mark.parametrize("status", ["paused", "error", "stuck"])
+def test_message_runs_a_paused_errored_or_stuck_worker(tmp_path, status):
+    """Only a pending approval is the user's alone; the coordinator may
+    run the worker again from the other stops."""
+    conversation = _conversation(status, "needs_you")
+    server = _Server([conversation])
+    executor = MessageWorkerExecutor(
         _conv_state(tmp_path), transport=httpx.MockTransport(server)
     )
 
     observation = executor(
-        MessageProjectConversationAction(
-            conversation_id=conversation["conversation_id"], message="x"
+        MessageWorkerAction(
+            conversation_id=conversation["conversation_id"], message="try again"
         )
     )
 
-    assert observation.is_error
-    assert "Sending would resume it" in observation.text
+    assert not observation.is_error, observation.text
+    (post,) = server.posts()
+    assert json.loads(post.content)["run"] is True
 
 
 def test_message_refuses_conversation_outside_project(tmp_path):
     coordinator = _conversation("idle", "idle", "coordinator")
     server = _Server([_conversation("idle", "idle")], coordinator=coordinator)
-    executor = MessageProjectConversationExecutor(
+    executor = MessageWorkerExecutor(
         _conv_state(tmp_path), transport=httpx.MockTransport(server)
     )
 
     for target in (uuid4().hex, coordinator["conversation_id"]):
         observation = executor(
-            MessageProjectConversationAction(conversation_id=target, message="hi")
+            MessageWorkerAction(conversation_id=target, message="hi")
         )
         assert observation.is_error
-        assert "is not a conversation of this project" in observation.text
+        assert "is not a worker of this project" in observation.text
     assert server.posts() == []
 
 
 def test_message_rejects_malformed_id_without_requests(tmp_path):
     server = _Server([])
-    executor = MessageProjectConversationExecutor(
+    executor = MessageWorkerExecutor(
         _conv_state(tmp_path), transport=httpx.MockTransport(server)
     )
 
     observation = executor(
-        MessageProjectConversationAction(
-            conversation_id="Docs conversation", message="hi"
-        )
+        MessageWorkerAction(conversation_id="Docs conversation", message="hi")
     )
 
     assert observation.is_error
@@ -410,10 +336,8 @@ def test_message_reads_project_at_call_time(tmp_path):
     state = _conv_state(tmp_path, tags={})
     conversation = _conversation("idle", "idle")
     server = _Server([conversation])
-    executor = MessageProjectConversationExecutor(
-        state, transport=httpx.MockTransport(server)
-    )
-    action = MessageProjectConversationAction(
+    executor = MessageWorkerExecutor(state, transport=httpx.MockTransport(server))
+    action = MessageWorkerAction(
         conversation_id=conversation["conversation_id"], message="hi"
     )
 
@@ -669,13 +593,11 @@ def test_read_reports_the_latest_messages(tmp_path):
             },
         )
 
-    executor = ReadProjectConversationExecutor(
+    executor = ReadWorkerExecutor(
         _conv_state(tmp_path), transport=httpx.MockTransport(server)
     )
 
-    observation = executor(
-        ReadProjectConversationAction(conversation_id=str(target), limit=5)
-    )
+    observation = executor(ReadWorkerAction(conversation_id=str(target), limit=5))
 
     assert not observation.is_error, observation.text
     (request,) = seen
@@ -688,27 +610,40 @@ def test_read_reports_the_latest_messages(tmp_path):
     assert "[agent (finish)] Done, with a test." in observation.text
 
 
+def test_read_refuses_the_coordinator_itself(tmp_path):
+    """read_worker reads workers; the caller is the coordinator."""
+    state = _conv_state(tmp_path)
+    executor = ReadWorkerExecutor(
+        state, transport=httpx.MockTransport(lambda r: httpx.Response(500))
+    )
+
+    observation = executor(ReadWorkerAction(conversation_id=state.id.hex))
+
+    assert observation.is_error
+    assert "That is this conversation" in observation.text
+
+
 def test_read_outside_a_project_is_an_error(tmp_path):
-    executor = ReadProjectConversationExecutor(
+    executor = ReadWorkerExecutor(
         _conv_state(tmp_path, tags={}),
         transport=httpx.MockTransport(lambda r: httpx.Response(500)),
     )
 
-    observation = executor(ReadProjectConversationAction(conversation_id=uuid4().hex))
+    observation = executor(ReadWorkerAction(conversation_id=uuid4().hex))
 
     assert observation.is_error
     assert "not part of a project" in observation.text
 
 
 def test_project_tools_bring_no_role_text(tmp_path):
-    """The coordinator's role is its prompt preset, not a tool's guidance:
-    the voice and the job no longer ride on message_project_conversation."""
-    (message_tool,) = MessageProjectConversationTool.create(_conv_state(tmp_path))
-    (list_tool,) = ListProjectConversationsTool.create(_conv_state(tmp_path))
+    """The coordinator's role is its prompt, not a tool's guidance:
+    the voice and the job no longer ride on message_worker."""
+    (message_tool,) = MessageWorkerTool.create(_conv_state(tmp_path))
+    (list_tool,) = ListWorkersTool.create(_conv_state(tmp_path))
 
     assert message_tool.prompt_guidance is None
     assert list_tool.prompt_guidance is None
-    assert ReadProjectConversationTool.name == "read_project_conversation"
+    assert ReadWorkerTool.name == "read_worker"
 
 
 def test_a_coordinators_system_prompt_states_its_role(tmp_path):
@@ -716,8 +651,8 @@ def test_a_coordinators_system_prompt_states_its_role(tmp_path):
 
     agent = Agent(
         llm=LLM(model="gpt-4o", usage_id="cat"),
-        tools=[Tool(name="message_project_conversation")],
-        prompt_preset=PromptPreset.PROJECT_COORDINATOR,
+        tools=[Tool(name="message_worker")],
+        system_prompt_filename=PROJECT_COORDINATOR_PROMPT,
     )
     state = _conv_state(tmp_path)
     agent._initialize(state)
@@ -773,3 +708,43 @@ def test_resolve_outside_a_project_makes_no_request(tmp_path):
 
     assert observation.is_error
     assert "not part of a project" in observation.text
+
+
+@pytest.mark.parametrize("name", ["../other/memory/MEMORY.md", "..", "a/b.md"])
+def test_memory_and_artifact_names_stay_in_the_project(tmp_path, name):
+    """A name with a path in it would be resolved by the URL into another
+    project's files; the tools refuse it before any request."""
+    from openhands.tools.project import (
+        ReadArtifactAction,
+        ReadArtifactExecutor,
+        ReadProjectMemoryAction,
+        ReadProjectMemoryExecutor,
+        UpdateProjectMemoryAction,
+        UpdateProjectMemoryExecutor,
+    )
+
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.path.endswith("/memory"):
+            return httpx.Response(200, json={"files": []})
+        return httpx.Response(200, json={})
+
+    transport = httpx.MockTransport(handler)
+    state = _conv_state(tmp_path)
+    observations = [
+        ReadArtifactExecutor(state, transport=transport)(ReadArtifactAction(name=name)),
+        ReadProjectMemoryExecutor(state, transport=transport)(
+            ReadProjectMemoryAction(name=name)
+        ),
+        UpdateProjectMemoryExecutor(state, transport=transport)(
+            UpdateProjectMemoryAction(name=name, content="x")
+        ),
+    ]
+
+    for observation in observations:
+        assert observation.is_error, observation.text
+        assert "is not a file name" in observation.text
+    assert all("/memory/" not in r.url.path for r in seen)
+    assert all("/artifacts/" not in r.url.path for r in seen)

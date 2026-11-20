@@ -169,8 +169,8 @@ class AgentContext(BaseModel):
             "coordinator and memory index), rendered by the host into the "
             "<PROJECT> prompt block. Set by the launch, not by the user."
         ),
-        # An ACP agent gets the same text in its suffix instead (see finalize),
-        # so the field itself never reaches its prompt.
+        # Projects never set it on an ACP agent, but a copied context carries
+        # every field (unset ones as None), so ACP must accept it.
         json_schema_extra={"acp_compatible": True},
     )
     disabled_skills: list[str] = Field(

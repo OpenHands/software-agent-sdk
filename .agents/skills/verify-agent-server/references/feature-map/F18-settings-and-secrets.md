@@ -49,7 +49,7 @@ Routes: `GET /api/settings/agent-schema`, `GET /api/settings/conversation-schema
 - `F18.sdk-clone-repos`: with the server secret `GITHUB_TOKEN` stored, the SDK's `RemoteWorkspace.clone_repos()` reads it from `GET /api/settings/secrets/GITHUB_TOKEN` and clones with it (a local git remote reachable only through the token-bearing URL), a provider whose token secret is missing (`GITLAB_TOKEN`) clones anonymously, and `get_repos_context()` names both clones.
 - `F18.ts-client`: the TypeScript `SettingsClient` reads both schemas, reads settings redacted, `plaintext` and `encrypted`, applies a sparse `updateSettings` that a second read shows, upserts, lists (also with `agentProfileId`), reads as text and deletes a secret, and rejects an unknown secret (404), a bad name (422) and a wrong key (401) with an `HttpError`.
 - `F18.persist-restart`: settings (plaintext key, model, conversation settings) and secrets read back unchanged after a restart with the same cipher key.
-- `F18.experimental-features`: `GET /api/settings/experimental` lists the experimental features the user can switch (`conversation_reactions`, `ask_user`, `conversation_mentions`, `message_edits` and `projects`, all off) without writing `settings.json`, and `PATCH /api/settings/experimental/{key}` answers 404 for a key the server does not know and stores nothing (`experimental_features` stays `{}`).
+- `F18.experimental-features`: `GET /api/settings/experimental` lists the experimental features the user can switch (`conversation_reactions`, `ask_user`, `conversation_mentions`, `message_edits` `factories` and `projects`, all off) without writing `settings.json`, and `PATCH /api/settings/experimental/{key}` answers 404 for a key the server does not know and stores nothing (`experimental_features` stays `{}`).
 - `F18.upgrade-from-release`: settings, an LLM key and a secret saved by the latest released server read back identical after the same state is restarted on this checkout (`restart --checkout`), the upgrade does not rewrite either file, and the experimental routes answer.
 - `F18.corrupted-files`: with an unparsable `settings.json`, GET silently returns defaults (every experimental feature off) and PATCH, of the settings or of an experimental feature, is 409 without touching the file; with an unparsable `secrets.json` the list is empty, GET by name 404, PUT and DELETE 500; restoring the files restores the values.
 - `F18.no-cipher`: without any cipher key, `X-Expose-Secrets: encrypted` is 503, `plaintext` still works, both files store plaintext, and the secrets routes are open without a key.
@@ -685,7 +685,8 @@ Preconditions:
     --check 1.key eq ask_user --check 1.label eq 'Decision cards' --check 1.enabled eq false \
     --check 2.key eq conversation_mentions --check 2.enabled eq false \
     --check 3.key eq message_edits --check 3.enabled eq false \
-    --check 4.key eq projects --check 4.enabled eq false --save F18.experimental-features/list
+    --check 4.key eq factories --check 4.label eq 'Factories' --check 4.enabled eq false \
+    --check 5.key eq projects --check 5.enabled eq false --save F18.experimental-features/list
   control-agent-server api PATCH /api/settings/experimental/qa_f18_unknown --json '{"enabled": true}' --expect 404 \
     --check detail eq 'Unknown experimental feature: qa_f18_unknown' --save F18.experimental-features/unknown
   control-agent-server api PATCH /api/settings/experimental/qa_f18_unknown --json '{}' --expect 422
@@ -695,7 +696,8 @@ Preconditions:
   if test -e "$S"; then jq -e '.experimental_features == {}' "$S"; fi
   ```
   The list holds `conversation_reactions` (F37 switches it), `ask_user`,
-  `conversation_mentions` (F38), `message_edits` (F39) and `projects` (F36),
+  `conversation_mentions` (F38 switches it), `message_edits` (F39 switches
+  it), `factories` (client-only: no tools or routes) and `projects` (F36),
   all off, as
   `{key, label, description, enabled}`. A key the server does not know is a
   404, and neither the reads nor the refused switches create or change

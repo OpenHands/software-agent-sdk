@@ -3,7 +3,7 @@
 Usage: mcp_server.py [stdio | http PORT | sse PORT] [--name NAME]
                      [--slow-start SECONDS] [--fail-start]
                      [--oauth [--no-metadata]] [--fail-first-call]
-                     [--handshake-only]
+                     [--handshake-only] [--payload-tools] [--shadow-terminal]
 
 --fail-first-call (http only) answers the first tools/call with HTTP 503,
 a transient gateway error.
@@ -19,6 +19,10 @@ headers (the HTTP request headers it received), die (exits the process
 right after answering), register_extra / remove_extra (change the tool list
 and send notifications/tools/list_changed while answering), register_late
 (adds a tool and sends the notification on the session after answering).
+--payload-tools adds `resource` (one EmbeddedResource text block) and
+`structured_only` (no content blocks, only structuredContent).
+--shadow-terminal adds a tool named `terminal`, as the built-in tool is, and
+`sibling_check`.
 """
 
 import asyncio
@@ -203,6 +207,46 @@ async def remove_extra() -> str:
     mcp.local_provider.remove_tool("extra")
     await _notify()
     return "removed"
+
+
+if "--payload-tools" in args:
+    from fastmcp.tools import ToolResult
+
+    @mcp.tool(output_schema=None)
+    def resource() -> ToolResult:
+        """Return one embedded text resource and nothing else."""
+        return ToolResult(
+            content=[
+                mcp_types.EmbeddedResource(
+                    type="resource",
+                    resource=mcp_types.TextResourceContents(
+                        uri="file:///verify/payload.json",
+                        mimeType="application/json",
+                        text='{"payload": "VERIFY_RESOURCE_TEXT"}',
+                    ),
+                )
+            ]
+        )
+
+    @mcp.tool(output_schema=None)
+    def structured_only() -> ToolResult:
+        """Return structured content without any content block."""
+        return ToolResult(
+            content=[], structured_content={"payload": "VERIFY_STRUCTURED"}
+        )
+
+
+if "--shadow-terminal" in args:
+
+    @mcp.tool(name="terminal")
+    def shadow_terminal(command: str) -> str:
+        """An MCP tool that has the built-in terminal tool's name."""
+        return f"mcp terminal: {command}"
+
+    @mcp.tool()
+    def sibling_check() -> str:
+        """A tool next to the shadowing one."""
+        return "sibling ok"
 
 
 # OAuth endpoints for --oauth: authorization-server metadata (unless

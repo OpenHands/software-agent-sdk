@@ -41,7 +41,7 @@ from fastapi import (
     status,
 )
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import (
@@ -78,6 +78,7 @@ from openhands.agent_server.project_memory import (
     ProjectMemoryStore,
     valid_memory_name,
 )
+from openhands.agent_server.project_profiles import runs_in_a_project
 from openhands.agent_server.project_turns import TurnOutcome
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.agent_server.utils import utc_now
@@ -131,6 +132,9 @@ projects_router = APIRouter(
     prefix="/projects",
     tags=["Projects"],
     dependencies=[Depends(_require_projects)],
+    # Experimental: out of the OpenAPI schema, so the routes can still change
+    # without the REST deprecation runway (see agent_server/AGENTS.md).
+    include_in_schema=False,
 )
 
 PROJECT_TAG = PROJECT_TAG_KEY
@@ -182,19 +186,13 @@ class NewProjectCoordinator(BaseModel):
         max_length=256,
         description="Conversation title. Unset, it is titled automatically.",
     )
-    conversation_id: UUID | None = Field(
-        default=None,
-        description=(
-            "Id for the coordinator, reserved by the client so it can find the "
-            "conversation after a lost response. Must not exist yet."
-        ),
-    )
     tags: ConversationTags = Field(
         default_factory=dict,
         description="More tags for the coordinator; the server adds `project`.",
     )
     conversation_runtime: ConversationRuntime | None = Field(
-        default=None, description="As in a conversation start request."
+        default=None,
+        description="As in a conversation start request; only `local` runs here.",
     )
     agent_launch_additions: AgentLaunchAdditions | None = Field(
         default=None,
@@ -216,11 +214,21 @@ class NewProjectCoordinator(BaseModel):
         description="As in a conversation start request. Unset, the default.",
     )
 
+    @field_validator("conversation_runtime")
+    @classmethod
+    def _local_runtime_only(
+        cls, value: ConversationRuntime | None
+    ) -> ConversationRuntime | None:
+        # The coordinator starts in a LocalWorkspace, as every conversation
+        # this server runs; refuse here, before the project is saved.
+        if value not in (None, "local"):
+            raise ValueError("This server only runs local conversations")
+        return value
+
     def start_options(self) -> dict[str, Any]:
         """The fields passed on to the coordinator's start request."""
         options: dict[str, Any] = {"tags": dict(self.tags)}
         for name in (
-            "conversation_id",
             "conversation_runtime",
             "agent_launch_additions",
             "confirmation_policy",
@@ -236,19 +244,11 @@ class NewProjectCoordinator(BaseModel):
 class CreateProjectRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=256)
     description: str = Field(default="", max_length=4096)
-    coordinator_conversation_id: UUID | None = Field(
-        default=None,
-        description=(
-            "An existing conversation to make the coordinator. It is tagged "
-            "as a member of the new project."
-        ),
-    )
     coordinator: NewProjectCoordinator | None = Field(
         default=None,
         description=(
             "Start a new, idle coordinator conversation with the project, with "
-            "the coordinator's project tools. Not with "
-            "coordinator_conversation_id."
+            "the coordinator's prompt and project tools."
         ),
     )
     worker_agent_profile_id: UUID | None = Field(
@@ -263,14 +263,6 @@ class CreateProjectRequest(BaseModel):
 class UpdateProjectRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=256)
     description: str | None = Field(default=None, max_length=4096)
-    coordinator_conversation_id: UUID | None = Field(
-        default=None,
-        description=(
-            "A conversation to make the coordinator; it is tagged as a member. "
-            "An explicit null clears the coordinator and leaves the "
-            "conversation a member."
-        ),
-    )
     worker_agent_profile_id: UUID | None = Field(
         default=None,
         description=(
@@ -455,52 +447,6 @@ def _find(persisted: PersistedProjects, project_id: UUID) -> ProjectItem:
     raise NotFound("Project not found")
 
 
-def _check_not_coordinating_elsewhere(
-    persisted: PersistedProjects, project_id: UUID, conversation_id: UUID
-) -> None:
-    for project in persisted.projects:
-        if (
-            project.id != project_id
-            and project.coordinator_conversation_id == conversation_id
-        ):
-            raise Conflict("Conversation is the coordinator of another project")
-
-
-async def _require_conversation(
-    service: ConversationService, conversation_id: UUID
-) -> None:
-    if await service.get_event_service(conversation_id) is None:
-        raise NotFound("Conversation not found")
-
-
-async def _join(
-    service: ConversationService, project_id: UUID, conversation_id: UUID
-) -> bool:
-    """Tag the conversation as a member; ``False`` when it does not exist."""
-    tags = await service.projects.set_conversation_tag(
-        conversation_id, PROJECT_TAG, project_id.hex
-    )
-    return tags is not None
-
-
-async def _join_or_undo(
-    service: ConversationService,
-    store: FileProjectsStore,
-    project_id: UUID,
-    conversation_id: UUID,
-    undo: Callable[[PersistedProjects], PersistedProjects],
-) -> None:
-    """Tag a coordinator just saved on a project; undo the save if that fails."""
-    try:
-        joined = await _join(service, project_id, conversation_id)
-    except Exception:
-        await _update(store, undo)
-        raise
-    if not joined:
-        await _update(store, undo)
-        raise NotFound("Conversation not found")
-
-
 def _replace_project(
     current: PersistedProjects, project_id: UUID, update: dict
 ) -> tuple[PersistedProjects, ProjectItem | None]:
@@ -577,19 +523,14 @@ async def list_projects(stores: _Stores) -> ProjectsListResponse:
     "",
     response_model=ProjectItem,
     status_code=status.HTTP_201_CREATED,
-    responses={
-        404: {"description": "Coordinator conversation or agent profile not found"},
-        409: {"description": "Coordinator already leads another project"},
-    },
+    responses={404: {"description": "Agent profile not found"}},
 )
 async def create_project(
     stores: _Stores,
     payload: CreateProjectRequest,
     service: ConversationService = Depends(get_conversation_service),
 ) -> ProjectItem:
-    """Create a project, with an existing or a new coordinator conversation, or none."""
-    if payload.coordinator is not None and payload.coordinator_conversation_id:
-        raise Unprocessable("Pass coordinator or coordinator_conversation_id, not both")
+    """Create a project, and start its coordinator conversation when asked."""
     if (
         payload.coordinator is not None
         and payload.coordinator.agent_profile_id is not None
@@ -600,31 +541,16 @@ async def create_project(
         id=uuid4(),
         name=payload.name,
         description=payload.description,
-        coordinator_conversation_id=payload.coordinator_conversation_id,
         worker_agent_profile_id=payload.worker_agent_profile_id,
     )
-    coordinator_id = payload.coordinator_conversation_id
-    if coordinator_id is not None:
-        await _require_conversation(service, coordinator_id)
     if payload.worker_agent_profile_id is not None:
         await _require_agent_profile(stores, payload.worker_agent_profile_id)
-
-    def apply(current: PersistedProjects) -> PersistedProjects:
-        if coordinator_id is not None:
-            _check_not_coordinating_elsewhere(current, project.id, coordinator_id)
-        return current.model_copy(update={"projects": [*current.projects, project]})
-
-    await _update(store, apply)
-    # Tag only once the record exists, so a refused write leaves no tag for
-    # a project that was never saved.
-    if coordinator_id is not None:
-        await _join_or_undo(
-            service,
-            store,
-            project.id,
-            coordinator_id,
-            lambda current: _without(current, project.id),
-        )
+    await _update(
+        store,
+        lambda current: current.model_copy(
+            update={"projects": [*current.projects, project]}
+        ),
+    )
     if payload.coordinator is not None:
         project = await _start_new_coordinator(
             service, store, project, payload.coordinator
@@ -671,13 +597,16 @@ async def _start_new_coordinator(
 
 
 async def _require_agent_profile(stores: ServerStores, profile_id: UUID) -> None:
-    store = stores.agent_profiles
-
-    def exists() -> bool:
-        return store.name_for_id(profile_id) is not None
-
-    if not await asyncio.to_thread(exists):
+    """A profile for a project's coordinator or workers: it exists and is not
+    an ACP agent."""
+    runs = await asyncio.to_thread(runs_in_a_project, stores, profile_id)
+    if runs is None:
         raise NotFound(f"Agent profile {profile_id} not found")
+    if not runs:
+        raise Unprocessable(
+            f"Agent profile {profile_id} runs an ACP agent, which cannot take "
+            "the project's prompt and tools"
+        )
 
 
 @projects_router.get(
@@ -693,36 +622,20 @@ async def get_project(project_id: UUID, stores: _Stores) -> ProjectItem:
 @projects_router.patch(
     "/{project_id}",
     response_model=ProjectItem,
-    responses={
-        404: {
-            "description": (
-                "Project, coordinator conversation or agent profile not found"
-            )
-        },
-        409: {"description": "Coordinator already leads another project"},
-    },
+    responses={404: {"description": "Project or agent profile not found"}},
 )
 async def update_project(
-    project_id: UUID,
-    stores: _Stores,
-    payload: UpdateProjectRequest,
-    service: ConversationService = Depends(get_conversation_service),
+    project_id: UUID, stores: _Stores, payload: UpdateProjectRequest
 ) -> ProjectItem:
-    """Rename a project, change its description, or set or clear its coordinator."""
+    """Rename a project, change its description or its worker agent profile."""
     store = _store(stores)
-    previous = _find(await _load(store), project_id)
+    _find(await _load(store), project_id)
 
     update: dict = {}
     if payload.name is not None:
         update["name"] = payload.name
     if payload.description is not None:
         update["description"] = payload.description
-    coordinator_id: UUID | None = None
-    if "coordinator_conversation_id" in payload.model_fields_set:
-        coordinator_id = payload.coordinator_conversation_id
-        if coordinator_id is not None:
-            await _require_conversation(service, coordinator_id)
-        update["coordinator_conversation_id"] = coordinator_id
     if "worker_agent_profile_id" in payload.model_fields_set:
         if payload.worker_agent_profile_id is not None:
             await _require_agent_profile(stores, payload.worker_agent_profile_id)
@@ -732,8 +645,6 @@ async def update_project(
 
     def apply(current: PersistedProjects) -> PersistedProjects:
         nonlocal updated
-        if coordinator_id is not None:
-            _check_not_coordinating_elsewhere(current, project_id, coordinator_id)
         changed, updated = _replace_project(current, project_id, update)
         return changed
 
@@ -741,26 +652,6 @@ async def update_project(
     if updated is None:
         # Deleted between the read above and the locked write.
         raise NotFound("Project not found")
-    if coordinator_id is not None:
-        saved = updated
-
-        def undo(current: PersistedProjects) -> PersistedProjects:
-            # Undo only our own change: a later write to this project wins.
-            if _find_or_none(current, project_id) != saved:
-                return current
-            restore = previous.model_dump(
-                include={"name", "description", "coordinator_conversation_id"}
-            )
-            former = previous.coordinator_conversation_id
-            if former is not None and any(
-                p.coordinator_conversation_id == former
-                for p in current.projects
-                if p.id != project_id
-            ):
-                restore["coordinator_conversation_id"] = None
-            return _replace_project(current, project_id, restore)[0]
-
-        await _join_or_undo(service, store, project_id, coordinator_id, undo)
     return updated
 
 
@@ -769,11 +660,16 @@ async def update_project(
     response_model=DeleteResponse,
     responses={404: {"description": "Project not found"}},
 )
-async def delete_project(project_id: UUID, stores: _Stores) -> DeleteResponse:
+async def delete_project(
+    project_id: UUID,
+    stores: _Stores,
+    service: ConversationService = Depends(get_conversation_service),
+) -> DeleteResponse:
     """Delete a project.
 
-    Conversations are left as they are, including their ``project`` tag; the
-    project's conversations endpoint answers 404 afterwards. The project's artifacts
+    Its conversations stay, without the ``project`` tag and the board's tags
+    (``turn``, ``ask``, ``resolved``, ``resolvenote``); the project's
+    conversations endpoint answers 404 afterwards. The project's artifacts
     are deleted.
     """
     removed = False
@@ -787,6 +683,7 @@ async def delete_project(project_id: UUID, stores: _Stores) -> DeleteResponse:
     await _update(_store(stores), apply)
     if not removed:
         raise NotFound("Project not found")
+    await service.projects.release_members(project_id.hex)
     await asyncio.to_thread(_artifacts(stores).delete_project, project_id)
     return DeleteResponse()
 

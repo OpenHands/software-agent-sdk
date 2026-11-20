@@ -168,13 +168,13 @@ def test_settings_saved_before_experimental_features_load_with_none_on():
 async def test_every_feature_is_listed_and_off(client):
     response = await client.get("/api/settings/experimental")
 
-    # The test conftest turns Projects (#6602) on for every agent-server test.
     assert [(f["key"], f["enabled"]) for f in response.json()] == [
         ("conversation_reactions", False),
         ("ask_user", False),
         ("conversation_mentions", False),
         ("message_edits", False),
-        ("projects", True),
+        ("factories", False),
+        ("projects", False),
     ]
 
 
@@ -202,6 +202,8 @@ def test_feature_tools_follow_the_flags():
     assert [t.name for t in experimental_feature_tools({"message_edits": True})] == [
         "edit_message"
     ]
+    # A client-only feature gives the agent nothing.
+    assert experimental_feature_tools({"factories": True}) == []
 
 
 def _runtime() -> LaunchRuntime:

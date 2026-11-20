@@ -11,7 +11,7 @@ import pytest_asyncio
 
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import ConversationService
-from openhands.agent_server.event_service import ConversationRunLimitExceeded
+from openhands.agent_server.exceptions import ConversationRunLimitExceeded
 from openhands.agent_server.openai.service import _run_agent
 from openhands.sdk import LLM, Agent, Message, TextContent
 from openhands.sdk.conversation.request import StartConversationRequest
@@ -114,13 +114,13 @@ async def _runs(tmp_path, monkeypatch, max_concurrent_runs):
 async def test_shared_limit_rejects_burst_and_reuses_capacity(runs, modes):
     services = [await runs.create(mode) for mode in modes]
     results = await asyncio.gather(*(s.run() for s in services), return_exceptions=True)
-    assert sum(r is True for r in results) == 2
+    assert sum(r is None for r in results) == 2
     assert (
         sum(isinstance(r, ConversationRunLimitExceeded) for r in results)
         == len(modes) - 2
     )
     await wait_until(lambda: runs.tracker.active == 2)
-    rejected = [s for s, r in zip(services, results) if r is not True]
+    rejected = [s for s, r in zip(services, results) if r is not None]
     assert all(s._run_task is None for s in rejected)
     runs.release.set()
     await asyncio.gather(*(s.wait_for_run_completion(5) for s in services))
@@ -233,7 +233,7 @@ async def test_creation_reservations_are_atomic_and_released_on_failure(
     entered = 0
     release = asyncio.Event()
 
-    async def initialize(*args):
+    async def initialize(*args, **kwargs):
         nonlocal entered
         entered += 1
         await release.wait()

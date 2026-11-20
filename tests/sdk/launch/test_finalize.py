@@ -6,7 +6,7 @@ from pydantic import SecretStr
 
 from openhands.sdk import LLM, Agent, AgentContext
 from openhands.sdk.agent import ACPAgent
-from openhands.sdk.context.prompts.presets import PromptPreset
+from openhands.sdk.agent.base import PROJECT_WORKER_PROMPT
 from openhands.sdk.conversation.request import AgentLaunchAdditions
 from openhands.sdk.launch import (
     AgentLaunchError,
@@ -15,6 +15,7 @@ from openhands.sdk.launch import (
     ResolvedLaunch,
     finalize,
 )
+from openhands.sdk.launch.finalize import ProjectRole
 from openhands.sdk.profiles.agent_profile import LaunchedAgentProfile
 from openhands.sdk.secret import StaticSecret
 from openhands.sdk.settings.model import ACPAgentSettings, OpenHandsAgentSettings
@@ -234,20 +235,17 @@ def test_client_tools_are_added_once():
     assert _tool_names(launched) == ["canvas_ui", "launch_child"]
 
 
-def test_a_deployment_role_sets_the_preset_and_the_project_block():
+def test_a_project_role_sets_the_prompt_and_the_project_block():
     agent = _agent(AgentContext(system_message_suffix="PROFILE"))
 
     launched = finalize(
         agent,
         LaunchRuntime(),
-        additions=AgentLaunchAdditions(
-            prompt_preset=PromptPreset.PROJECT_WORKER,
-            project_context="  Project: Docs  ",
-        ),
+        project_role=ProjectRole(PROJECT_WORKER_PROMPT, "  Project: Docs  "),
     )
 
     assert isinstance(launched.agent, Agent)
-    assert launched.agent.prompt_preset == PromptPreset.PROJECT_WORKER
+    assert launched.agent.system_prompt_filename == PROJECT_WORKER_PROMPT
     context = launched.agent.agent_context
     assert context is not None
     assert context.project_context == "Project: Docs"
@@ -255,17 +253,31 @@ def test_a_deployment_role_sets_the_preset_and_the_project_block():
     assert context.system_message_suffix == "PROFILE"
 
 
-def test_an_acp_agent_gets_the_project_block_in_its_suffix():
+def test_an_inline_system_prompt_keeps_its_text():
+    agent = Agent(
+        llm=LLM(model="gpt-4o", api_key="k", usage_id="agent"), system_prompt="Hi."
+    )
+
+    launched = finalize(
+        agent,
+        LaunchRuntime(),
+        project_role=ProjectRole(PROJECT_WORKER_PROMPT, ""),
+    )
+
+    assert isinstance(launched.agent, Agent)
+    assert launched.agent.system_prompt_filename == "system_prompt.j2"
+    assert launched.agent.static_system_message.startswith("Hi.")
+
+
+def test_an_acp_agent_takes_no_project_role():
+    """Projects do not run ACP agents; finalize leaves one as it is."""
     agent = ACPAgent(acp_command=["true"])
 
     launched = finalize(
         agent,
         LaunchRuntime(),
-        additions=AgentLaunchAdditions(
-            prompt_preset=PromptPreset.PROJECT_WORKER, project_context="Project: Docs"
-        ),
+        project_role=ProjectRole(PROJECT_WORKER_PROMPT, "Project: Docs"),
     )
 
     context = launched.agent.agent_context
-    assert context is not None
-    assert context.system_message_suffix == "<PROJECT>\nProject: Docs\n</PROJECT>"
+    assert context is None or not context.system_message_suffix

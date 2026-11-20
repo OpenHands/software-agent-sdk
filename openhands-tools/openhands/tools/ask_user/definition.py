@@ -123,7 +123,7 @@ with this tool: put that conversation's id in `for_conversation`, and keep \
 its meaning and its options (you may word them more clearly or add what the \
 user needs to know). However the user answers, by a tap on the card or in \
 their own words in the chat, the answer reaches that conversation as theirs \
-and it goes on by itself. You see the answer too: do not send it there, and \
+and it goes on by itself. You see the answer too: do not send it there again, and \
 never answer such a question yourself."""
 
 

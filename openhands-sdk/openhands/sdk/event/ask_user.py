@@ -90,6 +90,8 @@ class PendingAsk:
     question: str
     option_labels: tuple[str, ...]
     recommended: int | None
+    asked_at: str
+    """The timestamp of the question's ``ask_user`` call."""
     for_conversation: str | None = None
     """The conversation this question asks on behalf of, when a project's
     coordinator passes on a member's question; the user's answer goes there
@@ -132,6 +134,7 @@ def _as_pending(action_event: ActionEvent) -> PendingAsk | None:
         question=question,
         option_labels=labels,
         recommended=recommended,
+        asked_at=action_event.timestamp,
         for_conversation=for_conversation
         if isinstance(for_conversation, str) and for_conversation.strip()
         else None,

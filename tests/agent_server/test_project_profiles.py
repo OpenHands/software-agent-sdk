@@ -8,7 +8,6 @@ from openhands.agent_server.project_profiles import (
     PROJECT_PROFILE_NAMES,
     ensure_project_profile,
 )
-from openhands.sdk.context.prompts.presets import PromptPreset
 from openhands.sdk.profiles import OpenHandsAgentProfile
 from openhands.sdk.tool import Tool
 
@@ -57,8 +56,6 @@ def test_the_profiles_are_built_from_the_users_active_profile(stores):
     assert isinstance(coordinator, OpenHandsAgentProfile)
     assert isinstance(worker, OpenHandsAgentProfile)
     assert (coordinator.id, worker.id) == (coordinator_id, worker_id)
-    assert coordinator.prompt_preset == PromptPreset.PROJECT_COORDINATOR
-    assert worker.prompt_preset == PromptPreset.PROJECT_WORKER
     # The user's model, servers and suffix carry over; their persona does not.
     for profile in (coordinator, worker):
         assert profile.llm_profile_ref == "strong-model"

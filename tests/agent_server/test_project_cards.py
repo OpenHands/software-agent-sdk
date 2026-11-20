@@ -24,7 +24,7 @@ from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.event_router import event_router
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import StartConversationRequest
-from openhands.agent_server.persistence import ServerStores
+from openhands.agent_server.persistence import PersistedProjects, ServerStores
 from openhands.agent_server.project_board import ConversationOutcomeSubscriber
 from openhands.agent_server.project_turns import card_text
 from openhands.agent_server.project_wake import notify_coordinator, pass_on_answer
@@ -46,6 +46,9 @@ from openhands.tools.ask_user import (
     AskUserTool,
 )
 from tests.agent_server.conftest import install_test_context, update_test_context
+
+
+pytestmark = pytest.mark.projects_on
 
 
 def _ask(action: AskUserAction) -> ActionEvent:
@@ -262,7 +265,6 @@ def save_without_running(monkeypatch) -> None:
     original = EventService.send_message
 
     async def save_only(self, message, run=False, **kwargs):
-        kwargs.pop("refuse_pending_confirmation", None)
         await original(self, message, False, **kwargs)
         return "started"
 
@@ -287,13 +289,19 @@ async def _start(service: ConversationService, tmp_path: Path) -> UUID:
 async def _project(client, service, tmp_path) -> tuple[str, UUID, UUID]:
     cat = await _start(service, tmp_path)
     worker = await _start(service, tmp_path)
-    project = (
-        await client.post(
-            "/api/projects", json={"name": "P", "coordinator_conversation_id": cat.hex}
-        )
-    ).json()
-    # As the coordinator's start does.
-    await service.projects.set_conversation_tag(worker, "project", project["id"])
+    project = (await client.post("/api/projects", json={"name": "P"})).json()
+    # As starting a new coordinator, and then its worker, leaves them.
+    for member in (cat, worker):
+        await service.projects.set_conversation_tag(member, "project", project["id"])
+
+    def lead(current: PersistedProjects) -> PersistedProjects:
+        projects = [
+            p.model_copy(update={"coordinator_conversation_id": cat})
+            for p in current.projects
+        ]
+        return current.model_copy(update={"projects": projects})
+
+    service.stores.projects.update(lead)
     return project["id"], cat, worker
 
 
@@ -533,6 +541,66 @@ async def test_the_users_answer_reaches_a_question_asked_without_a_card(
     assert info is not None and "turn" not in info.tags
     # Answered: a second pass has nothing left to close.
     assert not await pass_on_answer(service, cat, project, tap.id, "Mochi", None)
+
+
+@pytest.mark.asyncio
+async def test_a_tap_on_an_old_card_does_not_answer_a_newer_question(
+    client, service, tmp_path
+):
+    """The user answered the worker's first question in the worker, and the
+    worker asked again; the coordinator's card for the first question no
+    longer answers anything."""
+    project, cat, worker = await _project(client, service, tmp_path)
+    _, passed_id = await _ask_through(service, cat, worker)
+    again = _ask(
+        AskUserAction(
+            question="Which port?",
+            options=[
+                AskUserOption(label="Postgres", consequence="5432."),
+                AskUserOption(label="Other", consequence="Pick one."),
+            ],
+        )
+    )
+    await _record(service, worker, again, _shown(again))
+    tap = AskUserAnswerEvent(ask_id=passed_id, option_index=0, option_label="Postgres")
+
+    await _record(service, cat, tap)
+
+    assert not await pass_on_answer(service, cat, project, tap.id, "Postgres", None)
+    await _passed_on(service, cat, worker)
+    assert await _answers(service, worker) == []
+
+
+@pytest.mark.asyncio
+async def test_an_old_card_does_not_answer_a_newer_open_question(
+    client, service, tmp_path
+):
+    project, cat, worker = await _project(client, service, tmp_path)
+    passed = _ask(
+        AskUserForConversationAction(
+            question="Which name for the cat?",
+            options=[
+                AskUserOption(label="Mochi", consequence="Short."),
+                AskUserOption(label="Juniper", consequence="Longer."),
+            ],
+            for_conversation=str(worker),
+        )
+    )
+    await _record(service, cat, passed, _shown(passed))
+    # The user went on in the worker, which ended a new turn on a question.
+    await _record(service, worker, _user("Call it Mochi. Which color?"))
+    await service.projects.set_conversation_tag(worker, "turn", "asking")
+    await service.projects.set_conversation_tag(worker, "ask", "Which color?")
+
+    tap = AskUserAnswerEvent(ask_id=passed.id, option_index=1, option_label="Juniper")
+    await _record(service, cat, tap)
+
+    assert not await pass_on_answer(service, cat, project, tap.id, "Juniper", None)
+    await _passed_on(service, cat, worker)
+    messages = [
+        e for e in await _events(service, worker) if isinstance(e, MessageEvent)
+    ]
+    assert len(messages) == 1  # the user's own; no answer was passed on
 
 
 @pytest.mark.asyncio

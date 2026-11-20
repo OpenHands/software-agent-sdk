@@ -24,15 +24,18 @@ from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.event_router import event_router
-from openhands.agent_server.event_service import (
-    ConversationRunLimitExceeded,
-    EventService,
-)
+from openhands.agent_server.event_service import EventService
+from openhands.agent_server.exceptions import ConversationRunLimitExceeded
 from openhands.agent_server.models import (
     StartConversationRequest,
     UpdateConversationRequest,
 )
-from openhands.agent_server.persistence import ServerStores
+from openhands.agent_server.persistence import (
+    PersistedProjects,
+    PersistedSettings,
+    ProjectItem,
+    ServerStores,
+)
 from openhands.agent_server.project_wake import (
     notify_coordinator,
     notify_coordinator_of_stop,
@@ -42,9 +45,14 @@ from openhands.agent_server.project_wake import (
 from openhands.agent_server.projects_router import projects_router
 from openhands.sdk import LLM, Agent, Message, TextContent
 from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.errors import Unprocessable
 from openhands.sdk.event import MessageEvent
+from openhands.sdk.profiles import ACPAgentProfile, OpenHandsAgentProfile
 from openhands.sdk.workspace import LocalWorkspace
 from tests.agent_server.conftest import install_test_context, update_test_context
+
+
+pytestmark = pytest.mark.projects_on
 
 
 @pytest.fixture
@@ -118,6 +126,29 @@ async def _join(
         conversation_id, "project", project_id
     )
     assert tags is not None
+
+
+async def _project_led_by(
+    client: httpx.AsyncClient,
+    stores: ServerStores,
+    service: ConversationService,
+    coordinator: UUID,
+) -> dict:
+    """A project led by ``coordinator``, as starting a new coordinator leaves it."""
+    project = (await client.post("/api/projects", json={"name": "P"})).json()
+    await _join(service, project["id"], coordinator)
+
+    def lead(current: PersistedProjects) -> PersistedProjects:
+        projects = [
+            p.model_copy(update={"coordinator_conversation_id": coordinator})
+            if p.id.hex == project["id"]
+            else p
+            for p in current.projects
+        ]
+        return current.model_copy(update={"projects": projects})
+
+    stores.projects.update(lead)
+    return {**project, "coordinator_conversation_id": coordinator.hex}
 
 
 async def _set_status(
@@ -215,8 +246,9 @@ async def test_delete_removes_project_and_keeps_conversations(
     client, service, tmp_path
 ):
     project = (await client.post("/api/projects", json={"name": "P"})).json()
-    conversation_id = await _start(service, tmp_path)
+    conversation_id = await _start(service, tmp_path, tags={"env": "dev"})
     await _join(service, project["id"], conversation_id)
+    await service.projects.set_conversation_tag(conversation_id, "turn", "asking")
 
     response = await client.delete(f"/api/projects/{project['id']}")
 
@@ -224,7 +256,8 @@ async def test_delete_removes_project_and_keeps_conversations(
     assert response.json() == {"deleted": True}
     assert (await client.get("/api/projects")).json() == {"projects": []}
     assert await service.get_conversation(conversation_id) is not None
-    assert await _tags(service, conversation_id) == {"project": project["id"]}
+    # The project's tags go with it; the conversation's own stay.
+    assert await _tags(service, conversation_id) == {"env": "dev"}
 
 
 @pytest.mark.asyncio
@@ -252,88 +285,52 @@ async def test_newer_schema_is_refused(client, persistence_dir):
 
 
 @pytest.mark.asyncio
-async def test_create_with_coordinator_tags_it_and_keeps_other_tags(
-    client, service, tmp_path
+async def test_a_docker_coordinator_is_refused_before_the_project_is_saved(
+    client, persistence_dir, tmp_path
 ):
-    cat = await _start(service, tmp_path, tags={"insidercat": "self"})
-
     response = await client.post(
         "/api/projects",
-        json={"name": "P", "coordinator_conversation_id": str(cat)},
+        json={
+            "name": "P",
+            "coordinator": {
+                "working_dir": str(tmp_path),
+                "conversation_runtime": "docker",
+            },
+        },
     )
 
-    assert response.status_code == 201
-    project = response.json()
-    assert project["coordinator_conversation_id"] == cat.hex
-    assert await _tags(service, cat) == {"insidercat": "self", "project": project["id"]}
-
-    conversations = (
-        await client.get(f"/api/projects/{project['id']}/conversations")
-    ).json()
-    assert conversations["coordinator"]["conversation_id"] == cat.hex
-    assert conversations["conversations"] == []
-
-
-@pytest.mark.asyncio
-async def test_create_with_missing_coordinator_writes_nothing(client, persistence_dir):
-    response = await client.post(
-        "/api/projects",
-        json={"name": "P", "coordinator_conversation_id": str(uuid4())},
-    )
-
-    assert response.status_code == 404
+    assert response.status_code == 422
+    assert "only runs local conversations" in str(response.json()["detail"])
     assert not (persistence_dir / "projects.json").exists()
 
 
 @pytest.mark.asyncio
-async def test_patch_sets_and_clears_coordinator(client, service, tmp_path):
-    project = (await client.post("/api/projects", json={"name": "P"})).json()
-    cat = await _start(service, tmp_path)
+async def test_an_acp_coordinator_is_refused_before_the_project_is_saved(
+    client, stores, persistence_dir, tmp_path
+):
+    acp = ACPAgentProfile(name="acp", acp_server="claude-code")
+    stores.agent_profiles.save(acp)
+    stores.settings.save(PersistedSettings(active_agent_profile_id=str(acp.id)))
 
-    set_response = await client.patch(
-        f"/api/projects/{project['id']}",
-        json={"coordinator_conversation_id": cat.hex},
+    named = await client.post(
+        "/api/projects",
+        json={
+            "name": "P",
+            "coordinator": {
+                "working_dir": str(tmp_path),
+                "agent_profile_id": acp.id.hex,
+            },
+        },
     )
-    assert set_response.json()["coordinator_conversation_id"] == cat.hex
-    assert (await _tags(service, cat))["project"] == project["id"]
-
-    # Omitting the field leaves the coordinator alone.
-    renamed = await client.patch(f"/api/projects/{project['id']}", json={"name": "Q"})
-    assert renamed.json()["coordinator_conversation_id"] == cat.hex
-
-    cleared = await client.patch(
-        f"/api/projects/{project['id']}",
-        json={"coordinator_conversation_id": None},
-    )
-    assert cleared.json()["coordinator_conversation_id"] is None
-    # The former coordinator stays a member, now listed with the others.
-    conversations = (
-        await client.get(f"/api/projects/{project['id']}/conversations")
-    ).json()
-    assert conversations["coordinator"] is None
-    assert [t["conversation_id"] for t in conversations["conversations"]] == [cat.hex]
-
-
-@pytest.mark.asyncio
-async def test_a_coordinator_leads_one_project(client, service, tmp_path):
-    cat = await _start(service, tmp_path)
-    first = (
-        await client.post(
-            "/api/projects", json={"name": "A", "coordinator_conversation_id": cat.hex}
-        )
-    ).json()
-    second = (await client.post("/api/projects", json={"name": "B"})).json()
-
-    as_coordinator = await client.post(
-        "/api/projects", json={"name": "C", "coordinator_conversation_id": cat.hex}
-    )
-    as_new_coordinator = await client.patch(
-        f"/api/projects/{second['id']}", json={"coordinator_conversation_id": cat.hex}
+    active = await client.post(
+        "/api/projects",
+        json={"name": "P", "coordinator": {"working_dir": str(tmp_path)}},
     )
 
-    assert as_coordinator.status_code == 409
-    assert as_new_coordinator.status_code == 409
-    assert (await _tags(service, cat))["project"] == first["id"]
+    assert named.status_code == 422
+    assert active.status_code == 422
+    assert "ACP agent" in active.json()["detail"]
+    assert (await client.get("/api/projects")).json()["projects"] == []
 
 
 # Conversations
@@ -374,14 +371,10 @@ async def test_conversations_are_grouped_by_attention(client, service, tmp_path)
 
 @pytest.mark.asyncio
 async def test_tagged_children_are_conversations_with_their_parent(
-    client, service, tmp_path
+    client, stores, service, tmp_path
 ):
     cat = await _start(service, tmp_path)
-    project = (
-        await client.post(
-            "/api/projects", json={"name": "P", "coordinator_conversation_id": cat.hex}
-        )
-    ).json()
+    project = await _project_led_by(client, stores, service, cat)
     # A child copies its parent's tags, as ``start_child_conversation`` does.
     child = await _start(
         service, tmp_path, tags=await _tags(service, cat), parent=cat, title="child"
@@ -436,14 +429,10 @@ async def test_remove_leaves_a_member_of_another_project_alone(
 
 @pytest.mark.asyncio
 async def test_coordinator_cannot_be_removed_from_its_project(
-    client, service, tmp_path
+    client, stores, service, tmp_path
 ):
     cat = await _start(service, tmp_path)
-    project = (
-        await client.post(
-            "/api/projects", json={"name": "P", "coordinator_conversation_id": cat.hex}
-        )
-    ).json()
+    project = await _project_led_by(client, stores, service, cat)
 
     response = await client.delete(
         f"/api/projects/{project['id']}/conversations/{cat.hex}"
@@ -475,7 +464,6 @@ def _send(text: str, sender: UUID | str | None = None, **extra) -> dict:
         "role": "user",
         "content": [{"type": "text", "text": text}],
         "run": True,
-        "refuse_pending_confirmation": True,
         **extra,
     }
     if sender is not None:
@@ -491,32 +479,6 @@ async def _user_messages(service: ConversationService, conversation_id: UUID) ->
         1
         for event in state.events
         if isinstance(event, MessageEvent) and event.source == "user"
-    )
-
-
-@pytest.mark.asyncio
-async def test_message_refuses_conversation_waiting_for_confirmation(
-    client, service, tmp_path
-):
-    project = (await client.post("/api/projects", json={"name": "P"})).json()
-    worker = await _start(service, tmp_path)
-    await _join(service, project["id"], worker)
-    await _set_status(
-        service, worker, ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
-    )
-
-    response = await client.post(
-        f"/api/conversations/{worker.hex}/events",
-        json=_send("go ahead"),
-    )
-
-    assert response.status_code == 409
-    assert await _user_messages(service, worker) == 0
-    event_service = await service.get_event_service(worker)
-    assert event_service is not None
-    state = await event_service.get_state()
-    assert (
-        state.execution_status == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
     )
 
 
@@ -558,47 +520,44 @@ async def test_sender_outside_any_project_is_named_as_a_conversation(
     assert "another conversation, not by the user" in header
 
 
-@pytest.mark.asyncio
-async def test_message_runs_member_with_guard(client, service, tmp_path, monkeypatch):
-    project = (await client.post("/api/projects", json={"name": "P"})).json()
-    worker = await _start(service, tmp_path)
-    await _join(service, project["id"], worker)
-    calls: list[dict] = []
-
-    async def fake_send(self, message, run=False, **kwargs):
-        calls.append({"text": message.content[0].text, "run": run, **kwargs})
-        return "started"
-
-    monkeypatch.setattr(EventService, "send_message", fake_send)
+async def _tagged_sender_reaches_untagged(client, service, tmp_path, monkeypatch):
+    sender = await _start(service, tmp_path)
+    await service.projects.set_conversation_tag(sender, "project", "billing")
+    target = await _start(service, tmp_path)
+    _save_without_running(monkeypatch)
 
     response = await client.post(
-        f"/api/conversations/{worker.hex}/events",
-        json=_send("Also add docs"),
+        f"/api/conversations/{target.hex}/events", json=_send("hi", sender.hex)
     )
 
-    assert response.status_code == 200
-    assert response.json() == {
-        "success": True,
-        "previous_status": "idle",
-        "run": "started",
-    }
-    assert calls == [
-        {
-            "text": "Also add docs",
-            "run": True,
-            "refuse_pending_confirmation": True,
-            "sender": None,
-        }
-    ]
+    assert response.status_code == 200, response.text
+    event = await _last_user_message(service, target)
+    assert event.sender == f"conversation:{sender.hex}"
+    header = event.llm_message.content[0].text  # type: ignore[union-attr]
+    assert "another conversation, not by the user" in header
+
+
+@pytest.mark.asyncio
+async def test_a_project_tag_naming_no_project_is_ordinary_for_senders(
+    client, service, tmp_path, monkeypatch
+):
+    """A client's own ``project`` tag does not limit whom it can message."""
+    await _tagged_sender_reaches_untagged(client, service, tmp_path, monkeypatch)
+
+
+@pytest.mark.asyncio
+@pytest.mark.projects_off
+async def test_with_projects_off_a_project_tag_does_not_limit_senders(
+    client, service, tmp_path, monkeypatch
+):
+    await _tagged_sender_reaches_untagged(client, service, tmp_path, monkeypatch)
 
 
 def _save_without_running(monkeypatch) -> None:
     original = EventService.send_message
 
     async def save_only(self, message, run=False, **kwargs):
-        kwargs.pop("refuse_pending_confirmation", None)
         await original(self, message, False, **kwargs)
-        return "started"
 
     monkeypatch.setattr(EventService, "send_message", save_only)
 
@@ -617,19 +576,15 @@ async def _last_user_message(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("from_coordinator", [True, False])
 async def test_message_records_its_sender(
-    client, service, tmp_path, monkeypatch, from_coordinator
+    client, stores, service, tmp_path, monkeypatch, from_coordinator
 ):
     cat = await _start(service, tmp_path)
     worker = await _start(service, tmp_path)
     project = (
-        await client.post(
-            "/api/projects",
-            json={
-                "name": "P",
-                "coordinator_conversation_id": cat.hex if from_coordinator else None,
-            },
-        )
-    ).json()
+        await _project_led_by(client, stores, service, cat)
+        if from_coordinator
+        else (await client.post("/api/projects", json={"name": "P"})).json()
+    )
     for member in (cat, worker):
         await _join(service, project["id"], member)
     _save_without_running(monkeypatch)
@@ -668,54 +623,6 @@ async def test_message_refuses_a_sender_outside_the_project(client, service, tmp
 
 
 @pytest.mark.asyncio
-async def test_guarded_send_keeps_message_and_does_not_approve(service, tmp_path):
-    """The race the endpoint guards against: the conversation is already waiting
-    when the guarded send runs (the endpoint's own pre-check saw it idle)."""
-    worker = await _start(service, tmp_path)
-    await _set_status(
-        service, worker, ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
-    )
-    event_service = await service.get_event_service(worker)
-    assert event_service is not None
-
-    with pytest.raises(ValueError, match="waiting_for_confirmation"):
-        await event_service.send_message(
-            Message(role="user", content=[TextContent(text="go ahead")]),
-            run=True,
-            refuse_pending_confirmation=True,
-        )
-
-    assert await _user_messages(service, worker) == 1
-    state = await event_service.get_state()
-    assert (
-        state.execution_status == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
-    )
-    assert event_service._run_task is None
-
-
-@pytest.mark.asyncio
-async def test_send_reports_queued_while_a_run_is_active(service, tmp_path):
-    worker = await _start(service, tmp_path)
-    event_service = await service.get_event_service(worker)
-    assert event_service is not None
-    active = asyncio.get_running_loop().create_future()
-    event_service._run_task = active  # a run that has not ended yet
-    try:
-        outcome = await event_service.send_message(
-            Message(role="user", content=[TextContent(text="also")]),
-            run=True,
-            refuse_pending_confirmation=True,
-        )
-    finally:
-        event_service._run_task = None
-        active.cancel()
-        event_service._rerun_requested = False
-
-    assert outcome == "queued"
-    assert await _user_messages(service, worker) == 1
-
-
-@pytest.mark.asyncio
 async def test_send_without_run_returns_none(service, tmp_path):
     worker = await _start(service, tmp_path)
     event_service = await service.get_event_service(worker)
@@ -728,27 +635,6 @@ async def test_send_without_run_returns_none(service, tmp_path):
     assert outcome is None
 
 
-@pytest.mark.asyncio
-async def test_a_sender_conversation_is_always_guarded(client, service, tmp_path):
-    """Review: a message from another conversation never approves pending
-    actions, even when its sender leaves refuse_pending_confirmation off."""
-    sender = await _start(service, tmp_path)
-    worker = await _start(service, tmp_path)
-    await _set_status(
-        service, worker, ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
-    )
-
-    response = await client.post(
-        f"/api/conversations/{worker.hex}/events",
-        json=_send("go ahead", sender.hex, refuse_pending_confirmation=False),
-    )
-
-    assert response.status_code == 409
-    # The status that refused it is a field, so clients need not parse words.
-    assert response.json()["status"] == "waiting_for_confirmation"
-    assert await _user_messages(service, worker) == 0
-
-
 def test_sender_fields_are_left_out_of_a_plain_message():
     """The sender fields live on SendMessageRequest, but a user's own message
     serializes exactly as before they existed."""
@@ -756,126 +642,8 @@ def test_sender_fields_are_left_out_of_a_plain_message():
 
     plain = SendMessageRequest(content=[TextContent(text="hi")])
     assert "sender_conversation_id" not in plain.model_dump()
-    assert "refuse_pending_confirmation" not in plain.model_dump()
-    sent = SendMessageRequest(
-        sender_conversation_id=uuid4(), refuse_pending_confirmation=True
-    ).model_dump(mode="json")
-    assert sent["refuse_pending_confirmation"] is True
+    sent = SendMessageRequest(sender_conversation_id=uuid4()).model_dump(mode="json")
     assert "sender_conversation_id" in sent
-
-
-@pytest.mark.asyncio
-async def test_a_guarded_message_leaves_a_stuck_conversation_stuck(service, tmp_path):
-    """Review: saving a message resets stuck to idle, which would let the
-    guarded run retry work the user has not looked at."""
-    worker = await _start(service, tmp_path)
-    await _set_status(service, worker, ConversationExecutionStatus.STUCK)
-    event_service = await service.get_event_service(worker)
-    assert event_service is not None
-
-    with pytest.raises(ValueError, match="stuck"):
-        await event_service.send_message(
-            Message(role="user", content=[TextContent(text="try again")]),
-            run=True,
-            refuse_pending_confirmation=True,
-        )
-
-    assert await _user_messages(service, worker) == 1
-    state = await event_service.get_state()
-    assert state.execution_status == ConversationExecutionStatus.STUCK
-    assert event_service._run_task is None
-
-
-@pytest.mark.asyncio
-async def test_send_reports_not_run_when_a_stop_lands_first(
-    service, tmp_path, monkeypatch
-):
-    """Review: run() can return without scheduling anything; the message is
-    then not reported as started."""
-    worker = await _start(service, tmp_path)
-    event_service = await service.get_event_service(worker)
-    assert event_service is not None
-    original = EventService.run
-
-    async def stopped_while_waiting(self, *args, **kwargs):
-        self._explicit_interrupt_generation += 1  # a stop won the run lock
-        return await original(self, *args, **kwargs)
-
-    monkeypatch.setattr(EventService, "run", stopped_while_waiting)
-
-    outcome = await event_service.send_message(
-        Message(role="user", content=[TextContent(text="also")]),
-        run=True,
-        refuse_pending_confirmation=True,
-    )
-
-    assert outcome == "not_run"
-    assert event_service._run_task is None
-    assert await _user_messages(service, worker) == 1
-
-
-@pytest.mark.asyncio
-async def test_a_guarded_acp_follow_up_resumes_its_own_interrupt(service, tmp_path):
-    """Review: a follow-up to a running ACP conversation interrupts the prompt
-    (paused) and starts a replacement run, which the guard must not refuse.
-    A pause the user made, or pending actions, still refuse."""
-    worker = await _start(service, tmp_path)
-    event_service = await service.get_event_service(worker)
-    assert event_service is not None
-    conversation = event_service._conversation
-    assert conversation is not None
-    ran = asyncio.Event()
-
-    async def arun() -> None:
-        ran.set()
-
-    conversation.arun = arun  # type: ignore[method-assign]
-    await _set_status(service, worker, ConversationExecutionStatus.PAUSED)
-
-    with pytest.raises(ValueError, match="paused"):
-        await event_service.run(refuse_pending_confirmation=True)
-    started = await event_service.run(
-        refuse_pending_confirmation=True, _resuming_internal_acp_pause=True
-    )
-
-    assert started is True
-    await asyncio.wait_for(ran.wait(), 5)
-    await event_service.wait_for_run_completion(timeout=5)
-
-    await _set_status(
-        service, worker, ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
-    )
-    with pytest.raises(ValueError, match="waiting_for_confirmation"):
-        await event_service.run(
-            refuse_pending_confirmation=True, _resuming_internal_acp_pause=True
-        )
-
-
-@pytest.mark.asyncio
-async def test_failed_coordinator_tag_undoes_the_whole_patch(
-    client, service, tmp_path, monkeypatch
-):
-    old = await _start(service, tmp_path)
-    new = await _start(service, tmp_path)
-    project = (
-        await client.post(
-            "/api/projects", json={"name": "P", "coordinator_conversation_id": old.hex}
-        )
-    ).json()
-
-    async def vanished(*args, **kwargs):
-        return None
-
-    monkeypatch.setattr(service.projects, "set_conversation_tag", vanished)
-    response = await client.patch(
-        f"/api/projects/{project['id']}",
-        json={"name": "Q", "coordinator_conversation_id": new.hex},
-    )
-
-    assert response.status_code == 404
-    current = (await client.get(f"/api/projects/{project['id']}")).json()
-    assert current["name"] == "P"
-    assert current["coordinator_conversation_id"] == old.hex
 
 
 @pytest.mark.asyncio
@@ -1150,15 +918,11 @@ async def test_new_tags_are_read_before_the_state_is_saved(
 
 @pytest.mark.asyncio
 async def test_a_finished_member_wakes_its_coordinator(
-    client, service, tmp_path, monkeypatch
+    client, stores, service, tmp_path, monkeypatch
 ):
     cat = await _start(service, tmp_path)
     worker = await _start(service, tmp_path)
-    project = (
-        await client.post(
-            "/api/projects", json={"name": "P", "coordinator_conversation_id": cat.hex}
-        )
-    ).json()
+    project = await _project_led_by(client, stores, service, cat)
     await _join(service, project["id"], worker)
     _save_without_running(monkeypatch)
 
@@ -1179,16 +943,48 @@ async def test_a_finished_member_wakes_its_coordinator(
     assert text == "Which database should I use?"
 
 
+@pytest.mark.parametrize(
+    ("status", "runs"),
+    [
+        (ConversationExecutionStatus.WAITING_FOR_CONFIRMATION, False),
+        (ConversationExecutionStatus.IDLE, True),
+    ],
+)
+@pytest.mark.asyncio
+async def test_an_update_never_approves_the_coordinators_pending_actions(
+    client, stores, service, tmp_path, monkeypatch, status, runs
+):
+    """A run would approve them, so the update is saved for the next run."""
+    cat = await _start(service, tmp_path)
+    worker = await _start(service, tmp_path)
+    project = await _project_led_by(client, stores, service, cat)
+    await _join(service, project["id"], worker)
+    await _set_status(service, cat, status)
+    asked: list[bool] = []
+    original = EventService.send_message
+
+    async def record(self, message, run=False, **kwargs):
+        asked.append(run)
+        await original(self, message, False, **kwargs)
+
+    monkeypatch.setattr(EventService, "send_message", record)
+
+    assert await notify_coordinator(
+        service, worker, project["id"], "finished", "Done.", f"conversation:{cat.hex}"
+    )
+
+    assert asked == [runs]
+    assert (await _last_user_message(service, cat)).sender == (
+        f"conversation:{worker.hex}"
+    )
+
+
 @pytest.mark.asyncio
 async def test_no_update_without_a_coordinator_or_to_itself(
-    client, service, tmp_path, monkeypatch
+    client, stores, service, tmp_path, monkeypatch
 ):
     cat = await _start(service, tmp_path)
-    project = (
-        await client.post(
-            "/api/projects", json={"name": "P", "coordinator_conversation_id": cat.hex}
-        )
-    ).json()
+    project = await _project_led_by(client, stores, service, cat)
     bare = (await client.post("/api/projects", json={"name": "Q"})).json()
     _save_without_running(monkeypatch)
 
@@ -1204,7 +1000,7 @@ async def test_no_update_without_a_coordinator_or_to_itself(
 
 @pytest.mark.asyncio
 async def test_only_the_coordinators_turns_wake_it(
-    client, service, tmp_path, monkeypatch
+    client, stores, service, tmp_path, monkeypatch
 ):
     """The coordinator runs on replies to its own messages. A turn the user
     started is passed on without a run, and a turn another member started (or
@@ -1212,11 +1008,7 @@ async def test_only_the_coordinators_turns_wake_it(
     cat = await _start(service, tmp_path)
     worker = await _start(service, tmp_path, title="worker")
     peer = await _start(service, tmp_path)
-    project = (
-        await client.post(
-            "/api/projects", json={"name": "P", "coordinator_conversation_id": cat.hex}
-        )
-    ).json()
+    project = await _project_led_by(client, stores, service, cat)
     for member in (worker, peer):
         await _join(service, project["id"], member)
     runs = _record_runs(monkeypatch)
@@ -1245,7 +1037,6 @@ def _record_runs(monkeypatch) -> list[bool]:
 
     async def save_only(self, message, run=False, **kwargs):
         runs.append(run)
-        kwargs.pop("refuse_pending_confirmation", None)
         await original(self, message, False, **kwargs)
         return "started" if run else None
 
@@ -1255,15 +1046,11 @@ def _record_runs(monkeypatch) -> list[bool]:
 
 @pytest.mark.asyncio
 async def test_the_users_message_in_a_member_reaches_the_coordinator(
-    client, service, tmp_path, monkeypatch
+    client, stores, service, tmp_path, monkeypatch
 ):
     cat = await _start(service, tmp_path)
     worker = await _start(service, tmp_path, title="worker")
-    project = (
-        await client.post(
-            "/api/projects", json={"name": "P", "coordinator_conversation_id": cat.hex}
-        )
-    ).json()
+    project = await _project_led_by(client, stores, service, cat)
     await _join(service, project["id"], worker)
     runs = _record_runs(monkeypatch)
 
@@ -1281,16 +1068,12 @@ async def test_the_users_message_in_a_member_reaches_the_coordinator(
 
 @pytest.mark.asyncio
 async def test_transcript_lists_messages_with_their_senders(
-    client, service, tmp_path, monkeypatch
+    client, stores, service, tmp_path, monkeypatch
 ):
     cat = await _start(service, tmp_path)
     worker = await _start(service, tmp_path)
     outsider = await _start(service, tmp_path)
-    project = (
-        await client.post(
-            "/api/projects", json={"name": "P", "coordinator_conversation_id": cat.hex}
-        )
-    ).json()
+    project = await _project_led_by(client, stores, service, cat)
     await _join(service, project["id"], worker)
     _save_without_running(monkeypatch)
     await client.post(
@@ -1484,15 +1267,11 @@ async def test_deleting_a_project_deletes_its_memory(client, persistence_dir):
 
 @pytest.mark.asyncio
 async def test_an_update_leaves_the_coordinators_goal_loop_running(
-    client, service, tmp_path, monkeypatch
+    client, stores, service, tmp_path, monkeypatch
 ):
     cat = await _start(service, tmp_path)
     worker = await _start(service, tmp_path)
-    project = (
-        await client.post(
-            "/api/projects", json={"name": "P", "coordinator_conversation_id": cat.hex}
-        )
-    ).json()
+    project = await _project_led_by(client, stores, service, cat)
     await _join(service, project["id"], worker)
     _save_without_running(monkeypatch)
     stopped: list[UUID] = []
@@ -1515,13 +1294,17 @@ async def test_an_update_leaves_the_coordinators_goal_loop_running(
 
 @pytest.mark.asyncio
 async def test_a_project_names_its_workers_agent_profile(client, stores):
-    known = uuid4()
-    stores._built["agent_profiles"] = SimpleNamespace(
-        name_for_id=lambda pid: "worker" if pid == known else None
-    )
+    worker = OpenHandsAgentProfile(name="worker", llm_profile_ref="default")
+    stores.agent_profiles.save(worker)
+    known = worker.id
+    acp = ACPAgentProfile(name="acp", acp_server="claude-code")
+    stores.agent_profiles.save(acp)
 
     unknown = await client.post(
         "/api/projects", json={"name": "P", "worker_agent_profile_id": str(uuid4())}
+    )
+    refused = await client.post(
+        "/api/projects", json={"name": "P", "worker_agent_profile_id": str(acp.id)}
     )
     project = (
         await client.post(
@@ -1538,6 +1321,8 @@ async def test_a_project_names_its_workers_agent_profile(client, stores):
     ).json()
 
     assert unknown.status_code == 404
+    assert refused.status_code == 422
+    assert "ACP agent" in refused.json()["detail"]
     assert project["worker_agent_profile_id"] == known.hex
     assert renamed["worker_agent_profile_id"] == known.hex
     assert cleared["worker_agent_profile_id"] is None
@@ -1605,84 +1390,21 @@ async def test_a_coordinator_that_cannot_start_leaves_no_project(
         "/api/projects",
         json={"name": "P", "coordinator": {"working_dir": str(tmp_path)}},
     )
-    both = await client.post(
-        "/api/projects",
-        json={
-            "name": "P",
-            "coordinator": {"working_dir": str(tmp_path)},
-            "coordinator_conversation_id": str(uuid4()),
-        },
-    )
 
     assert response.status_code == 422
     assert "No agent profile" in response.json()["detail"]
-    assert both.status_code == 422
     assert (await client.get("/api/projects")).json()["projects"] == []
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "held",
-    [
-        ConversationExecutionStatus.PAUSED,
-        ConversationExecutionStatus.ERROR,
-        ConversationExecutionStatus.STUCK,
-    ],
-)
-async def test_message_does_not_resume_work_the_user_stopped(
-    client, service, tmp_path, held
-):
-    """Review S3: a coordinator's follow-up used to resume a paused worker
-    (and run any actions left over from its interrupted batch)."""
-    project = (await client.post("/api/projects", json={"name": "P"})).json()
-    worker = await _start(service, tmp_path)
-    await _join(service, project["id"], worker)
-    await _set_status(service, worker, held)
-
-    response = await client.post(
-        f"/api/conversations/{worker.hex}/events", json=_send("carry on")
-    )
-
-    assert response.status_code == 409
-    assert await _user_messages(service, worker) == 0
-    event_service = await service.get_event_service(worker)
-    assert event_service is not None
-    assert (await event_service.get_state()).execution_status == held
-
-
-@pytest.mark.asyncio
-async def test_guarded_send_keeps_the_message_of_a_paused_conversation(
-    service, tmp_path
-):
-    worker = await _start(service, tmp_path)
-    await _set_status(service, worker, ConversationExecutionStatus.PAUSED)
-    event_service = await service.get_event_service(worker)
-    assert event_service is not None
-
-    with pytest.raises(ValueError, match="paused"):
-        await event_service.send_message(
-            Message(role="user", content=[TextContent(text="carry on")]),
-            run=True,
-            refuse_pending_confirmation=True,
-        )
-
-    assert await _user_messages(service, worker) == 1
-    assert event_service._run_task is None
-
-
-@pytest.mark.asyncio
 async def test_a_member_stopped_on_the_user_wakes_its_coordinator(
-    client, service, tmp_path, monkeypatch
+    client, stores, service, tmp_path, monkeypatch
 ):
     """Review S1: the coordinator learns that a worker it started waits on the
     user, and runs to tell them; a pause is only noted."""
     cat = await _start(service, tmp_path)
     worker = await _start(service, tmp_path, title="worker")
-    project = (
-        await client.post(
-            "/api/projects", json={"name": "P", "coordinator_conversation_id": cat.hex}
-        )
-    ).json()
+    project = await _project_led_by(client, stores, service, cat)
     await _join(service, project["id"], worker)
     runs = _record_runs(monkeypatch)
     by_cat = f"conversation:{cat.hex}"
@@ -1719,22 +1441,17 @@ async def test_a_member_stopped_on_the_user_wakes_its_coordinator(
 
 @pytest.mark.asyncio
 async def test_an_update_waits_for_a_run_slot_instead_of_being_dropped(
-    client, service, tmp_path, monkeypatch
+    client, stores, service, tmp_path, monkeypatch
 ):
     """Review S2: with every run slot taken, an update was saved but nothing
     ever ran the coordinator on it."""
     cat = await _start(service, tmp_path)
     worker = await _start(service, tmp_path)
-    project = (
-        await client.post(
-            "/api/projects", json={"name": "P", "coordinator_conversation_id": cat.hex}
-        )
-    ).json()
+    project = await _project_led_by(client, stores, service, cat)
     await _join(service, project["id"], worker)
     original = EventService.send_message
 
     async def full(self, message, run=False, **kwargs):
-        kwargs.pop("refuse_pending_confirmation", None)
         await original(self, message, False, **kwargs)
         if run:
             raise ConversationRunLimitExceeded("full")
@@ -1788,18 +1505,14 @@ async def _agent_says(
 
 @pytest.mark.asyncio
 async def test_a_restart_delivers_the_updates_it_missed(
-    client, service, tmp_path, monkeypatch
+    client, stores, service, tmp_path, monkeypatch
 ):
     """Review S2/F3: a turn the coordinator started that ended while no update
     reached it (the server stopped first) is delivered on the next start,
     once; turns the user started are not replayed."""
     cat = await _start(service, tmp_path)
     worker = await _start(service, tmp_path, title="worker")
-    project = (
-        await client.post(
-            "/api/projects", json={"name": "P", "coordinator_conversation_id": cat.hex}
-        )
-    ).json()
+    project = await _project_led_by(client, stores, service, cat)
     await _join(service, project["id"], worker)
     runs = _record_runs(monkeypatch)
     worker_service = await service.get_event_service(worker)
@@ -1860,22 +1573,16 @@ async def test_a_restart_delivers_the_updates_it_missed(
 
 
 @pytest.mark.asyncio
-async def test_a_pause_from_a_restart_is_not_the_users(
-    client, service, tmp_path, monkeypatch
+async def test_a_worker_stopped_by_a_shutdown_is_reported_after_the_restart(
+    client, stores, service, tmp_path, monkeypatch
 ):
-    """E2E finding: a worker the shutdown paused was reported as paused by the
-    user. The shutdown sends nothing; the catch-up names the restart and
-    wakes the coordinator. A later pause by the user reads as theirs."""
-    from openhands.agent_server.event_service import PAUSED_BY_SHUTDOWN_MARKER
+    """While the server goes down, nothing is sent; the catch-up after it
+    starts again reports the worker in the status it came back in."""
     from openhands.agent_server.project_wake import notify_coordinator_of_stop
 
     cat = await _start(service, tmp_path)
     worker = await _start(service, tmp_path, title="worker")
-    project = (
-        await client.post(
-            "/api/projects", json={"name": "P", "coordinator_conversation_id": cat.hex}
-        )
-    ).json()
+    project = await _project_led_by(client, stores, service, cat)
     await _join(service, project["id"], worker)
     runs = _record_runs(monkeypatch)
     worker_service = await service.get_event_service(worker)
@@ -1893,12 +1600,9 @@ async def test_a_pause_from_a_restart_is_not_the_users(
     await _agent_says(
         service, worker, "Running the tests now.", ConversationExecutionStatus.PAUSED
     )
-    worker_service._mark_paused_by_shutdown(True)
-    assert (service.conversations_dir / worker.hex / PAUSED_BY_SHUTDOWN_MARKER).exists()
     copies = await _user_messages(service, cat)
     runs.clear()
 
-    # While the server goes down, nothing is sent.
     worker_service._closing = True
     try:
         assert not await notify_coordinator_of_stop(
@@ -1913,55 +1617,10 @@ async def test_a_pause_from_a_restart_is_not_the_users(
         worker_service._closing = False
     assert await _user_messages(service, cat) == copies
 
-    # Back up: the catch-up names the restart and wakes the coordinator.
     assert await reconcile_coordinator_updates(service) == 1
-    header = (await _last_user_message(service, cat)).llm_message.content[0].text  # type: ignore[union-attr]
-    assert header.startswith("[Update from ") and "server restart" in header
-    assert "Paused by the user" not in header
-    assert runs == [True]
-
-    # An error status read while the mark is set is the same restart.
-    assert await notify_coordinator_of_stop(
-        service, worker, project["id"], "error", "x", f"conversation:{cat.hex}"
-    )
-    header = (await _last_user_message(service, cat)).llm_message.content[0].text  # type: ignore[union-attr]
-    assert "server restart" in header
-
-    # A run clears the mark, so the user's own pause later reads as theirs.
-    worker_service._mark_paused_by_shutdown(False)
-    assert not worker_service.paused_by_shutdown
-    runs.clear()
-    assert await notify_coordinator_of_stop(
-        service,
-        worker,
-        project["id"],
-        "paused",
-        "x",
-        f"conversation:{cat.hex}",
-    )
     header = (await _last_user_message(service, cat)).llm_message.content[0].text  # type: ignore[union-attr]
     assert header.startswith("[Paused by the user: ")
     assert runs == [False]
-
-
-@pytest.mark.asyncio
-async def test_a_run_clears_the_shutdown_mark(service, tmp_path):
-    worker = await _start(service, tmp_path)
-    event_service = await service.get_event_service(worker)
-    assert event_service is not None
-    conversation = event_service._conversation
-    assert conversation is not None
-
-    async def arun() -> None:
-        return None
-
-    conversation.arun = arun  # type: ignore[method-assign]
-    event_service._mark_paused_by_shutdown(True)
-    assert event_service.paused_by_shutdown
-
-    assert await event_service.run() is True
-    await event_service.wait_for_run_completion(timeout=5)
-    assert not event_service.paused_by_shutdown
 
 
 @pytest.mark.asyncio
@@ -2074,14 +1733,15 @@ async def test_resolve_by_the_agent_is_auto_and_never_over_the_user(
 
 
 @pytest.mark.asyncio
-async def test_a_client_patch_keeps_the_tags_the_server_owns(service, tmp_path):
+async def test_a_client_patch_keeps_the_tags_the_server_owns(client, service, tmp_path):
     """Review S6/N2: a full-set PATCH built from tags read a moment ago cannot
     undo a board update, set board state or change membership. Resolving goes
     through the resolve and reopen routes only."""
+    p1 = (await client.post("/api/projects", json={"name": "P"})).json()["id"]
     member = await _start(
         service,
         tmp_path,
-        tags={"project": "p1", "turn": "asking", "ask": "Which DB?", "env": "dev"},
+        tags={"project": p1, "turn": "asking", "ask": "Which DB?", "env": "dev"},
     )
 
     # Stale read: no board tags, a different project, a forged resolve note.
@@ -2092,7 +1752,7 @@ async def test_a_client_patch_keeps_the_tags_the_server_owns(service, tmp_path):
         ),
     )
     assert await _tags(service, member) == {
-        "project": "p1",
+        "project": p1,
         "turn": "asking",
         "ask": "Which DB?",
         "env": "prod",
@@ -2112,74 +1772,69 @@ async def test_a_client_patch_keeps_the_tags_the_server_owns(service, tmp_path):
     assert (await _tags(service, member))["resolved"] == "user"
 
 
-@pytest.mark.parametrize(
-    "status, unconfirmed, from_user, refusal",
-    [
-        ("idle", False, False, None),
-        ("finished", False, False, None),
-        ("running", False, False, "conversation_already_running"),
-        ("waiting_for_confirmation", False, False, "waiting_for_confirmation"),
-        ("paused", False, False, "paused"),
-        ("error", False, False, "error"),
-        ("stuck", False, False, "stuck"),
-        # Actions left unconfirmed would run, which approves them.
-        ("paused", True, True, "waiting_for_confirmation"),
-        ("idle", True, False, "waiting_for_confirmation"),
-        # The user's own words (Voice) may resume their paused conversation.
-        ("paused", False, True, None),
-        ("error", False, True, "error"),
-    ],
-)
-def test_one_admission_rule_for_senders_that_are_not_watching(
-    tmp_path, status, unconfirmed, from_user, refusal
-):
-    """Review S3/F2: the guard for other conversations and Voice's
-    send_message_if_idle are one rule, differing only in who may resume."""
-    from openhands.agent_server.event_service import (
-        ConversationAlreadyRunning,
-        HeldForUser,
-        admission_refusal,
-    )
-    from openhands.sdk.conversation.state import ConversationState
-    from openhands.sdk.event import ActionEvent
-    from openhands.sdk.llm import MessageToolCall
-    from openhands.sdk.tool.builtins.finish import FinishAction
+@pytest.mark.asyncio
+async def test_a_client_patch_cannot_join_a_project(client, service, tmp_path):
+    project = (await client.post("/api/projects", json={"name": "P"})).json()["id"]
+    conversation = await _start(service, tmp_path, tags={"env": "dev"})
 
-    state = ConversationState.create(
-        id=uuid4(),
-        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
-        workspace=LocalWorkspace(working_dir=str(tmp_path)),
-        persistence_dir=str(tmp_path / "state"),
-    )
-    state.execution_status = ConversationExecutionStatus(status)
-    if unconfirmed:
-        state.events.append(
-            ActionEvent(
-                source="agent",
-                thought=[],
-                action=FinishAction(message="done"),
-                tool_name="finish",
-                tool_call_id="call-1",
-                tool_call=MessageToolCall(
-                    id="call-1", name="finish", arguments="{}", origin="completion"
-                ),
-                llm_response_id="response-1",
-            )
+    with pytest.raises(Unprocessable):
+        await service.projects.update_conversation_from_client(
+            conversation,
+            UpdateConversationRequest(tags={"project": project, "turn": "asking"}),
         )
+    assert await _tags(service, conversation) == {"env": "dev"}
 
-    # Only the agent's latest calls are read, never the whole branch.
-    with patch.object(
-        ConversationState,
-        "active_branch",
-        side_effect=AssertionError("read the whole branch"),
-    ):
-        got = admission_refusal(state, from_user=from_user)
-    if refusal is None:
-        assert got is None
-    elif refusal == "conversation_already_running":
-        assert isinstance(got, ConversationAlreadyRunning)
-    else:
-        assert isinstance(got, HeldForUser) and got.status == refusal
+
+@pytest.mark.asyncio
+async def test_project_keys_naming_no_project_are_the_clients_own(
+    client, service, tmp_path
+):
+    """A project tag from before Projects, or of a deleted project, is an
+    ordinary tag: no board, and the client sets and clears all five keys."""
+    tags = {
+        "project": uuid4().hex,
+        "turn": "asking",
+        "ask": "Mine",
+        "resolved": "user",
+        "resolvenote": "note",
+    }
+    conversation = await _start(service, tmp_path, tags=tags)
+
+    await service.projects.update_conversation_from_client(
+        conversation, UpdateConversationRequest(tags={"env": "x"})
+    )
+    assert await _tags(service, conversation) == {"env": "x"}
+    await service.projects.update_conversation_from_client(
+        conversation, UpdateConversationRequest(tags=tags)
+    )
+    assert await _tags(service, conversation) == tags
+    assert conversation not in service.projects._watched
+
+
+@pytest.mark.projects_off
+@pytest.mark.asyncio
+async def test_with_projects_off_a_patch_sets_and_clears_the_project_keys(
+    service, stores, tmp_path
+):
+    project = ProjectItem(name="P")
+    stores.projects.save(PersistedProjects(projects=[project]))
+    tags = {
+        "project": project.id.hex,
+        "turn": "asking",
+        "ask": "Mine",
+        "resolved": "user",
+        "resolvenote": "note",
+    }
+    conversation = await _start(service, tmp_path)
+
+    await service.projects.update_conversation_from_client(
+        conversation, UpdateConversationRequest(tags=tags)
+    )
+    assert await _tags(service, conversation) == tags
+    await service.projects.update_conversation_from_client(
+        conversation, UpdateConversationRequest(tags={})
+    )
+    assert await _tags(service, conversation) == {}
 
 
 @pytest.mark.asyncio
@@ -2210,27 +1865,21 @@ async def test_the_recipient_sees_the_senders_id(client, service, tmp_path):
     )
 
 
-@pytest.mark.asyncio
-async def test_a_saved_update_leaves_a_stuck_coordinator_stuck(
-    client, service, tmp_path
+def test_a_workspace_file_opens_where_files_cannot_be_nonblocking(
+    tmp_path, monkeypatch
 ):
-    """Review: a copy of the user's message in a worker, saved in the
-    coordinator without a run, turned a stuck coordinator idle; the next
-    worker update then resumed work the user had not looked at."""
-    cat = await _start(service, tmp_path)
-    worker = await _start(service, tmp_path, title="worker")
-    project = (
-        await client.post(
-            "/api/projects", json={"name": "P", "coordinator_conversation_id": cat.hex}
-        )
-    ).json()
-    await _join(service, project["id"], worker)
-    await _set_status(service, cat, ConversationExecutionStatus.STUCK)
+    """Windows has no O_NONBLOCK, and set_blocking fails on a regular file."""
+    import os
 
-    assert await relay_user_message(service, worker, project["id"], "Use Postgres")
+    from openhands.agent_server.project_artifacts import open_workspace_file
 
-    cat_service = await service.get_event_service(cat)
-    assert cat_service is not None
-    state = await cat_service.get_state()
-    assert state.execution_status == ConversationExecutionStatus.STUCK
-    assert cat_service._run_task is None
+    (tmp_path / "notes.md").write_bytes(b"hello")
+    monkeypatch.delattr(os, "O_NONBLOCK", raising=False)
+
+    def refuse(fd, blocking):
+        raise OSError("not a pipe")
+
+    monkeypatch.setattr(os, "set_blocking", refuse)
+
+    with open_workspace_file(tmp_path, "notes.md") as file:
+        assert file.read() == b"hello"

@@ -8,18 +8,14 @@ from fastapi.testclient import TestClient
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
 from openhands.agent_server.experimental_features import (
-    PROJECT_TOOL_NAMES,
-    experimental_feature_withheld_tools,
     feature_enabled_now,
     find_experimental_feature,
     is_enabled,
 )
 from openhands.agent_server.persistence import PersistedSettings, ServerStores
 from openhands.agent_server.project_board import ConversationOutcomeSubscriber
-from openhands.sdk import LLM, Agent, Message, TextContent
+from openhands.sdk import Message, TextContent
 from openhands.sdk.event import MessageEvent
-from openhands.sdk.launch.finalize import LaunchRuntime, finalize
-from openhands.sdk.tool.spec import Tool
 
 
 pytestmark = pytest.mark.projects_off
@@ -28,8 +24,6 @@ pytestmark = pytest.mark.projects_off
 def test_projects_is_an_experimental_feature_off_by_default():
     assert find_experimental_feature("projects") is not None
     assert not is_enabled({}, "projects")
-    assert experimental_feature_withheld_tools({}) == list(PROJECT_TOOL_NAMES)
-    assert experimental_feature_withheld_tools({"projects": True}) == []
 
 
 def _app(tmp_path) -> TestClient:
@@ -102,7 +96,7 @@ async def test_no_wake_ups_while_off():
         on_finished=tell,
         on_user_message=tell,
         on_stopped=tell,
-        projects_enabled=off,
+        is_member=off,
     )
     await subscriber(
         MessageEvent(
@@ -112,16 +106,3 @@ async def test_no_wake_ups_while_off():
     )
     await subscriber.drain()
     assert told == []
-
-
-def test_finalize_withholds_tools():
-    agent = Agent(
-        llm=LLM(model="test-model", usage_id="test"),
-        tools=[Tool(name="terminal"), Tool(name="list_project_conversations")],
-    )
-    launched = finalize(
-        agent,
-        LaunchRuntime(),
-        withheld_tools=PROJECT_TOOL_NAMES,
-    )
-    assert [t.name for t in launched.agent.tools] == ["terminal"]

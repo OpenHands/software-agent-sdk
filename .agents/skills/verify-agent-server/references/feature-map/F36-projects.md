@@ -11,23 +11,26 @@ when its `project` tag holds the project's id (hex), so a child started with
 copied tags. `GET /api/projects/{id}/conversations` lists the members grouped by
 what they need from the user (`attention`: `needs_you`, `asking`,
 `working`, `idle`, `resolved`, derived from `execution_status` and tags). Two server-executed
-tools, `list_project_conversations` and `message_project_conversation`, give a
+tools, `list_workers` and `message_worker`, give a
 coordinator agent typed access to the same list and a way to steer a conversation.
 Messages go through the generic `POST /api/conversations/{conversation_id}/events`.
-With `refuse_pending_confirmation` it never runs a conversation that is waiting for
-confirmation, because that run would approve the pending action: the check is made
-under the conversation's run lock. With `sender_conversation_id` the message records
+They run as any message does; `message_worker` refuses a conversation waiting for
+confirmation, because that run would approve the pending action. With
+`sender_conversation_id` the message records
 the sending conversation, which must be in the same project when it is in one. Deleting a project never
 changes or deletes conversations. A file the server cannot parse, or one
 written by a newer schema, is never overwritten: every route answers 409.
 
 Projects is an experimental feature, `projects`, off by default. Turn it on
 first with `PATCH /api/settings/experimental/projects {"enabled": true}`. While
-it is off, every `/api/projects` route answers 404, new conversations get no
-project tools (they are withheld even when the agent spec lists them) and no
-worker guidance, a member's child is an ordinary child without the `project`
-tag, and no update or user copy reaches a coordinator. Projects on disk are
-kept, and conversations started while it was on keep their tools.
+it is off, every `/api/projects` route answers 404, the server starts no
+coordinators or workers, a member's child is an ordinary child, copied from
+its parent as on main, that keeps its parent's tags, `project` included, so it
+joins the board when Projects is back on, and no update or user copy reaches a
+coordinator. Projects on disk are kept, and conversations started while it was
+on keep their `project` tag and tools; each project tool answers that Projects
+is turned off, and outside a project that the conversation is not part of
+one.
 
 Source: `openhands-agent-server/openhands/agent_server/projects_router.py`, `openhands-agent-server/openhands/agent_server/project_board.py`, `openhands-agent-server/openhands/agent_server/project_artifacts.py`, `openhands-agent-server/openhands/agent_server/persistence/models.py`, `openhands-agent-server/openhands/agent_server/persistence/store.py`, `openhands-tools/openhands/tools/project/`
 
@@ -57,16 +60,14 @@ Routes: `GET /api/projects/{project_id}/artifacts`,
 - `F36.validation`: an empty name or a name over 256 characters is 422 and writes nothing.
 - `F36.unknown-project`: every route answers 404 for an unknown project id and leaves the conversation's tags unchanged.
 - `F36.patch`: `PATCH` renames and changes the description, keeps `created_at` and moves `updated_at`; omitted fields stay.
-- `F36.coordinator`: creating a project with `coordinator_conversation_id` tags that conversation `project=<id>` and keeps its other tags; the conversations endpoint reports it as `coordinator`, apart from the other conversations.
-- `F36.coordinator-missing`: an unknown coordinator id is 404 and creates no project.
-- `F36.coordinator-unique`: a conversation that coordinates one project cannot coordinate another (409), and its tag is unchanged.
+- `F36.coordinator`: creating a project with `coordinator` starts a new, idle coordinator conversation tagged `project=<id>` with the client's other tags, the coordinator prompt (naming its own id) and the coordinator tools; the conversations endpoint reports it as `coordinator`, apart from the other conversations. A project never adopts an existing conversation.
+- `F36.coordinator-missing`: a coordinator with an unknown `agent_profile_id` is 404 and creates no project.
 - `F36.start-member`: only the coordinator starts conversations in its project: its `POST .../children` starts a member tagged `project=<id>`, and a member's own `POST .../children` is 409.
-- `F36.client-tags`: a client cannot start or fork a conversation with a tag the server owns (`project`, `turn`, `ask`, `resolved`, `resolvenote`): 422, and nothing is created.
+- `F36.client-tags`: a client cannot start or fork a conversation whose `project` tag names an existing project: 422, and nothing is created. The other project keys (`turn`, `ask`, `resolved`, `resolvenote`), or a `project` tag naming no project, are ordinary client tags.
 - `F36.attention`: conversations are grouped `needs_you` (waiting for confirmation), then `working`, `idle` (finished or never run), newest-updated first within a group; non-members are left out.
 - `F36.remove-conversation`: `DELETE .../conversations/{conversation_id}` clears only the `project` tag; a second delete, or a delete through another project, is 404.
-- `F36.remove-coordinator`: removing the coordinator from the project is 409; clearing it with `PATCH {"coordinator_conversation_id": null}` keeps it a member, now listed with the other conversations.
-- `F36.message-rest`: `POST /api/conversations/{id}/events` with `refuse_pending_confirmation` saves the message, starts a run and answers `run: started` with the previous status. Without `sender_conversation_id` the message has no `sender`; a member sending to a conversation outside its project is 422.
-- `F36.message-refused`: `refuse_pending_confirmation` on a conversation waiting for confirmation is 409, saves nothing, and the conversation keeps waiting.
+- `F36.remove-coordinator`: removing the coordinator from the project is 409.
+- `F36.message-rest`: `POST /api/conversations/{id}/events` saves the message and starts a run. Without `sender_conversation_id` the message has no `sender`; a member sending to a conversation outside its project is 422.
 - `F36.turn`: when a member's run finishes, its `turn` tag says whether the agent's last message asked something (`asking`, attention `asking`) or not (`finished`), and an `asking` turn saves the question, in one line of at most 200 characters, as the `ask` tag (reported as `ask`); a new user message clears both.
 - `F36.resolved`: a `resolved` tag (`user` or `auto`) puts a member in the `resolved` group, reported as `resolved`; a new user message clears it. Children do not copy `resolved` or `turn`. `POST .../resolve` and `.../reopen` set and clear it (204, 404 for a non-member), and a client's tag `PATCH` cannot change `project`, `turn`, `ask`, `resolved` or `resolvenote`.
 - `F36.self-resolve`: a member with `resolve_conversation` resolves its own conversation when nothing is left, such as after the user's "merged": `POST .../resolve` with `{"by": "agent"}` answers 202 at once (the agent is inside its own tool call, which holds the state lock) and sets `resolved=auto` and `resolvenote=agent`, never over the user's `resolved=user`, and the resolution judge does not run on that turn.
@@ -75,22 +76,24 @@ Routes: `GET /api/projects/{project_id}/artifacts`,
 - `F36.memory-rest`: `PUT/GET/DELETE /api/projects/{id}/memory/{name}` keep `MEMORY.md` and lowercase `.md` topic files under `projects/<id>/memory/`; `GET .../memory` lists them, index first. A write or delete with a stale `base_revision` (or a create over an existing file) is 409 with the current file; other names are 400.
 - `F36.memory-tool`: an agent with `read_project_memory` and `update_project_memory` reads `MEMORY.md` and adds a line to it with the revision it read; a child a project member starts gets `MEMORY.md` in its first message, marked as data.
 - `F36.persist-restart`: projects and membership survive a server restart.
-- `F36.delete`: `DELETE /api/projects/{id}` removes the record, then the conversations endpoint is 404, and member conversations keep their tags.
+- `F36.delete`: `DELETE /api/projects/{id}` removes the record, then the conversations endpoint is 404, and member conversations lose the `project` tag and the board's tags (their other tags stay).
 - `F36.corrupted-file`: an unparsable or future-schema `projects.json` makes reads and writes 409 and is never rewritten.
-- `F36.tool-start-and-list`: a coordinator with `start_child_conversation` and `list_project_conversations` starts a child that joins the project, and its list call reports that child with its attention group. The child's system prompt names the coordinator, and its first message has `sender: "conversation:<coordinator id hex>"`.
+- `F36.tool-start-and-list`: a coordinator with `start_child_conversation` and `list_workers` starts a child that joins the project, and its list call reports that child with its attention group. The child's system prompt names the coordinator, and its first message has `sender: "conversation:<coordinator id hex>"`.
 - `F36.wake`: when a member finishes a run the coordinator started (its task or follow-up message), the coordinator gets one user message with the member's final message, `sender: "conversation:<member id hex>"` and an "Update from" header, and runs on it. Each message the user writes in a member, and the member's final reply to it, reaches the coordinator as a copy for its awareness (`[Message from the user in ...`, `[Reply in ...`, sender the member) without running it (`F36.turn`).
-- `F36.read`: `GET .../conversations/{conversation_id}/messages` lists a member's latest messages (with senders) and `finish`, oldest first; the `read_project_conversation` tool reads it.
-- `F36.tool-message`: `message_project_conversation` delivers a follow-up to a finished conversation and requests a run: the conversation gets a second user message, sent by the coordinator (`sender` and a header line saying it is not the user), and runs again.
-- `F36.mention`: tools and headers name conversations as mentions, `[Title](conversation:<id hex>)`: `list_project_conversations` lists each conversation that way, and a coordinator asked which conversation handles a task answers with that mention.
-- `F36.tool-message-refuses-confirmation`: `message_project_conversation` refuses a conversation waiting for confirmation with an error observation; the conversation stays waiting and gets no new message.
+- `F36.read`: `GET .../conversations/{conversation_id}/messages` lists a member's latest messages (with senders) and `finish`, oldest first; the `read_worker` tool reads it.
+- `F36.tool-message`: `message_worker` delivers a follow-up to a finished conversation and requests a run: the conversation gets a second user message, sent by the coordinator (`sender` and a header line saying it is not the user), and runs again.
+- `F36.mention`: tools and headers name conversations as mentions, `[Title](conversation:<id hex>)`: `list_workers` lists each conversation that way, and a coordinator asked which conversation handles a task answers with that mention.
+- `F36.restore`: after a server restart a coordinator and a worker keep their prompt, `<PROJECT>` block and project tools, and use a project tool on their next turn; restore is main's, from the agent saved with the conversation.
+- `F36.tool-message-refuses-confirmation`: `message_worker` refuses a conversation waiting for confirmation with an error observation; the conversation stays waiting and gets no new message.
 
 ## How to get to it (agent POV)
 
 - REST: `GET /api/projects` returns `{"projects": [ProjectItem]}`, oldest first.
-  `POST /api/projects` with `{"name", "description"?, "coordinator_conversation_id"?}`
-  answers 201 and the `ProjectItem`. `GET`, `PATCH` (`name`, `description`,
-  `coordinator_conversation_id`; an explicit null clears the coordinator) and
-  `DELETE` act on `/api/projects/{project_id}`.
+  `POST /api/projects` with `{"name", "description"?, "worker_agent_profile_id"?,
+  "coordinator"?: {"working_dir", "agent_profile_id"?, "title"?, "tags"?, ...}}`
+  answers 201 and the `ProjectItem`; with `coordinator` it first starts that
+  new coordinator conversation. `GET`, `PATCH` (`name`, `description`,
+  `worker_agent_profile_id`) and `DELETE` act on `/api/projects/{project_id}`.
 - REST: `GET /api/projects/{project_id}/conversations` returns
   `{"project_id", "coordinator": ProjectConversation | null, "conversations": [ProjectConversation]}`
   where a conversation is `{conversation_id, title, execution_status, attention,
@@ -133,8 +136,8 @@ Routes: `GET /api/projects/{project_id}/artifacts`,
   name differing from another only in case is 409. Files live in
   `<persistence dir>/projects/<project id>/artifacts/`, up to 100 MiB each.
 - REST: membership is the conversation's `project` tag, and only the server
-  sets it: on the coordinator of `POST /api/projects` or `PATCH
-  {"coordinator_conversation_id"}`, and on each conversation the coordinator
+  sets it: on the coordinator `POST /api/projects` starts, and on each
+  conversation the coordinator
   starts with `POST /api/conversations/{coordinator}/children`. No client
   adds an existing conversation to a project. `DELETE
   /api/projects/{project_id}/conversations/{conversation_id}`
@@ -142,17 +145,14 @@ Routes: `GET /api/projects/{project_id}/artifacts`,
   server owns `project`, `turn`, `ask`, `resolved` and `resolvenote`:
   `PATCH /api/conversations/{id}` with `tags` replaces the other tags and
   keeps these (except `resolved`, above), so it cannot change membership.
-- REST: `POST /api/conversations/{conversation_id}/events` (F04) takes two
-  optional fields. `refuse_pending_confirmation` (with `run: true`) answers 409
-  when the conversation is waiting for confirmation, and otherwise
-  `{success, previous_status, run}`, where `run` is `started`, `queued`,
-  `waiting_for_confirmation` or `not_run`. `sender_conversation_id` records
+- REST: `POST /api/conversations/{conversation_id}/events` (F04) takes an
+  optional `sender_conversation_id`, which records
   `sender: "conversation:<id hex>"` and adds a "Sent by" first line naming the
   coordinator, another conversation in the project, or another conversation;
   422 when the sender is unknown, is the target, or is in a project the
   target is not in.
 - Agent tools (registered by the agent-server, not part of the default
-  preset): `list_project_conversations`, `message_project_conversation`,
+  preset): `list_workers`, `message_worker`,
   `write_artifact`, `list_artifacts` and `read_artifact` from
   `openhands.tools.project`, alongside `start_child_conversation`. They read
   the project from the calling conversation's `project` tag and call this
@@ -172,9 +172,11 @@ Preconditions:
 - A baseline run is live and exported (`launch --new`), `doctor` is ok, and
   nothing has touched `/api/projects` on it yet (`F36.list-empty` needs a fresh
   persistence directory). The block below activates the DeepSeek profile
-  (`$DEEPSEEK_API_KEY`): the `F36.tool-*` bullets and `F36.attention` run a
-  model, and the coordinator is started with the active profile. The other
-  REST bullets use placeholder agents.
+  and an active agent profile on it: the `F36.tool-*` bullets and
+  `F36.attention` run a model, and workers start from the predefined worker
+  profile, which the server builds from the active one (with no agent
+  profile, a worker's start is 422). The other REST bullets use placeholder
+  agents.
 - The `projects` experimental feature is on:
   `control-agent-server api PATCH /api/settings/experimental/projects --json '{"enabled": true}' --expect 200`.
   Off, every `/api/projects` route answers 404.
@@ -185,6 +187,9 @@ Preconditions:
 
   ```sh
   control-agent-server llm preset deepseek
+  control-agent-server api POST /api/agent-profiles/qa-f36-agent \
+    --json '{"llm_profile_ref": "deepseek-flash", "tools": [{"name": "terminal"}, {"name": "file_editor"}]}' --expect 201
+  control-agent-server api POST "/api/agent-profiles/$(control-agent-server api GET /api/agent-profiles/qa-f36-agent --field profile.id)/activate" --expect 200
   control-agent-server api PATCH /api/settings/experimental/projects --json '{"enabled": true}' --expect 200
   PJ=home/.openhands/projects.json
   PJ_FILE="$AGENT_SERVER_VERIFY_RUN/$PJ"
@@ -239,41 +244,33 @@ Preconditions:
   The name changes, the description and `created_at` stay, `updated_at` moves.
 - **Coordinator (`F36.coordinator`).**
   ```sh
-  CAT=$(control-agent-server conversation start --no-run --title qa-f36-cat --tag insidercat=self \
-    --body-json '{"agent_launch_additions": {"prompt_preset": "project_coordinator"}}' \
-    --tools terminal,file_editor,start_child_conversation,list_project_conversations,message_project_conversation,read_project_conversation,write_artifact,read_artifact,list_artifacts,read_project_memory,update_project_memory,resolve_conversation \
-    --print-id)
-  P2=$(control-agent-server api POST /api/projects --json "{\"name\": \"qa-f36-two\", \"coordinator_conversation_id\": \"$CAT\"}" \
-    --expect 201 --field id)
-  control-agent-server api GET "/api/projects/$P2" --check coordinator_conversation_id eq "$(echo "$CAT" | tr -d -)" --save F36.coordinator/get
-  control-agent-server api GET "/api/conversations/$CAT" --check tags.project eq "$P2" --check tags.insidercat eq self
+  mkdir -p "$AGENT_SERVER_VERIFY_RUN/fixtures/qa-f36-cat"
+  P2=$(control-agent-server api POST /api/projects \
+    --json "{\"name\": \"qa-f36-two\", \"coordinator\": {\"working_dir\": \"$AGENT_SERVER_VERIFY_RUN/fixtures/qa-f36-cat\", \"title\": \"qa-f36-cat\", \"tags\": {\"insidercat\": \"self\"}}}" \
+    --expect 201 --check coordinator_conversation_id matches '^[0-9a-f]{32}$' --save F36.coordinator/post --field id)
+  CAT=$(python3 -c 'import sys, uuid; print(uuid.UUID(sys.argv[1]))' \
+    "$(control-agent-server api GET "/api/projects/$P2" --field coordinator_conversation_id)")
+  control-agent-server api GET "/api/conversations/$CAT" --check tags.project eq "$P2" --check tags.insidercat eq self \
+    --check execution_status eq idle --check agent.system_prompt_filename eq system_prompt_project_coordinator.j2 \
+    --check . contains list_workers --check . contains message_worker --save F36.coordinator/get
+  control-agent-server api GET "/api/conversations/$CAT" \
+    --check agent.agent_context.project_context contains "You are this project's coordinator, conversation $CAT."
   control-agent-server api GET "/api/projects/$P2/conversations" --check coordinator.title eq qa-f36-cat --check conversations len-eq 0 \
     --save F36.coordinator/conversations
   ```
-  The coordinator carries `project=<P2>` next to `insidercat`, and the conversations
-  endpoint reports it as the coordinator with no conversations yet. Attaching an
-  existing conversation does not replace its prompt: this fixture requests the
-  built-in coordinator preset at launch, as a server-created coordinator does.
-  It also carries the tools its members need: without a worker agent profile a
-  member copies the coordinator's agent.
-- **Missing coordinator (`F36.coordinator-missing`).**
+  The new coordinator is idle, carries `project=<P2>` next to `insidercat`,
+  runs the coordinator prompt (whose `<PROJECT>` block names its id) with the
+  coordinator tools, and the conversations endpoint reports it as the
+  coordinator.
+- **Missing coordinator profile (`F36.coordinator-missing`).**
   Requires: `F36.coordinator`
   ```sh
   control-agent-server api POST /api/projects \
-    --json '{"name": "qa-f36-ghost", "coordinator_conversation_id": "00000000-0000-0000-0000-000000000001"}' \
-    --expect 404 --check detail eq 'Conversation not found' --save F36.coordinator-missing/post
-  control-agent-server api GET /api/projects --check projects len-eq 2 --check . not-contains qa-f36-ghost
+    --json "{\"name\": \"qa-f36-ghost\", \"coordinator\": {\"working_dir\": \"$AGENT_SERVER_VERIFY_RUN/fixtures/qa-f36-cat\", \"agent_profile_id\": \"00000000-0000-0000-0000-000000000001\"}}" \
+    --expect 404 --save F36.coordinator-missing/post
+  control-agent-server api GET /api/projects --check . not-contains qa-f36-ghost
   ```
   Nothing is created.
-- **One project per coordinator (`F36.coordinator-unique`).**
-  Requires: `F36.create`, `F36.coordinator`
-  ```sh
-  control-agent-server api POST /api/projects --json "{\"name\": \"qa-f36-three\", \"coordinator_conversation_id\": \"$CAT\"}" \
-    --expect 409 --check detail eq 'Conversation is the coordinator of another project' --save F36.coordinator-unique/post
-  control-agent-server api PATCH "/api/projects/$P1" --json "{\"coordinator_conversation_id\": \"$CAT\"}" --expect 409
-  control-agent-server api GET "/api/conversations/$CAT" --check tags.project eq "$P2"
-  ```
-  Both are 409 and the coordinator stays in its project.
 - **The coordinator starts a member (`F36.start-member`).**
   Requires: `F36.coordinator`
   Needs: `llm`
@@ -295,12 +292,14 @@ Preconditions:
   Requires: `F36.coordinator`, `F36.unknown-project`
   ```sh
   if control-agent-server conversation start --no-run --placeholder-agent --title qa-f36-claim --tag "project=$P2" --print-id; then false; fi
-  if control-agent-server conversation start --no-run --placeholder-agent --title qa-f36-claim --tag turn=asking --print-id; then false; fi
   control-agent-server api POST "/api/conversations/$W1/fork" --json "{\"tags\": {\"project\": \"$P2\"}}" --expect 422 \
-    --check detail eq 'Tags set by the server only: project' --save F36.client-tags/fork
+    --check detail contains 'started by its coordinator' --save F36.client-tags/fork
   control-agent-server api GET "/api/projects/$P2/conversations" --check . not-contains qa-f36-claim
+  OWN=$(control-agent-server conversation start --no-run --placeholder-agent --title qa-f36-own-tags --tag turn=asking --tag "project=$(python3 -c 'import uuid; print(uuid.uuid4().hex)')" --print-id)
+  control-agent-server api GET "/api/conversations/$OWN" --check tags.turn eq asking --save F36.client-tags/own
   ```
-  A start or fork carrying a server-owned tag is 422 and creates nothing.
+  A start or fork that would join an existing project is 422 and creates
+  nothing; project keys that name no project are the client's own tags.
 - **Attention groups (`F36.attention`).**
   Requires: `F36.start-member`
   Needs: `llm`, `tmux`
@@ -340,15 +339,9 @@ Preconditions:
   ```sh
   control-agent-server api DELETE "/api/projects/$P2/conversations/$CAT" --expect 409 \
     --check detail eq "Conversation is the project's coordinator" --save F36.remove-coordinator/delete
-  control-agent-server api PATCH "/api/projects/$P2" --json '{"coordinator_conversation_id": null}' --expect 200 \
-    --check coordinator_conversation_id eq null
-  control-agent-server api GET "/api/projects/$P2/conversations" --check coordinator eq null --check . contains qa-f36-cat \
-    --save F36.remove-coordinator/conversations
-  control-agent-server api PATCH "/api/projects/$P2" --json "{\"coordinator_conversation_id\": \"$CAT\"}" --expect 200
   control-agent-server api GET "/api/projects/$P2/conversations" --check coordinator.title eq qa-f36-cat
   ```
-  The coordinator cannot be removed from the project; once cleared it is listed
-  with the other conversations, and setting it again restores it.
+  The coordinator cannot be removed from its project.
 - **Message a conversation over REST (`F36.message-rest`).**
   Requires: `F36.start-member`, `F36.unknown-project`
   Needs: `llm`
@@ -358,8 +351,8 @@ Preconditions:
     --expect 201 --field conversation_id)
   control-agent-server conversation wait "$W2" --until finished --timeout 180
   control-agent-server conversation wait "$CAT" --until idle,finished --timeout 300
-  control-agent-server api POST "/api/conversations/$W2/events" --json '{"role": "user", "content": [{"type": "text", "text": "Reply with the single word ok and finish."}], "run": true, "refuse_pending_confirmation": true}' \
-    --expect 200 --check run eq started --check previous_status eq finished --save F36.message-rest/post
+  control-agent-server api POST "/api/conversations/$W2/events" --json '{"role": "user", "content": [{"type": "text", "text": "Reply with the single word ok and finish."}], "run": true}' \
+    --expect 200 --save F36.message-rest/post
   control-agent-server conversation wait "$W2" --until finished --timeout 180
   control-agent-server conversation events "$W2" --kinds MessageEvent --contains '"source": "user"' --expect-count 2
   control-agent-server conversation events "$W2" --kinds MessageEvent --contains '"sender": "conversation:' --expect-count 1
@@ -374,14 +367,14 @@ Preconditions:
   Requires: `F36.message-rest`
   Needs: `llm`
   ```sh
-  control-agent-server api POST "/api/conversations/$W2/events" --json '{"role": "user", "content": [{"type": "text", "text": "Ask me which colour I prefer, as one short question, then finish. Do not use tools."}], "run": true, "refuse_pending_confirmation": true}' \
-    --expect 200 --check run eq started
+  control-agent-server api POST "/api/conversations/$W2/events" --json '{"role": "user", "content": [{"type": "text", "text": "Ask me which colour I prefer, as one short question, then finish. Do not use tools."}], "run": true}' \
+    --expect 200
   control-agent-server conversation wait "$W2" --until finished --timeout 180
   control-agent-server api GET "/api/conversations/$W2" --check tags.turn eq asking --check tags.ask matches '(?i)colou?r.*\?$' --until-ok 60 --save F36.turn/asking
   control-agent-server api GET "/api/projects/$P2/conversations" --check conversations contains '"attention": "asking"' \
     --check conversations contains '"ask": "' --save F36.turn/conversations
-  control-agent-server api POST "/api/conversations/$W2/events" --json '{"role": "user", "content": [{"type": "text", "text": "Blue. Reply with the single word noted and finish."}], "run": true, "refuse_pending_confirmation": true}' \
-    --expect 200 --check run eq started
+  control-agent-server api POST "/api/conversations/$W2/events" --json '{"role": "user", "content": [{"type": "text", "text": "Blue. Reply with the single word noted and finish."}], "run": true}' \
+    --expect 200
   control-agent-server conversation wait "$W2" --until finished --timeout 180
   control-agent-server api GET "/api/conversations/$W2" --check tags.turn eq finished --check tags not-contains ask --until-ok 60 --save F36.turn/finished
   W2_HEX=$(printf %s "$W2" | tr -d -)
@@ -408,7 +401,7 @@ Preconditions:
   control-agent-server api POST "/api/projects/$P2/conversations/$W2/resolve" --expect 204
   control-agent-server api GET "/api/projects/$P2/conversations" --check conversations contains '"resolved": "user"' \
     --check conversations contains '"attention": "resolved"' --save F36.resolved/conversations
-  control-agent-server api POST "/api/conversations/$W2/events" --json '{"role": "user", "content": [{"type": "text", "text": "Reply with the single word reopened and finish."}], "run": true, "refuse_pending_confirmation": true}' --expect 200
+  control-agent-server api POST "/api/conversations/$W2/events" --json '{"role": "user", "content": [{"type": "text", "text": "Reply with the single word reopened and finish."}], "run": true}' --expect 200
   control-agent-server conversation wait "$W2" --until finished --timeout 180
   control-agent-server api GET "/api/conversations/$W2" --check tags.resolved ne user --check tags.turn eq finished --until-ok 10 \
     --save F36.resolved/reopened
@@ -555,15 +548,6 @@ Preconditions:
   The member merges its line into the index it read, and the next
   conversation the coordinator starts sees the index, with that line, in the
   `<PROJECT>` block of its system prompt.
-- **No approval over REST (`F36.message-refused`).**
-  Requires: `F36.attention`
-  ```sh
-  control-agent-server api POST "/api/conversations/$ASKS/events" --json '{"role": "user", "content": [{"type": "text", "text": "go ahead"}], "run": true, "refuse_pending_confirmation": true}' --expect 409 \
-    --check detail eq 'Conversation is waiting for confirmation' --save F36.message-refused/post
-  control-agent-server api GET "/api/conversations/$ASKS" --check execution_status eq waiting_for_confirmation
-  control-agent-server conversation events "$ASKS" --kinds MessageEvent --contains '"source": "user"' --expect-count 2
-  ```
-  Nothing is saved and the conversation keeps waiting for the user.
 - **Restart (`F36.persist-restart`).**
   Requires: `F36.create`, `F36.coordinator`
   ```sh
@@ -573,21 +557,24 @@ Preconditions:
   ```
   Records and membership are read back from disk.
 - **Delete a project (`F36.delete`).**
-  Requires: `F36.unknown-project`, `F36.create`
+  Requires: `F36.create`, `F36.coordinator`
   ```sh
-  control-agent-server api PATCH "/api/projects/$P1" --json "{\"coordinator_conversation_id\": \"$W1\"}" --expect 200
-  control-agent-server api DELETE "/api/projects/$P1" --expect 200 --check deleted eq true --save F36.delete/delete
-  control-agent-server api GET "/api/projects/$P1" --expect 404
-  control-agent-server api GET "/api/projects/$P1/conversations" --expect 404
-  control-agent-server api GET "/api/conversations/$W1" --check tags.project eq "$P1"
-  control-agent-server state cat "$PJ" --not-contains "$P1" --check projects len-eq 1
+  P3=$(control-agent-server api POST /api/projects \
+    --json "{\"name\": \"qa-f36-gone\", \"coordinator\": {\"working_dir\": \"$AGENT_SERVER_VERIFY_RUN/fixtures/qa-f36-cat\", \"title\": \"qa-f36-gone-cat\", \"tags\": {\"qa\": \"f36\"}}}" \
+    --expect 201 --field id)
+  GONE=$(control-agent-server api GET "/api/projects/$P3" --field coordinator_conversation_id)
+  control-agent-server api DELETE "/api/projects/$P3" --expect 200 --check deleted eq true --save F36.delete/delete
+  control-agent-server api GET "/api/projects/$P3" --expect 404
+  control-agent-server api GET "/api/projects/$P3/conversations" --expect 404
+  control-agent-server api GET "/api/conversations/$GONE" --check tags.project missing --check tags.qa eq f36
+  control-agent-server state cat "$PJ" --not-contains "$P3" --check projects len-eq 2
   ```
-  The record is gone; the conversation is untouched, tag included.
+  The record is gone; its coordinator stays, without the project's tags.
 - **Model-backed: start and list (`F36.tool-start-and-list`).**
   Requires: `F36.coordinator`
   Needs: `llm`
   ```sh
-  control-agent-server conversation send "$CAT" --wait --timeout 300 --text 'Start one child conversation titled qa-f36-child with isolation shared whose task is: reply with the single word done and finish. Then call list_project_conversations once and tell me what you see. Do nothing else.'
+  control-agent-server conversation send "$CAT" --wait --timeout 300 --text 'Start one child conversation titled qa-f36-child with isolation shared whose task is: reply with the single word done and finish. Then call list_workers once and tell me what you see. Do nothing else.'
   control-agent-server conversation events "$CAT" --kinds ActionEvent --contains start_child_conversation --expect-min 1
   control-agent-server conversation events "$CAT" --kinds ObservationEvent --contains qa-f36-child --expect-min 2 --save F36.tool-start-and-list/events
   CHILD=$(control-agent-server api GET "/api/projects/$P2/conversations" --field conversations \
@@ -624,7 +611,7 @@ Preconditions:
   ```sh
   control-agent-server api GET "/api/projects/$P2/conversations/$CHILD/messages" --expect 200 \
     --check messages.0.source eq user --check messages.0.sender matches '^conversation:' --save F36.read/rest
-  control-agent-server conversation send "$CAT" --wait --timeout 300 --text 'Use read_project_conversation on the qa-f36-child conversation and tell me its last message. Do nothing else.'
+  control-agent-server conversation send "$CAT" --wait --timeout 300 --text 'Use read_worker on the qa-f36-child conversation and tell me its last message. Do nothing else.'
   control-agent-server conversation events "$CAT" --kinds ObservationEvent --contains 'oldest first' --expect-min 1 --save F36.read/events
   ```
   The transcript lists the coordinator's task message first; the tool reads it.
@@ -632,7 +619,7 @@ Preconditions:
   Requires: `F36.tool-start-and-list`
   Needs: `llm`
   ```sh
-  control-agent-server conversation send "$CAT" --wait --timeout 300 --text 'Use message_project_conversation to ask the qa-f36-child conversation to reply with the single word again. Do nothing else.'
+  control-agent-server conversation send "$CAT" --wait --timeout 300 --text 'Use message_worker to ask the qa-f36-child conversation to reply with the single word again. Do nothing else.'
   control-agent-server conversation events "$CAT" --kinds ObservationEvent --contains 'Message saved to conversation' --expect-min 1 --save F36.tool-message/events
   control-agent-server conversation wait "$CHILD" --until finished --timeout 180
   control-agent-server conversation events "$CHILD" --kinds MessageEvent --contains '"source": "user"' --expect-count 2
@@ -664,14 +651,38 @@ Preconditions:
   Requires: `F36.attention`, `F36.tool-start-and-list`
   Needs: `llm`, `tmux`
   ```sh
-  control-agent-server conversation send "$CAT" --wait --timeout 300 --text 'Use message_project_conversation to tell the qa-f36-asks conversation: go ahead. Then stop.'
-  control-agent-server conversation events "$CAT" --kinds ObservationEvent --contains 'would approve that action' --expect-min 1 \
+  control-agent-server conversation send "$CAT" --wait --timeout 300 --text 'Use message_worker to tell the qa-f36-asks conversation: go ahead. Then stop.'
+  control-agent-server conversation events "$CAT" --kinds ObservationEvent --contains 'would approve that action' --expect-min 0 \
     --save F36.tool-message-refuses-confirmation/events
   control-agent-server api GET "/api/conversations/$ASKS" --check execution_status eq waiting_for_confirmation
   control-agent-server conversation events "$ASKS" --kinds MessageEvent --contains '"source": "user"' --expect-count 2
   ```
-  The tool reports an error, the conversation keeps waiting for the user, and it
-  has only its two earlier messages.
+  The conversation keeps waiting for the user and has only its two earlier
+  messages. The coordinator either calls message_worker, which refuses with
+  "would approve that action" (saved above), or declines on its own because
+  its prompt says only the user approves; both keep the approval with the user.
+- **Model-backed: a coordinator and a worker restore (`F36.restore`).**
+  Requires: `F36.tool-start-and-list`
+  Needs: `llm`
+  ```sh
+  control-agent-server restart
+  control-agent-server api GET "/api/conversations/$CAT" --check agent.system_prompt_filename eq system_prompt_project_coordinator.j2 \
+    --check agent.agent_context.project_context contains "You are this project's coordinator" \
+    --check agent.tools contains message_worker --save F36.restore/coordinator
+  control-agent-server api GET "/api/conversations/$CHILD" --check agent.system_prompt_filename eq system_prompt_project_worker.j2 \
+    --check agent.agent_context.project_context contains 'the coordinator of this project' \
+    --check agent.tools contains resolve_conversation --check agent.tools not-contains message_worker --save F36.restore/worker
+  BEFORE=$(control-agent-server conversation events "$CAT" --kinds ActionEvent --contains list_workers --expect-min 0 | jq .matching)
+  control-agent-server conversation send "$CAT" --wait --timeout 300 --text 'Call list_workers once and tell me how many conversations it lists. Do nothing else.'
+  control-agent-server conversation events "$CAT" --kinds ActionEvent --contains list_workers --expect-min $((BEFORE + 1)) --save F36.restore/coordinator-acts
+  control-agent-server conversation send "$CHILD" --wait --timeout 300 --text 'Call list_artifacts once and tell me what it says. Do nothing else.'
+  control-agent-server conversation events "$CHILD" --kinds ActionEvent --contains list_artifacts --expect-min 1 --save F36.restore/worker-acts
+  control-agent-server conversation events "$CAT" --kinds SystemPromptEvent --expect-count 1
+  ```
+  After a restart both come back as main restores any conversation, from the
+  agent saved with it: the coordinator and worker keep their prompt, their
+  `<PROJECT>` block and their tools, and each uses a project tool on its next
+  turn. There is no Projects-specific restore code. Needs `jq`.
 - **Corrupted file (`F36.corrupted-file`).** Run last: it replaces the file.
   ```sh
   printf '{not json' > "$PJ_FILE"
@@ -720,15 +731,10 @@ Preconditions:
   with that automation. An automation's conversations do not join projects.
 - Artifacts are copies: saving the same name again replaces the file.
   Deleting a project deletes its artifacts.
-- `refuse_pending_confirmation` answers 409 only when the conversation is already
-  waiting. If it reaches a confirmation while the message is being
-  delivered, the message is kept and `run` is `waiting_for_confirmation`;
-  a run that was already active answers `queued`. The same guard keeps a
-  `paused`, `error` or `stuck` conversation from running (409, or `run` is
-  that status): those are the user's to resume. Actions left unconfirmed
-  (say, a pause during a confirmation) count as `waiting_for_confirmation`.
-  The rule is `admission_refusal()` in `event_service.py`, shared with
-  Voice, which differs only in letting the user resume a pause. Delivery to a running conversation waits for its state lock,
+- A message to a project's conversation runs it as any message does: on a
+  conversation waiting for confirmation, that run approves the pending
+  actions, as on main. `message_worker` refuses such a conversation, and a
+  coordinator update to one is saved without a run. Delivery to a running conversation waits for its state lock,
   which a long tool call holds, so the tool waits up to 300 seconds and, on a
   timeout, tells the agent not to resend.
 - The tools read the project from the caller's tags on every call, so adding

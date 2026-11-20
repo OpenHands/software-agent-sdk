@@ -12,6 +12,7 @@ from typing import Final
 import pytest
 
 from openhands.sdk.agent import Agent
+from openhands.sdk.agent.base import PROJECT_COORDINATOR_PROMPT, PROJECT_WORKER_PROMPT
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.context.prompts.presets import PromptPreset, create_registry
 from openhands.sdk.context.prompts.section import Platform, PromptContext
@@ -159,20 +160,32 @@ def _agent(**kwargs: object) -> Agent:
     )
 
 
-def test_an_agent_selects_its_role_by_prompt_preset() -> None:
-    coordinator = _agent(prompt_preset="project_coordinator")
+def test_an_agent_selects_its_role_by_prompt_filename() -> None:
+    coordinator = _agent(system_prompt_filename=PROJECT_COORDINATOR_PROMPT)
     assert "<ROUTING>" in coordinator.static_system_message
     assert "<ROUTING>" not in _agent().static_system_message
-    # An inline system prompt still wins.
-    inline = _agent(prompt_preset="project_coordinator", system_prompt="Hi.")
-    assert inline.static_system_message == "Hi."
 
 
 def test_an_agent_renders_its_project_context() -> None:
     agent = _agent(
-        prompt_preset="project_worker",
+        system_prompt_filename=PROJECT_WORKER_PROMPT,
         agent_context=AgentContext(project_context="Project: Docs"),
     )
 
     assert agent.dynamic_context is not None
     assert agent.dynamic_context.startswith("<PROJECT>\nProject: Docs\n</PROJECT>")
+
+
+def test_a_changed_default_wording_does_not_break_the_import(caplog) -> None:
+    """The project sections edit the default prompt's text; when it changes,
+    the edit is skipped with a warning, and the snapshot tests show it."""
+    from openhands.sdk.context.prompts.sections.project import (
+        _insert_before_close,
+        _substitute,
+    )
+
+    assert _substitute("Ask the user.", ("the user", "me"), ("gone", "x")) == (
+        "Ask me."
+    )
+    assert _insert_before_close("<A>\nx", "A", "y") == "<A>\nx\ny"
+    assert "cannot find 'gone'" in caplog.text
