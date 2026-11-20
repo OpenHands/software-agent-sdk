@@ -173,7 +173,7 @@ async def test_features_are_listed_and_off(client):
         ("ask_user", False),
         ("conversation_mentions", False),
         ("message_edits", False),
-        ("software_factory", False),
+        ("factories", False),
     ]
 
 
@@ -202,7 +202,7 @@ def test_feature_tools_follow_the_flags():
         "edit_message"
     ]
     # A client-only feature gives the agent nothing.
-    assert experimental_feature_tools({"software_factory": True}) == []
+    assert experimental_feature_tools({"factories": True}) == []
 
 
 def _runtime() -> LaunchRuntime:
