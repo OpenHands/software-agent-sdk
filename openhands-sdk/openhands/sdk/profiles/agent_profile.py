@@ -83,6 +83,27 @@ def build_profile_verification(
     )
 
 
+class ProfileSandboxSettings(BaseModel):
+    """Sandbox launch metadata for a profile, read by the host that provisions
+    sandboxes.
+
+    Kept apart from the agent configuration: :func:`~openhands.sdk.launch.resolve`
+    never copies it into ``AgentSettings``, and an agent server that does not
+    create sandboxes ignores it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    spec_id: str = Field(
+        min_length=1,
+        description=(
+            "Id of a sandbox spec (for example an agent-server image) the host "
+            "advertises. Applies only when a new sandbox is created; the host "
+            "decides how a spec it no longer offers is handled."
+        ),
+    )
+
+
 class AgentProfileInfo(BaseModel):
     """Summary projection of a stored profile (no secret instantiation)."""
 
@@ -173,6 +194,13 @@ class AgentProfileBase(BaseModel):
             "Which of the user's connected built-in integrations to expose to "
             "this agent. null = all; [] = none; a non-null list = filter to the "
             "named integrations."
+        ),
+    )
+    sandbox: ProfileSandboxSettings | None = Field(
+        default=None,
+        description=(
+            "Sandbox to start new conversations with. null = the host's own "
+            "default selection."
         ),
     )
 

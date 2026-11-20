@@ -30,6 +30,7 @@ Routes: `GET /api/conversations/search`, `GET /api/conversations/count`,
 - `F04.create-validation-redaction`: a 422 caused by a wrongly typed field next to the LLM key (in an inline `agent.llm` and in `agent_settings.llm`) never contains the posted key; where the error echoes the enclosing object, the key reads `<redacted>`.
 - `F04.create-idempotent`: re-posting an existing client `conversation_id` returns 200 with the same conversation, creates nothing and does not resend the initial message.
 - `F04.create-initial-message-run-false`: an `initial_message` with `"run": false` is recorded without starting a run (the same body with `"run": true` runs).
+- `F04.create-initial-sender`: an `initial_message` with `sender_conversation_id` naming another conversation saves the first user message with `sender: "conversation:<sender id hex>"` and a first text part naming the sender (`[Sent by [<title>](conversation:<hex>), another conversation, not by the user. ...]`); an unknown sender or the new conversation's own id is 422 and creates nothing.
 - `F04.create-parent`: `parent_conversation_id` links a child that the parent lists in `sub_conversation_ids`; an unknown parent, a different workspace and a self-parent are 422.
 - `F04.create-worktree`: `worktree: true` inside a git repository moves the conversation into its own worktree on branch `openhands/<id>`.
 - `F04.create-observability`: the `X-OpenHands-Observability-*` headers are validated (422 for non-object metadata) and stored in `meta.json`.
@@ -46,8 +47,10 @@ Routes: `GET /api/conversations/search`, `GET /api/conversations/count`,
 - `F04.search-page`: `limit` and `next_page_id` page newest first by default; `sort_order=CREATED_AT` reverses it; skills are trimmed unless `include_skills=true`; bad limits and sort orders are 422.
 - `F04.search-filter`: `status` filters search and count consistently; an unknown status is 422.
 - `F04.count`: `GET /api/conversations/count` equals the number of conversations search lists.
+- `F04.search-at-scale`: with 2,000 conversations, search pages through every one exactly once in both orders, count is 2,000, the last page answers within 4× the first page's p95 (first page under 2 s), 50 listings grow the server's RSS by under 300 MB, and all 2,000 are listed again after a restart.
 - `F04.patch-title`: PATCH `title` is stripped, stored in `meta.json`, bumps `updated_at` and moves the conversation to the top of `UPDATED_AT_DESC`.
 - `F04.patch-tags`: PATCH `tags` replaces the whole map in `meta.json` and `base_state.json` and pushes a `tags` state update on the events socket.
+- `F04.patch-tags-while-running`: while a run holds the conversation's state for a tool step, a tags PATCH waits for it, but GET, the batch get and search already show the new tags (from `meta.json`) although `base_state.json` still has the old ones; once the step ends the PATCH answers 200 and both files agree.
 - `F04.patch-errors`: an empty or 201-character title, a bad tag key and a malformed id are 422; no key is 401; the stored values are untouched.
 - `F04.patch-whitespace-title`: a whitespace-only title is rejected instead of erasing the stored title.
 - `F04.patch-unknown-id`: PATCH on an unknown id answers the 404 the OpenAPI document declares, not 200 `{"success": false}`.
@@ -60,6 +63,7 @@ Routes: `GET /api/conversations/search`, `GET /api/conversations/count`,
 - `F04.child-unborn`: the default child launch succeeds in a fresh workspace whose automatically initialized git repository has no commit.
 - `F04.child-errors`: missing or invalid child-launch fields are 422, an unknown parent is 404 and no key is 401; rejected launches create no child.
 - `F04.child-capacity`: a full run-capacity limit rejects a child launch with 429 before creating a conversation or worktree.
+- `F04.child-task-sender`: the task a child receives is its only user message, with the task text unchanged and `sender: "conversation:<parent id hex>"`, so it reads as sent by the parent, not typed by the user.
 
 ## How to get to it (agent POV)
 
@@ -69,7 +73,9 @@ Routes: `GET /api/conversations/search`, `GET /api/conversations/count`,
   `secrets`, `secrets_encrypted`, `tags`, `max_iterations`, `autotitle`,
   `title_llm_profile`, `confirmation_policy`, `plugins`, `client_tools`,
   `observability_span_name`, `observability_tags`, `observability_metadata`,
-  `observability_parent_span_context`, ...; query `include_skills`; headers
+  `observability_parent_span_context`, ...; `initial_message` takes the
+  message fields plus an optional `sender_conversation_id`; query
+  `include_skills`; headers
   `X-OpenHands-Observability-Span-Name`, `-Tags`, `-Metadata`,
   `-Parent-Span-Context`, which fill in the body fields the request leaves
   unset, while header metadata merges under the body's). 201 for a new
@@ -125,7 +131,9 @@ Routes: `GET /api/conversations/search`, `GET /api/conversations/count`,
 Preconditions:
 
 - A baseline run is live and exported (`launch --new`), `doctor` is ok, and
-  `$DEEPSEEK_API_KEY` is set; the block below saves the DeepSeek profiles.
+  `$DEEPSEEK_API_KEY` (or the proxy's `$LLM_BASE_URL` and `$LLM_API_KEY`) is
+  set; the block below saves the DeepSeek profiles and keeps the active
+  model in `$MODEL`, which differs through the proxy.
 - `git` is installed (worktree fixture). No `tmux` or browser is needed: every
   agent here has `tools: []` (`--tools none`), which keeps only the built-in
   `finish` and `think` tools.
@@ -144,7 +152,7 @@ Preconditions:
   called; the real-model run is `F04.run-real`.
 
 ```sh
-control-agent-server llm preset deepseek
+MODEL=$(control-agent-server llm preset deepseek --print-model)
 F="$AGENT_SERVER_VERIFY_RUN/fixtures"
 W="$F/qa-f04-ws"
 mkdir -p "$W"
@@ -193,14 +201,14 @@ EOF
   START=$(control-agent-server conversation start --tools none --no-autotitle --tag qa=f04 --workspace "$W" --save F04.create-settings/start)
   CID=$(python3 -c 'import json, sys; d = json.loads(sys.argv[1]); assert d["status"] == 201 and d["execution_status"] == "idle", d; print(d["id"])' "$START")
   control-agent-server api GET "/api/conversations/$CID" --expect 200 --check execution_status eq idle \
-    --check agent.kind eq Agent --check agent.llm.model eq deepseek/deepseek-flash --check agent.tools len-eq 0 \
+    --check agent.kind eq Agent --check agent.llm.model eq "$MODEL" --check agent.tools len-eq 0 \
     --check agent.llm.api_key ne "$DEEPSEEK_API_KEY" --check tags.qa eq f04 --check title missing \
     --check workspace.working_dir eq "$W" --save F04.create-settings/get
   control-agent-server api GET /api/conversations/count --check . eq $((N1 + 1))
   control-agent-server state cat "server/workspace/conversations/${CID//-/}/meta.json" --max-chars 200 \
     --check agent missing --check secrets_encrypted missing --check autotitle eq false --check tags.qa eq f04
   control-agent-server state cat "server/workspace/conversations/${CID//-/}/base_state.json" --max-chars 200 \
-    --check agent.llm.model eq deepseek/deepseek-flash --check execution_status eq idle
+    --check agent.llm.model eq "$MODEL" --check execution_status eq idle
   ```
   The create is 201 and `idle`, the count grows by one, `meta.json` has
   neither the `agent` nor the request's `secrets_encrypted` flag, and
@@ -228,10 +236,10 @@ EOF
   AID=$(control-agent-server api POST /api/conversations \
     --json "{\"workspace\": {\"working_dir\": \"$W\"}, \"agent_profile_id\": \"$PID\", \"autotitle\": false}" \
     --expect 201 --check launched_agent_profile.agent_profile_id eq "$PID" \
-    --check agent.llm.model eq deepseek/deepseek-flash --check agent.tools len-eq 0 \
+    --check agent.llm.model eq "$MODEL" --check agent.tools len-eq 0 \
     --save F04.create-agent-profile/start --field id)
   control-agent-server api GET "/api/conversations/$AID" --check launched_agent_profile.agent_profile_id eq "$PID" \
-    --check launched_agent_profile.revision exists --check agent.llm.model eq deepseek/deepseek-flash
+    --check launched_agent_profile.revision exists --check agent.llm.model eq "$MODEL"
   ```
   The conversation records the profile id and runs the profile's model.
 - **Create validation (`F04.create-validation`).** Every bad request is
@@ -436,7 +444,7 @@ EOF
   RID=$(control-agent-server conversation start --tools none --workspace "$W/qa-real" \
     --prompt 'Reply with the single word: pong' --wait --until finished --timeout 300 --save F04.run-real/start --print-id)
   control-agent-server api GET "/api/conversations/$RID" --check execution_status eq finished \
-    --check agent.llm.model eq deepseek/deepseek-flash --check stats.usage_to_metrics.default.model_name exists --save F04.run-real/get
+    --check agent.llm.model eq "$MODEL" --check stats.usage_to_metrics.default.model_name exists --save F04.run-real/get
   control-agent-server ws listen "/sockets/events/$RID" --query resend_mode=all --until-kind ConversationStateUpdateEvent \
     --until key=execution_status --until value=finished --duration 20 --save F04.run-real/replay
   control-agent-server conversation events "$RID" --kinds MessageEvent --contains 'single word: pong'
@@ -768,7 +776,7 @@ EOF
     control-agent-server api GET "/api/conversations/$CCHILD" --expect 200 \
       --check parent_conversation_id eq "$CPARENT" --check title eq "QA F04 child $CHILD_CASE" \
       --check tags.qa eq f04-child --check max_iterations eq 7 \
-      --check agent.llm.model eq deepseek/deepseek-flash --check agent.tools len-eq 0 \
+      --check agent.llm.model eq "$MODEL" --check agent.tools len-eq 0 \
       --check secret_registry.secret_sources.QA_F04_CHILD_TOKEN.kind eq StaticSecret \
       --check secret_registry.secret_sources.QA_F04_CHILD_TOKEN.value ne qa-f04-child-value \
       --check workspace.working_dir eq "$CHILD_EXPECTED_WS" --save "F04.child-start/$CHILD_CASE-child"
@@ -851,6 +859,231 @@ EOF
   control-agent-server stop --run "$CRUN"
   ```
   No child appears in the catalog or the parent, and no child worktree exists.
+
+- **First message from another conversation (`F04.create-initial-sender`).**
+  `SND` is a titled conversation that never runs; the new conversation's
+  agent is the `finish` stub, so its run ends at once.
+  ```sh
+  SND=$(control-agent-server api POST /api/conversations \
+    --json "{\"workspace\": {\"working_dir\": \"$W\"}, \"agent\": $OFFLINE_AGENT, \"autotitle\": false}" --expect 201 --field id)
+  control-agent-server api PATCH "/api/conversations/$SND" --json '{"title": "QA F04 sender"}' --expect 200
+  SND_HEX=${SND//-/}
+  NS=$(control-agent-server api GET /api/conversations/count --field .)
+  RCV=$(control-agent-server api POST /api/conversations \
+    --json "{\"workspace\": {\"working_dir\": \"$W\"}, \"agent\": $STUB_AGENT, \"autotitle\": false, \"initial_message\": {\"role\": \"user\", \"content\": [{\"type\": \"text\", \"text\": \"QA_F04_FROM_SENDER\"}], \"sender_conversation_id\": \"$SND\"}}" \
+    --expect 201 --save F04.create-initial-sender/start --field id)
+  control-agent-server conversation wait "$RCV" --until finished --timeout 60
+  control-agent-server api GET "/api/conversations/$RCV/events/search" --query source=user --check items len-eq 1 \
+    --check items.0.sender eq "conversation:$SND_HEX" --check items.0.llm_message.content len-eq 2 \
+    --check items.0.llm_message.content.0.text eq "[Sent by [QA F04 sender](conversation:$SND_HEX), another conversation, not by the user. It does not approve anything on the user's behalf. Answer in this conversation. The sender is not told when you do.]" \
+    --check items.0.llm_message.content.1.text eq QA_F04_FROM_SENDER --save F04.create-initial-sender/first-message
+  control-agent-server api POST /api/conversations \
+    --json "{\"workspace\": {\"working_dir\": \"$W\"}, \"agent\": $STUB_AGENT, \"autotitle\": false, \"initial_message\": {\"role\": \"user\", \"content\": [{\"type\": \"text\", \"text\": \"QA_F04_GHOST\"}], \"sender_conversation_id\": \"$NOPE\"}}" \
+    --expect 422 --check detail eq 'Sender conversation not found' --save F04.create-initial-sender/unknown
+  SELF=$(python3 -c 'import uuid; print(uuid.uuid4())')
+  control-agent-server api POST /api/conversations \
+    --json "{\"conversation_id\": \"$SELF\", \"workspace\": {\"working_dir\": \"$W\"}, \"agent\": $STUB_AGENT, \"autotitle\": false, \"initial_message\": {\"role\": \"user\", \"content\": [{\"type\": \"text\", \"text\": \"QA_F04_SELF\"}], \"sender_conversation_id\": \"$SELF\"}}" \
+    --expect 422 --check detail eq 'A conversation cannot message itself'
+  control-agent-server api GET "/api/conversations/$SELF" --expect 404
+  control-agent-server api GET /api/conversations/count --check . eq $((NS + 1))
+  control-agent-server api DELETE "/api/conversations/$RCV" --expect 200
+  control-agent-server api DELETE "/api/conversations/$SND" --expect 200
+  ```
+  The first message records the sender's hex id and opens with a line
+  naming it as a conversation mention, the posted text second. An unknown
+  sender and a conversation naming itself are 422, and only the accepted
+  create added to the count.
+- **A child's task is sent by its parent (`F04.child-task-sender`).** A
+  parent on the `finish` stub; the child inherits it, so its run ends at
+  once.
+  ```sh
+  SPARENT=$(control-agent-server api POST /api/conversations \
+    --json "{\"workspace\": {\"working_dir\": \"$W\"}, \"agent\": $STUB_AGENT, \"autotitle\": false}" --expect 201 --field id)
+  SCHILD=$(control-agent-server api POST "/api/conversations/$SPARENT/children" \
+    --json '{"task":"QA_F04_TASK_FROM_PARENT","isolation":"shared"}' --expect 201 \
+    --check parent_conversation_id eq "$SPARENT" --save F04.child-task-sender/create --field conversation_id)
+  control-agent-server conversation wait "$SCHILD" --until finished --timeout 60
+  control-agent-server api GET "/api/conversations/$SCHILD/events/search" --query source=user --check items len-eq 1 \
+    --check items.0.sender eq "conversation:${SPARENT//-/}" --check items.0.llm_message.content len-eq 1 \
+    --check items.0.llm_message.content.0.text eq QA_F04_TASK_FROM_PARENT --save F04.child-task-sender/task
+  control-agent-server api GET "/api/conversations/$SPARENT/events/count" --query source=user --check . eq 0
+  control-agent-server api DELETE "/api/conversations/$SCHILD" --expect 200
+  control-agent-server api DELETE "/api/conversations/$SPARENT" --expect 200
+  ```
+  The child's one user message is the task, word for word, with the
+  parent's hex id as `sender`; the parent has no user message of its own.
+- **New tags while a tool step holds the state (`F04.patch-tags-while-running`).**
+  A stub that asks for `terminal` `sleep 25` and then `finish`: the run
+  holds the conversation's state for the whole tool step, so the PATCH
+  (in the background) waits for it.
+
+  Needs: `tmux`
+  ```sh
+  SLEEPY=$(control-agent-server fixture llm-stub --name qa-f04-sleepy \
+    --step 'tool:terminal:{"command":"sleep 25","summary":"QA F04 wait"}' --step 'tool:finish:{"message":"QA_F04_TAGS_DONE"}' --print-path)
+  SLEEPY_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key\", \"base_url\": \"$SLEEPY/v1\", \"num_retries\": 0}, \"tools\": [{\"name\": \"terminal\"}]}"
+  mkdir -p "$W/qa-tags"
+  TG=$(control-agent-server api POST /api/conversations \
+    --json "{\"workspace\": {\"working_dir\": \"$W/qa-tags\"}, \"agent\": $SLEEPY_AGENT, \"autotitle\": false, \"tags\": {\"state\": \"open\"}, \"initial_message\": {\"role\": \"user\", \"content\": [{\"type\": \"text\", \"text\": \"Wait.\"}]}}" \
+    --expect 201 --field id)
+  control-agent-server api GET "/api/conversations/$TG/events/count" --query kind=ActionEvent --check . eq 1 --until-ok 30
+  control-agent-server api GET "/api/conversations/$TG/events/count" --query kind=ObservationEvent --check . eq 0
+  control-agent-server api PATCH "/api/conversations/$TG" --json '{"tags": {"state": "resolved"}}' --timeout 90 \
+    --expect 200 --check success eq true --save F04.patch-tags-while-running/patch > /dev/null &
+  TAG_PATCH=$!
+  control-agent-server api GET "/api/conversations/$TG" --check tags.state eq resolved --check execution_status eq running \
+    --until-ok 10 --save F04.patch-tags-while-running/get-during
+  control-agent-server state cat "server/workspace/conversations/${TG//-/}/base_state.json" --max-chars 200 --check tags.state eq open
+  control-agent-server api GET "/api/conversations/$TG/events/count" --query kind=ObservationEvent --check . eq 0
+  control-agent-server api GET /api/conversations --query ids="$TG" --check 0.tags.state eq resolved --save F04.patch-tags-while-running/batch-during
+  control-agent-server api GET /api/conversations/search --query limit=100 --field items \
+    | jq -e --arg id "$TG" '[.[] | select(.id == $id) | .tags.state] == ["resolved"]'
+  wait "$TAG_PATCH"
+  control-agent-server conversation wait "$TG" --until finished --timeout 60
+  control-agent-server state cat "server/workspace/conversations/${TG//-/}/base_state.json" --max-chars 200 --check tags.state eq resolved
+  control-agent-server state cat "server/workspace/conversations/${TG//-/}/meta.json" --max-chars 200 --check tags.state eq resolved
+  control-agent-server api GET "/api/conversations/$TG" --check tags.state eq resolved --check execution_status eq finished
+  control-agent-server api DELETE "/api/conversations/$TG" --expect 200
+  ```
+  While `sleep 25` runs (no observation yet) and `base_state.json` still
+  says `open`, GET, the batch get and search already say `resolved`. The
+  PATCH answers 200 once the step ends, and then both files say
+  `resolved`.
+- **Search at scale (`F04.search-at-scale`).** Its own run, so the 2,000
+  conversations stay out of the main catalog. A helper seeds them over
+  `POST /api/conversations` (eight at a time, offline agent, no first
+  message), walks every page in both orders, checks the count, times the
+  first and the last page, and samples the server's RSS from `/proc` over 50
+  listings. It prints `QA_SCALE_OK` when every check holds and the first
+  failure otherwise. About 35 s to seed and check, and 12 s to restart.
+  ```sh
+  cat > "$F/qa-f04-scale.py" <<'EOF'
+  """Seed N conversations over REST, then check search, count and their cost.
+
+  Prints QA_SCALE_OK when every check holds, else the first failure.
+  """
+  import json, os, statistics, sys, time, urllib.parse, urllib.request
+  from concurrent.futures import ThreadPoolExecutor
+
+  n, workspace, server_pid = int(sys.argv[1]), sys.argv[2], int(sys.argv[3])
+  first_page_budget_s = float(os.environ.get("QA_FIRST_PAGE_P95_S", "2.0"))
+  PAGE, DEEP_FACTOR, RSS_BUDGET_MB = 50, 4.0, 300.0
+  URL, KEY = os.environ["AGENT_SERVER_URL"], os.environ["SESSION_API_KEY"]
+  AGENT = {
+      "llm": {"model": "openai/qa-offline", "api_key": "qa-offline-key",
+              "base_url": "http://127.0.0.1:9/v1", "num_retries": 0},
+      "tools": [],
+  }
+
+
+  def call(method, path, body=None, **query):
+      url = f"{URL}{path}" + (f"?{urllib.parse.urlencode(query)}" if query else "")
+      data = None if body is None else json.dumps(body).encode()
+      request = urllib.request.Request(url, data=data, method=method, headers={
+          "X-Session-API-Key": KEY, "Content-Type": "application/json"})
+      with urllib.request.urlopen(request, timeout=120) as response:
+          return json.loads(response.read())
+
+
+  def check(ok, message):
+      if not ok:
+          print(f"QA_SCALE_FAIL {message}")
+          sys.exit(1)
+
+
+  def create(_):
+      body = {"workspace": {"working_dir": workspace}, "agent": AGENT, "autotitle": False}
+      return call("POST", "/api/conversations", body)["id"]
+
+
+  def walk(sort_order):
+      seen, page_id = [], None
+      for _ in range(n // PAGE + 10):
+          query = {"limit": PAGE, "sort_order": sort_order}
+          if page_id:
+              query["page_id"] = page_id
+          body = call("GET", "/api/conversations/search", **query)
+          seen += [(item["id"], item["created_at"]) for item in body["items"]]
+          page_id = body.get("next_page_id")
+          if not page_id:
+              return seen
+      check(False, f"{sort_order}: next_page_id never ended")
+
+
+  def last_page_id():
+      page_id, previous = None, None
+      while True:
+          query = {"limit": PAGE, "sort_order": "CREATED_AT_DESC"}
+          if page_id:
+              query["page_id"] = page_id
+          previous, page_id = page_id, call("GET", "/api/conversations/search", **query).get("next_page_id")
+          if not page_id:
+              return previous
+
+
+  def p95_search(**extra):
+      samples = []
+      for _ in range(10):
+          start = time.monotonic()
+          call("GET", "/api/conversations/search", limit=PAGE, sort_order="CREATED_AT_DESC", **extra)
+          samples.append(time.monotonic() - start)
+      return statistics.quantiles(samples, n=20)[-1]
+
+
+  def rss_mb():
+      with open(f"/proc/{server_pid}/status") as status:
+          line = next(line for line in status if line.startswith("VmRSS:"))
+      return int(line.split()[1]) / 1024
+
+
+  start = time.monotonic()
+  with ThreadPoolExecutor(8) as pool:
+      seeded = set(pool.map(create, range(n)))
+  print(f"seeded {len(seeded)} conversations in {time.monotonic() - start:.1f} s")
+  check(len(seeded) == n, f"seeded {len(seeded)} distinct ids, wanted {n}")
+
+  for order, descending in (("CREATED_AT_DESC", True), ("CREATED_AT", False)):
+      listed = walk(order)
+      ids = [i for i, _ in listed]
+      check(len(ids) == n and set(ids) == seeded, f"{order}: listed {len(ids)} ({len(set(ids))} distinct), seeded {n}")
+      stamps = [t for _, t in listed]
+      pairs = list(zip(stamps, stamps[1:]))
+      bad = next((p for p in pairs if (p[0] < p[1] if descending else p[0] > p[1])), None)
+      check(bad is None, f"{order}: out of order at {bad}")
+  check(call("GET", "/api/conversations/count") == n, "count differs from the seeded number")
+
+  first = p95_search()
+  deep = p95_search(page_id=last_page_id())
+  print(f"first page p95 {first * 1000:.0f} ms, last page p95 {deep * 1000:.0f} ms")
+  check(first < first_page_budget_s, f"first page p95 {first:.3f} s over {first_page_budget_s} s")
+  check(deep < first * DEEP_FACTOR, f"last page p95 {deep:.3f} s over {DEEP_FACTOR}x the first page")
+
+  before, peak = rss_mb(), 0.0
+  for _ in range(50):
+      call("GET", "/api/conversations/search", limit=PAGE, sort_order="CREATED_AT_DESC")
+      peak = max(peak, rss_mb())
+  print(f"server RSS {before:.0f} MB before 50 listings, peak {peak:.0f} MB")
+  check(peak - before < RSS_BUDGET_MB, f"RSS grew {peak - before:.0f} MB over 50 listings")
+  print("QA_SCALE_OK")
+  EOF
+  SRUN=$(control-agent-server launch --new --name f04-search-scale --print-run)
+  trap 'control-agent-server stop --run "$SRUN" >/dev/null' EXIT
+  control-agent-server doctor --run "$SRUN"
+  SW="$SRUN/fixtures/qa-f04-scale-ws"
+  mkdir -p "$SW"
+  control-agent-server exec --run "$SRUN" --timeout 900 --expect-output QA_SCALE_OK --save F04.search-at-scale/probe \
+    -- python3 "$F/qa-f04-scale.py" 2000 "$SW" "$(jq -r .pid "$SRUN/run.json")"
+  control-agent-server restart --run "$SRUN"
+  control-agent-server api GET /api/conversations/count --run "$SRUN" --check . eq 2000 --save F04.search-at-scale/count-after-restart
+  control-agent-server api GET /api/conversations/search --run "$SRUN" --query limit=50 --check items len-eq 50 --check next_page_id exists
+  control-agent-server stop --run "$SRUN"
+  ```
+  The helper's output names the seeding time, both p95 latencies and the RSS
+  before and at peak. `QA_FIRST_PAGE_P95_S` raises the first-page budget on a
+  slow machine; the last-page ratio and the RSS budget hold everywhere. A
+  listing that went O(N) per page, a cursor that rescans from the start, a
+  duplicate or missing page, an ignored `sort_order` or a listing that
+  materializes the whole store per call fails here.
 
 ## Gotchas
 

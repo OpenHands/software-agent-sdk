@@ -16,17 +16,15 @@ from pydantic import SecretStr
 
 import openhands.agent_server.event_service as event_service_module
 from openhands.agent_server.api import add_domain_error_handler
-from openhands.agent_server.conversation_service import (
-    ConversationService,
-    CredentialBindingActivationRequired,
-)
+from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.credential_binding import (
     LocalVersionedCredentialBinding,
     router,
 )
-from openhands.agent_server.event_service import (
+from openhands.agent_server.event_service import EventService
+from openhands.agent_server.exceptions import (
+    CredentialBindingActivationRequired,
     CredentialBindingActivationTooLate,
-    EventService,
 )
 from openhands.agent_server.models import StartConversationRequest, StoredConversation
 from openhands.agent_server.persistence import (

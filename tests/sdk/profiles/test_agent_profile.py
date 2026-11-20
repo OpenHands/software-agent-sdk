@@ -19,6 +19,7 @@ from openhands.sdk.profiles import (
     AgentProfileInfo,
     AgentProfileListResponse,
     OpenHandsAgentProfile,
+    ProfileSandboxSettings,
     validate_agent_profile,
 )
 from openhands.sdk.profiles.agent_profile import (
@@ -931,4 +932,40 @@ def test_current_profile_rejects_removed_switches(switch, schema_version) -> Non
                 "llm_profile_ref": "d",
                 switch: True,
             }
+        )
+
+
+def test_sandbox_defaults_to_none_and_older_payloads_load() -> None:
+    profile = validate_agent_profile(
+        {"schema_version": 4, "name": "p", "llm_profile_ref": "default"}
+    )
+
+    assert profile.sandbox is None
+
+
+@pytest.mark.parametrize("agent_kind", ["openhands", "acp"])
+def test_sandbox_round_trips_on_both_variants(agent_kind: str) -> None:
+    payload: dict[str, object] = {
+        "agent_kind": agent_kind,
+        "name": "p",
+        "sandbox": {"spec_id": "registry.example/agent-server:custom"},
+    }
+    if agent_kind == "openhands":
+        payload["llm_profile_ref"] = "default"
+
+    profile = validate_agent_profile(payload)
+
+    assert profile.sandbox == ProfileSandboxSettings(
+        spec_id="registry.example/agent-server:custom"
+    )
+    assert validate_agent_profile(profile.model_dump(mode="json")) == profile
+
+
+@pytest.mark.parametrize(
+    "sandbox", [{"spec_id": ""}, {}, {"spec_id": "img", "size": "large"}]
+)
+def test_sandbox_rejects_empty_or_unknown_fields(sandbox: dict[str, str]) -> None:
+    with pytest.raises(ValidationError):
+        validate_agent_profile(
+            {"name": "p", "llm_profile_ref": "default", "sandbox": sandbox}
         )

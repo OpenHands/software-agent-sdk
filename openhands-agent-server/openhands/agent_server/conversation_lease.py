@@ -19,6 +19,9 @@ logger = get_logger(__name__)
 LEASE_FILE_NAME = "owner_lease.json"
 LEASE_LOCK_FILE_NAME = ".owner_lease.lock"
 DEFAULT_LEASE_TTL_SECONDS = 45.0
+# The lock is held for a few milliseconds per write, so a waiter (including the
+# event loop) polls at that scale rather than filelock's default 50 ms.
+LEASE_LOCK_POLL_SECONDS = 0.002
 
 
 @dataclass(frozen=True)
@@ -36,6 +39,7 @@ class LeasePayload(TypedDict):
     # must treat them as optional.
     owner_host: NotRequired[str]
     owner_pid: NotRequired[int]
+    owner_started_at: NotRequired[str]
 
 
 def _current_host() -> str:
@@ -43,6 +47,29 @@ def _current_host() -> str:
         return socket.gethostname()
     except Exception:
         return ""
+
+
+def _read_proc_stat(pid: int) -> tuple[str, str] | None:
+    """Return ``(state, start_time)`` from ``/proc/<pid>/stat``, or None.
+
+    ``start_time`` is in clock ticks since boot, so together with the PID it
+    identifies one process incarnation. Returns None where ``/proc`` is
+    unavailable (non-Linux) or the process does not exist.
+    """
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return None
+    # comm (field 2) may contain spaces and parentheses; fields after it don't.
+    fields = stat[stat.rfind(")") + 2 :].split()
+    if len(fields) < 20:
+        return None
+    return fields[0], fields[19]
+
+
+def _process_started_at(pid: int) -> str | None:
+    proc = _read_proc_stat(pid)
+    return proc[1] if proc is not None else None
 
 
 def _is_pid_alive(pid: int) -> bool:
@@ -55,6 +82,10 @@ def _is_pid_alive(pid: int) -> bool:
     that might still be in use.
     """
     if pid <= 0:
+        return False
+    proc = _read_proc_stat(pid)
+    if proc is not None and proc[0] in ("Z", "X"):
+        # A killed process whose parent has not reaped it yet.
         return False
     try:
         os.kill(pid, 0)
@@ -127,10 +158,16 @@ class ConversationLease:
         self._lease_path = conversation_dir / LEASE_FILE_NAME
         self._lock_path = conversation_dir / LEASE_LOCK_FILE_NAME
 
+    @contextmanager
+    def _locked(self) -> Iterator[None]:
+        lock = FileLock(str(self._lock_path))
+        with lock.acquire(poll_interval=LEASE_LOCK_POLL_SECONDS):
+            yield
+
     def claim(self) -> LeaseClaim:
         """Claim or renew ownership of the conversation directory."""
         self._conversation_dir.mkdir(parents=True, exist_ok=True)
-        with FileLock(str(self._lock_path)):
+        with self._locked():
             now = time.time()
             payload = self._read_payload()
             if payload is not None:
@@ -186,15 +223,19 @@ class ConversationLease:
             return False
         if owner_host != _current_host():
             return False
-        # Don't mistakenly consider ourselves dead if the lease points at
-        # this very process (e.g. a same-process re-claim).
-        if owner_pid == os.getpid():
+        if not _is_pid_alive(owner_pid):
+            return True
+        # A live PID may belong to a new process that reused it, e.g. an
+        # agent-server restarted in the same container gets the same PID.
+        recorded_start = payload.get("owner_started_at")
+        current_start = _process_started_at(owner_pid)
+        if recorded_start is None or current_start is None:
             return False
-        return not _is_pid_alive(owner_pid)
+        return recorded_start != current_start
 
     def renew(self, generation: int) -> None:
         """Extend the current lease while keeping the same generation."""
-        with FileLock(str(self._lock_path)):
+        with self._locked():
             self._assert_owner_locked(generation)
             self._write_payload(
                 generation=generation,
@@ -204,13 +245,13 @@ class ConversationLease:
     @contextmanager
     def guarded_write(self, generation: int) -> Iterator[None]:
         """Hold the lease lock while verifying ownership for a disk write."""
-        with FileLock(str(self._lock_path)):
+        with self._locked():
             self._assert_owner_locked(generation)
             yield
 
     def release(self, generation: int) -> None:
         """Release the lease if this instance still owns the generation."""
-        with FileLock(str(self._lock_path)):
+        with self._locked():
             payload = self._read_payload()
             if payload is None:
                 return
@@ -268,6 +309,9 @@ class ConversationLease:
             owner_pid = raw_payload.get("owner_pid")
             if isinstance(owner_pid, int):
                 payload["owner_pid"] = owner_pid
+            owner_started_at = raw_payload.get("owner_started_at")
+            if isinstance(owner_started_at, str) and owner_started_at:
+                payload["owner_started_at"] = owner_started_at
             return payload
         except Exception:
             logger.warning(
@@ -284,6 +328,9 @@ class ConversationLease:
             "owner_host": _current_host(),
             "owner_pid": os.getpid(),
         }
+        started_at = _process_started_at(os.getpid())
+        if started_at is not None:
+            payload["owner_started_at"] = started_at
         tmp_path = self._lease_path.with_suffix(".tmp")
         tmp_path.write_text(json.dumps(payload))
         tmp_path.replace(self._lease_path)
