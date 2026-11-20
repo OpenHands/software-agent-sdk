@@ -5,9 +5,9 @@ artifact (see `AGENTS.md`, "PR-Specific Evidence Documents"); the next release P
 removes it.
 
 - Base: `main` at `3d638f2e`, merged into all three branches.
-- Code under test: part 1 `6d9b169d`, part 2 `bba1de01`, part 3 `578a8978`. The commit
-  after `578a8978` replaces the previous round's record in `.pr/single-owner/`
-  (this file and its screenshots) and changes nothing else.
+- Code under test: part 1 `6d9b169d`, part 2 `bba1de01`, part 3 `578a8978`. The commits
+  after `578a8978` replace the previous round's record in `.pr/single-owner/`
+  (this file and its screenshots) and change nothing else.
 - Every live attempt launches its own agent-server
   (`control-agent-server map run --fresh`); "restart" is a real process
   restart on the same state directory. Runs were wrapped in
@@ -153,7 +153,7 @@ The full OpenHands UI (Agent Canvas, built from the `OpenHands/OpenHands` reposi
 
 ![replaced secret after a restart](ui-secret-after-restart.png)
 
-On `main` the revert is also written back: after the restart and the next prompt, `base_state.json` holds the creation-time policy again. In one of the two attempts the file still said `AlwaysConfirm` at the first read-back after the restart, and the command ran unasked all the same. While the Add-secret form is being filled, the typed value is in that masked field; otherwise no secret value appears in the page (text and DOM), in the API events or in the conversation's state directory, on either side, and the screenshots show only lengths. An independent pass recounted every number in this table from the saved read-backs and step logs.
+On `main` the revert is also written back: after the restart and the next prompt, `base_state.json` holds the creation-time policy again. In one of the two attempts the file still said `AlwaysConfirm` at the first read-back after the restart, and the command ran unasked all the same. While the Add-secret form is being filled, the typed value is in that masked field (the LLM form holds its key the same way); otherwise no secret value appears in the page (text and DOM), in the API events or in the conversation's state directory, on either side, and the screenshots show only lengths. One place does hold the value on both sides, and this change neither causes nor fixes it: the shell history of the agent's terminal, in the run's home directory, keeps the `export` lines with which the terminal tool gives a command its secret. An independent pass recounted every number in this table from the saved read-backs and step logs.
 
 ## 4. Checks CI runs only for PRs into `main`, and two further comparisons, run on part 3
 
