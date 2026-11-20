@@ -420,7 +420,7 @@ class EventService:
         for name, entry in entries.items():
             try:
                 source = _SECRET_SOURCE.validate_python(
-                    entry, context={"cipher": self.cipher}
+                    entry, context=cipher_context(self.cipher)
                 )
             except ValidationError:
                 logger.warning(
@@ -2746,7 +2746,7 @@ class EventService:
         return any(
             part is not None
             and part.model_dump(mode="json")
-            != part.model_dump(mode="json", context={"expose_secrets": True})
+            != part.model_dump(mode="json", context=client_context("plaintext"))
             for part in (state.secret_registry, state.security_analyzer)
         )
 

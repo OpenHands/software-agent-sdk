@@ -201,7 +201,7 @@ def request_security_analyzer(
     if analyzer is None:
         return None
     return type(analyzer).model_validate(
-        analyzer.model_dump(context={"expose_secrets": True}),
+        analyzer.model_dump(context=client_context("plaintext")),
         context=_decryption_context(request, cipher),
     )
 
