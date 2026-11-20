@@ -25,7 +25,8 @@ class SendMessageRequest(BaseModel):
             "receiving agent which conversation sent it, that the user did "
             "not, and that it approves nothing on the user's behalf. On a new "
             "conversation's `initial_message` it marks the first message the "
-            "same way. Leave it out for the user's own messages."
+            "same way. A sender in a project may only message conversations of "
+            "the same project. Leave it out for the user's own messages."
         ),
     )
 

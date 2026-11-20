@@ -23,11 +23,16 @@ import json
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
 from openhands.sdk.event.ask_user import ASK_USER_TOOL_NAME
 from openhands.sdk.tool.spec import Tool
+
+
+if TYPE_CHECKING:
+    from openhands.agent_server.persistence import SettingsStore
 
 
 @dataclass(frozen=True)
@@ -103,12 +108,24 @@ FACTORIES = ExperimentalFeatureDefinition(
     ),
 )
 
+PROJECTS = ExperimentalFeatureDefinition(
+    key="projects",
+    label="Projects",
+    description=(
+        "Group conversations into projects: a coordinator conversation hands "
+        "work to other conversations, hears back from them, and keeps project "
+        "files and memory. Turned off, the projects API is unavailable and project "
+        "tools refuse to run; existing projects are kept."
+    ),
+)
+
 EXPERIMENTAL_FEATURES: list[ExperimentalFeatureDefinition] = [
     CONVERSATION_REACTIONS,
     ASK_USER,
     CONVERSATION_MENTIONS,
     MESSAGE_EDITS,
     FACTORIES,
+    PROJECTS,
 ]
 
 
@@ -150,6 +167,26 @@ def experimental_feature_tools(features: Mapping[str, bool]) -> list[Tool]:
         # Tool name as registered by openhands.tools.message_edit.
         tools.append(Tool(name="edit_message"))
     return tools
+
+
+async def feature_enabled_now(key: str, settings_store: "SettingsStore | None") -> bool:
+    """Whether the user has ``key`` on right now (host switches in a runtime).
+
+    For server behavior that follows the switch at once, such as a route or a
+    wake-up. An unreadable settings file, or no store, counts as off.
+    """
+    host_features = host_experimental_features()
+    if host_features is not None:
+        return is_enabled(host_features, key)
+    if settings_store is None:
+        return False
+    from openhands.agent_server.persistence import run_store
+
+    try:
+        features = await run_store(settings_store.experimental_features)
+    except (PermissionError, OSError):
+        return False
+    return is_enabled(features, key)
 
 
 RUNTIME_EXPERIMENTAL_FEATURES_ENV = "OH_RUNTIME_EXPERIMENTAL_FEATURES"

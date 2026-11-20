@@ -68,11 +68,13 @@ Routes: `GET /api/conversations/{conversation_id}/events/search`,
 
 - REST: `POST /api/conversations/{conversation_id}/events` with a
   `SendMessageRequest` body `{"role": "user", "content": [{"type": "text",
-  "text": "..."}], "run": false}` returns `{"success": true}`; `run` defaults
+  "text": "..."}], "run": false}` returns `{"success": true}` (with `run: true`
+  it also reports `run`: `started`, `queued` or `not_run`); `run` defaults
   to `false`, and a content item is either `{"type": "text", "text": ...}`
-  or `{"type": "image", "image_urls": [...]}` (http or `data:` URLs). An
-  optional `sender_conversation_id` (a conversation UUID) marks a message
-  that another conversation's agent sends, not the user; it is left out of
+  or `{"type": "image", "image_urls": [...]}` (http or `data:` URLs). The same
+  model is a new conversation's `initial_message`. An optional
+  `sender_conversation_id` (a conversation UUID) marks a message that another
+  conversation's agent sends, not the user (projects: F36); it is left out of
   the request schema's dumps while unset. The Python SDK `RemoteConversation.send_message()` and the
   TypeScript `RemoteConversation.sendMessage()` always send `run: false` and
   then call `POST /run` separately; `ConversationClient.sendEvent()` posts the

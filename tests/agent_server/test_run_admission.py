@@ -233,7 +233,7 @@ async def test_creation_reservations_are_atomic_and_released_on_failure(
     entered = 0
     release = asyncio.Event()
 
-    async def initialize(*args):
+    async def initialize(*args, **kwargs):
         nonlocal entered
         entered += 1
         await release.wait()
