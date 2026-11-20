@@ -2332,6 +2332,39 @@ def test_long_conversation_full_state_fits_session_frame(server_env):
         )
 
 
+def test_session_socket_delivers_events_up_to_the_configured_cap(tmp_path, monkeypatch):
+    """With the cap raised, an event over 4 MiB is delivered, not dropped (#6934)."""
+    text = "x" * (5 * 1024 * 1024)
+    with live_server_env(
+        tmp_path,
+        monkeypatch,
+        config_overrides={"session_max_frame_bytes": 16 * 1024 * 1024},
+    ) as env:
+        ws_host = env["host"].replace("http://", "ws://")
+        with httpx.Client(base_url=env["host"]) as client:
+            conversation_id = _start_idle_conversation(client)
+            client.post(
+                f"/api/conversations/{conversation_id}/events",
+                json={"content": [{"type": "text", "text": text}], "run": False},
+                timeout=30.0,
+            ).raise_for_status()
+
+        with connect(
+            f"{ws_host}/sockets/session/{conversation_id}?after_seq=-1",
+            max_size=None,
+        ) as ws:
+            raw = ws.recv(timeout=10)
+            while len(raw) <= MAX_FRAME_BYTES:
+                raw = ws.recv(timeout=10)
+            frame = json.loads(raw)
+            assert frame["type"] == "durable"
+            assert frame["event"]["llm_message"]["content"][0]["text"] == text
+
+            with pytest.raises(TimeoutError):
+                while True:
+                    ws.recv(timeout=2)
+
+
 def test_ask_agent_usage_is_in_conversation_info_at_once(server_env, patched_llm):
     """GET /api/conversations/{id} counts a side question's usage as soon as
     ask_agent returns, with no run or other state change after it.

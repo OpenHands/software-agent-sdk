@@ -34,7 +34,9 @@ from openhands.sdk import Event
 MAX_FRAME_BYTES: Final[int] = 4 * 1024 * 1024
 """Largest frame the server will emit; a bigger one drops the connection."""
 
-MAX_PENDING_BYTES: Final[int] = 4 * MAX_FRAME_BYTES
+PENDING_FRAMES: Final[int] = 4
+
+MAX_PENDING_BYTES: Final[int] = PENDING_FRAMES * MAX_FRAME_BYTES
 """Per-connection write budget. Over it, the connection is dropped."""
 
 

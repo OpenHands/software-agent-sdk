@@ -27,6 +27,7 @@ from openhands.agent_server.pub_sub import MaxSubscribersError, Subscriber
 from openhands.agent_server.session_protocol import (
     MAX_FRAME_BYTES,
     MAX_PENDING_BYTES,
+    PENDING_FRAMES,
     DeltaFrame,
     DurableFrame,
     ErrorFrame,
@@ -422,7 +423,11 @@ async def session_socket(
         )
         return
 
-    writer = _ConnectionWriter(websocket)
+    writer = _ConnectionWriter(
+        websocket,
+        max_frame_bytes=config.session_max_frame_bytes,
+        max_pending_bytes=PENDING_FRAMES * config.session_max_frame_bytes,
+    )
     writer.start()
     subscriber = _SessionSubscriber(writer=writer, events=events)
 
