@@ -93,7 +93,12 @@ ARG APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=120 -o Acquire::ht
 # CVE-2026-109518, root code execution through a download-verification
 # bypass), first published in snapshot 20261104T120337Z. debian:trixie-slim
 # already ships apt 3.0.4, so older snapshots fail to install apt-utils.
-ARG DEBIAN_SNAPSHOT=20261105T000000Z
+# zlib 1:1.3.dfsg+really1.3.1-1+deb13u1 (CVE-2026-76844, CVE-2026-85091)
+# first appears in trixie-security snapshot 20261107T075304Z.
+# 20261114 skips the three-day window to pick up linux-libc-dev 6.12.117-1
+# (DSA-6628-1: CVE-2026-98466, CVE-2026-98715, CVE-2026-98853, CVE-2026-99109,
+# CVE-2026-99281, CVE-2026-99288), first published in snapshot 20261113T212035Z.
+ARG DEBIAN_SNAPSHOT=20261114T000000Z
 
 COPY --from=python-runtime /usr/local /usr/local
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
@@ -599,6 +604,10 @@ RUN --mount=type=bind,from=builder,source=/agent-server/openhands-agent-server/o
     chown -R ${USERNAME}:${USERNAME} "${CODE_SERVER_ROOT}/lib/vscode/extensions"
 
 # --- Docker ---
+# Pin the executable to include the x/net fix for CVE-2026-78669.
+ARG BUILDX_VERSION=0.39.0
+ARG BUILDX_AMD64_SHA256=5fb31a097304fbf6dd4038649a0decf32c2b9510e4047acd7d68b9d700c46194
+ARG BUILDX_ARM64_SHA256=722cdcdfdd6f3fb943fa1ba75102d057feb18ba72aab93b1b0a8cf2b2b48a25f
 RUN set -eux; \
     case ",$INSTALL_CAPABILITIES," in \
       *,docker,*) ;; \
@@ -633,6 +642,22 @@ RUN set -eux; \
     # Configure Docker daemon with MTU 1450 to prevent packet fragmentation issues
     mkdir -p /etc/docker; \
     echo '{"mtu": 1450}' > /etc/docker/daemon.json
+
+# Replace the apt-provided plugin in place so no vulnerable duplicate remains.
+RUN set -eux; \
+    case ",$INSTALL_CAPABILITIES," in \
+      *,docker,*) ;; \
+      *) echo "INSTALL_CAPABILITIES excludes docker; skipping Buildx"; exit 0;; \
+    esac; \
+    case "$(dpkg --print-architecture)" in \
+      amd64) buildx_arch=amd64; buildx_sha256="$BUILDX_AMD64_SHA256" ;; \
+      arm64) buildx_arch=arm64; buildx_sha256="$BUILDX_ARM64_SHA256" ;; \
+      *) echo "Unsupported Buildx architecture" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL --retry 5 "https://github.com/docker/buildx/releases/download/v${BUILDX_VERSION}/buildx-v${BUILDX_VERSION}.linux-${buildx_arch}" -o /tmp/docker-buildx; \
+    echo "$buildx_sha256  /tmp/docker-buildx" | sha256sum -c -; \
+    install -m 0755 /tmp/docker-buildx /usr/libexec/docker/cli-plugins/docker-buildx; \
+    rm /tmp/docker-buildx
 
 # --- GitHub CLI ---
 RUN set -eux; \

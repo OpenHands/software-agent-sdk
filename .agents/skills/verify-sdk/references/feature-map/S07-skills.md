@@ -28,6 +28,7 @@ Examples: `examples/01_standalone_sdk/03_activate_skill.py`, `examples/05_skills
 - `S07.load-project-flag`: `AgentContext(load_project_skills=True)` is resolved by `LocalConversation` on the first `send_message()`/`run()` from `workspace.working_dir`; project skills override same-named explicit skills, `disabled_skills` still applies, and a load failure does not stop the conversation. Unit: `tests/sdk/conversation/test_repo_root_project_skills.py`. Example: none. Real-LLM: none.
 - `S07.user-skills`: `AgentContext(load_user_skills=True)` merges `~/.agents/skills`, `$OH_PERSISTENCE_DIR`-or-`~/.openhands` `skills/` and `microagents/`, then enabled installed skills; explicit skills win on a name conflict. Unit: `tests/sdk/skills/test_load_user_skills.py`. Example: none. Real-LLM: none.
 - `S07.public-skills`: `AgentContext(load_public_skills=True)` (or `load_public_skills()`) clones `https://github.com/OpenHands/extensions` into the skills cache, keeps only skills listed in `marketplace_path` (default `marketplaces/default.json`, `None` for all), caches the result in-process (60 s for a branch, forever for a tag or SHA), honors `EXTENSIONS_REF`, and falls back to the cached clone when the update fails. Unit: `tests/sdk/skills/test_load_public_skills.py`, `tests/sdk/skills/test_extensions_ref.py`. Example: `examples/01_standalone_sdk/03_activate_skill.py`. Real-LLM: none.
+- `S07.public-skills-switch`: `OH_PUBLIC_SKILLS_ENABLED` set to a false value (`false`, `off`, `0`, `no`) makes `load_public_skills()` for the default repository, and therefore `AgentContext(load_public_skills=True)`, return no public skills without cloning or reading anything; it is read on each call, unset, empty or unrecognised values (with a warning) keep public skills on, explicit `AgentContext(skills=[...])` are kept, and a `load_public_skills(repo_url=<another repository>)` still loads. `EXTENSIONS_PATH` names a local copy of the default repository that is read in place instead of cloned. Unit: `tests/sdk/skills/test_load_public_skills.py`, `tests/agent_server/test_public_extension_policy.py` (the agent server's side). Example: none. Real-LLM: none.
 - `S07.merge-precedence`: `load_available_skills` layers public, then user, then project (later wins); `merge_skills_by_name` keeps the primary list's order; duplicate names inside `AgentContext.skills` raise. Unit: `tests/sdk/context/test_agent_context.py::TestAgentContext::test_skill_validation_duplicate_names`, `tests/sdk/conversation/test_repo_root_project_skills.py::test_load_project_skills_flag_merges_with_project_precedence`. Example: none. Real-LLM: none.
 - `S07.disabled-skills`: `AgentContext(disabled_skills=[...])` drops those names after every source is loaded; an absent name is a no-op. Unit: `tests/sdk/context/test_agent_context.py::TestAgentContext::test_disabled_skills_drops_named_skill`, `tests/sdk/conversation/test_repo_root_project_skills.py::test_disabled_skills_drops_project_skill_at_lazy_merge`. Example: none. Real-LLM: none.
 - `S07.skill-mcp-json`: an AgentSkills directory's `.mcp.json` (legacy skills: frontmatter `mcp_tools`) is parsed into `Skill.mcp_tools`, with `${VAR}` expanded from secrets, then env, then defaults; invalid JSON raises. Unit: `tests/sdk/skills/test_mcp_json.py`, `tests/sdk/skills/test_mcp_config_expansion.py`. Example: none. Real-LLM: none.
@@ -44,7 +45,7 @@ Examples: `examples/01_standalone_sdk/03_activate_skill.py`, `examples/05_skills
 - Frontmatter keys: `name`, `description`, `triggers`, `paths`, `inputs`, `license`, `compatibility`, `metadata`, `allowed-tools`, `disable-model-invocation` / `disable_model_invocation`, `mcp_tools` (legacy only).
 - Built-in tool: `invoke_skill` (`InvokeSkillTool`, `openhands.sdk.tool.builtins`), auto-attached; state fields `ConversationState.invoked_skills`, `activated_knowledge_skills`, `activated_path_rules`. Covers `S07.invoke-skill-*`, `S07.path-rules`.
 - Install store API: `install_skill(source, ref=None, installed_dir=None, force=False)`, `uninstall_skill`, `enable_skill`, `disable_skill`, `list_installed_skills`, `load_installed_skills`, `get_installed_skill`, `update_skill`, `install_skills_from_marketplace(marketplace_dir, force=)`. Covers `S07.installed-lifecycle`, `S07.marketplace-install`.
-- Env vars: `EXTENSIONS_REF` (public skills ref, read at import), `OH_PERSISTENCE_DIR` (replaces `~/.openhands`, must be set before `openhands.sdk` is imported), `LLM_API_KEY` / `LLM_MODEL` / `LLM_BASE_URL` for the examples.
+- Env vars: `EXTENSIONS_REF` (public skills ref, read at import), `OH_PUBLIC_SKILLS_ENABLED` (default on, read per call) and `EXTENSIONS_PATH` (a local copy of the default repository) (`S07.public-skills-switch`), `OH_PERSISTENCE_DIR` (replaces `~/.openhands`, must be set before `openhands.sdk` is imported), `LLM_API_KEY` / `LLM_MODEL` / `LLM_BASE_URL` for the examples.
 
 ## Driving it
 
@@ -100,7 +101,7 @@ Each run has its own `HOME` and `OH_PERSISTENCE_DIR`, so user skills, the instal
     --check longdesc_full_in_prompt eq false --check longdesc_points_to_invoke_skill eq true \
     --check longdesc_leaks_location eq false
   ```
-  Expected: the description is cut at 1024 characters with `Call invoke_skill(name="longdesc") to load the full skill`, and no file location is shown (`to_prompt` omits `<location>` on purpose). `Skill` truncates a long description already when the `SKILL.md` is loaded; since #6644 that notice also points at `invoke_skill` and not at the file.
+  Expected: the description is cut at 1024 characters with `Call invoke_skill(name="longdesc") to load the full skill`, and no file location is shown (`to_prompt` omits `<location>` on purpose). `Skill` truncates a long description already when the `SKILL.md` is loaded, and that notice points at `invoke_skill`, not at the file.
 - **Path rules (`S07.path-rules`).** A `paths: [src/**/*.py]` AgentSkills rule and a nested `docs/AGENTS.md`; the scripted agent views `README.md`, `src/app/main.py`, `src/app/other.py` and `docs/guide.md` with `file_editor`.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
@@ -164,6 +165,16 @@ Each run has its own `HOME` and `OH_PERSISTENCE_DIR`, so user skills, the instal
     --check public_count gt 10 --check has_github eq true --check cache_clone eq true \
     --check origin eq https://github.com/OpenHands/extensions
   ```
+- **The public-skills switch over a local copy (`S07.public-skills-switch`).** `EXTENSIONS_PATH` points the default repository at a local copy (skills `alpha` and `beta`, marketplace `alpha`); the program loads public skills under each value of `OH_PUBLIC_SKILLS_ENABLED`, with and without an explicit skill, then loads another local git repository with the switch off.
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  control-sdk program S07/public_switch \
+    --check unset.load eq '["alpha"]' --check unset.context eq '["alpha"]' \
+    --check false.load eq '[]' --check false.context eq '[]' --check false.with_explicit eq '["explicit"]' \
+    --check off.load eq '[]' --check zero.load eq '[]' \
+    --check true.load eq '["alpha"]' --check garbage.load eq '["alpha"]' --check garbage.with_explicit eq '["alpha", "explicit"]' \
+    --check cloned_before_other_repo eq false --check other_repo_when_off eq '["gamma"]'
+  ```
 - **A real model uses an AgentSkills skill (`S07.available-skills-prompt`, `S07.invoke-skill-run`, `S07.invoke-skill-autoattach`).** Live: the task does not name the skill.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --llm deepseek-flash --field run)
@@ -185,7 +196,7 @@ Each run has its own `HOME` and `OH_PERSISTENCE_DIR`, so user skills, the instal
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
   control-sdk exec --expect-output "DEMO 1: Installing local skills" -- python examples/05_skills_and_plugins/03_managing_installed_skills/main.py
   ```
-  Known failure (reproduced 2026-11-03, not yet filed): the example stops in DEMO 3 with `KeyError: 'skills'`. It reads `.installed.json` as `metadata["skills"][name]`, but the install store now records every kind under `"extensions"` (`InstallationMetadata` in `openhands-sdk/openhands/sdk/extensions/installation/metadata.py` reads `skills` and `plugins` only as legacy keys). The SDK calls themselves work; the example's own asserts are stale, and no CI job runs it (see the gotcha below).
+  Known failure (reproduced 2026-11-17, [#6248](https://github.com/OpenHands/software-agent-sdk/issues/6248)): the example stops in DEMO 3 with `KeyError: 'skills'`. It reads `.installed.json` as `metadata["skills"][name]`, but the install store now records every kind under `"extensions"` (`InstallationMetadata` in `openhands-sdk/openhands/sdk/extensions/installation/metadata.py` reads `skills` and `plugins` only as legacy keys). The SDK calls themselves work; the example's own asserts are stale, and no CI job runs it (see the gotcha below).
 - **Mixed marketplace example (`S07.marketplace-install`).** Network; `--install` writes to the run's install store (its `HOME` and `OH_PERSISTENCE_DIR` are private).
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --llm deepseek-flash --field run)
@@ -211,3 +222,4 @@ Each run has its own `HOME` and `OH_PERSISTENCE_DIR`, so user skills, the instal
 - The public-skills clone lives at the fixed path `<persistence>/cache/skills/public-skills` whatever `repo_url` is: after `load_public_skills(repo_url=<other repo>)`, a later default call (or `AgentContext(load_public_skills=True)`) in a new process updates that clone from its existing origin and returns the other repository's skills, not `OpenHands/extensions` (reproduced 2026-10-13 with `programs/S07/public.py`: `local` then `remote` in one run gives 3 skills and `origin` pointing at the local repo).
 - Marketplace files in the public repository list skills as `plugins` entries (`load_marketplace_skill_names` reads `marketplace.plugins`); a `skills` list there is ignored.
 - `tests/integration/run_infer.py` needs both `LLM_API_KEY` and `LLM_BASE_URL`; without either, the test instance raises `ValueError(... Skipping real LLM test.)` and is counted as an error, not a pass.
+- `OH_PUBLIC_SKILLS_ENABLED` gates only the default repository (`PUBLIC_SKILLS_REPO`); its sibling `OH_PUBLIC_CATALOG_ENABLED` (`public_catalog_enabled()`) has no effect in an SDK program: only the agent server's skills and plugin catalog routes read it (agent-server map).

@@ -17,7 +17,6 @@ from filelock import FileLock
 
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
-from openhands.agent_server.persistence import reset_stores
 
 
 # Upper bound for the held lock: if the handler blocks the event loop, nothing
@@ -72,6 +71,30 @@ _ALIVE_BUDGET_SECONDS = 2.0
             200,
             id="provider-connections",
         ),
+        pytest.param(
+            ".workspaces.lock",
+            "POST",
+            "/api/workspaces",
+            {"workspaces": [{"id": "/qa-busy", "name": "qa", "path": "/qa-busy"}]},
+            200,
+            id="workspaces",
+        ),
+        pytest.param(
+            ".secrets.lock",
+            "PUT",
+            "/api/settings/secrets",
+            {"name": "QA_BUSY", "value": "qa-value"},
+            200,
+            id="secrets",
+        ),
+        pytest.param(
+            ".settings.lock",
+            "POST",
+            "/api/settings/mcp/qa-busy",
+            {"transport": "http", "url": "https://qa-busy.example/mcp"},
+            201,
+            id="settings-mcp-server",
+        ),
     ],
 )
 async def test_alive_answers_while_store_request_waits_for_lock(
@@ -84,7 +107,6 @@ async def test_alive_answers_while_store_request_waits_for_lock(
     expected_status: int,
 ) -> None:
     monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path))
-    reset_stores()
     app = create_app(
         Config(static_files_path=None, session_api_keys=[], secret_key=None)
     )
@@ -126,4 +148,3 @@ async def test_alive_answers_while_store_request_waits_for_lock(
         safety.cancel()
         if held.is_locked:
             held.release(force=True)
-        reset_stores()

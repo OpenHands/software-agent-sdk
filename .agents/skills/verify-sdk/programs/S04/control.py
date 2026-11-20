@@ -7,6 +7,7 @@ tools are the real terminal and the `sleeper` tool from `S01/sleeper.py`.
 Usage: control.py MODE
   pause           pause() between steps, while idle, twice, then resume
   pause-mid-call  pause() while an LLM call is in flight
+  arun-pause-persisted  pause() while arun() waits on the model is on disk at once
   async-callback  a coroutine on the main loop receives events from run()
   interrupt       interrupt() cancels arun() mid-LLM-call; resume; fallbacks
   cancel-token    interrupt() during a batch of tool calls skips the rest
@@ -17,6 +18,7 @@ import sys
 import threading
 import time
 
+from pydantic import Field
 from S01.sleeper import TIMELINE  # registers "SleeperTool"
 from sdk_verify import emit, run_paths, script_messages
 
@@ -45,10 +47,13 @@ def sleeper(label: str, seconds: float = 0.6) -> dict:
 
 
 class SlowLLM(TestLLM):
-    """A scripted model that takes `delay` seconds per call (sync and async)."""
+    """A scripted model that takes `delay` seconds per call (sync and async).
+
+    The agent's `llm` is serialized as its own class (SerializeAsAny, #6789), so
+    the event is kept out of the persisted state."""
 
     delay: float = 0.0
-    in_flight: threading.Event | None = None
+    in_flight: threading.Event | None = Field(default=None, exclude=True)
 
     def completion(self, *args, **kwargs):
         if self.in_flight is not None:
@@ -70,11 +75,12 @@ def slow_llm(script, delay: float) -> SlowLLM:
     return llm
 
 
-def conversation_for(llm, tools=("SleeperTool",), **kw):
+def conversation_for(llm, tools=("SleeperTool",), callbacks=None, **kw):
     return Conversation(
         agent=Agent(llm=llm, tools=[Tool(name=t) for t in tools], **kw),
         workspace=WORKSPACE,
         visualizer=None,
+        callbacks=callbacks,
     )
 
 
@@ -141,6 +147,57 @@ elif mode == "pause-mid-call":
     }
     conversation.run()
     out["status_after_resume"] = conversation.state.execution_status.value
+    conversation.close()
+
+elif mode == "arun-pause-persisted":
+    import json
+    import uuid
+
+    from sdk_verify import conversation_dir
+
+    cid = uuid.uuid4()
+    delay = 3.0
+    llm = slow_llm([sleeper("only", 0.1), {"finish": "done"}], delay=delay)
+    conversation = Conversation(
+        agent=Agent(llm=llm, tools=[Tool(name="SleeperTool")]),
+        workspace=WORKSPACE,
+        persistence_dir=str(run_paths()["conversations"]),
+        conversation_id=cid,
+        visualizer=None,
+    )
+    base_state = conversation_dir(str(cid)) / "base_state.json"
+
+    def disk_status() -> str:
+        return json.loads(base_state.read_text())["execution_status"]
+
+    conversation.send_message("Sleep once, then finish.")
+    thread = threading.Thread(target=lambda: asyncio.run(conversation.arun()))
+    thread.start()
+    llm.in_flight.wait(timeout=30)
+    time.sleep(0.2)
+    out["disk_status_before_pause"] = disk_status()
+    paused_at = time.monotonic()
+    conversation.pause()  # from this (other) thread, the model call in flight
+    out |= {
+        "pause_returned_after_s": round(time.monotonic() - paused_at, 2),
+        "disk_status_mid_call": disk_status(),
+        "model_call_still_in_flight": thread.is_alive() and llm.call_count == 0,
+        "pause_events_mid_call": count(conversation, PauseEvent),
+    }
+    thread.join(timeout=60)
+    out |= {
+        "status": conversation.state.execution_status.value,
+        "disk_status_after_arun": disk_status(),
+        "llm_calls": llm.call_count,
+        "pause_events": count(conversation, PauseEvent),
+    }
+    llm.delay = 0.0
+    conversation.run()
+    out |= {
+        "status_after_resume": conversation.state.execution_status.value,
+        "disk_status_after_resume": disk_status(),
+        "llm_calls_after_resume": llm.call_count,
+    }
     conversation.close()
 
 elif mode == "async-callback":
@@ -270,30 +327,32 @@ elif mode == "cancel-token":
     llm = TestLLM.from_messages(
         script_messages([batch, {"finish": "batch done"}]), usage_id="agent"
     )
-    conversation = conversation_for(llm, tool_concurrency_limit=1)
-    conversation.send_message("Run the batch.")
     tokens: list = []
+    holder: list = []
+
+    def record_token(_event) -> None:
+        # Events are emitted while a run is in progress, so the run's token is
+        # observable here however short the run is.
+        token = holder[0].cancel_token if holder else None
+        if token is not None and (not tokens or tokens[-1] is not token):
+            tokens.append(token)
+
+    conversation = conversation_for(
+        llm, tool_concurrency_limit=1, callbacks=[record_token]
+    )
+    holder.append(conversation)
+    conversation.send_message("Run the batch.")
 
     async def drive() -> None:
         await conversation.arun()
 
-    def watch_token() -> None:
-        while thread.is_alive():
-            token = conversation.cancel_token
-            if token is not None and (not tokens or tokens[-1] is not token):
-                tokens.append(token)
-            time.sleep(0.02)
-
     thread = threading.Thread(target=lambda: asyncio.run(drive()))
     thread.start()
-    watcher = threading.Thread(target=watch_token)
-    watcher.start()
     while count(conversation, ActionEvent) < 4 and thread.is_alive():
         time.sleep(0.02)
     time.sleep(0.3)  # call-0 is running
     conversation.interrupt()
     thread.join(timeout=60)
-    watcher.join()
     time.sleep(1.2)  # let a worker that was already running finish
     first_token = tokens[0] if tokens else None
     out |= {
@@ -305,11 +364,8 @@ elif mode == "cancel-token":
     }
     # The next run gets a fresh, uncancelled token and finishes the work.
     thread = threading.Thread(target=lambda: asyncio.run(drive()))
-    watcher = threading.Thread(target=watch_token)
     thread.start()
-    watcher.start()
     thread.join(timeout=60)
-    watcher.join()
     out |= {
         "tokens_seen": len(tokens),
         "second_token_is_new": len(tokens) >= 2 and tokens[-1] is not tokens[0],

@@ -159,9 +159,8 @@ def live_server_env(
     # Build app after env is set
     from openhands.agent_server.api import create_app
     from openhands.agent_server.config import Config
-    from openhands.agent_server.persistence import reset_stores
+    from openhands.agent_server.server_context import server_context_of
 
-    reset_stores()
     cfg_obj = Config.model_validate_json(cfg_file.read_text())
 
     app = create_app(cfg_obj)
@@ -198,7 +197,7 @@ def live_server_env(
         yield {
             "app": app,
             "conversation_service": (
-                None if deferred_init else app.state.conversation_service
+                None if deferred_init else server_context_of(app).conversation_service
             ),
             "host": f"http://127.0.0.1:{port}",
             "workspace_path": workspace_path,
@@ -212,4 +211,3 @@ def live_server_env(
         cwd_conversations = Path("workspace/conversations")
         if cwd_conversations.exists():
             shutil.rmtree(cwd_conversations)
-        reset_stores()

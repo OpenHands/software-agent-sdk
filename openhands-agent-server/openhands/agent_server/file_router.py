@@ -19,9 +19,9 @@ from uuid import UUID
 
 from fastapi import (
     APIRouter,
+    Depends,
     File,
     Query,
-    Request,
     UploadFile,
 )
 from fastapi.responses import FileResponse
@@ -34,6 +34,7 @@ from openhands.agent_server._secret_redaction import (
     should_redact,
 )
 from openhands.agent_server.config import Config
+from openhands.agent_server.dependencies import get_config
 from openhands.agent_server.models import FileUploadResult, Success
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.sdk.errors import (
@@ -101,18 +102,20 @@ async def _upload_file(path: str, file: UploadFile) -> FileUploadResult:
         if not target_path.is_absolute():
             raise Invalid("Path must be absolute")
 
-        # Ensure target directory exists
-        target_path.parent.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(target_path.parent.mkdir, parents=True, exist_ok=True)
 
         # Stream the file to disk to avoid memory issues with large files.
-        # Offload writes to a worker thread so slow storage (NFS, FUSE,
-        # encrypted FS) cannot starve the event loop for the upload's
+        # Every filesystem call runs on a worker thread so slow storage (NFS,
+        # FUSE, encrypted FS) cannot starve the event loop for the upload's
         # duration.
         file_size = 0
-        with open(target_path, "wb") as f:
+        f = await asyncio.to_thread(target_path.open, "wb")
+        try:
             while chunk := await file.read(8192):  # Read in 8KB chunks
                 await asyncio.to_thread(f.write, chunk)
                 file_size += len(chunk)
+        finally:
+            await asyncio.to_thread(f.close)
 
         logger.info(f"Uploaded file to {target_path}")
         return FileUploadResult(file_size=file_size)
@@ -132,7 +135,7 @@ async def _upload_file(path: str, file: UploadFile) -> FileUploadResult:
         raise OperationFailed(f"Failed to upload file: {str(e)}")
 
 
-async def _download_file(path: str) -> FileResponse:
+def _download_file(path: str) -> FileResponse:
     """Internal helper to download a file from the workspace."""
     update_last_execution_time()
     logger.info(f"Downloading file: {path}")
@@ -235,7 +238,7 @@ class _TemporaryFileResponse(FileResponse):
         try:
             await super().__call__(scope, receive, send)
         finally:
-            Path(self.path).unlink(missing_ok=True)
+            await asyncio.to_thread(Path(self.path).unlink, missing_ok=True)
 
 
 ArchiveFormat = Literal["git-delta", "tar.gz"]
@@ -313,6 +316,52 @@ def _is_sensitive_git_internal(rel: PurePosixPath) -> bool:
 # a workspace path: they can legitimately contain vendored/nested git repos that
 # must not be mistaken for the workspace's own repo.
 _ARCHIVE_DESCENT_SKIP = frozenset({"node_modules", "venv", "site-packages", "vendor"})
+
+
+def _existing_directory(target: Path) -> Path:
+    """``target`` resolved, or the 404/400 for a missing path or a non-directory."""
+    if not target.exists():
+        raise NotFound("Directory not found")
+    if not target.is_dir():
+        raise Invalid("Path is not a directory")
+    return target.resolve()
+
+
+def _archive_scratch_file(target: Path, suffix: str) -> Path:
+    """Create the empty file an archive of ``target`` is written to."""
+    # Build the archive on the same volume as the workspace (its parent dir, so
+    # it is never included in itself) rather than the system temp dir: a large
+    # tar.gz on a tmpfs /tmp would defeat the stream-to-disk OOM fix, and on a
+    # small container root it could trip the pod's ephemeral-storage limit. Fall
+    # back to the default temp location if the parent is not usable.
+    scratch_dir: str | None = None
+    parent = target.parent
+    if parent != target and os.access(parent, os.W_OK):
+        scratch_dir = str(parent)
+    fd, tmp_name = tempfile.mkstemp(suffix=suffix, dir=scratch_dir)
+    os.close(fd)
+    return Path(tmp_name)
+
+
+def _build_archive(
+    archive_format: ArchiveFormat,
+    repo_root: Path,
+    base_ref: str | None,
+    output_path: Path,
+    excludes: list[str],
+) -> str:
+    """Write the archive to ``output_path``; the git-delta base commit or ``""``.
+
+    ``output_path`` is removed when building fails.
+    """
+    try:
+        if archive_format == "git-delta":
+            return _create_git_delta(repo_root, base_ref, output_path, excludes)
+        _create_tar_gz_archive(repo_root, output_path, excludes)
+        return ""
+    except Exception:
+        output_path.unlink(missing_ok=True)
+        raise
 
 
 def _resolve_git_repo_root(target: Path, max_depth: int = 3) -> Path:
@@ -734,11 +783,11 @@ async def upload_file_query(
 @file_router.get(
     "/download", responses=_FILE_DOWNLOAD_RESPONSES, response_class=FileResponse
 )
-async def download_file_query(
+def download_file_query(
     path: Annotated[str, Query(description="Absolute file path")],
 ) -> FileResponse:
     """Download a file from the workspace using query parameter (preferred method)."""
-    return await _download_file(path)
+    return _download_file(path)
 
 
 @file_router.post("/create_directory")
@@ -847,7 +896,7 @@ async def get_home_directory(
 
 
 @file_discovery_router.get("/search_subdirs")
-async def search_subdirs(
+def search_subdirs(
     path: Annotated[
         str,
         Query(description="Absolute directory path to list subdirectories of"),
@@ -933,10 +982,9 @@ async def search_subdirs(
 )
 async def download_trajectory(
     conversation_id: UUID,
-    request: Request,
+    config: Config = Depends(get_config),
 ) -> FileResponse:
     """Download a zip archive of a conversation trajectory."""
-    config: Config = request.app.state.config
     conversation_dir = config.conversations_path / conversation_id.hex
 
     if not conversation_dir.is_dir():
@@ -966,7 +1014,7 @@ async def download_trajectory(
         try:
             await zip_task
         finally:
-            temp_file.unlink(missing_ok=True)
+            await asyncio.to_thread(temp_file.unlink, missing_ok=True)
         raise
     return _TemporaryFileResponse(
         path=temp_file,
@@ -1054,51 +1102,31 @@ async def archive_directory(
     target = Path(path)
     if not target.is_absolute():
         raise Invalid("Path must be absolute")
-    if not target.exists():
-        raise NotFound("Directory not found")
-    if not target.is_dir():
-        raise Invalid("Path is not a directory")
+    target = await asyncio.to_thread(_existing_directory, target)
     if base_ref is not None and base_ref.startswith("-"):
         raise Invalid("base_ref must not start with '-'")
 
-    target = target.resolve()
     effective_excludes = (
         list(_DEFAULT_ARCHIVE_EXCLUDES) if use_default_excludes else []
     ) + (exclude or [])
-    # Build the archive on the same volume as the workspace (its parent dir, so
-    # it is never included in itself) rather than the system temp dir: a large
-    # tar.gz on a tmpfs /tmp would defeat the stream-to-disk OOM fix, and on a
-    # small container root it could trip the pod's ephemeral-storage limit. Fall
-    # back to the default temp location if the parent is not usable.
-    scratch_dir: str | None = None
-    parent = target.parent
-    if parent != target and os.access(parent, os.W_OK):
-        scratch_dir = str(parent)
-    fd, tmp_name = tempfile.mkstemp(
-        suffix=_ARCHIVE_SUFFIX[archive_format], dir=scratch_dir
+    output_path = await asyncio.to_thread(
+        _archive_scratch_file, target, _ARCHIVE_SUFFIX[archive_format]
     )
-    os.close(fd)
-    output_path = Path(tmp_name)
 
     # The caller passes the workspace base, but a repo-backed conversation clones
     # into a subdirectory; resolve to the actual repo so both formats root the
     # archive at the repo (consistent paths across git-delta, tar.gz, and the
     # initial snapshot) and git-delta does not 400 on the non-repo parent.
     repo_root = await asyncio.to_thread(_resolve_git_repo_root, target)
-    base_commit = ""
     try:
-        if archive_format == "git-delta":
-            base_commit = await asyncio.to_thread(
-                _create_git_delta,
-                repo_root,
-                base_ref,
-                output_path,
-                effective_excludes,
-            )
-        else:
-            await asyncio.to_thread(
-                _create_tar_gz_archive, repo_root, output_path, effective_excludes
-            )
+        base_commit = await asyncio.to_thread(
+            _build_archive,
+            archive_format,
+            repo_root,
+            base_ref,
+            output_path,
+            effective_excludes,
+        )
     except GitRepositoryError as e:
         output_path.unlink(missing_ok=True)
         raise Invalid(f"Not a git repository: {e}")
@@ -1109,7 +1137,6 @@ async def archive_directory(
         output_path.unlink(missing_ok=True)
         raise OperationFailed(f"Failed to generate git delta: {e}")
     except Exception as e:
-        output_path.unlink(missing_ok=True)
         logger.error(f"Failed to archive {target}: {e}")
         raise OperationFailed(f"Failed to archive directory: {str(e)}")
 

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
 from types import SimpleNamespace
@@ -16,10 +17,11 @@ from openhands.agent_server import event_router
 from openhands.agent_server.config import Config
 from openhands.agent_server.docker_runtime.hybrid import HybridConversationRegistry
 from openhands.agent_server.docker_runtime.registry import DockerConversationRegistry
-from openhands.agent_server.errors import status_for
+from openhands.agent_server.errors import GatewayTimeout, status_for
 from openhands.agent_server.event_router import run_gateway_message
-from openhands.agent_server.event_service import ConversationRunLimitExceeded
+from openhands.agent_server.exceptions import ConversationRunLimitExceeded
 from openhands.agent_server.openai import service as gateway
+from openhands.agent_server.persistence import ServerStores
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.message_request import SendMessageRequest
 from openhands.sdk.conversation.request import StartConversationRequest
@@ -37,7 +39,7 @@ def _setup(tmp_path):
         workspace_path=tmp_path / "outer-workspace",
         secret_key=SecretStr("outer-key"),
     )
-    registry = DockerConversationRegistry(config)
+    registry = DockerConversationRegistry(config, ServerStores.from_config(config))
     outer_service = AsyncMock()
     request = StartConversationRequest(
         agent_profile_id=uuid4(),
@@ -76,6 +78,7 @@ def _gateway_event_service():
     event_service = AsyncMock()
     event_service._run_task = None
     event_service._gateway_run_lock = asyncio.Lock()
+    event_service._active_gateway_runs = 0
     return event_service
 
 
@@ -85,6 +88,7 @@ def _inner_client(
     *,
     status_code=200,
     error_detail="Inner run failed",
+    error_headers=None,
     on_request=None,
 ):
     original_client = httpx.AsyncClient
@@ -94,7 +98,11 @@ def _inner_client(
         if on_request is not None:
             on_request(request)
         if status_code != 200:
-            return httpx.Response(status_code, json={"detail": error_detail})
+            return httpx.Response(
+                status_code,
+                json={"detail": error_detail},
+                headers=error_headers,
+            )
         return httpx.Response(
             200,
             json={
@@ -185,7 +193,7 @@ async def test_f55r_resume_gateway_run_stays_in_existing_docker_container(
                 "conversation_runtime_selectable": True,
             }
         )
-        registry = HybridConversationRegistry(config)
+        registry = HybridConversationRegistry(config, ServerStores.from_config(config))
     conversation_id = uuid4()
     registry.provisioning.create(conversation_id)
     requests = []
@@ -309,8 +317,17 @@ async def test_docker_gateway_keeps_container_attached_until_inner_error(
 
 
 @pytest.mark.asyncio
-async def test_docker_gateway_reports_inner_timeout_as_gateway_timeout(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize(
+    ("timeout_class", "retry_unsafe"),
+    [
+        (httpx.ReadTimeout, True),
+        (httpx.WriteTimeout, True),
+        (httpx.ConnectTimeout, False),
+        (httpx.PoolTimeout, False),
+    ],
+)
+async def test_docker_gateway_timeout_retry_signal(
+    tmp_path, monkeypatch, timeout_class, retry_unsafe
 ):
     config, registry, outer_service, start_request = _setup(tmp_path)
     conversation_id = uuid4()
@@ -322,7 +339,7 @@ async def test_docker_gateway_reports_inner_timeout_as_gateway_timeout(
         SimpleNamespace(
             AsyncClient=lambda **kwargs: httpx.AsyncClient(
                 transport=httpx.MockTransport(
-                    lambda request: (_ for _ in ()).throw(httpx.ReadTimeout("slow"))
+                    lambda request: (_ for _ in ()).throw(timeout_class("slow"))
                 ),
                 **kwargs,
             ),
@@ -342,7 +359,52 @@ async def test_docker_gateway_reports_inner_timeout_as_gateway_timeout(
         )
 
     assert status_for(error.value) == 504
+    if retry_unsafe:
+        assert isinstance(error.value, GatewayTimeout)
+        assert error.value.retry_safe is False
+        assert error.value.conversation_id == conversation_id
+        assert error.value.detail == "Conversation runtime timed out"
+    else:
+        assert not isinstance(error.value, GatewayTimeout)
+
     assert not registry.has_attached_sessions(conversation_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("retry_signal", [None, "false", "true"])
+async def test_docker_gateway_classifies_inner_timeout_retry_signal(
+    tmp_path, monkeypatch, retry_signal
+):
+    config, registry, outer_service, start_request = _setup(tmp_path)
+    conversation_id = uuid4()
+    registry.provisioning.create(conversation_id)
+    _mock_container(monkeypatch)
+    requests = []
+    _inner_client(
+        monkeypatch,
+        requests,
+        status_code=504,
+        error_headers={"x-should-retry": retry_signal} if retry_signal else None,
+    )
+
+    with pytest.raises(GatewayTimeout) as error:
+        await _run_gateway(
+            config,
+            registry,
+            outer_service,
+            start_request,
+            "Slow turn",
+            conversation_id=conversation_id,
+        )
+
+    assert status_for(error.value) == 504
+    assert len(requests) == 1
+    if retry_signal != "true":
+        assert isinstance(error.value, GatewayTimeout)
+        assert error.value.retry_safe is False
+        assert error.value.conversation_id == conversation_id
+    else:
+        assert error.value.retry_safe is True
 
 
 @pytest.mark.asyncio
@@ -444,7 +506,7 @@ async def test_docker_gateway_rejects_id_owned_by_local_conversation(tmp_path):
 async def test_hybrid_gateway_keeps_a_local_owned_conversation_local(tmp_path):
     config, _, outer_service, start_request = _setup(tmp_path)
     config = config.model_copy(update={"conversation_runtime_selectable": True})
-    registry = HybridConversationRegistry(config)
+    registry = HybridConversationRegistry(config, ServerStores.from_config(config))
     conversation_id = uuid4()
     conversation_dir = registry.conversation_dir(conversation_id)
     conversation_dir.mkdir(parents=True)
@@ -664,4 +726,29 @@ async def test_gateway_lock_wait_expires_before_saving_message(monkeypatch):
             await run_gateway_message(SendMessageRequest(), event_service)
 
     assert status_for(error.value) == 504
+    assert isinstance(error.value, GatewayTimeout)
+    assert error.value.retry_safe is True
+
     event_service.send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_gateway_post_send_timeout_keeps_run_and_disables_retry():
+    event_service = _gateway_event_service()
+    event_service.reserve_run_slot.return_value = None
+    event_service.get_state.return_value = SimpleNamespace(
+        events=[], stats=ConversationStats()
+    )
+    event_service.wait_for_run_completion.side_effect = TimeoutError("slow run")
+
+    with pytest.raises(GatewayTimeout) as error:
+        await run_gateway_message(
+            SendMessageRequest(content=[TextContent(text="Slow turn")]),
+            event_service,
+            deadline=time.monotonic() + 1,
+        )
+
+    assert status_for(error.value) == 504
+    assert error.value.retry_safe is False
+    event_service.send_message.assert_awaited_once()
+    event_service.interrupt.assert_not_awaited()
