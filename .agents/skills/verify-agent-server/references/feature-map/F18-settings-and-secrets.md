@@ -680,7 +680,7 @@ Preconditions:
   ```sh
   S="$AGENT_SERVER_VERIFY_RUN/home/.openhands/settings.json"
   SUM=$({ cat "$S" 2>/dev/null || true; } | sha256sum)
-  control-agent-server api GET /api/settings/experimental --expect 200 --check . len-eq 5 --check 0.key eq conversation_reactions \
+  control-agent-server api GET /api/settings/experimental --expect 200 --check . len-eq 6 --check 0.key eq conversation_reactions \
     --check 0.label eq 'Conversation reactions' --check 0.description exists --check 0.enabled eq false \
     --check 1.key eq ask_user --check 1.label eq 'Decision cards' --check 1.enabled eq false \
     --check 2.key eq conversation_mentions --check 2.enabled eq false \
