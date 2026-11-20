@@ -121,6 +121,24 @@ def test_durable_delivery_stops_at_missing_sequence(tmp_path):
         reopened.webhook_event_batch(0, 10, 10000)
 
 
+def test_replay_snapshot_does_not_include_newly_appended_events(tmp_path):
+    service, _ = _publisher(tmp_path, tmp_path / "conversations")
+    log = service._events_for_read()
+    for _ in range(2):
+        log.append(ConversationStateUpdateEvent(key="execution_status", value="idle"))
+
+    first = service.webhook_replay_page(-1, None, 1)
+    assert first["through_seq"] == 1
+    assert [entry["seq"] for entry in first["events"]] == [0]
+
+    log.append(ConversationStateUpdateEvent(key="execution_status", value="idle"))
+    second = service.webhook_replay_page(0, first["through_seq"], 100)
+    assert [entry["seq"] for entry in second["events"]] == [1]
+    assert service.webhook_replay_page(1, first["through_seq"], 100)["events"] == []
+    with pytest.raises(ValueError, match="outside the persisted log"):
+        service.webhook_replay_page(1, 3, 100)
+
+
 @pytest.mark.asyncio
 async def test_durable_close_drains_events_written_during_teardown(tmp_path):
     service, subscriber = _publisher(tmp_path, tmp_path / "conversations")

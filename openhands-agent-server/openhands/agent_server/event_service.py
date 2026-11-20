@@ -599,7 +599,12 @@ class EventService:
         return self._conversation._state.events
 
     def webhook_event_batch(
-        self, after_seq: int, limit: int, max_bytes: int
+        self,
+        after_seq: int,
+        limit: int,
+        max_bytes: int,
+        *,
+        through_seq: int | None = None,
     ) -> list[dict[str, Any]]:
         events = self._events_for_read()
         if after_seq >= 0 and (not events or after_seq > events.get_seq(-1)):
@@ -609,6 +614,8 @@ class EventService:
         size = len(b'{"events":[]}')
         for index in range(start, min(start + limit, len(events))):
             seq = events.get_seq(index)
+            if through_seq is not None and seq > through_seq:
+                break
             expected = after_seq + len(batch) + 1
             if seq != expected:
                 if batch:
@@ -651,6 +658,19 @@ class EventService:
             size += entry_size + bool(batch)
             batch.append(entry)
         return batch
+
+    def webhook_replay_page(
+        self, after_seq: int, through_seq: int | None, limit: int
+    ) -> dict[str, Any]:
+        events = self._events_for_read()
+        last_seq = events.get_seq(-1) if events else -1
+        through_seq = last_seq if through_seq is None else through_seq
+        if not -1 <= after_seq <= through_seq <= last_seq:
+            raise ValueError("Webhook replay cursor is outside the persisted log")
+        batch = self.webhook_event_batch(
+            after_seq, limit, 5 * 1024 * 1024, through_seq=through_seq
+        )
+        return {"through_seq": through_seq, "events": batch}
 
     def _get_event_sync(self, event_id: str) -> Event | None:
         """Private sync function to get a single event.
