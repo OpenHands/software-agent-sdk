@@ -38,6 +38,7 @@ from openhands.agent_server.models import (
 )
 from openhands.agent_server.pub_sub import PubSub, Subscriber
 from openhands.agent_server.server_details_router import update_last_execution_time
+from openhands.agent_server.stream_capture import StreamCapture
 from openhands.sdk import LLM, AgentBase, Event, Message, TextContent, get_logger
 from openhands.sdk.agent import ACPAgent
 from openhands.sdk.agent.acp_agent import ACTIVITY_SIGNAL_INTERVAL
@@ -273,6 +274,7 @@ class EventService:
     bash_event_service: BashEventService | None = field(default=None, init=False)
     owner_instance_id: str = field(default_factory=lambda: uuid4().hex)
     lease_ttl_seconds: float = DEFAULT_LEASE_TTL_SECONDS
+    capture_llm_streams: bool = False
     _conversation: LocalConversation | None = field(default=None, init=False)
     _persisted_events: EventLog | None = field(default=None, init=False)
     _pub_sub: PubSub[Event] = field(
@@ -1432,6 +1434,17 @@ class EventService:
                     reasoning_content=reasoning if isinstance(reasoning, str) else None,
                 )
 
+        capture = (
+            StreamCapture(self.conversation_dir / "stream-captures")
+            if self.capture_llm_streams
+            else None
+        )
+        callbacks: list[ConversationCallbackType] = [self._callback_wrapper]
+        stream_callbacks = [_publish_stream_progress]
+        if capture is not None:
+            callbacks.insert(0, capture.committed)
+            stream_callbacks.append(capture.progress)
+
         # Off-loop: resuming replays every persisted event on the active branch
         # (read + validate), which scales with conversation length and would
         # otherwise freeze the whole server while it runs.
@@ -1442,9 +1455,9 @@ class EventService:
             plugins=self.stored.plugins,
             persistence_dir=str(self.conversations_dir),
             conversation_id=self.stored.id,
-            callbacks=[self._callback_wrapper],
+            callbacks=callbacks,
             token_callbacks=([_token_streaming_callback] if streaming_enabled else []),
-            stream_callbacks=[_publish_stream_progress],
+            stream_callbacks=stream_callbacks,
             max_iteration_per_run=self.stored.max_iterations,
             max_budget_per_run=self.initial_max_budget_per_run,
             stuck_detection=self.stored.stuck_detection,
