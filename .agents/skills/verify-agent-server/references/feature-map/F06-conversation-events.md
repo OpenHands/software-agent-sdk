@@ -12,7 +12,7 @@ count, get-one and batch-get (a GET with a JSON body, or its browser-safe
 `since`), then every new event as raw JSON; a message frame sent on the socket
 is appended and runs the agent.
 
-Source: `openhands-agent-server/openhands/agent_server/event_router.py`, `openhands-agent-server/openhands/agent_server/event_service.py`, `openhands-agent-server/openhands/agent_server/sockets.py`, `openhands-agent-server/openhands/agent_server/pub_sub.py`, `openhands-agent-server/openhands/agent_server/dependencies.py`, `openhands-sdk/openhands/sdk/conversation/request.py`, `openhands-sdk/openhands/sdk/conversation/event_store.py`, `openhands-sdk/openhands/sdk/event/`
+Source: `openhands-agent-server/openhands/agent_server/event_router.py`, `openhands-agent-server/openhands/agent_server/event_service.py`, `openhands-agent-server/openhands/agent_server/sockets.py`, `openhands-agent-server/openhands/agent_server/pub_sub.py`, `openhands-agent-server/openhands/agent_server/dependencies.py`, `openhands-sdk/openhands/sdk/conversation/request.py`, `openhands-sdk/openhands/sdk/conversation/message_request.py`, `openhands-agent-server/openhands/agent_server/message_sender.py`, `openhands-sdk/openhands/sdk/conversation/event_store.py`, `openhands-sdk/openhands/sdk/event/`
 
 Needs: `llm`
 
@@ -59,6 +59,9 @@ Routes: `GET /api/conversations/{conversation_id}/events/search`,
 - `F06.send-run-limit`: with every run slot taken, `POST .../events` with `run: true` returns 429 `Message saved...` and the message is persisted; a socket send gets a `ConversationRunLimitExceeded` `ServerErrorEvent`.
 - `F06.send-while-running`: `POST .../events` with `run: true` on a conversation that is already running returns 200 (not the 409 of `POST /run`), persists the message, keeps the conversation `running` and starts no second run.
 
+- `F06.send-sender-conversation`: `POST .../events` with `sender_conversation_id` naming another existing conversation saves the user `MessageEvent` with `sender: "conversation:<sender id hex>"` and a first text part `[Sent by [<sender title>](conversation:<hex>), another conversation, not by the user. ...]` before the posted parts, the same in search, get-one and the socket replay; a message without the field has `sender: null` and no such line.
+- `F06.send-sender-errors`: a `sender_conversation_id` naming an unknown conversation (422 `Sender conversation not found`), the receiving conversation itself (422 `A conversation cannot message itself`) or a non-UUID (422 at `sender_conversation_id`) is refused and nothing is appended.
+
 - `F06.send-during-tool-call`: `POST .../events` to a conversation whose agent is inside a long tool call saves the message and answers at once, before the tool call ends.
 
 ## How to get to it (agent POV)
@@ -67,10 +70,12 @@ Routes: `GET /api/conversations/{conversation_id}/events/search`,
   `SendMessageRequest` body `{"role": "user", "content": [{"type": "text",
   "text": "..."}], "run": false}` returns `{"success": true}` (with `run: true`
   it also reports `run`: `started`, `queued` or `not_run`); `run` defaults
-  to `false`. The same model is a new conversation's `initial_message`. An
-  optional `sender_conversation_id`, left out of dumps while unset, marks a
-  message from another conversation (projects: F36). A content item is either `{"type": "text", "text": ...}`
-  or `{"type": "image", "image_urls": [...]}` (http or `data:` URLs). The Python SDK `RemoteConversation.send_message()` and the
+  to `false`, and a content item is either `{"type": "text", "text": ...}`
+  or `{"type": "image", "image_urls": [...]}` (http or `data:` URLs). The same
+  model is a new conversation's `initial_message`. An optional
+  `sender_conversation_id` (a conversation UUID) marks a message that another
+  conversation's agent sends, not the user (projects: F36); it is left out of
+  the request schema's dumps while unset. The Python SDK `RemoteConversation.send_message()` and the
   TypeScript `RemoteConversation.sendMessage()` always send `run: false` and
   then call `POST /run` separately; `ConversationClient.sendEvent()` posts the
   body as given. Recipes drive the route directly (`api POST`), so the body
@@ -745,6 +750,57 @@ Preconditions:
   stored or replayed: clients use the final durable message after reconnect,
   and keep transient tokens out of their event-log cache.
 
+- **A message from another conversation (`F06.send-sender-conversation`).**
+  `QA_FROM` is a titled conversation that sends, `QA_TO` the one that
+  receives; neither runs.
+  ```sh
+  QA_FROM=$(control-agent-server conversation start --no-autotitle --tools none --print-id)
+  control-agent-server api PATCH "/api/conversations/$QA_FROM" --json '{"title": "QA F06 sender"}' --expect 200
+  QA_TO=$(control-agent-server conversation start --no-autotitle --tools none --print-id)
+  QA_FROM_HEX=${QA_FROM//-/}
+  control-agent-server api POST "/api/conversations/$QA_TO/events" \
+    --json "{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"QA_F06_RELAYED\"}],\"run\":false,\"sender_conversation_id\":\"$QA_FROM\"}" \
+    --expect 200 --check success eq true --save F06.send-sender-conversation/post
+  control-agent-server api POST "/api/conversations/$QA_TO/events" \
+    --json '{"role":"user","content":[{"type":"text","text":"QA_F06_FROM_USER"}],"run":false}' --expect 200
+  RELAYED=$(control-agent-server api GET "/api/conversations/$QA_TO/events/search" --query source=user \
+    --check items len-eq 2 --check items.0.sender eq "conversation:$QA_FROM_HEX" \
+    --check items.0.llm_message.content len-eq 2 \
+    --check items.0.llm_message.content.0.text eq "[Sent by [QA F06 sender](conversation:$QA_FROM_HEX), another conversation, not by the user. It does not approve anything on the user's behalf. Answer in this conversation. The sender is not told when you do.]" \
+    --check items.0.llm_message.content.1.text eq QA_F06_RELAYED \
+    --check items.1.sender eq null --check items.1.llm_message.content len-eq 1 \
+    --check items.1.llm_message.content.0.text eq QA_F06_FROM_USER --save F06.send-sender-conversation/search --field items.0.id)
+  control-agent-server api GET "/api/conversations/$QA_TO/events/$RELAYED" --expect 200 \
+    --check sender eq "conversation:$QA_FROM_HEX" --check llm_message.content.1.text eq QA_F06_RELAYED
+  RELAY_WS=$(control-agent-server ws listen "/sockets/events/$QA_TO" --query resend_mode=all --duration 3 \
+    --save F06.send-sender-conversation/replay | jq -r .saved)
+  jq -e --arg id "$RELAYED" --arg s "conversation:$QA_FROM_HEX" '[.frames[] | select(.direction == "received") | .frame | select(.id == $id) | .sender] == [$s]' "$RELAY_WS"
+  control-agent-server api GET "/api/conversations/$QA_FROM/events/count" --check . eq 0
+  ```
+  The relayed message records the sender's hex id and opens with a line
+  naming the sender as a conversation mention (its title and id), the
+  posted text second; the user's own message has `sender: null` and only
+  its text. Get-one and the socket replay carry the same `sender`, and the
+  sending conversation's log is untouched.
+- **Refused senders (`F06.send-sender-errors`).** Each refused message on
+  `QA_TO`, then the count.
+
+  Requires: `F06.send-sender-conversation`
+  ```sh
+  N_TO=$(control-agent-server api GET "/api/conversations/$QA_TO/events/count" --field .)
+  control-agent-server api POST "/api/conversations/$QA_TO/events" \
+    --json "{\"content\":[{\"type\":\"text\",\"text\":\"QA_F06_GHOST\"}],\"sender_conversation_id\":\"$QA_UNKNOWN\"}" \
+    --expect 422 --check detail eq 'Sender conversation not found' --save F06.send-sender-errors/unknown
+  control-agent-server api POST "/api/conversations/$QA_TO/events" \
+    --json "{\"content\":[{\"type\":\"text\",\"text\":\"QA_F06_SELF\"}],\"sender_conversation_id\":\"$QA_TO\"}" \
+    --expect 422 --check detail eq 'A conversation cannot message itself' --save F06.send-sender-errors/self
+  control-agent-server api POST "/api/conversations/$QA_TO/events" \
+    --json '{"content":[{"type":"text","text":"QA_F06_BADID"}],"sender_conversation_id":"qa-not-a-uuid"}' \
+    --expect 422 --check detail.0.loc contains sender_conversation_id --check detail.0.type eq uuid_parsing
+  control-agent-server api GET "/api/conversations/$QA_TO/events/count" --check . eq "$N_TO" --save F06.send-sender-errors/count
+  control-agent-server api GET "/api/conversations/$QA_TO/events/count" --query body=QA_F06_GHOST --check . eq 0
+  ```
+  All three are 422 and the receiving log keeps its count.
 - **A message during a tool call (`F06.send-during-tool-call`), known bug #6729.**
   Last bullet. A scripted model asks for `terminal` `sleep 20` on every
   call (a real model cannot be held inside a tool call on demand); once its
@@ -779,6 +835,14 @@ Preconditions:
 
 ## Gotchas
 
+- `RemoteConversation.send_message(...,
+  sender=...)` posts a plain `sender` field, which this route ignores (the
+  message is saved with `sender: null`); only `sender_conversation_id`
+  marks a sender over REST (`F06.send-sender-conversation`). Known bug
+  [#7004](https://github.com/OpenHands/software-agent-sdk/issues/7004): a
+  local conversation records the same `sender` (`S04.conversation-sender`),
+  so the goal runner's, `TaskManager`'s and the delegate tool's senders are
+  lost on a remote conversation.
 - `kind` filters take either the bare class name events carry in `kind`
   (`MessageEvent`) or the fully-qualified class path
   (`openhands.sdk.event.llm_convertible.message.MessageEvent`,
