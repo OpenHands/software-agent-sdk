@@ -361,7 +361,7 @@ The scripted bullets point a real `LLM` (`openai/...`, `anthropic/...`) at `prog
     --check results.duplicate_tool_call_id.error_type eq LLMMalformedConversationHistoryError \
     --check results.parallel_wrong_order.error_type eq LLMMalformedConversationHistoryError
   ```
-  Expected: DeepSeek rejects all eight, each as `LLMMalformedConversationHistoryError`. Before #6658, the three whose provider message is "Messages with role 'tool' must be a response to a preceding message with 'tool_calls'" (unmatched tool result, duplicate id, parallel results in the wrong order) came back as the generic `LLMBadRequestError`; now the classifier knows that message.
+  Expected: DeepSeek rejects all eight, each as `LLMMalformedConversationHistoryError`, including the three whose provider message is "Messages with role 'tool' must be a response to a preceding message with 'tool_calls'" (unmatched tool result, duplicate id, parallel results in the wrong order).
 - **Examples 22 and 23 and the thinking-block condenser test (`S02.anthropic-thinking`, `S02.responses-reasoning`), blocked.** Example 22 and `c01_thinking_block_condenser` need an Anthropic extended-thinking model and key; example 23 hardcodes `openhands/gpt-5-mini-2025-08-07` and needs an OpenHands provider key. The run's DeepSeek key reaches neither.
 
 ## Gotchas
