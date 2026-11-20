@@ -34,6 +34,35 @@ def _expire_lease(conversation_dir: Path) -> None:
     lease_path.write_text(json.dumps(payload))
 
 
+def test_lease_lock_waiters_poll_briefly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A waiter (the event loop, for a meta.json write) must not sleep 50 ms
+    for a lock that is held for a few milliseconds."""
+    polls: list[float] = []
+    real_acquire = conversation_lease_module.FileLock.acquire
+
+    def recording_acquire(self, timeout=None, poll_interval=0.05, **kwargs):
+        polls.append(poll_interval)
+        return real_acquire(self, timeout, poll_interval, **kwargs)
+
+    monkeypatch.setattr(
+        conversation_lease_module.FileLock, "acquire", recording_acquire
+    )
+    lease = ConversationLease(
+        conversation_dir=tmp_path / "conversation", owner_instance_id="primary"
+    )
+
+    claim = lease.claim()
+    lease.renew(claim.generation)
+    with lease.guarded_write(claim.generation):
+        pass
+    lease.release(claim.generation)
+
+    assert len(polls) == 4
+    assert all(poll <= 0.005 for poll in polls)
+
+
 def test_claim_and_renew_persist_same_owner_generation(tmp_path: Path) -> None:
     conversation_dir = tmp_path / "conversation"
     lease = ConversationLease(

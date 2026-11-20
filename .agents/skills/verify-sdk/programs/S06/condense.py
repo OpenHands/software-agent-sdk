@@ -15,6 +15,8 @@ Usage: condense.py MODE
             reset (retries, then gives up).
   soft      size pressure with nothing worth forgetting (minimum_progress)
             leaves the run alone; an explicit request resets hard.
+  empty-summary  size pressure while the summary LLM answers with no text
+            (""), then with only whitespace (" ").
   reasons   condensation reasons and their combination, on a View taken from
             a real conversation (the API a custom condenser author uses).
   pipeline  PipelineCondenser and NoOpCondenser inside conversations.
@@ -360,6 +362,26 @@ elif mode == "soft":
     ]
     out["hard_offset"] = conds[-1].summary_offset if conds else None
     conversation.close()
+
+elif mode == "empty-summary":
+    for name, blank in (("empty", ""), ("blank", " ")):
+        usage_id = f"condenser-{name}"
+        condenser = summarizer([blank] * 6, usage_id=usage_id)
+        conversation = conversation_for(echo_steps(8) + [{"finish": "done"}], condenser)
+        error = run(conversation)
+        conds = condensations(conversation)
+        out[name] = {
+            "error": error,
+            "status": conversation.state.execution_status.value,
+            "summary_calls": len(calls(usage_id)),
+            "condensations": len(conds),
+            "empty_summary_condensations": sum(
+                not (c.summary or "").strip() for c in conds
+            ),
+            "forgotten": sum(len(c.forgotten_event_ids) for c in conds),
+            "summaries": [c.summary for c in conds],
+        }
+        conversation.close()
 
 elif mode == "reasons":
     script = echo_steps(12) + [{"finish": "done"}]

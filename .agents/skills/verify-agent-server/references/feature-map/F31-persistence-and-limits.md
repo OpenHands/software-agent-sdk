@@ -24,7 +24,7 @@ Routes: none
 - `F31.lease-renewed`: while the server lives, the lease's `expires_at` moves forward within 15 s, with the same owner and generation.
 - `F31.lease-released-graceful`: a graceful restart deletes the lease of every loaded conversation, catalog reads do not claim it again, and the next load claims generation 1 under the new pid.
 - `F31.lease-dead-owner-takeover`: after a SIGKILL the lease still names the dead pid; the restarted server takes it over on first load with generation 2 and logs the takeover.
-- `F31.lease-zombie-owner-takeover`: a restarted server serves its own conversation at once and takes the lease over as generation 2 also when the SIGKILLed owner's pid is still in the process table as a zombie (killed, not reaped) (known bug #6826: 404 until the lease expires).
+- `F31.lease-zombie-owner-takeover`: a restarted server serves its own conversation at once and takes the lease over as generation 2 also when the SIGKILLed owner's pid is still in the process table as a zombie (killed, not reaped); the lease records the owner's process start time (`owner_started_at`).
 - `F31.crash-tool-call`: a conversation SIGKILLed during a tool call is loaded again at startup, comes back `error` with one `AgentErrorEvent` (`recovery_reason: server_restart`) answering the interrupted call and no observation, and the resumed run hands that error to the model.
 - `F31.state-survives-restarts`: a conversation's title, tags and events, the settings, a stored secret and the LLM profiles read back unchanged after a graceful restart and after a SIGKILL.
 - `F31.no-plaintext-at-rest`: after a real model run, the provider key, a stored secret and a conversation secret appear nowhere in the run's persisted files or the server log, while the server still hands out the provider key and the stored secret and keeps the conversation secret encrypted in its registry.
@@ -189,7 +189,7 @@ Preconditions:
   first load on the restarted server takes it over at once (same host, pid
   gone) as generation 2 and logs `Taking over conversation lease ... from
   dead owner`.
-- **Zombie owner takeover (`F31.lease-zombie-owner-takeover`), known bug #6826.**
+- **Zombie owner takeover (`F31.lease-zombie-owner-takeover`).**
   The same crash, seen where nothing reaps the dead server (a container whose
   PID 1 does not): its pid stays in the process table as a zombie. To get
   that state on any machine, a helper makes itself a child subreaper
@@ -211,7 +211,8 @@ Preconditions:
   ZPID=$(jq -r .pid "$Z/run.json")
   ZC=$(control-agent-server conversation start --run "$Z" --tools none --no-autotitle --prompt 'qa-f31-zombie-marker' --no-run --print-id)
   ZN=$(control-agent-server api GET "/api/conversations/$ZC/events/count" --run "$Z" --expect 200 --field .)
-  control-agent-server state cat owner_lease.json --run "$Z" --conversation "$ZC" --check owner_pid eq "$ZPID" --check generation eq 1
+  control-agent-server state cat owner_lease.json --run "$Z" --conversation "$ZC" --check owner_pid eq "$ZPID" --check generation eq 1 \
+    --check owner_started_at exists
   control-agent-server restart --hard --run "$Z"
   test "$(ps -o state= -p "$ZPID")" = Z
   ZPID2=$(jq -r .pid "$Z/run.json")
@@ -219,7 +220,7 @@ Preconditions:
   control-agent-server state cat owner_lease.json --run "$Z" --conversation "$ZC" --check owner_pid eq "$ZPID" --check generation eq 1 \
     --check expires_at gt "$(date +%s)"
   control-agent-server api GET "/api/conversations/$ZC" --run "$Z" --expect 200 --check id eq "$ZC" --quiet
-  control-agent-server api GET "/api/conversations/$ZC/events/count" --run "$Z" --expect 200 --check . eq "$ZN" --save F31.lease-zombie-owner-takeover/first-load  # bug: status eq 404 && response.body.detail contains 'Conversation not found'
+  control-agent-server api GET "/api/conversations/$ZC/events/count" --run "$Z" --expect 200 --check . eq "$ZN" --save F31.lease-zombie-owner-takeover/first-load
   control-agent-server state cat owner_lease.json --run "$Z" --conversation "$ZC" --check owner_pid eq "$ZPID2" --check generation eq 2
   control-agent-server stop --run "$Z"
   control-agent-server helper stop qa-f31-zombie-parent
@@ -231,10 +232,8 @@ Preconditions:
   read) and must load it on the first request with the events it had before
   the crash, taking the lease over as generation 2, as it does when the pid
   is gone
-  (`F31.lease-dead-owner-takeover`). The bug: a zombie still answers the
-  liveness probe, so the lease is honoured and the load answers 404
-  `Conversation not found: <id>` until the lease expires, up to 45 s after
-  the crash. Evidence lands in `Z`'s `evidence/`.
+  (`F31.lease-dead-owner-takeover`): a pid in state `Z` (or `X`) counts as
+  dead. Evidence lands in `Z`'s `evidence/`.
 - **Crash during a tool call (`F31.crash-tool-call`).** `T`'s model asks for
   `terminal` `sleep 300`; the server is SIGKILLed while it runs, then the
   stub is rewritten to call `finish` and the run resumes.
@@ -873,12 +872,13 @@ Preconditions:
   dead pid. A frozen or hung owner (pid alive), an owner on another host, or
   a lease file from an older server without `owner_host`/`owner_pid` is taken
   over only after `expires_at`. A TTL below the 15 s renewal interval expires
-  between renewals. The pid counts as alive while it is a zombie (a killed
-  server nobody reaped, as under a PID 1 that does not reap), and a lease
-  that names the restarted server's own pid (a pid reused in a container) is
-  never treated as dead; both wait for `expires_at`
-  ([#6826](https://github.com/OpenHands/software-agent-sdk/issues/6826),
-  `F31.lease-zombie-owner-takeover`).
+  between renewals. A zombie pid (a killed server nobody reaped, as under a
+  PID 1 that does not reap) counts as dead (`F31.lease-zombie-owner-takeover`).
+  On Linux the lease also records the owner's process start time
+  (`owner_started_at`, from `/proc/<pid>/stat`), so a live pid whose start
+  time differs (a pid reused by a restarted server in a container) counts as
+  dead too; a lease without that field, or a host without `/proc`, falls back
+  to the pid check alone.
 - An owner that lost its lease keeps the conversation loaded and answers
   every write with 409 until idle eviction or a restart closes it, and its
   reads serve the stale in-memory state; each attempt counts as activity,

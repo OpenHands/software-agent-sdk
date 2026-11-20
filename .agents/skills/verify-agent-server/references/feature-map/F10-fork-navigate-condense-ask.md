@@ -556,7 +556,7 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   A second `Condensation` is recorded and ask_agent still names the codename
   from the reloaded history (the condenser keeps the first two events, the
   system prompt and the user's message); `A` stays `finished`.
-- **Ask usage on GET and after a restart (`F10.ask-agent-usage-saved`), known bug #6844.**
+- **Ask usage on GET and after a restart (`F10.ask-agent-usage-saved`).**
   A conversation of its own on an `llm-stub` with fixed usage numbers: the
   run's reply reports 11 prompt and 7 completion tokens, the ask's reply 5
   and 3. The bullet restarts the run, so it comes last.
@@ -575,7 +575,7 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   control-agent-server api GET "/api/conversations/$U" --max-chars 300 \
     --check stats.usage_to_metrics.default.accumulated_token_usage.completion_tokens eq 7 \
     --check stats.usage_to_metrics.ask-agent-llm.accumulated_token_usage.completion_tokens eq 3 \
-    --save F10.ask-agent-usage-saved/get  # bug: status eq 200 && checks.0.ok eq true && checks.1.actual eq null
+    --save F10.ask-agent-usage-saved/get
   control-agent-server restart
   control-agent-server api GET "/api/conversations/$U" --max-chars 300 \
     --check stats.usage_to_metrics.default.accumulated_token_usage.completion_tokens eq 7 \
@@ -584,12 +584,9 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   ```
   The run's usage is on GET (7 completion tokens under `default`), the ask
   answers, and the `stats` event the ask recorded reports 5 and 3 tokens
-  under `ask-agent-llm`. Expected: GET shows the same `ask-agent-llm` entry
-  right away and after a restart
-  ([#6844](https://github.com/OpenHands/software-agent-sdk/issues/6844), fix in [#6845](https://github.com/OpenHands/software-agent-sdk/pull/6845)).
-  Today GET still lists only `default`: the ask updates the live stats
-  without saving the conversation's state, GET reads the saved state, and a
-  restart right after the ask loses the entry.
+  under `ask-agent-llm`. GET shows the same `ask-agent-llm` entry right
+  away, next to `default`, and still after a restart: the ask saves its
+  usage with the conversation's state.
 
 ## Gotchas
 
@@ -629,11 +626,9 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   Each call records and pushes one `stats` `ConversationStateUpdateEvent`
   whose `usage_to_metrics` includes an `ask-agent-llm` entry
   (`F10.ask-agent` checks the total count), so a client that counts events
-  around an ask sees one more. GET's `stats` does not show the
-  `ask-agent-llm` entry until the conversation's state is next saved (a
-  message, a run), and a restart before that loses it
-  (`F10.ask-agent-usage-saved`,
-  [#6844](https://github.com/OpenHands/software-agent-sdk/issues/6844)). It passes the agent's tools to
+  around an ask sees one more. The same entry is saved with the
+  conversation's state, so GET and a restarted server show it
+  (`F10.ask-agent-usage-saved`). It passes the agent's tools to
   the model and returns the first text block, so on a conversation with no
   messages yet DeepSeek's answer came back as an empty `response` (200).
 - `fork` and `navigate` return `ConversationInfo` with

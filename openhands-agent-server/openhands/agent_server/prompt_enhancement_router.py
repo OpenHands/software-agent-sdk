@@ -11,6 +11,7 @@ from litellm import ResponsesAPIResponse
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from openhands.agent_server.dependencies import get_cipher, get_llm_profile_store
+from openhands.agent_server.persistence import run_store
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.exceptions import (
     LLMAuthenticationError,
@@ -129,9 +130,7 @@ async def _load_profile(
         )
 
     try:
-        llm = await asyncio.to_thread(
-            profile_store.load, name, cipher=cipher, strict=True
-        )
+        llm = await run_store(profile_store.load, name, cipher=cipher, strict=True)
         if cipher is None:
             for field in LLM_SECRET_FIELDS:
                 value = getattr(llm, field)

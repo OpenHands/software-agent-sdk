@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from uuid import UUID, uuid4
 
 import httpx
+from httpx import ConnectTimeout, PoolTimeout
 from pydantic import ValidationError
 
 from openhands.agent_server.agent_profiles_router import active_agent_profile
@@ -19,7 +20,7 @@ from openhands.agent_server.docker_runtime.routers import (
     _container,
     start_docker_conversation,
 )
-from openhands.agent_server.errors import ForwardedStatus
+from openhands.agent_server.errors import ForwardedStatus, GatewayTimeout
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.launch import launch_error
 from openhands.agent_server.openai.models import (
@@ -43,7 +44,11 @@ from openhands.agent_server.openai.models import (
     OpenAIResponseUsage,
     OpenAIUsage,
 )
-from openhands.agent_server.persistence import PersistedSettings, ServerStores
+from openhands.agent_server.persistence import (
+    PersistedSettings,
+    ServerStores,
+    run_store,
+)
 from openhands.sdk import Message
 from openhands.sdk.conversation.request import (
     AgentLaunchAdditions,
@@ -68,6 +73,7 @@ from openhands.sdk.llm.utils.metrics import TokenUsage
 from openhands.sdk.profiles import OpenHandsAgentProfile
 from openhands.sdk.profiles.resolver import ProfileNotFound
 from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.pydantic_secrets import client_context
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -507,7 +513,7 @@ def iter_openai_chat_completion_sse(
 
 async def list_openai_models(stores: ServerStores) -> OpenAIModelListResponse:
     try:
-        profiles = await asyncio.to_thread(stores.llm_profiles.list_summaries)
+        profiles = await run_store(stores.llm_profiles.list_summaries)
     except TimeoutError:
         raise Unavailable("Profile store is busy. Please retry.")
     data = [
@@ -554,11 +560,16 @@ async def _run_reused_local_agent(
         finally:
             if run_slot is not None:
                 run_slot.release()
-        status_value = await _wait_for_reused_conversation_completion(
-            event_service,
-            min_event_count=min_event_count,
-            timeout_seconds=_GATEWAY_TIMEOUT_SECONDS,
-        )
+        try:
+            status_value = await _wait_for_reused_conversation_completion(
+                event_service,
+                min_event_count=min_event_count,
+                timeout_seconds=_GATEWAY_TIMEOUT_SECONDS,
+            )
+        except UpstreamTimeout as exc:
+            raise GatewayTimeout(
+                retry_safe=False, conversation_id=conversation_id
+            ) from exc
         _raise_for_terminal_error(status_value)
         state = await event_service.get_state()
         final_response = await event_service.get_agent_final_response()
@@ -647,7 +658,9 @@ async def _run_agent(
                 timeout=_GATEWAY_TIMEOUT_SECONDS
             )
         except TimeoutError:
-            raise UpstreamTimeout("Agent run timed out") from None
+            raise GatewayTimeout(
+                retry_safe=False, conversation_id=conversation_id
+            ) from None
         _raise_for_terminal_error(status_value)
         state = await event_service.get_state()
         final_response = await event_service.get_agent_final_response()
@@ -690,7 +703,7 @@ async def _run_docker_agent(
             }
         )
         status_code, _, conversation_id = await start_docker_conversation(
-            docker_request.model_dump(mode="json", context={"expose_secrets": True}),
+            docker_request.model_dump(mode="json", context=client_context("plaintext")),
             registry,
         )
         if status_code >= 400:
@@ -714,6 +727,12 @@ async def _run_docker_agent(
                 ).model_dump(mode="json"),
             )
         if response.is_error:
+            if response.status_code == 504:
+                if response.headers.get("x-should-retry") != "true":
+                    raise GatewayTimeout(
+                        retry_safe=False, conversation_id=conversation_id
+                    )
+                raise GatewayTimeout(retry_safe=True)
             if response.status_code == 404:
                 try:
                     detail = response.json().get("detail")
@@ -740,7 +759,12 @@ async def _run_docker_agent(
             ),
         )
     except httpx.TimeoutException as exc:
-        raise UpstreamTimeout("Conversation runtime timed out") from exc
+        if isinstance(exc, (ConnectTimeout, PoolTimeout)):
+            raise UpstreamTimeout("Conversation runtime timed out") from exc
+        raise GatewayTimeout(
+            retry_safe=False, conversation_id=conversation_id, runtime_timeout=True
+        ) from exc
+
     except httpx.HTTPError as exc:
         raise UpstreamFailed("Conversation container unreachable") from exc
     finally:
@@ -761,7 +785,9 @@ async def run_chat_completion(
         # SSE streaming needs incremental agent-event forwarding; add it separately.
         raise Invalid("Streaming chat completions are not supported yet")
 
-    start_request = _conversation_request(
+    # Reads the profile and settings stores.
+    start_request = await run_store(
+        _conversation_request,
         request=request,
         config=config,
         stores=stores,
@@ -825,7 +851,9 @@ async def run_response(
         )
 
     user_content = _response_user_content(request)
-    start_request = _response_conversation_request(
+    # Reads the profile and settings stores.
+    start_request = await run_store(
+        _response_conversation_request,
         request=request,
         user_content=user_content,
         config=config,

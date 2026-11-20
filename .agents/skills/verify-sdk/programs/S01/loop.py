@@ -7,6 +7,9 @@ Usage: loop.py MODE
   budget          max_budget_per_run with a priced model
   thresholds      custom stuck_detection_thresholds
   reasoning-only  a reply with only reasoning gets a nudge
+  content-free    a real LLM's reply with no text, tool call or reasoning is
+                  retried inside the call, not nudged; reasoning-only still
+                  nudged; exhausted retries end the run in ERROR
   parallel        tool_concurrency_limit, order, a failing call, finish truncation
   locks           resource keys, undeclared tools, declared-safe tools
   tool-exception  an exception inside a tool executor
@@ -224,6 +227,62 @@ elif mode == "reasoning-only":
         "nudge_text": nudges[0].llm_message.content[0].text if nudges else None,
     }
     conversation.close()
+
+elif mode == "content-free":
+    # A real LLM against the local endpoint: TestLLM bypasses the response
+    # validation that decides a reply is content-free.
+    def provider_run(script: list[dict], num_retries: int) -> dict:
+        with FakeProvider(script) as server:
+            llm = LLM(
+                model="openai/gpt-4o-mini",
+                base_url=server.url,
+                api_key=SecretStr("sk-test"),
+                usage_id="agent",
+                num_retries=num_retries,
+                temperature=0.0,
+                retry_min_wait=0,
+                retry_max_wait=0,
+                retry_multiplier=0.1,
+            )
+            conversation = conversation_for(Agent(llm=llm, tools=[]))
+            conversation.send_message("Answer.")
+            try:
+                conversation.run()
+                raised = None
+            except Exception as exc:
+                raised = type(exc).__name__
+            events = conversation.state.events
+            messages = [e for e in events if isinstance(e, MessageEvent)]
+            errors = [e for e in events if isinstance(e, ConversationErrorEvent)]
+            result = {
+                "status": conversation.state.execution_status.value,
+                "raised": raised,
+                "requests": len(server.requests),
+                "temperatures": [r["body"].get("temperature") for r in server.requests],
+                "nudges": sum(m.source == "environment" for m in messages),
+                "agent_messages": [
+                    "".join(getattr(c, "text", "") for c in m.llm_message.content)
+                    for m in messages
+                    if m.source == "agent"
+                ],
+                "error_codes": [e.code for e in errors],
+                "error_classifications": [
+                    e.classification.model_dump(mode="json")
+                    if e.classification
+                    else None
+                    for e in errors
+                ],
+            }
+            conversation.close()
+            return result
+
+    out["empty_then_answer"] = provider_run(
+        [{"text": ""}, {"text": ""}, {"text": "The answer is ready."}], 5
+    )
+    out["reasoning_only"] = provider_run(
+        [{"reasoning": "I am only thinking."}, {"finish": "done"}], 5
+    )
+    out["exhausted"] = provider_run([{"text": ""}] * 3, 2)
 
 elif mode == "parallel":
     calls = [sleeper_call(f"s{i}", 1.0) for i in range(4)]

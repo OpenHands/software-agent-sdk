@@ -49,6 +49,9 @@ Routes: `GET /v1/models`, `POST /v1/chat/completions`, `POST /v1/responses`, `PO
 - `F30.chat-run-limit-429`: when `max_concurrent_runs` is full a new gateway conversation is refused with 429 and nothing is created; the same request succeeds once a slot is free.
 - `F30.chat-reuse-run-limit-429`: on a continued conversation a 429 also leaves nothing behind, so a client retry is safe.
 - `F30.chat-timeout-504`: a run longer than the fixed 120 s answers 504 `Agent run timed out`, and the run keeps going server-side.
+- `F30.chat-timeout-no-retry`: the official OpenAI Python client with its default retries sends a run that outlives the gateway's 120 s exactly once: the post-send 504 carries `X-Should-Retry: false` and the conversation id, the client raises `InternalServerError` (504) after one HTTP request, and the conversation holds one user message and one model call.
+- `F30.inner-gateway-presend-504`: an inner gateway turn that cannot start before its 120 s deadline (the conversation's direct run is still going) answers 504 `Agent run timed out` with `X-Should-Retry: true` and no conversation header, and saves no message.
+- `F30.inner-gateway-no-sender`: the inner gateway route refuses a body with `sender_conversation_id` with 422 `A gateway turn is not sent by another conversation` before running anything.
 - `F30.responses-basic`: `POST /v1/responses` on a real model returns a completed `response` with one `output_text` message equal to the agent's final answer, echoes `instructions` and `metadata`, and puts the instructions in the system suffix.
 - `F30.responses-stateless-replay`: every responses call is a new conversation (the conversation header is ignored); replayed items become one user message wrapped in `<message role="...">` markers, and developer items go to the system suffix.
 - `F30.responses-errors`: `stream`, `store: true` and `previous_response_id` are 400 before anything else is checked, bad input is 400 or 422, an unknown model 404, and nothing is created.
@@ -63,7 +66,7 @@ Routes: `GET /v1/models`, `POST /v1/chat/completions`, `POST /v1/responses`, `PO
   `X-Session-API-Key`, `X-OpenHands-ServerConversation-ID` (chat only),
   `X-OpenHands-Observability-Span-Name`, `-Tags`, `-Metadata` and
   `-Parent-Span-Context`. Response header: `X-OpenHands-ServerConversation-ID`
-  on success only.
+  on success and on a post-send 504.
 - OpenAI SDKs: `OpenAI(base_url=<server>/v1, api_key=<session key>)`, then
   `models.list()`, `chat.completions.create(...)` (and
   `.with_raw_response.create` to read the conversation header,
@@ -479,18 +482,21 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
     --check choices.0.message.content eq QA_F30_U2 --raw-out "$F30/usage-2.json" --save F30.chat-usage-per-request/second-turn
   control-agent-server sink read --name qa-f30-usage --contains QA_F30_USAGE_2 --expect-min 1 --expect-max 1
   control-agent-server sink read --name qa-f30-usage --expect-min 2 --expect-max 2
-  control-agent-server api GET "/api/conversations/$UCID" --check stats.usage_to_metrics.default.token_usages len-eq 2 \
-    --check stats.usage_to_metrics.default.token_usages.1.prompt_tokens eq 3 \
-    --check stats.usage_to_metrics.default.token_usages.1.completion_tokens eq 2 \
+  control-agent-server api GET "/api/conversations/$UCID" \
     --check stats.usage_to_metrics.default.accumulated_token_usage.prompt_tokens eq 13 \
     --check stats.usage_to_metrics.default.accumulated_token_usage.completion_tokens eq 7 --quiet
+  control-agent-server state cat base_state.json --conversation "$UCID" --check stats.usage_to_metrics.default.token_usages len-eq 2 \
+    --check stats.usage_to_metrics.default.token_usages.1.prompt_tokens eq 3 \
+    --check stats.usage_to_metrics.default.token_usages.1.completion_tokens eq 2
   control-agent-server state cat fixtures/qa-f30/usage-2.json --check usage.prompt_tokens eq 3 \
     --check usage.completion_tokens eq 2 --check usage.total_tokens eq 5
   ```
   The stub got exactly two model calls, one per request, so the second
-  request's own usage is the stub's 3/2/5: the conversation's stats hold one
-  `token_usages` entry per model call (10/5, then 3/2) and a running total
-  of 13/7 (the positive control: the server has the per-call numbers).
+  request's own usage is the stub's 3/2/5: the conversation's saved state
+  (`base_state.json`) holds one `token_usages` entry per model call (10/5,
+  then 3/2) and GET reports the running total of 13/7 (the positive
+  control: the server has the per-call numbers; GET's `stats` carries only
+  the aggregates, see `F07.snapshot-compact-stats`).
   The second response reports 3/2/5, not the conversation's accumulated
   13/7/20: the gateway snapshots the combined metrics before the turn and
   reports the difference, so an OpenAI client that sums `usage` per request
@@ -629,7 +635,7 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
   call. The direct run then finishes with its own answer; after that the
   identical request is 200 with the new turn's answer and the same id, and
   its message is stored.
-- **Continue a paused conversation (`F30.chat-reuse-paused`), known bug #6842.**
+- **Continue a paused conversation (`F30.chat-reuse-paused`).**
   A conversation started through the native API whose first model call
   hangs is interrupted, so it rests in `paused` with no run active; then a
   chat completion names it in the header. The request's output is kept in a
@@ -652,18 +658,16 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
   control-agent-server api GET "/api/conversations/$PCID/agent_final_response" --check response eq QA_F30_PAUSED_OK --quiet
   control-agent-server sink read --name qa-f30-paused --expect-min 2 --expect-max 2
   control-agent-server assert --json "$F30/paused-turn.json" --check status eq 200 \
-    --check response.body.choices.0.message.content eq QA_F30_PAUSED_OK --check checks.0.ok eq true  # bug: value.status eq 409 && value.response.body.detail contains 'ended with status: paused'
+    --check response.body.choices.0.message.content eq QA_F30_PAUSED_OK --check checks.0.ok eq true
   ```
-  The turn is saved and run either way: the conversation finishes, holds
-  exactly one `QA_F30_PAUSED_TURN` user message, its final response is the
-  stub's `QA_F30_PAUSED_OK`, and the stub got exactly two calls. Expected:
-  the request answers 200 with that answer and the conversation's id in
-  `X-OpenHands-ServerConversation-ID`
-  ([#6842](https://github.com/OpenHands/software-agent-sdk/issues/6842), fix in [#6843](https://github.com/OpenHands/software-agent-sdk/pull/6843)).
-  Today it answers 409 `Agent run ended with status: paused` within a
-  fraction of a second, without the header: the gateway reads the resting
-  `paused` status as the end of the turn it has just started, so a client
-  that retries the 409 adds a second turn.
+  The request answers 200 with the turn's own answer, the stub's
+  `QA_F30_PAUSED_OK`, and the conversation's id in
+  `X-OpenHands-ServerConversation-ID`; the conversation finishes, holds
+  exactly one `QA_F30_PAUSED_TURN` user message, and the stub got exactly
+  two calls. The status the earlier run left behind (`paused`, or `error`)
+  does not end the wait while the turn's own run is alive; only that run's
+  own end decides the answer (409 if it pauses or waits for confirmation,
+  500 if it ends in `error`).
 - **The agent runs its own tools (`F30.chat-agent-tools`).** Ask the real
   model to use the terminal, and pass an OpenAI client tool with
   `tool_choice: required`.
@@ -910,17 +914,111 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
   T0=$SECONDS
   control-agent-server api POST /v1/chat/completions --auth bearer --timeout 200 --header "X-OpenHands-ServerConversation-ID: $TOID" \
     --json '{"model": "openhands_qa-f30-slow", "messages": [{"role": "user", "content": "QA_F30_SLOW"}]}' \
-    --expect 504 --check detail eq 'Internal Server Error' --check exception eq '504: Agent run timed out' \
-    --check-header x-openhands-serverconversation-id missing --expect-max-ms 140000 --save F30.chat-timeout-504/timeout
+    --expect 504 --check detail eq 'Agent run timed out' \
+    --check-header x-should-retry eq false --check-header x-openhands-serverconversation-id eq "$TOID" \
+    --expect-max-ms 140000 --save F30.chat-timeout-504/timeout
   test $((SECONDS - T0)) -ge 115
   control-agent-server api GET "/api/conversations/$TOID" --check execution_status eq running --quiet
   control-agent-server sink read --name qa-f30-slow --expect-min 1 --expect-max 1
   control-agent-server api DELETE "/api/conversations/$TOID" --expect 200
   control-agent-server api GET "/api/conversations/$TOID" --expect 404 --quiet
   ```
-  The 504 arrives after 115 to 140 s with the reason in `exception`. The run
+  The 504 arrives after 115 to 140 s with the reason in `detail`. The run
   is not cancelled: right after the 504 the conversation is still `running`
   on its single model call, so the bullet deletes it.
+- **The default OpenAI client sends a timed-out turn once (`F30.chat-timeout-no-retry`).**
+  The same hanging stub as the timeout bullet, behind its own profile, and
+  a program using `openai` with its default `max_retries` (2); an `httpx`
+  request hook counts the HTTP requests the client really sends. Two
+  minutes: the server's own timer is under test.
+  ```sh
+  SLOW_SDK=$(control-agent-server fixture llm-stub --name qa-f30-slow-sdk --step hang:170 --print-path)
+  control-agent-server llm set --profile qa-f30-slow-sdk --model openai/qa-stub --base-url "$SLOW_SDK/v1" \
+    --no-api-key --no-validate --no-activate --num-retries 0 --llm-timeout 300
+  NR_ID=$(python3 -c 'import uuid; print(uuid.uuid4())')
+  control-agent-server exec --openai --timeout 600 --expect-output QA_F30_NO_RETRY_OK --save F30.chat-timeout-no-retry/program -- \
+    .venv/bin/python - "$NR_ID" <<'PY'
+  import sys
+  import time
+
+  import openai
+  from openai import DefaultHttpxClient, OpenAI
+
+  sent = []
+  client = OpenAI(timeout=300, http_client=DefaultHttpxClient(event_hooks={"request": [sent.append]}))
+  assert client.max_retries == 2, client.max_retries
+  started = time.monotonic()
+  try:
+      client.chat.completions.create(
+          model="openhands_qa-f30-slow-sdk",
+          messages=[{"role": "user", "content": "QA_F30_NO_RETRY"}],
+          extra_headers={"X-OpenHands-ServerConversation-ID": sys.argv[1]},
+      )
+      raise SystemExit("expected a 504")
+  except openai.InternalServerError as exc:
+      headers = exc.response.headers
+      print(exc.status_code, headers.get("x-should-retry"), headers.get("x-openhands-serverconversation-id"), len(sent), round(time.monotonic() - started))
+      assert exc.status_code == 504, exc.status_code
+      assert headers.get("x-should-retry") == "false", dict(headers)
+      assert headers.get("x-openhands-serverconversation-id") == sys.argv[1], dict(headers)
+      assert len(sent) == 1, len(sent)
+  print("QA_F30_NO_RETRY_OK")
+  PY
+  control-agent-server api GET "/api/conversations/$NR_ID/events/search" --query source=user --check items len-eq 1 \
+    --check items.0.llm_message.content.0.text eq QA_F30_NO_RETRY --save F30.chat-timeout-no-retry/user-messages
+  control-agent-server api GET "/api/conversations/$NR_ID" --check execution_status eq running --quiet
+  control-agent-server sink read --name qa-f30-slow-sdk --expect-min 1 --expect-max 1
+  control-agent-server api DELETE "/api/conversations/$NR_ID" --expect 200
+  control-agent-server api DELETE /api/profiles/qa-f30-slow-sdk --expect 200
+  ```
+  The client raises `InternalServerError` with status 504,
+  `X-Should-Retry: false` and the id it chose, after one HTTP request,
+  although its default would retry a 5xx twice. The conversation holds the
+  one user message, the stub saw one model call, and the run is still
+  going, so the bullet deletes it.
+- **A turn that cannot start in time is retryable (`F30.inner-gateway-presend-504`).**
+  A conversation whose direct run hangs in its model call; the inner
+  gateway turn on it waits for that run to end and gives up at its
+  deadline without saving its message. Two minutes.
+  ```sh
+  PRE_SLOW=$(control-agent-server fixture llm-stub --name qa-f30-presend --step hang:170 --print-path)
+  PRE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key\", \"base_url\": \"$PRE_SLOW/v1\", \"num_retries\": 0, \"timeout\": 300}, \"tools\": []}"
+  PRE=$(control-agent-server conversation start --body-json "{\"agent\": $PRE_AGENT}" --no-autotitle --print-id)
+  control-agent-server api POST "/api/conversations/$PRE/events" \
+    --json '{"role":"user","content":[{"type":"text","text":"QA_F30_DIRECT"}],"run":true}' --expect 200
+  control-agent-server conversation wait "$PRE" --until running --timeout 30
+  control-agent-server sink read --name qa-f30-presend --expect-min 1
+  T0=$SECONDS
+  control-agent-server api POST "/api/conversations/$PRE/events/_gateway/run" --timeout 200 \
+    --json '{"role":"user","content":[{"type":"text","text":"QA_F30_PRESEND"}],"run":true}' \
+    --expect 504 --check detail eq 'Agent run timed out' --check-header x-should-retry eq true \
+    --check-header x-openhands-serverconversation-id missing --expect-max-ms 140000 --save F30.inner-gateway-presend-504/timeout
+  test $((SECONDS - T0)) -ge 115
+  control-agent-server api GET "/api/conversations/$PRE/events/count" --query body=QA_F30_PRESEND --check . eq 0 \
+    --save F30.inner-gateway-presend-504/no-message
+  control-agent-server api GET "/api/conversations/$PRE/events/count" --query source=user --check . eq 1
+  control-agent-server sink read --name qa-f30-presend --expect-min 1 --expect-max 1
+  control-agent-server api DELETE "/api/conversations/$PRE" --expect 200
+  ```
+  The 504 arrives after 115 to 140 s with `X-Should-Retry: true` and
+  without a conversation header; the gateway's message was never saved
+  (only the direct run's user message is in the log) and no second model
+  call was made, so a client retry is safe.
+- **No sender on a gateway turn (`F30.inner-gateway-no-sender`).** The
+  field that marks a message from another conversation, on the inner
+  route.
+  ```sh
+  NS_FROM=$(control-agent-server conversation start --no-autotitle --tools none --print-id)
+  NS_TO=$(control-agent-server conversation start --no-autotitle --tools none --print-id)
+  control-agent-server api POST "/api/conversations/$NS_TO/events/_gateway/run" \
+    --json "{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"QA_F30_NS\"}],\"run\":true,\"sender_conversation_id\":\"$NS_FROM\"}" \
+    --expect 422 --check detail eq 'A gateway turn is not sent by another conversation' --save F30.inner-gateway-no-sender/refused
+  control-agent-server api GET "/api/conversations/$NS_TO/events/count" --check . eq 0
+  control-agent-server api GET "/api/conversations/$NS_TO" --check execution_status eq idle --quiet
+  control-agent-server api DELETE "/api/conversations/$NS_TO" --expect 200
+  control-agent-server api DELETE "/api/conversations/$NS_FROM" --expect 200
+  ```
+  422 at once; the target's log is still empty and it never ran.
 - **Responses (`F30.responses-basic`).** One real-model call with
   instructions, metadata and an ignored client tool. `RID` names its
   conversation.
@@ -1108,14 +1206,15 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
   conversation whose direct run is active is 409 `Conversation run in
   progress; message not saved` (`F30.chat-reuse-direct-run-409`). Neither
   saves the message, so the request can be sent again later.
-- A 409 or 500 on a continued conversation does not always mean nothing
-  ran: on a conversation resting in `paused` or `error` the turn is saved
-  and runs although the request fails (`F30.chat-reuse-paused`,
-  [#6842](https://github.com/OpenHands/software-agent-sdk/issues/6842)).
-  Read the conversation before retrying.
+- A turn that continues a conversation resting in `paused` or `error` is
+  judged by its own run, not by the status the earlier run left behind
+  (`F30.chat-reuse-paused`). A 409 or 500 then means the turn's own run
+  paused, waits for confirmation or failed; its message is saved either way,
+  so read the conversation before retrying.
   Docker gateway turns for one conversation wait in order inside the container.
-  A turn that cannot start before its deadline returns 504 without saving its
-  message. A new turn waits for a prior run that remains active after a 504.
+  A turn that cannot start before its deadline returns 504 with
+  `X-Should-Retry: true` without saving its message. A new turn waits for a
+  prior run that remains active after a 504.
 - `usage` is the request's own usage summed over every model call the agent
   made while serving it; on a continued conversation earlier turns are not
   included (see `F30.chat-usage-per-request`). Overlapping local-runtime
@@ -1129,13 +1228,14 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
 - The 120 s timeout and the 2 s poll for continued conversations are fixed
   in `openai/service.py`; the CLI's `api` default timeout is 60 s, so
   model-backed calls pass `--timeout 180`. A 504 does not cancel the run.
-- Error bodies are FastAPI-shaped (`{"detail": ...}`), not OpenAI's
-  `{"error": {...}}`. 5xx bodies are rewritten to `detail` `Internal Server
-  Error` with the real reason in `exception` (`"504: Agent run timed out"`),
-  so OpenAI SDKs raise a generic `InternalServerError`. No error response
-  carries `X-OpenHands-ServerConversation-ID`, even when a conversation was
-  created (409, 500, 504); send a UUID of your own in the header to know the
-  id in advance, or search conversations by status.
+- Error bodies use `{"detail": ...}`, not OpenAI's `{"error": {...}}`.
+  A post-send 504 has `detail` `Agent run timed out`,
+  `X-Should-Retry: false`, and `X-OpenHands-ServerConversation-ID`.
+  The OpenAI Python client does not retry this 504. Use the returned ID to
+  inspect the conversation before a new turn. A 504 before message save remains
+  retryable. The Docker proxy treats an untagged inner 504 as unsafe to retry.
+  Other 5xx responses still hide their reason. The gateway does not
+  honor `Idempotency-Key`, so a manual resend can repeat a turn.
 - Validation order (chat): no user message 400, content parts 400 (system
   messages too), model prefix 404, profile name 400 or missing profile 404,
   then the run. Responses: `stream`/`store`/`previous_response_id` 400 first,
