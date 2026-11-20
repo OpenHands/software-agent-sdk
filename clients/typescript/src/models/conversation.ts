@@ -13,9 +13,29 @@ import {
   EventPage,
   Message,
 } from '../types/base';
+import type { StuckDetectionThresholds } from '../conversation/stuck-detector';
 import type { HookConfig } from '../hooks';
 import type { ACPEffortOption } from './acp-model-discovery';
 import type { LaunchedAgentProfile, LaunchedProfile } from './agent-profile';
+
+export interface StuckDetectionThresholdsPayload {
+  action_observation?: number;
+  action_error?: number;
+  monologue?: number;
+  alternating_pattern?: number;
+}
+
+export function serializeStuckDetectionThresholds(
+  thresholds?: Partial<StuckDetectionThresholds>
+): StuckDetectionThresholdsPayload | undefined {
+  if (thresholds === undefined) return undefined;
+  return {
+    action_observation: thresholds.actionObservation,
+    action_error: thresholds.actionError,
+    monologue: thresholds.monologue,
+    alternating_pattern: thresholds.alternatingPattern,
+  };
+}
 
 export enum ConversationSortOrder {
   CREATED_AT = 'CREATED_AT',
@@ -63,6 +83,7 @@ export interface ConversationInfo {
   /** USD limit on accumulated conversation cost; a completed step may overshoot. */
   max_budget_per_run?: number | null;
   stuck_detection?: boolean;
+  stuck_detection_thresholds?: StuckDetectionThresholdsPayload | null;
   conversation_stats?: ConversationStats;
   /** API may return stats instead of conversation_stats */
   stats?: ConversationStats;
@@ -126,6 +147,7 @@ export interface CreateConversationRequest {
   /** Positive USD limit on accumulated conversation cost; null means unbounded. */
   max_budget_per_run?: number | null;
   stuck_detection: boolean;
+  stuck_detection_thresholds?: StuckDetectionThresholdsPayload | null;
   workspace: Record<string, unknown>;
   hook_config?: HookConfig | null;
   user_id?: string | null;
@@ -138,6 +160,7 @@ export interface CreateACPConversationRequest {
   /** Positive USD limit on accumulated conversation cost; null means unbounded. */
   max_budget_per_run?: number | null;
   stuck_detection: boolean;
+  stuck_detection_thresholds?: StuckDetectionThresholdsPayload | null;
   workspace: Record<string, unknown>;
   hook_config?: HookConfig | null;
   user_id?: string | null;
