@@ -149,7 +149,6 @@ def test_conversation_info_takes_tags_from_the_metadata(sample_stored_conversati
         agent=_sample_agent(),
         workspace=stored.workspace,
         execution_status=ConversationExecutionStatus.RUNNING,
-        confirmation_policy=stored.confirmation_policy,
         tags={"project": "p1"},
     )
 
@@ -2089,7 +2088,6 @@ class TestConversationServiceStartConversation:
                 agent=cast(AgentBase, kwargs.get("agent")) or _sample_agent(),
                 workspace=stored.workspace,
                 execution_status=ConversationExecutionStatus.IDLE,
-                confirmation_policy=stored.confirmation_policy,
             )
             return mock_event_service
 
@@ -2960,7 +2958,6 @@ class TestConversationServiceUpdateConversation:
             agent=_sample_agent(),
             workspace=sample_stored_conversation.workspace,
             execution_status=ConversationExecutionStatus.RUNNING,
-            confirmation_policy=sample_stored_conversation.confirmation_policy,
         )
         mock_service.get_state.return_value = state
         conversation_id = sample_stored_conversation.id
