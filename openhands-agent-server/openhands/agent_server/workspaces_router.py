@@ -17,6 +17,7 @@ from openhands.agent_server.persistence import (
     PersistedWorkspaces,
     WorkspaceItem,
     WorkspaceParentItem,
+    run_store,
 )
 from openhands.sdk.errors import Conflict, NotFound, OperationFailed
 from openhands.sdk.logger import get_logger
@@ -65,17 +66,22 @@ async def list_workspaces(
     store: FileWorkspacesStore = Depends(get_workspaces_store),
 ) -> WorkspacesListResponse:
     """Return the saved workspaces and workspace parents."""
-    try:
+
+    def read() -> tuple[PersistedWorkspaces | None, bool]:
         persisted = store.load()
-    except (OSError, PermissionError):
-        logger.error("Workspaces list failed - file I/O error")
-        raise OperationFailed("Failed to read workspaces")
-    if persisted is None:
         # ``load()`` collapses "file missing" and "file present but
         # unreadable/corrupted/future-schema" into the same ``None``. Returning
         # an empty list for the second case would hide the user's data and let
         # a subsequent POST overwrite the still-on-disk file with defaults.
-        if store._path.exists():
+        return persisted, persisted is None and store._path.exists()
+
+    try:
+        persisted, corrupted = await run_store(read)
+    except (OSError, PermissionError):
+        logger.error("Workspaces list failed - file I/O error")
+        raise OperationFailed("Failed to read workspaces")
+    if persisted is None:
+        if corrupted:
             raise Conflict("Workspaces file is corrupted")
         persisted = PersistedWorkspaces()
     return _to_response(persisted)
@@ -110,7 +116,7 @@ async def add_workspaces(
         )
 
     try:
-        updated = store.update(apply)
+        updated = await run_store(store.update, apply)
     except RuntimeError as e:
         logger.error(f"Workspaces add blocked: {e}")
         raise Conflict("Workspaces file is corrupted")
@@ -139,7 +145,7 @@ async def delete_workspace(
         return current.model_copy(update={"workspaces": remaining})
 
     try:
-        store.update(apply)
+        await run_store(store.update, apply)
     except RuntimeError as e:
         logger.error(f"Workspaces delete blocked: {e}")
         raise Conflict("Workspaces file is corrupted")
@@ -182,7 +188,7 @@ async def add_workspace_parents(
         )
 
     try:
-        updated = store.update(apply)
+        updated = await run_store(store.update, apply)
     except RuntimeError as e:
         logger.error(f"Workspace parents add blocked: {e}")
         raise Conflict("Workspaces file is corrupted")
@@ -211,7 +217,7 @@ async def delete_workspace_parent(
         return current.model_copy(update={"workspace_parents": remaining})
 
     try:
-        store.update(apply)
+        await run_store(store.update, apply)
     except RuntimeError as e:
         logger.error(f"Workspace parents delete blocked: {e}")
         raise Conflict("Workspaces file is corrupted")

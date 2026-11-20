@@ -5,6 +5,7 @@ import { ConversationClient } from './conversation-client';
 import { FileClient } from './file-client';
 import { GitClient } from './git-client';
 import { HooksClient } from './hooks-client';
+import { InitClient } from './init-client';
 import { HttpClient, type ResponseType } from './http-client';
 import { LLMMetadataClient } from './llm-client';
 import { MCPClient } from './mcp-client';
@@ -142,6 +143,7 @@ export class AgentServerClient extends OpenHandsClient {
   readonly shared: SharedClient;
   readonly llm: LLMMetadataClient;
   readonly workspaces: WorkspacesClient;
+  readonly init: InitClient;
 
   private readonly client: HttpClient;
 
@@ -178,6 +180,7 @@ export class AgentServerClient extends OpenHandsClient {
     this.shared = new SharedClient(clientOptions);
     this.llm = new LLMMetadataClient(clientOptions);
     this.workspaces = new WorkspacesClient(clientOptions);
+    this.init = new InitClient(clientOptions);
   }
 
   async request<TResponse = unknown>(options: OpenHandsRequestOptions): Promise<TResponse> {

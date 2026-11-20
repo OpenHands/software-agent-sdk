@@ -243,7 +243,7 @@ def test_verified_lists_keep_two_latest_versions_per_line():
     """
     expectations = {
         "openai": (
-            {"gpt-6.1-terra", "gpt-6-astra", "gpt-5.6"},
+            {"gpt-6.2-sol", "gpt-6.2-astra", "gpt-6.1-terra", "gpt-6-astra", "gpt-5.6"},
             {"gpt-5.5", "gpt-5.4", "gpt-4o", "o3"},
         ),
         "anthropic": (
@@ -260,7 +260,15 @@ def test_verified_lists_keep_two_latest_versions_per_line():
             {"devstral-2512", "devstral-medium-2512"},
             {"devstral-medium-2507"},
         ),
-        "gemini": ({"gemini-4-argon", "gemini-3.8-flash"}, {"gemini-3.6-flash"}),
+        "gemini": (
+            {
+                "gemini-4-argon",
+                "gemini-4-carbon",
+                "gemini-4-hydrogen",
+                "gemini-3.8-flash",
+            },
+            {"gemini-3.6-flash"},
+        ),
         "deepseek": ({"deepseek-v4-pro", "deepseek-v3.2-reasoner"}, set()),
         "moonshot": ({"kimi-k3.1-pro", "kimi-k3", "kimi-k2.7-code"}, {"kimi-k2.6"}),
         "minimax": (
@@ -277,7 +285,7 @@ def test_verified_lists_keep_two_latest_versions_per_line():
             set(),
         ),
         "qwen": (
-            {"qwen3.8-max", "qwen3.7-max", "qwen3.8-omni-flash"},
+            {"qwen4-max", "qwen3.8-max", "qwen3.7-max", "qwen3.8-omni-flash"},
             {"qwen3-max", "qwen3-6-plus"},
         ),
         # OpenRouter routes other vendors' models, so entries are namespaced

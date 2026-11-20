@@ -20,6 +20,8 @@ Steps (one per request):
   {"finish": "message"}                             the finish tool
   {"status": 429, "message": "..."}                 an HTTP error
   {"empty": true}                                   a reply with no choices
+  {"text": "", "finish_reason": "length"}          the choice's finish_reason
+  {"raw": "...", "raw_status": 200}                 a non-JSON body
   {"delay": 2.0, ...}                               wait before answering
   {"stall": 2.0, ...}                               (stream) pause after two events
   {"thinking": "...", "redacted": "..."}           Anthropic thinking blocks
@@ -122,6 +124,14 @@ class FakeProvider:
                     return
                 if step.get("delay"):
                     time.sleep(float(step["delay"]))
+                if "raw" in step:
+                    data = str(step["raw"]).encode()
+                    self.send_response(int(step.get("raw_status", 200)))
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+                    return
                 if "status" in step:
                     self._send(
                         int(step["status"]),
@@ -249,7 +259,9 @@ class FakeProvider:
                 {
                     "index": 0,
                     "message": message,
-                    "finish_reason": "tool_calls" if calls else "stop",
+                    "finish_reason": step.get(
+                        "finish_reason", "tool_calls" if calls else "stop"
+                    ),
                 }
             ],
         }
@@ -314,7 +326,7 @@ class FakeProvider:
                         ),
                     )
                 )
-        last = chunk({}, "tool_calls" if calls else "stop")
+        last = chunk({}, step.get("finish_reason", "tool_calls" if calls else "stop"))
         last["usage"] = {
             "prompt_tokens": usage["prompt_tokens"],
             "completion_tokens": usage["completion_tokens"],

@@ -160,6 +160,15 @@ The programs under `programs/S06/` record every scripted LLM call (`recorder.py`
     --check summary_calls_soft eq 0 --check condensations_after_request eq 1 \
     --check view_kinds_after_request eq '["SystemPromptEvent", "CondensationSummaryEvent"]' --check hard_offset eq 1
   ```
+- **A summary with no text (`S06.summarizing-size`, `S06.soft-vs-hard`).** `LLMSummarizingCondenser(max_size=10, keep_first=2)` over nine scripted terminal steps while the summary LLM answers every call with no text (`""`); then the same with only whitespace (`" "`).
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  control-sdk program S06/condense --arg empty-summary \
+    --check empty.status eq finished --check empty.summary_calls ge 1 \
+    --check empty.empty_summary_condensations eq 0 --check empty.forgotten eq 0 \
+    --check blank.status eq finished --check blank.empty_summary_condensations eq 0 --check blank.forgotten eq 0
+  ```
+  Expected: size pressure is a soft requirement, so with no usable summary the view stays as it was (nothing forgotten, no `Condensation`), as when there is nothing worth forgetting. Known failure (reproduced 2026-11-19, [#6957](https://github.com/OpenHands/software-agent-sdk/issues/6957)): both runs record two condensations whose summary is `""` (or `" "`) and forget 15 events between them; `LLMSummarizingCondenser` takes any successful reply's first text block as the summary. The issue's trigger is an empty reply with `finish_reason="length"`; the scripted LLM answers with `finish_reason="stop"`, which the condenser does not read either.
 - **Hard context reset (`S06.hard-reset`).** The summary LLM fails on the normal path and on the first reset attempt, then answers; with every attempt failing, `condense()` raises and nothing is forgotten.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)

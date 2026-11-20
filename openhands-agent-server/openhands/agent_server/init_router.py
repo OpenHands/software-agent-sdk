@@ -44,7 +44,11 @@ from openhands.agent_server.conversation_registry import (
 )
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_config
-from openhands.agent_server.persistence import ServerStores, reencrypt_stale_stores
+from openhands.agent_server.persistence import (
+    ServerStores,
+    reencrypt_stale_stores,
+    run_store,
+)
 from openhands.agent_server.server_context import (
     ServerContext,
     install_server_context,
@@ -337,7 +341,7 @@ class InitService:
             maybe_init_laminar()
 
             stores = ServerStores.from_config(new_config)
-            await asyncio.to_thread(reencrypt_stale_stores, stores)
+            await run_store(reencrypt_stale_stores, stores)
 
             # The conversation service reads the sink while it starts, so the
             # delivered one has to be in place first. ``server_started`` is
