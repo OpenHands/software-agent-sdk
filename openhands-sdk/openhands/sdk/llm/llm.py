@@ -40,11 +40,14 @@ from pydantic import (
 )
 from pydantic.json_schema import SkipJsonSchema
 
+from openhands.sdk.llm._message_normalization import response_is_refused
 from openhands.sdk.llm._response_stream import (
     OutputItemEvent,
+    ResponseEndEvent,
     ResponseStreamEvent,
     async_response_events,
     completed_response as get_completed_response,
+    is_completed_or_filtered,
     response_events,
 )
 from openhands.sdk.llm._tokenizer import (
@@ -108,7 +111,6 @@ from litellm.types.llms.openai import (
     OutputTextDeltaEvent,
     ReasoningSummaryTextDeltaEvent,
     RefusalDeltaEvent,
-    ResponseCompletedEvent,
     ResponsesAPIResponse,
     ResponsesAPIStreamEvents,
 )
@@ -128,6 +130,7 @@ from openhands.sdk.llm.call_context import resolve_llm_call_context
 from openhands.sdk.llm.exceptions import (
     LLMContextWindowTooSmallError,
     LLMNoResponseError,
+    LLMResponseRefusedError,
     is_prompt_cache_too_small,
     looks_like_auth_error,
     map_provider_exception,
@@ -1403,6 +1406,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         """Convert a raw :class:`ResponsesAPIResponse` into an :class:`LLMResponse`."""
         if session is None:
             session = self.session
+        if response_is_refused(resp):
+            raise LLMResponseRefusedError(response_id=resp.id)
         message = Message.from_llm_responses_output(resp.output)
         return LLMResponse(
             message=message,
@@ -1493,7 +1498,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
     def _finalize_stream_response(
         self,
-        completed_response: ResponseCompletedEvent | None,
+        completed_response: ResponseEndEvent | None,
         collected_output_items: list[Any],
         session: LLMSession | None = None,
     ) -> ResponsesAPIResponse:
@@ -1501,15 +1506,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         Raises:
             LLMNoResponseError: If the stream finished without a completed
-                response or with an unexpected event type.
+                response.
         """
         if completed_response is None:
             raise LLMNoResponseError(
                 "Responses stream finished without a completed response"
-            )
-        if not isinstance(completed_response, ResponseCompletedEvent):
-            raise LLMNoResponseError(
-                f"Unexpected completed event: {type(completed_response)}"
             )
 
         completed_resp = completed_response.response
@@ -1826,13 +1827,19 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         ``Telemetry.on_response`` and is not returned to the caller.
 
         Raises:
+            LLMResponseRefusedError: If the provider stopped generation with
+                a content filter. This is terminal even if partial output exists.
             LLMNoResponseError: If the response has no choices, or its only
                 choice carries no text content, no tool calls, and no
                 reasoning. Raising here, inside the retry boundary, ensures
                 both cases are retried.
         """
+        refused = bool(resp.choices) and resp.choices[0].finish_reason in (
+            "content_filter",
+            "refusal",
+        )
         raw_resp: ModelResponse | None = None
-        if use_mock_tools:
+        if use_mock_tools and not refused:
             raw_resp = copy.deepcopy(resp)
             resp = self.post_response_prompt_mock(
                 resp,
@@ -1849,6 +1856,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             raw_resp=raw_resp,
             provider_info=self._provider_info,
         )
+
+        # The provider still reported usage for this call. Discard its output
+        # after accounting, without interpreting an incomplete tool call.
+        if refused:
+            raise LLMResponseRefusedError(response_id=resp.id)
 
         # Ensure at least one choice.
         # Gemini sometimes returns empty choices; we raise LLMNoResponseError here
@@ -2322,7 +2334,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 if not isinstance(ret, Iterable):
                     raise TypeError(f"Expected a response stream, got {type(ret)}")
                 for event in response_events(ret):
-                    if isinstance(event, ResponseCompletedEvent):
+                    if is_completed_or_filtered(event):
                         completed_response = event
                     output_item, delta_chunk = self._process_stream_event(
                         event, emit_deltas=stream_callback is not None
@@ -2499,7 +2511,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     async for event in async_response_events(
                         self._aiter_with_idle_timeout(ret)
                     ):
-                        if isinstance(event, ResponseCompletedEvent):
+                        if is_completed_or_filtered(event):
                             completed_response = event
                         output_item, delta_chunk = self._process_stream_event(
                             event, emit_deltas=stream_cb is not None
@@ -2516,7 +2528,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         None, list, response_events(ret)
                     )
                     for event in events:
-                        if isinstance(event, ResponseCompletedEvent):
+                        if is_completed_or_filtered(event):
                             completed_response = event
                         output_item, delta_chunk = self._process_stream_event(
                             event, emit_deltas=stream_cb is not None

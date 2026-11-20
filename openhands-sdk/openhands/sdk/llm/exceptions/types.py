@@ -145,6 +145,27 @@ class LLMContentPolicyViolationError(LLMBadRequestError):
         super().__init__(message)
 
 
+class LLMResponseRefusedError(LLMError):
+    """Terminal refusal in a successful response from the provider.
+
+    Unlike an HTTP 400 LLMContentPolicyViolationError, this must not trigger
+    a rephrase or another generation attempt.
+    """
+
+    def __init__(
+        self,
+        message: str = (
+            "The model provider refused to continue this conversation (content filter)."
+        ),
+        *,
+        response_id: str | None = None,
+    ) -> None:
+        self.response_id = response_id
+        if response_id:
+            message = f"{message} Response ID: {response_id}"
+        super().__init__(message)
+
+
 # Other
 class UserCancelledError(Exception):
     def __init__(self, message: str = "User cancelled the request") -> None:
