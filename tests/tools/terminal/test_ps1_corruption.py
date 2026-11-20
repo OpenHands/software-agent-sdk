@@ -9,12 +9,17 @@ The regex uses negative lookahead to match only the LAST ###PS1JSON### before
 each ###PS1END###, automatically handling corruption scenarios.
 """
 
+import json
 import logging
 from unittest.mock import MagicMock
 
 import pytest
 
-from openhands.tools.terminal.constants import CMD_OUTPUT_METADATA_PS1_REGEX
+from openhands.tools.terminal.constants import (
+    CMD_OUTPUT_METADATA_PS1_REGEX,
+    CMD_OUTPUT_PS1_BEGIN,
+    CMD_OUTPUT_PS1_END,
+)
 from openhands.tools.terminal.metadata import CmdOutputMetadata
 from openhands.tools.terminal.terminal.terminal_session import TerminalSession
 
@@ -206,6 +211,90 @@ ALSO BROKEN
         assert isinstance(obs, TerminalObservation)
         assert obs.exit_code == -1  # Unknown exit code sentinel
         assert "PS1 metadata" in obs.metadata.suffix
+
+    @pytest.mark.parametrize("value", [None, [], 42, "not metadata", True])
+    def test_non_object_ps1_json_uses_completed_command_fallback(self, value):
+        mock_terminal = MagicMock()
+        mock_terminal.work_dir = "/workspace"
+        mock_terminal.username = None
+        session = TerminalSession(terminal=mock_terminal)
+        session._cwd = "/workspace"
+        session._initialized = True
+
+        terminal_content = (
+            f"command output\n{CMD_OUTPUT_PS1_BEGIN}\n"
+            f"{json.dumps(value)}\n{CMD_OUTPUT_PS1_END}"
+        )
+        ps1_matches = CmdOutputMetadata.matches_ps1_metadata(terminal_content)
+
+        obs = session._handle_completed_command(
+            command="printf output",
+            terminal_content=terminal_content,
+            ps1_matches=ps1_matches,
+        )
+
+        assert obs.exit_code == -1
+        assert obs.text
+        assert obs.metadata.suffix
+
+    def test_non_object_trailing_ps1_does_not_reuse_stale_metadata(self):
+        mock_terminal = MagicMock()
+        mock_terminal.work_dir = "/workspace"
+        mock_terminal.username = None
+        session = TerminalSession(terminal=mock_terminal)
+        session._cwd = "/workspace"
+        session._initialized = True
+
+        valid_metadata = {
+            "pid": 123,
+            "exit_code": 0,
+            "working_dir": "/workspace",
+        }
+        terminal_content = (
+            f"{CMD_OUTPUT_PS1_BEGIN}\n{json.dumps(valid_metadata)}\n"
+            f"{CMD_OUTPUT_PS1_END}\ncommand output\n"
+            f"{CMD_OUTPUT_PS1_BEGIN}\nnull\n{CMD_OUTPUT_PS1_END}"
+        )
+        ps1_matches = CmdOutputMetadata.matches_ps1_metadata(terminal_content)
+
+        obs = session._handle_completed_command(
+            command="printf output",
+            terminal_content=terminal_content,
+            ps1_matches=ps1_matches,
+        )
+
+        assert obs.exit_code == -1
+        assert "PS1 metadata" in obs.metadata.suffix
+
+    def test_valid_ps1_object_after_command_output_is_extracted(self):
+        mock_terminal = MagicMock()
+        mock_terminal.work_dir = "/workspace"
+        mock_terminal.username = None
+        session = TerminalSession(terminal=mock_terminal)
+        session._cwd = "/workspace"
+        session._initialized = True
+
+        metadata = {
+            "pid": 456,
+            "exit_code": 7,
+            "working_dir": "/workspace/project",
+        }
+        terminal_content = (
+            f"arbitrary command output\n{CMD_OUTPUT_PS1_BEGIN}\n"
+            f"{json.dumps(metadata)}\n{CMD_OUTPUT_PS1_END}"
+        )
+        ps1_matches = CmdOutputMetadata.matches_ps1_metadata(terminal_content)
+
+        obs = session._handle_completed_command(
+            command="printf output",
+            terminal_content=terminal_content,
+            ps1_matches=ps1_matches,
+        )
+
+        assert obs.exit_code == 7
+        assert obs.metadata.pid == 456
+        assert obs.metadata.working_dir == "/workspace/project"
+        assert "arbitrary command output" in obs.text
 
     def test_pager_output_causes_zero_ps1_matches(self):
         """
