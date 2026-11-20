@@ -5,7 +5,7 @@ import copy
 import json
 import threading
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from datetime import datetime
 from pathlib import Path, PurePath
@@ -1080,6 +1080,9 @@ class LocalConversation(BaseConversation):
                 fork_conv._state.ambient_plugin_mcp_servers = copy.copy(
                     self._state.ambient_plugin_mcp_servers
                 )
+                fork_conv._state.runtime_mcp_servers = list(
+                    self._state.runtime_mcp_servers
+                )
             # Full rebuild: the copied events may need property enforcement
             # (same posture as cold load).
             fork_conv._state.rebuild_view()
@@ -1663,6 +1666,7 @@ class LocalConversation(BaseConversation):
         on_tools_changed: ToolsChangedCallback | None = None,
         on_tools_reconciled: ToolsReconciledCallback | None = None,
         startup_budget: float | None = None,
+        runtime_added: Collection[str] = (),
     ) -> list[ToolDefinition]:
         # Servers the user switched off stay in the settings map but must not
         # be connected to. Filter before the emptiness check so an all-disabled
@@ -1682,7 +1686,10 @@ class LocalConversation(BaseConversation):
         # One connection per server, so a server that fails or never answers
         # costs only its own tools. They start side by side: startup takes as
         # long as the slowest server, not all of them in a row.
-        prefixed = len(mcp_config) > 1
+        # Servers added at runtime were named `{server}_{tool}` when added; the
+        # others follow the startup rule "prefix only when there are several",
+        # counted without the runtime additions, so no name changes on reopen.
+        prefix_configured = len(mcp_config.keys() - set(runtime_added)) > 1
         pool = ThreadPoolExecutor(
             max_workers=len(mcp_config), thread_name_prefix="mcp-startup"
         )
@@ -1692,7 +1699,7 @@ class LocalConversation(BaseConversation):
                 name,
                 server,
                 create_kwargs,
-                prefixed,
+                prefix_configured or name in runtime_added,
             )
             for name, server in mcp_config.items()
         }
@@ -1808,6 +1815,7 @@ class LocalConversation(BaseConversation):
             on_tools_changed=lambda tools: self.agent._on_mcp_tools_changed(tools),
             on_tools_reconciled=self._on_mcp_tools_reconciled,
             startup_budget=self._mcp_startup_budget,
+            runtime_added=self._state.runtime_mcp_servers,
         )
 
     def _runtime_mcp_create_kwargs(self) -> dict[str, Any]:
@@ -1844,6 +1852,10 @@ class LocalConversation(BaseConversation):
             if duplicates:
                 raise ValueError(f"MCP server already exists: {sorted(duplicates)}")
             agent_ready = self._agent_ready
+            # Before its first message a conversation names an added server like
+            # a configured one; once started, the model may have seen the
+            # existing names, so the addition is named `{server}_{tool}`.
+            started = agent_ready or len(self._state.events) > 0
 
         runtime_tools: list[ToolDefinition] = []
         if agent_ready:
@@ -1877,6 +1889,11 @@ class LocalConversation(BaseConversation):
                 self._close_runtime_tools(runtime_tools)
                 raise
             self.agent = self._state.agent = updated_agent
+            if started:
+                self._state.runtime_mcp_servers = [
+                    *self._state.runtime_mcp_servers,
+                    *mcp_config,
+                ]
 
     def _mcp_start_failure_reason(self, exc: Exception) -> str:
         """One line saying why a server did not start, without its secrets."""
