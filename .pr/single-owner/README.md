@@ -8,11 +8,12 @@ removes it.
 - Code under test: part 1 `6d9b169d`, part 2 `bba1de01`, part 3 `578a8978`. The commits
   after `578a8978` replace the previous round's record in `.pr/single-owner/`
   (this file and its screenshots) and change nothing else.
-- Every live attempt launches its own agent-server
+- Every agent-server attempt launches its own server
   (`control-agent-server map run --fresh`); "restart" is a real process
-  restart on the same state directory. Runs were wrapped in
+  restart on the same state directory. Those runs were wrapped in
   `/usr/libexec/docker/docker-init -s --`, because PID 1 in the sandbox is
-  slow to reap orphaned tmux servers.
+  slow to reap orphaned tmux servers. The SDK-map bullets (`S04`, `S13`) run
+  in-process, without a server and without the wrapper.
 - Model-backed bullets used DeepSeek flash through the environment's LLM
   proxy (section 2 has a note on that). The rest use the skill's scripted
   `llm-stub` and need no key.
@@ -20,7 +21,10 @@ removes it.
   documents. `xpass`: that failure did not reproduce.
 - The UI check (section 3) ran on the same commits, `main` at `3d638f2e` and part 3 at `578a8978`, through Agent Canvas built from `OpenHands/OpenHands` at `b759f8a7`.
 
-## 1. The bug on `main` and the fix, on live servers
+## 1. The bug on `main` and the fix
+
+Parts 1 and 3 on live servers; part 1's two `S04` rows and part 2 in the SDK,
+in-process.
 
 ### Part 1 (#6762): a secret is saved the moment it changes
 
@@ -70,10 +74,11 @@ On part 1's code (`main` plus #6762), which part 2 is based on, the same recipe 
 
 Replayed with a copy of `main`'s map that holds part 3's recipes with a
 known-bug marker added, against a server from `main` and then from part 3.
-One recipe differs beyond the marker: in the copy,
-`F08.secrets-override-restart` also saves the state with a tags PATCH before
-the restart, so that on `main` it is the `meta.json` overwrite that fails it
-and not the unsaved secret of part 1.
+One recipe is adapted further: in the copy, `F08.secrets-override-restart`
+builds its own stub agent (`main`'s map has no `$ROTR_AGENT`), and it saves
+the state with a tags PATCH and checks `base_state.json` before the restart,
+so that on `main` it is the `meta.json` overwrite that fails it and not the
+unsaved secret of part 1.
 
 | Bullet | `main` | part 3 (`578a8978`) |
 |---|---|---|
@@ -88,8 +93,10 @@ and not the unsaved secret of part 1.
 
 ## 2. Families on part 3's code, and the same on `main`
 
-Seven whole families, and from each of the two client families the four
-bullets that touch this change.
+Seven whole families, and from each of the two client families three
+bullets that touch this change, with the one bullet they require. In the
+five agent-server rows the totals include the file's preconditions step as
+one entry, as the tool's own summary does; it passes on both sides.
 
 | Family | part 3 (`578a8978`) | `main` (`3d638f2e`), its own map (`F31`, `F33`, `F34`: adapted to the proxy, see the note) |
 |---|---|---|
@@ -98,8 +105,8 @@ bullets that touch this change.
 | `F04` conversation lifecycle | 40 of 41 pass; 1 xfail that `main` has too (`F04.create-initial-message-run-false`) | 39 of 41 pass, 2 xfail |
 | `F12` runtime and credentials | 29 of 32 pass; 1 xfail that `main` has too (`F12.sandbox-pause-websocket`); `F12.docker-runtime` blocked (needs a Docker daemon); `F12.docker-startup-timeout` blocked (needs a Docker daemon) | 29 of 32 pass, 1 xfail, 2 blocked |
 | `F31` persistence and limits | 23 of 25 pass; 1 xfail that `main` has too (`F31.takeover-keeps-metadata`); `F31.storage-retention` blocked (needs a Docker daemon) | 23 of 25 pass, 1 xfail, 1 blocked |
-| `F33` Python `RemoteConversation`: 4 of its 41 bullets (run, fork, confirmation, secrets) | the 4 bullets pass, and their preconditions | the 4 bullets pass, and their preconditions |
-| `F34` TypeScript client: 4 of its 38 bullets (create, run, fork/navigate/ask, confirm) | the 4 bullets pass, and their preconditions | the 4 bullets pass, and their preconditions |
+| `F33` Python `RemoteConversation`: 4 of its 41 bullets (fork, confirmation, secrets, and the run bullet that fork requires) | the 4 bullets pass, and their preconditions | the 4 bullets pass, and their preconditions |
+| `F34` TypeScript client: 4 of its 38 bullets (run, fork/navigate/ask, confirm, and the create bullet they require) | the 4 bullets pass, and their preconditions | the 4 bullets pass, and their preconditions |
 | `S04` local conversation (SDK map) | 32 of 36 pass; 3 fail that also fail on `main` (`S04.pause-during-startup`, `S04.goal-asked-branch`, `S04.interactive-terminal`); `S04.factory` labelled blocked in the map | 31 of 35 pass, 3 fail, 1 blocked |
 | `S13` security and confirmation (SDK map) | 8 of 10 pass; the live-model bullet (`S13.llm-analyzer`, `S13.confirm-wait`, `S13.confirm-approve-reject`) failed in this run: its result is the model's own risk label, see the note below; `S13.confirm-approve-reject`, `S13.llm-analyzer` labelled blocked in the map | 9 of 10 pass, 1 blocked |
 
@@ -114,7 +121,7 @@ What does not pass on either side:
 - labelled blocked in the map itself: `S04.factory` (it needs a running agent-server), `S13.confirm-approve-reject` (in its interactive examples, which need a person at a terminal), `S13.llm-analyzer` (the same examples)
 - fail on both sides in the same way (the notes below say how): `S04.pause-during-startup`, `S04.goal-asked-branch`, `S04.interactive-terminal`
 
-A note on the model route. The environment of this run has an LLM proxy (`LLM_BASE_URL`, `LLM_API_KEY`) and no `DEEPSEEK_API_KEY`. The skills handle that by themselves: `llm preset deepseek` and `control-sdk` then use the flash model the proxy serves, so `F04`, `F08`, `F10`, `F12` and the SDK families ran as they are. The recipes of `F31`, `F33` and `F34` name DeepSeek's own API (`deepseek/deepseek-flash` with `$DEEPSEEK_API_KEY`). For those three files, on both sides, I ran copies in which only the model name, the key variable and the base URL are changed to the proxy's, and one check counts the single profile that preset makes through a proxy (two with DeepSeek's key); the rows above are those runs. Run as written, the same bullets fail on part 3 and on `main` alike, for one reason: there is no DeepSeek key here. DeepSeek's `authentication_error` shows directly, as a conversation that ends in `error`, or as the missing conversation id after the failed run bullet, and two settings checks in `F31` expect the direct model and DeepSeek's key: `F31`: `F31.state-survives-restarts`, `F31.no-plaintext-at-rest`; `F33`: `F33.conversation-run` with `F33.conversation-callbacks` with `F33.conversation-stats`, `F33.conversation-fork`, `F33.conversation-confirmation`, `F33.conversation-secrets`; `F34`: `F34.conversation-run`, `F34.conversation-branching`, `F34.conversation-confirm`.
+A note on the model route. The environment of this run has an LLM proxy (`LLM_BASE_URL`, `LLM_API_KEY`) and no `DEEPSEEK_API_KEY`. The skills handle that by themselves: `llm preset deepseek` and `control-sdk` then use the flash model the proxy serves, so `F04`, `F08`, `F10`, `F12` and the SDK families ran as they are. The recipes of `F31`, `F33` and `F34` name DeepSeek's own API (`deepseek/deepseek-flash` with `$DEEPSEEK_API_KEY`). For those three files, on both sides, I ran copies in which only the model name, the key variable and the base URL are changed to the proxy's, and one check counts the single profile that preset makes through a proxy (two with DeepSeek's key); the rows above are those runs. Run as written, the same bullets fail on part 3 and on `main` alike, because this environment has the proxy's variables and no DeepSeek key. The `F33` and `F34` recipes call DeepSeek's API with an empty key: its `authentication_error` shows directly, as a conversation that ends in `error`, or as the missing conversation id after the failed run bullet. In `F31`, `llm preset deepseek` goes through the proxy whenever `LLM_BASE_URL` and `LLM_API_KEY` are set, so two settings checks that expect the direct model and DeepSeek's key fail: `F31`: `F31.state-survives-restarts`, `F31.no-plaintext-at-rest`; `F33`: `F33.conversation-run` with `F33.conversation-callbacks` with `F33.conversation-stats`, `F33.conversation-fork`, `F33.conversation-confirmation`, `F33.conversation-secrets`; `F34`: `F34.conversation-run`, `F34.conversation-branching`, `F34.conversation-confirm`.
 
 `F08.upgrade-from-release` is part of the `F08` run: conversations are created by the latest released server (1.63.0), which leaves a start-time secret only in `meta.json`, and the same state directory is then restarted on part 3's code. The secret, the policy and the analyzer are all there. Replayed on its own, two attempts each: pass, pass on part 3's code, and fail, fail on the same code with the legacy take-over removed (one added `return {}`): there the command that reads the secret gets an empty value, so the recipe's comparison with the value the released server stored fails.
 
@@ -147,13 +154,13 @@ The full OpenHands UI (Agent Canvas, built from the `OpenHands/OpenHands` reposi
 | Conversation switched to `AlwaysConfirm`, then a backend restart, then a new command | ran without asking, in 2 of 2 attempts | waited for approval, in 2 of 2 attempts; Continue ran it both times, and Cancel rejected the next one |
 | Secret replaced at runtime (18 bytes → 25), then a restart; length read by the agent (1 attempt a side) | 18: the old value is back | 25 |
 | New conversation started in confirmation mode: reject, approve, restart, next command (1 attempt a side) | waits (creation-time value) | waits |
-| `meta.json` read back at every step | had `confirmation_policy`, `security_analyzer`, `secrets` in 30 of 30 read-backs | had none of them in 32 of 32 |
+| `meta.json` at every read-back of the four scenario conversations | had `confirmation_policy`, `security_analyzer`, `secrets` in 30 of 30 read-backs | had none of them in 32 of 32 |
 
 ![policy after a restart](ui-policy-after-restart.png)
 
 ![replaced secret after a restart](ui-secret-after-restart.png)
 
-On `main` the revert is also written back: after the restart and the next prompt, `base_state.json` holds the creation-time policy again. In one of the two attempts the file still said `AlwaysConfirm` at the first read-back after the restart, and the command ran unasked all the same. While the Add-secret form is being filled, the typed value is in that masked field (the LLM form holds its key the same way); otherwise no secret value appears in the page (text and DOM), in the API events or in the conversation's state directory, on either side, and the screenshots show only lengths. One place does hold the value on both sides, and this change neither causes nor fixes it: the shell history of the agent's terminal, in the run's home directory, keeps the `export` lines with which the terminal tool gives a command its secret. An independent pass recounted every number in this table from the saved read-backs and step logs.
+On `main` the revert is also written back: after the restart and the next prompt, `base_state.json` holds the creation-time policy again. In one of the two attempts the file still said `AlwaysConfirm` at the first read-back after the restart, and the command ran unasked all the same. While the Add-secret form is being filled, the typed value is in that masked field (the LLM form holds its key the same way); otherwise no secret value appears in plain text in the page (text and DOM), in the API events or in the conversation's state directory, on either side, and the screenshots show only lengths. One place does hold the value on both sides, and this change neither causes nor fixes it: the shell history of the agent's terminal, in the run's home directory, keeps the `export` lines with which the terminal tool gives a command its secret. An independent pass recounted every number in this table from the saved read-backs and step logs.
 
 ## 4. Checks CI runs only for PRs into `main`, and two further comparisons, run on part 3
 
