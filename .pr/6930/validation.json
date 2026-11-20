@@ -1,0 +1,132 @@
+{
+  "issue": "https://github.com/OpenHands/software-agent-sdk/issues/6930",
+  "base_sha": "06f643ca471eea73c662a76fef2e0b836a33c826",
+  "validated_at": "2026-11-17T23:56:44.285356+08:00",
+  "source_sha256": {
+    "openhands-agent-server/openhands/agent_server/docker_runtime/plugins.py": "127229f25a5641c05077018944714ce7a1ae8904432a087dbf1e9cb584926dc5",
+    "openhands-agent-server/openhands/agent_server/docker_runtime/registry.py": "39651638462951246ad5bf2e401c31cf878b503ef761414ca911dd2d4a0b9498",
+    "tests/agent_server/docker_runtime/test_installed_plugins.py": "bed204832db622549ea3c15f34269d6d505f9455514ee7c949e611f9f3553a6c",
+    "tests/agent_server/docker_runtime/test_installed_plugins_live.py": "091299a7c4bfd2f9271090600bf5becdca3bc63a35f37293aae4c350f1669a3c"
+  },
+  "environment": {
+    "host": "macOS arm64, Python 3.13.12, Docker Desktop 4.82 / Engine 29.6.1",
+    "runtime": "linux/arm64",
+    "image": "ghcr.io/openhands/agent-server:06f643c-python-slim",
+    "arm64_manifest": "sha256:3ed89f2f809a73e2e607607afa5a43eda6b57eee6bc10c7bcb7ce0958bf3c9b9",
+    "limits": "1 CPU and 2 GiB per test container"
+  },
+  "tests": [
+    {
+      "label": "base Docker/hybrid regression",
+      "result": "6 failed, 4 passed, 1 warning in 90.54s (0:01:30)",
+      "console_tail": [
+        "-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html",
+        "=========================== short test summary info ============================",
+        "FAILED tests/agent_server/docker_runtime/test_installed_plugins_live.py::test_docker_loads_only_enabled_installed_plugins[docker-True]",
+        "FAILED tests/agent_server/docker_runtime/test_installed_plugins_live.py::test_docker_loads_only_enabled_installed_plugins[hybrid-True]",
+        "FAILED tests/agent_server/docker_runtime/test_installed_plugins_live.py::test_docker_resume_rechecks_enabled_plugins[docker-disable]",
+        "FAILED tests/agent_server/docker_runtime/test_installed_plugins_live.py::test_docker_resume_rechecks_enabled_plugins[docker-uninstall]",
+        "FAILED tests/agent_server/docker_runtime/test_installed_plugins_live.py::test_docker_resume_rechecks_enabled_plugins[hybrid-disable]",
+        "FAILED tests/agent_server/docker_runtime/test_installed_plugins_live.py::test_docker_resume_rechecks_enabled_plugins[hybrid-uninstall]",
+        "============== 6 failed, 4 passed, 1 warning in 90.54s (0:01:30) ==============="
+      ],
+      "log_sha256": "431e36b70e8c5da133bd06d6fad97361c781884fb65b9ed7ae402ffa5fb255fa"
+    },
+    {
+      "label": "fixed Docker/hybrid regression",
+      "result": "10 passed, 1 warning in 112.22s (0:01:52)",
+      "console_tail": [
+        "================== 10 passed, 1 warning in 112.22s (0:01:52) ==================="
+      ],
+      "log_sha256": "5b5ad92f8508c71e8457dc99f852bb9c0c7212d5c7b10b3fcde9ae8bcabe687c"
+    },
+    {
+      "label": "fixed related regression suite",
+      "result": "692 passed, 1 skipped, 16 deselected, 26 warnings in 43.57s",
+      "console_tail": [
+        "========= 692 passed, 1 skipped, 16 deselected, 26 warnings in 43.57s =========="
+      ],
+      "log_sha256": "318edbc800e420f95807b4948eb2c84f8f804eb2f3bfc409270dc27e25be1b1a"
+    }
+  ],
+  "http_workflow": [
+    {
+      "step": "base first message",
+      "method": "GET",
+      "path": "/api/conversations/{conversation_id}",
+      "status": 200,
+      "checks": [
+        {
+          "check": "agent.agent_context.skills contains qa-docker-installed-skill",
+          "ok": false,
+          "actual": "null"
+        }
+      ],
+      "skill_names": [],
+      "artifact_sha256": "63a5f38914953d5e7633f69d8c4f0f5eb0eba1f449736daa4d80143ce4169c1c"
+    },
+    {
+      "step": "fixed first message",
+      "method": "GET",
+      "path": "/api/conversations/{conversation_id}?include_skills=true",
+      "status": 200,
+      "checks": [
+        {
+          "check": "agent.agent_context.skills contains qa-docker-installed-skill",
+          "ok": true,
+          "actual": "[{\"name\": \"qa-docker-installed-skill\", \"content\": \"# qa-docker-installed-skill\\n\\nWhen this skill is active, include the exact phrase QA_SKILL_MARKER.\", \"trigger\": {\"type\": \"keyword\", \"keywords\": [\"qa…"
+        }
+      ],
+      "skill_names": [
+        "qa-docker-installed-skill",
+        "qa-docker-installed:qa-hello"
+      ],
+      "artifact_sha256": "ab3b5fd8efc2dc8d31dcbf8c3dc295047c8209f4084614a37a01b56536e2e97e"
+    },
+    {
+      "step": "fixed running container after disable",
+      "method": "GET",
+      "path": "/api/conversations/{conversation_id}?include_skills=true",
+      "status": 200,
+      "checks": [
+        {
+          "check": "agent.agent_context.skills contains qa-docker-installed-skill",
+          "ok": true,
+          "actual": "[{\"name\": \"qa-docker-installed-skill\", \"content\": \"# qa-docker-installed-skill\\n\\nWhen this skill is active, include the exact phrase QA_SKILL_MARKER.\", \"trigger\": {\"type\": \"keyword\", \"keywords\": [\"qa…"
+        }
+      ],
+      "skill_names": [
+        "qa-docker-installed-skill",
+        "qa-docker-installed:qa-hello"
+      ],
+      "artifact_sha256": "e285e0b0eaac83f6a02989f2859b5b623e38bf6d95ed389e802a796421582b14"
+    },
+    {
+      "step": "fixed after stop/reprovision",
+      "method": "GET",
+      "path": "/api/conversations/{conversation_id}?include_skills=true",
+      "status": 200,
+      "checks": [
+        {
+          "check": "agent.agent_context.skills not-contains qa-docker-installed",
+          "ok": true,
+          "actual": "[]"
+        }
+      ],
+      "skill_names": [],
+      "artifact_sha256": "4365a197b1f45e3375e72ef6cdb65c5630952736b34fbb77e0b43a6a9265aa01"
+    }
+  ],
+  "limitations": [
+    "Messages use run=false; no model inference or generated answer quality was tested.",
+    "Official same-base slim image was used because the full python image pull stalled; full image/browser/in-container Docker are not covered.",
+    "No x86_64, remote GPU, multi-node, or full repository test suite claim.",
+    "The 1 skipped related regression is the existing opt-in worktree live test; 16 deselected Docker-live cases were excluded from that suite. The 10 new Docker-live cases were run separately."
+  ],
+  "reproduce": {
+    "setup": "make build",
+    "live": "OPENHANDS_DOCKER_PLUGIN_TEST_IMAGE=ghcr.io/openhands/agent-server:06f643c-python-slim uv run --frozen pytest -m docker_live tests/agent_server/docker_runtime/test_installed_plugins_live.py",
+    "regression": "uv run --frozen pytest tests/agent_server/docker_runtime tests/agent_server/test_plugins_router.py tests/agent_server/test_conversation_service_plugin.py tests/sdk/conversation/test_local_conversation_plugins.py tests/sdk/plugin",
+    "baseline": "Copy only test_installed_plugins_live.py to a clean worktree at base_sha and run the same live command. The six enabled/resume tests fail on the first missing skill assertion; disabled/explicit cases pass."
+  }
+}

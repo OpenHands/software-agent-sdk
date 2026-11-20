@@ -19,6 +19,7 @@ from uuid import UUID, uuid4
 
 from openhands.agent_server.config import V1_SESSION_API_KEY_ENV, Config
 from openhands.agent_server.conversation_registry import ConversationRegistry
+from openhands.agent_server.docker_runtime.plugins import refresh_installed_plugins
 from openhands.agent_server.docker_runtime.provisioning import RuntimeProvisioningStore
 from openhands.agent_server.docker_runtime.storage import DockerRuntimeStorage
 from openhands.agent_server.experimental_features import (
@@ -648,6 +649,11 @@ class DockerConversationRegistry(ConversationRegistry):
         ):
             directory.mkdir(parents=True, mode=0o700, exist_ok=True)
 
+        refresh_installed_plugins(
+            self.stores.profile_dir / "plugins" / "installed",
+            persistence_dir,
+            _PERSISTENCE_DIR,
+        )
         env = sanitized_env()
         env.update(
             {
