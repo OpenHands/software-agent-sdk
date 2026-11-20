@@ -742,6 +742,7 @@ Preconditions:
 
 ## Gotchas
 
+- The 4 MiB frame cap of `F07.frame-too-large` applies to live delivery too, not only to replay: a socket open while a 5 MiB event is appended receives the events before it and then closes with 1013 `frame_too_large`, so later events never arrive on that socket; reconnecting with `after_seq` past the big event resumes. A client that does not reconnect past it loses the live stream ([#6934](https://github.com/OpenHands/software-agent-sdk/issues/6934), open).
 - `F07.reject-non-user`, `F07.error-frame`, `F07.error-non-json` and `F07.auth-frame-ignored` read the `error` frames at fixed positions after `sync` and the snapshot. While #6745 lasts, an `error` can overtake `sync` when the server is slow to subscribe, on an idle machine as well as under load (for `F07.auth-frame-ignored` as `frames.3.frame.type` `error`, for `F07.error-non-json` as an `error` frame ahead of `sync`), and the bullet then fails on its first position check. A fail of one of these four whose transcript shows that order is #6745, not a new defect; another attempt often passes. `F07.sync-first-during-run` reproduces that order deterministically.
 - Neither the SDK nor the TypeScript client uses this socket yet, so a
   regression here breaks no shipped consumer's tests; only these recipes and
