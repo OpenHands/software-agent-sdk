@@ -1,0 +1,8 @@
+[11/20/26 19:53:52] INFO     FileEditor initialized with cwd:      editor.py:125
+                             /tmp/openhands-undo-live-57auxw4h                  
+{"failure_was_reported": true, "after_failed_undo": "value = 2\n", "retry_is_error": false, "after_retry": "value = 0\n", "older_undo_is_error": true, "after_older_undo": "value = 0\n"}
+Traceback (most recent call last):
+  File "<reproduce.py>", line 45, in <module>
+    assert not retried.is_error and after_retry == "value = 1\n"
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError
