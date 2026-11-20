@@ -1,6 +1,4 @@
 import math
-import shutil
-import tempfile
 import threading
 import time
 from collections.abc import Mapping
@@ -122,14 +120,7 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         self._terminal_type = terminal_type
         self._env = normalize_terminal_env(env)
         self._max_panes = max_panes
-        self._owned_spillover_dir: str | None = None
-        if full_output_save_dir is None:
-            self._owned_spillover_dir = tempfile.mkdtemp(
-                prefix="openhands_terminal_outputs_"
-            )
-            self.full_output_save_dir: str | None = self._owned_spillover_dir
-        else:
-            self.full_output_save_dir = full_output_save_dir
+        self.full_output_save_dir: str | None = full_output_save_dir
 
         # Pool mode: use TmuxPanePool for parallel execution
         self._pool: TmuxPanePool | None = None
@@ -693,6 +684,3 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
                 self._sessions.clear()
         elif self._session is not None:
             self._session.close()
-        if self._owned_spillover_dir is not None:
-            shutil.rmtree(self._owned_spillover_dir, ignore_errors=True)
-            self._owned_spillover_dir = None

@@ -40,12 +40,14 @@ def test_truncate_with_metadata_populated_on_spillover(tmp_path: Path):
     assert spill.read_text(encoding="utf-8") == content
 
 
-def test_terminal_executor_persists_full_unclipped_output_and_exposes_metadata(
+def test_terminal_executor_persists_full_output_when_save_dir_configured(
     tmp_path: Path,
 ):
+    obs_dir = tmp_path / "observations"
     executor = TerminalExecutor(
         working_dir=str(tmp_path),
         terminal_type="subprocess",
+        full_output_save_dir=str(obs_dir),
     )
     try:
         obs = executor(
@@ -65,7 +67,6 @@ def test_terminal_executor_persists_full_unclipped_output_and_exposes_metadata(
         spill_file = Path(obs.truncation.spillover_path)
         assert spill_file.is_file()
         full_saved = spill_file.read_text(encoding="utf-8")
-        # Middle lines clipped from inline text are preserved intact on disk
         assert "LINE-0750-" in full_saved
         assert "LINE-0001-" in full_saved
         assert "LINE-1500-" in full_saved
@@ -79,17 +80,43 @@ def test_terminal_executor_persists_full_unclipped_output_and_exposes_metadata(
         executor.close()
 
 
+def test_terminal_executor_persistence_off_writes_no_files_but_reports_metadata(
+    tmp_path: Path,
+):
+    executor = TerminalExecutor(
+        working_dir=str(tmp_path),
+        terminal_type="subprocess",
+        full_output_save_dir=None,
+    )
+    try:
+        obs = executor(
+            TerminalAction(
+                command=(
+                    'python3 -c "for i in range(1, 1501): '
+                    "print(f'LINE-{i:04d}-' + 'Z' * 30)\""
+                )
+            )
+        )
+        assert isinstance(obs.truncation, TruncationMetadata)
+        assert obs.truncation.truncated is True
+        assert obs.truncation.spillover_path is None
+        assert list(tmp_path.iterdir()) == []
+    finally:
+        executor.close()
+
+
 def test_terminal_executor_masks_secrets_in_spillover_file(tmp_path: Path):
     secret_value = "sk-super-secret-spillover-token-998877"
     registry = SecretRegistry()
     registry.update_secrets({"API_TOKEN": secret_value})
-    # Trigger export tracking so mask_secrets_in_output redacts secret_value
     _ = registry.get_secrets_as_env_vars("echo $API_TOKEN")
     fake_conv = SimpleNamespace(state=SimpleNamespace(secret_registry=registry))
 
+    obs_dir = tmp_path / "observations"
     executor = TerminalExecutor(
         working_dir=str(tmp_path),
         terminal_type="subprocess",
+        full_output_save_dir=str(obs_dir),
     )
     try:
         obs = executor(
