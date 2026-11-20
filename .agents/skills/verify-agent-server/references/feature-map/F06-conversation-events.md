@@ -19,6 +19,7 @@ Needs: `llm`
 Launch: `--env TZ=UTC`
 
 Routes: `GET /api/conversations/{conversation_id}/events/search`,
+`GET /api/conversations/{conversation_id}/events/webhook-replay`,
 `GET /api/conversations/{conversation_id}/events/count`,
 `GET /api/conversations/{conversation_id}/events/{event_id}`,
 `GET /api/conversations/{conversation_id}/events`,
@@ -30,6 +31,7 @@ Routes: `GET /api/conversations/{conversation_id}/events/search`,
 
 - `F06.send-no-run`: `POST .../events` with `run: false` persists a user `MessageEvent` (preceded by the `SystemPromptEvent` on the first message), returns `{"success": true}` and leaves the conversation `idle`.
 - `F06.search-page`: search returns `{items, next_page_id}` in log order; `limit` plus the inclusive `page_id` cursor pages through it, `TIMESTAMP_DESC` reverses it, and an unknown `page_id` restarts from the first event.
+- `F06.webhook-replay`: `GET .../events/webhook-replay` returns persisted events with durable sequence numbers. Pass the first page's `through_seq` on subsequent requests to keep the same snapshot while events are appended.
 - `F06.search-validation`: search rejects `limit` 0 or 101, an unknown `sort_order` and an unparsable timestamp with 422.
 - `F06.search-filters`: `source`, `body` (case-insensitive, message text only) and fully-qualified `kind` filters narrow search results and combine.
 - `F06.search-kind-short`: `kind=MessageEvent`, the short name the API docs and the TypeScript client use, filters by the wire `kind`.
@@ -87,6 +89,9 @@ Routes: `GET /api/conversations/{conversation_id}/events/search`,
   `ConversationClient.searchEvents()`, `getEventCount()` and
   `RemoteEventsList.search()`/`count()`. `conversation events` in the CLI
   pages through search.
+- REST: `GET .../events/webhook-replay` reads persisted webhook payloads
+  after `after_seq`. Pass the first page's `through_seq` on subsequent
+  requests to read the same snapshot.
 - REST: `GET .../events/{event_id}` (TypeScript `ConversationClient.getEvent()`,
   `RemoteEventsList.getEventById()`) and `GET .../events` with a JSON array body
   (batch get; no SDK or TypeScript caller, because browsers cannot send a GET
@@ -150,6 +155,17 @@ Preconditions:
   `last_user_message_id` state update; a second message (role and `run` left
   to their defaults) adds a `MessageEvent` and another update, and the
   conversation stays `idle`.
+- **Read a stable webhook snapshot (`F06.webhook-replay`).** Append one
+  message after starting a paged read on a separate conversation.
+  ```sh
+  REPLAY_CID=$(control-agent-server conversation start --placeholder-agent --tools none --no-autotitle --print-id)
+  REPLAY_PATH="/api/conversations/$REPLAY_CID/events"
+  control-agent-server api POST "$REPLAY_PATH" --json '{"role":"user","content":[{"type":"text","text":"before the watermark"}],"run":false}'
+  THROUGH=$(control-agent-server api GET "$REPLAY_PATH/webhook-replay" --query limit=1 --check events.0.seq eq 0 --field through_seq)
+  control-agent-server api POST "$REPLAY_PATH" --json '{"role":"user","content":[{"type":"text","text":"after the watermark"}],"run":false}'
+  control-agent-server api GET "$REPLAY_PATH/webhook-replay" --query "after_seq=$THROUGH" --query "through_seq=$THROUGH" \
+    --check through_seq eq "$THROUGH" --check events len-eq 0 --save F06.webhook-replay/end
+  ```
 - **Paging and sort order (`F06.search-page`).** Five events in pages of two.
   ```sh
   E0=$(control-agent-server api GET "/api/conversations/$CID/events/search" --field items.0.id)

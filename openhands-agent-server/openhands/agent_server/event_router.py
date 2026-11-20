@@ -176,6 +176,31 @@ async def search_conversation_events(
 
 
 @event_read_router.get(
+    "/webhook-replay",
+    responses=error_responses(
+        {NotFound: "Conversation not found", Conflict: "Replay cursor unavailable"}
+    ),
+)
+async def read_webhook_replay_page(
+    conversation_id: UUID,
+    after_seq: Annotated[int, Query(ge=-1, le=2**53 - 1)] = -1,
+    through_seq: Annotated[int | None, Query(ge=-1, le=2**53 - 1)] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 100,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> dict[str, Any]:
+    """Read a bounded snapshot of persisted webhook events in sequence order."""
+    service = await conversation_service.get_persisted_event_service(conversation_id)
+    if service is None:
+        raise NotFound(f"Conversation not found: {conversation_id}")
+    try:
+        return await asyncio.to_thread(
+            service.webhook_replay_page, after_seq, through_seq, limit
+        )
+    except ValueError as exc:
+        raise Conflict(str(exc)) from exc
+
+
+@event_read_router.get(
     "/count", responses=error_responses({NotFound: "Conversation not found"})
 )
 async def count_conversation_events(
