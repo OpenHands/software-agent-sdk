@@ -90,6 +90,11 @@ DEFAULT_CONVERSATION_IMAGE = "ghcr.io/openhands/agent-server:latest-python"
 class WebhookSpec(BaseModel):
     """Spec to create a webhook. All webhook requests use POST method."""
 
+    durable_events: bool = Field(
+        default=False,
+        description="Replay persisted events with receiver acknowledgements",
+    )
+
     # General parameters
     event_buffer_size: int = Field(
         default=5,
