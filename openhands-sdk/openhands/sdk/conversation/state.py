@@ -323,6 +323,8 @@ class ConversationState(OpenHandsModel):
     _view: View = PrivateAttr(default_factory=View)
     _view_branch_leaf: EventID | None = PrivateAttr(default=None)
     _view_lock: threading.RLock = PrivateAttr(default_factory=threading.RLock)
+    _pending_actions: list[ActionEvent] = PrivateAttr(default_factory=list)
+    _pending_actions_leaf: EventID | None = PrivateAttr(default=None)
     _cipher: Cipher | None = PrivateAttr(default=None)  # cipher for secret encryption
     _autosave_enabled: bool = PrivateAttr(
         default=False
@@ -429,6 +431,24 @@ class ConversationState(OpenHandsModel):
         it when it is not on the active branch (see ``EventLog.walk_back``).
         """
         return self._events.walk_back(self._resolve_active_leaf(), until=until)
+
+    def _pending_actions_on_active_branch(self) -> list[ActionEvent]:
+        with self._view_lock:
+            leaf = self._resolve_active_leaf()
+            previous = self._pending_actions_leaf
+            if leaf != previous:
+                tail = list(self._events.walk_back(leaf, until=previous))
+                if previous is None:
+                    branch = list(reversed(tail))
+                elif tail and tail[-1].id == previous:
+                    tail.pop()
+                    # Appending events cannot make a resolved action pending again.
+                    branch = [*self._pending_actions, *reversed(tail)]
+                else:
+                    branch = self._events.path_to_root(leaf)
+                self._pending_actions = self.get_unmatched_actions(branch)
+                self._pending_actions_leaf = leaf
+            return self._pending_actions.copy()
 
     def waiting_actions(self) -> list[ActionEvent]:
         """The tool calls still waiting for their results, in order.

@@ -31,7 +31,6 @@ from openhands.sdk.context.prompts.presets import PromptPreset, create_registry
 from openhands.sdk.conversation import (
     CancellationToken,
     ConversationCallbackType,
-    ConversationState,
     ConversationTokenCallbackType,
     LocalConversation,
 )
@@ -89,6 +88,7 @@ from openhands.sdk.tool import (
 
 
 if TYPE_CHECKING:
+    from openhands.sdk.conversation.state import ConversationState
     from openhands.sdk.llm.llm import LLMCallContext
     from openhands.sdk.tool import ToolDefinition
 from openhands.sdk.mcp.tool import MCPToolDefinition
@@ -865,7 +865,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         state = conversation.state
         # Check for pending actions (implicit confirmation)
         # and execute them before sampling new actions.
-        pending_actions = ConversationState.get_unmatched_actions(state.active_branch())
+        pending_actions = state._pending_actions_on_active_branch()
         if pending_actions:
             logger.info(
                 "Confirmation mode: Executing %d pending action(s)",
@@ -942,10 +942,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             # drop the pixels so the turn continues degraded instead of
             # hard-failing (see LLM._validate_image_request).
 
-        logger.debug(
-            "Sending messages to LLM: "
-            f"{json.dumps([m.model_dump() for m in _messages[1:]], indent=2)}"
-        )
+        logger.debug("Sending %d messages to LLM", len(_messages))
 
         try:
             llm_response = self.llm.generate(
@@ -1087,7 +1084,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
     ) -> None:
         state = conversation.state
         # Check for pending actions (implicit confirmation)
-        pending_actions = ConversationState.get_unmatched_actions(state.active_branch())
+        pending_actions = state._pending_actions_on_active_branch()
         if pending_actions:
             logger.info(
                 "Confirmation mode: Executing %d pending action(s)",
@@ -1159,10 +1156,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             # drop the pixels so the turn continues degraded instead of
             # hard-failing (see LLM._validate_image_request).
 
-        logger.debug(
-            "Sending messages to LLM: "
-            f"{json.dumps([m.model_dump() for m in _messages[1:]], indent=2)}"
-        )
+        logger.debug("Sending %d messages to LLM", len(_messages))
 
         try:
             # Release the state lock for just the network wait so send_message()

@@ -4,6 +4,7 @@ and branch-slice fork through a real LocalConversation (no LLM). (#3747, #3748)
 
 import tempfile
 from collections.abc import Callable
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -15,7 +16,7 @@ from openhands.sdk.agent import Agent
 from openhands.sdk.context.view import View
 from openhands.sdk.conversation import Conversation, LocalConversation
 from openhands.sdk.conversation.state import ConversationState
-from openhands.sdk.event import ActionEvent
+from openhands.sdk.event import ActionEvent, AgentErrorEvent, UserRejectObservation
 from openhands.sdk.event.base import Event
 from openhands.sdk.event.condenser import Condensation
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
@@ -573,6 +574,49 @@ def test_pending_actions_ignore_abandoned_branch():
         ] == [pending.id]
         # ...but the active branch (what the consumers now read) does not.
         assert ConversationState.get_unmatched_actions(conv.state.active_branch()) == []
+
+
+def test_reject_pending_actions_after_branch_switch(tmp_path):
+    with closing(_conversation(str(tmp_path))) as conversation:
+        root = _emit(conversation, _msg("root"))
+        older = _emit(conversation, _action_event("older"))
+        _emit(conversation, _action_event("completed"))
+        settled = _emit(
+            conversation,
+            AgentErrorEvent(
+                tool_call_id="completed",
+                tool_name="test_tool",
+                error="Interrupted before completion",
+            ),
+        )
+
+        conversation.reject_pending_actions()
+        conversation.reject_pending_actions()
+        first_branch = [
+            event.action_id
+            for event in conversation.state.active_branch()
+            if isinstance(event, UserRejectObservation)
+        ]
+        assert first_branch == [older.id]
+
+        conversation.navigate_to(root.id)
+        newer = _emit(conversation, _action_event("newer"))
+        conversation.reject_pending_actions()
+        second_branch = [
+            event.action_id
+            for event in conversation.state.active_branch()
+            if isinstance(event, UserRejectObservation)
+        ]
+        assert second_branch == [newer.id]
+
+        conversation.navigate_to(settled.id)
+        conversation.reject_pending_actions()
+        returned_branch = [
+            event.action_id
+            for event in conversation.state.active_branch()
+            if isinstance(event, UserRejectObservation)
+        ]
+        assert returned_branch == [older.id]
 
 
 def test_navigate_to_none_empties_single_root_tree():
