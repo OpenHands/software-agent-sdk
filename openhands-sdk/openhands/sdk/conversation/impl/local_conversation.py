@@ -106,6 +106,7 @@ from openhands.sdk.mcp.utils import (
 )
 from openhands.sdk.observability.laminar import (
     OPERATION_METADATA_KEY,
+    format_send_message_span_input,
     observe,
     record_tool_result,
 )
@@ -2433,7 +2434,10 @@ class LocalConversation(BaseConversation):
         self._state.agent = new_agent
         return new_agent
 
-    @observe(name="conversation.send_message")
+    @observe(
+        name="conversation.send_message",
+        input_formatter=format_send_message_span_input,
+    )
     def send_message(self, message: str | Message, sender: str | None = None) -> None:
         """Send a message to the agent.
 
