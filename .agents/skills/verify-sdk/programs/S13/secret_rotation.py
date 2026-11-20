@@ -47,7 +47,10 @@ script = [
     {"tool": "terminal", "args": {"command": "cat v1.txt"}},
     {"finish": "one"},
     {"tool": "terminal", "args": {"command": "cat v2.txt"}},
-    {"tool": "terminal", "args": {"command": "echo $DEPLOY_TOKEN $OAUTH_TOKEN | wc -c"}},
+    {
+        "tool": "terminal",
+        "args": {"command": "echo $DEPLOY_TOKEN $OAUTH_TOKEN | wc -c"},
+    },
     {"tool": "terminal", "args": {"command": "cat v1.txt"}},
     {"finish": "two"},
 ]
