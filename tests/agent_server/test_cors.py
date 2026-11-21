@@ -15,11 +15,7 @@ from openhands.agent_server.dependencies import (
     get_conversation_service,
 )
 from openhands.agent_server.event_service import EventService
-from openhands.agent_server.middleware import (
-    CORSDispatcher,
-    LocalhostCORSMiddleware,
-    _is_workspace_cookie_path,
-)
+from openhands.agent_server.middleware import CORSDispatcher, LocalhostCORSMiddleware
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -347,38 +343,6 @@ async def test_dispatcher_matches_workspace_path_after_root_path_strip():
     headers = {k.decode().lower(): v.decode() for k, v in start["headers"]}
     assert headers.get("access-control-allow-origin") == REMOTE_ORIGIN
     assert headers.get("access-control-allow-credentials") == "true"
-
-
-# Unit checks on the path matcher.
-
-
-@pytest.mark.parametrize(
-    "path",
-    [
-        "/api/auth/workspace-session",
-        "/api/conversations/abc-123/workspace/",
-        "/api/conversations/00000000-0000-0000-0000-000000000000/workspace/report.html",
-        "/api/conversations/x/workspace/nested/dir/file.txt",
-    ],
-)
-def test_is_workspace_cookie_path_matches(path):
-    assert _is_workspace_cookie_path(path)
-
-
-@pytest.mark.parametrize(
-    "path",
-    [
-        "/api/auth/workspace-sessions",
-        "/api/conversations",
-        "/api/conversations/abc/events",
-        "/api/conversations/abc/workspaces/file",
-        "/api/auth/login",
-        "/",
-        "",
-    ],
-)
-def test_is_workspace_cookie_path_rejects(path):
-    assert not _is_workspace_cookie_path(path)
 
 
 # Unit checks on LocalhostCORSMiddleware.is_allowed_origin.

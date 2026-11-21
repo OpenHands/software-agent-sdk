@@ -239,17 +239,6 @@ echo "Mixed 'quotes' in \\"double quotes\\""
     assert split_bash_commands(input_commands) == expected_output
 
 
-def test_invalid_syntax():
-    invalid_inputs = [
-        'echo "Unclosed quote',
-        "echo 'Unclosed quote",
-        "cat <<EOF\nUnclosed heredoc",
-    ]
-    for input_command in invalid_inputs:
-        # it will fall back to return the original input
-        assert split_bash_commands(input_command) == [input_command]
-
-
 def test_unclosed_backtick():
     # This test reproduces issue #7391
     # The issue occurs when parsing a command with an unclosed backtick

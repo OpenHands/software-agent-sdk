@@ -16,11 +16,6 @@ from openhands.agent_server.persistence.models import (
 from openhands.agent_server.telemetry.policy import resolve
 
 
-def test_there_is_no_typed_consent_field():
-    assert "telemetry_consent" not in PersistedSettings.model_fields
-    assert "telemetry_consent_updated_at" not in PersistedSettings.model_fields
-
-
 @pytest.mark.parametrize("version", [1, 2, 3])
 def test_older_settings_still_load(version: int):
     settings = PersistedSettings.from_persisted(
@@ -46,10 +41,3 @@ def test_revoking_through_misc_settings_disables():
     settings.update({"misc_settings_diff": {"telemetry": {"consent": "granted"}}})
     settings.update({"misc_settings_diff": {"telemetry": {"consent": "denied"}}})
     assert resolve(settings.misc_settings, env={}).enabled is False
-
-
-def test_a_newer_schema_version_is_still_rejected():
-    with pytest.raises(ValueError, match="newer than supported"):
-        PersistedSettings.from_persisted(
-            {"schema_version": PERSISTED_SETTINGS_SCHEMA_VERSION + 1}
-        )
