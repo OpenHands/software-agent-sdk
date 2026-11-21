@@ -1,6 +1,8 @@
 """Conversation router for OpenHands SDK."""
 
+import asyncio
 import json
+import logging
 from typing import Annotated
 from uuid import UUID
 
@@ -10,6 +12,7 @@ from fastapi import (
     Depends,
     Header,
     Query,
+    Request,
     Response,
     status,
 )
@@ -43,6 +46,9 @@ from openhands.agent_server.models import (
     AgentResponseResult,
     AskAgentRequest,
     AskAgentResponse,
+    ContentSearchEnabledResponse,
+    ContentSearchHit,
+    ContentSearchResponse,
     ConversationInfo,
     ConversationPage,
     ConversationRuntimeInfo,
@@ -61,6 +67,10 @@ from openhands.agent_server.models import (
     trim_conversation_response_skills,
 )
 from openhands.agent_server.persistence import run_store
+from openhands.agent_server.search_index import (
+    DEFAULT_SEARCH_LIMIT,
+    MAX_SEARCH_LIMIT,
+)
 from openhands.sdk import LLM
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.types import (
@@ -96,8 +106,25 @@ from openhands.sdk.tool.client_tool import ClientToolRegistrationError
 from openhands.sdk.utils.cipher import Cipher
 
 
+logger = logging.getLogger(__name__)
+
+
 conversation_catalog_router = APIRouter(prefix="/conversations", tags=["Conversations"])
 conversation_router = APIRouter(prefix="/conversations", tags=["Conversations"])
+conversation_search_router = APIRouter(prefix="/conversations", tags=["Conversations"])
+
+
+@conversation_search_router.get("/search/enabled")
+async def get_conversation_search_enabled() -> ContentSearchEnabledResponse:
+    """Feature probe: the UI hides the search box when this 404s.
+
+    Mounted on the same opt-in condition as the search service itself,
+    so deployments without the feature keep a schema identical to
+    upstream ``main`` — no route, no schema entry, no fingerprint.
+    """
+    return ContentSearchEnabledResponse(enabled=True)
+
+
 _OBSERVABILITY_SPAN_NAME_ADAPTER = TypeAdapter(ConversationObservabilitySpanName)
 _OBSERVABILITY_TAGS_ADAPTER = TypeAdapter(ConversationObservabilityTags)
 _OBSERVABILITY_METADATA_ADAPTER = TypeAdapter(ConversationObservabilityMetadata)
@@ -229,6 +256,47 @@ async def search_conversations(
         update={"items": [_with_runtime_info(registry, item) for item in page.items]}
     )
     return page
+
+
+@conversation_search_router.get("/search-content")
+async def search_conversation_content(
+    request: Request,
+    query: Annotated[
+        str,
+        Query(
+            title="Full-text query matched against conversation titles and message "
+            "text (FTS5 prefix match per token, AND across tokens)",
+            min_length=1,
+            # Keeps a hostile query from expanding into an unbounded FTS
+            # MATCH expression (every token adds a fuzzy expansion group).
+            max_length=256,
+        ),
+    ],
+    limit: Annotated[
+        int,
+        Query(
+            title="Max hits to return",
+            gt=0,
+            le=MAX_SEARCH_LIMIT,
+        ),
+    ] = DEFAULT_SEARCH_LIMIT,
+) -> ContentSearchResponse:
+    """Full-text content search over conversation history (local only).
+
+    Returns matching message rows with snippets. ``capped`` tells the caller
+    when the limit cut results off so the UI can show an honest hint.
+    The router is only mounted on deployments that constructed the service.
+    """
+    service = getattr(request.app.state, "content_search_service", None)
+    if service is None:
+        # Unreachable when mounted correctly; kept as a hard stop.
+        raise NotFound()
+    hits, capped = await asyncio.to_thread(service.search, query, limit)
+    return ContentSearchResponse(
+        results=[ContentSearchHit(**h) for h in hits],
+        total=len(hits),
+        capped=capped,
+    )
 
 
 @conversation_catalog_router.get("/count", include_in_schema=False)
@@ -422,6 +490,7 @@ async def interrupt_conversation(
     "/{conversation_id}", responses=error_responses({NotFound: "Item not found"})
 )
 async def delete_conversation(
+    request: Request,
     conversation_id: UUID,
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> Success:
@@ -429,6 +498,18 @@ async def delete_conversation(
     deleted = await conversation_service.delete_conversation(conversation_id)
     if not deleted:
         raise NotFound()
+    # Keep the search index honest: deleted conversations must stop
+    # matching immediately, not linger until the next backfill prune.
+    search_service = getattr(request.app.state, "content_search_service", None)
+    if search_service is not None:
+        try:
+            await asyncio.to_thread(
+                search_service.remove_conversation, str(conversation_id)
+            )
+        except Exception as e:
+            logger.warning(
+                f"Failed to prune search index for conversation {conversation_id}: {e}"
+            )
     return Success()
 
 

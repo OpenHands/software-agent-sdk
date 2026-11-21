@@ -1,0 +1,700 @@
+"""Full-text search index over local conversation history.
+
+SQLite FTS5 index over conversation titles and MessageEvent text so past
+conversations can be found by content. The index is a derived, disposable
+artifact: deleting ``search-index.db`` only degrades search until the next
+backfill rebuilds it; conversations themselves are never modified.
+
+Only titles and MessageEvent text/thinking blocks are indexed; tool
+observations and other event kinds are excluded (noise and secret-exposure
+risk). Known secret patterns are masked before text enters the index.
+"""
+
+from __future__ import annotations
+
+import bisect
+import hashlib
+import json
+import re
+import sqlite3
+from dataclasses import dataclass
+from pathlib import Path
+
+from openhands.sdk.conversation.persistence_const import EVENTS_DIR
+from openhands.sdk.utils.redact import (
+    redact_text_secrets,
+    redact_url_credentials_in_text,
+)
+
+
+_META_FILE = "meta.json"
+_EVENT_FILE_GLOB = "event-*.json"
+
+# API contract for the search endpoint's limit parameter; the router's
+# Query defaults/bounds and the service/index defaults all come from here.
+DEFAULT_SEARCH_LIMIT = 50
+MAX_SEARCH_LIMIT = 100
+
+# Tokenizer mirror: the index's unicode61 tokenizer splits text on any
+# non-alphanumeric character, so the query is split the same way. Pasted
+# punctuation ("(door", "garage!") then never becomes part of a token, and
+# every remaining token is still quoted below, neutralizing FTS syntax.
+_TOKEN_RE = re.compile(r"[^\W_]+", re.UNICODE)
+
+
+def _tokens(query: str) -> list[str]:
+    return [t for t in _TOKEN_RE.findall(query) if t]
+
+
+# FTS5 query syntax is user input; quoting every token makes it a safe
+# prefix query ("tok*") and neutralizes operators, quotes and parens.
+# The porter tokenizer stems both indexed text and MATCH queries, so
+# plural/verb variants match in both directions without extra work.
+_DQUOTE = '"'
+
+
+def _quote(token: str) -> str:
+    return f'"{token.replace(_DQUOTE, _DQUOTE * 2)}"*'
+
+
+def _quote_exact(token: str) -> str:
+    """Quoted token without the prefix star: matches the stemmed word only."""
+    return f'"{token.replace(_DQUOTE, _DQUOTE * 2)}"'
+
+
+def _is_subsequence(needle: str, hay: str) -> bool:
+    """True when needle's letters appear in hay in the same order."""
+    it = iter(hay)
+    return all(ch in it for ch in needle)
+
+
+def _levenshtein(a: str, b: str, cap: int) -> int:
+    """Damerau-Levenshtein distance, capped; returns cap+1 past the cap.
+
+    Adjacent transpositions count as one edit ("wobmat" for "wombat").
+    Callers compare only words within ``cap`` edits of the token length, so
+    no separate length-difference shortcut is needed.
+    """
+    prev2: list[int] | None = None
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        best = i
+        for j, cb in enumerate(b, 1):
+            cost = 0 if ca == cb else 1
+            d = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+            if (
+                prev2 is not None
+                and i > 1
+                and j > 1
+                and ca == b[j - 2]
+                and a[i - 2] == cb
+            ):
+                d = min(d, prev2[j - 2] + 1)
+            cur.append(d)
+            best = min(best, d)
+        if best > cap:
+            return cap + 1
+        prev2 = prev
+        prev = cur
+    return prev[-1]
+
+
+# Above this many distinct indexed words the in-memory vocabulary scan stops
+# being "fast enough" on every search, so fuzzy expansion degrades to
+# prefix-only (stemmed prefix queries still work; typos stop being corrected).
+_VOCAB_FUZZY_LIMIT = 250_000
+
+# Fuzzy-expansion tuning knobs. Thresholds exist so short tokens do not
+# explode into noisy expansions: only 4+ letter tokens get typo/substring
+# correction, 7+ letter tokens tolerate two edits (shorter ones one),
+# and each token expands to at most this many candidates.
+_FUZZY_MIN_TOKEN_LEN = 4
+_FUZZY_TWO_TYPO_TOKEN_LEN = 7
+_FUZZY_SUBSTRING_TOKEN_LEN = 5
+_FUZZY_MAX_EXPANSIONS = 5
+# Typed-too-fast fallback cap: the matched word may skip at most this many
+# letters ("huing" -> "hugging"), so subsequence stays a last resort.
+_FUZZY_SUBSEQUENCE_GAP = 2
+
+# A porter stem counts as "truncated" when this many letters were removed
+# and that is at least a third of the token; truncated stems are too broad
+# to use as match prefixes (see SearchIndex._stem_truncated).
+_STEM_TRUNC_MIN_TOKEN_LEN = 5
+_STEM_TRUNC_MIN_REMOVED = 3
+
+# Snippet shaping for search results. The bracket markers are an API
+# contract with clients: the UI splits the snippet on them to bold the
+# matched words, so they must not collide with ordinary prose.
+_SNIPPET_MARKER_START = "["
+_SNIPPET_MARKER_END = "]"
+_SNIPPET_ELLIPSIS = "…"
+_SNIPPET_MAX_TOKENS = 12
+
+
+# Secret-literal shapes the SDK's redact utilities do not cover (verified
+# against openhands.sdk.utils.redact._API_KEY_LITERAL_RE): bare classic
+# OpenAI/Anthropic ``sk-`` keys, AWS access key ids, and PEM private key
+# blocks.
+_SUPPLEMENTAL_SECRET_PATTERNS = [
+    re.compile(r"\bsk-[A-Za-z0-9]{16,}"),
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+    re.compile(
+        r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
+        re.S,
+    ),
+]
+
+_MASK = "<redacted>"
+
+
+def mask_secrets(text: str) -> str:
+    """Strip secret material from text before it enters the index.
+
+    Delegates to the SDK's standard redaction utilities (the single source of
+    truth for secret detection: provider key literals, ``key=value`` and JSON
+    entries, URL query params, embedded URL credentials) and adds the few
+    shapes they do not match.
+    """
+    text = redact_url_credentials_in_text(text)
+    text = redact_text_secrets(text)
+    for pat in _SUPPLEMENTAL_SECRET_PATTERNS:
+        text = pat.sub(_MASK, text)
+    return text
+
+
+def _extract_text(event: dict) -> str | None:
+    """Return indexable text from an event payload, if any.
+
+    MessageEvents carry llm_message.content; ActionEvents persist reasoning
+    at the top level (reasoning_content) rather than inside llm_message.
+    Both shapes are indexed.
+    """
+    parts: list[str] = []
+    reasoning = event.get("reasoning_content")
+    if isinstance(reasoning, str) and reasoning.strip():
+        parts.append(reasoning)
+    message = event.get("llm_message")
+    if isinstance(message, dict):
+        content = message.get("content")
+        if isinstance(content, str):
+            parts.append(content)
+        elif isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "text" and isinstance(block.get("text"), str):
+                    parts.append(block["text"])
+                elif block.get("type") == "thinking" and isinstance(
+                    block.get("thinking"), str
+                ):
+                    parts.append(block["thinking"])
+    text = "\n".join(p for p in parts if p.strip())
+    return text or None
+
+
+@dataclass
+class SearchHit:
+    conversation_id: str
+    title: str | None
+    event_id: str
+    source: str
+    timestamp: str
+    snippet: str
+    rank: float
+
+
+class SearchIndex:
+    """SQLite FTS5 index over conversation titles and message text."""
+
+    _SCHEMA = """
+    CREATE TABLE IF NOT EXISTS conversations (
+        conv_id TEXT PRIMARY KEY,
+        title TEXT,
+        dir_mtime REAL
+    );
+
+    CREATE TABLE IF NOT EXISTS messages (
+        event_id TEXT PRIMARY KEY,
+        conv_id TEXT NOT NULL,
+        fts_rowid INTEGER NOT NULL UNIQUE,
+        source TEXT NOT NULL,
+        ts TEXT
+    );
+    CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+        text,
+        conv_id UNINDEXED,
+        tokenize = "porter unicode61 remove_diacritics 2"
+    );
+    -- Raw-word twin of messages_fts, same rows, plain unicode61 tokenizer.
+    -- Serves only as the fuzzy vocabulary: typo and substring discovery
+    -- needs unstemmed words (see _fuzzy_terms).
+    CREATE VIRTUAL TABLE IF NOT EXISTS messages_words_fts USING fts5(
+        text,
+        conv_id UNINDEXED,
+        tokenize = "unicode61 remove_diacritics 2"
+    );
+    CREATE VIRTUAL TABLE IF NOT EXISTS messages_words_vocab USING fts5vocab(
+        "messages_words_fts", "row"
+    );
+    CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conv_id);
+    """
+
+    def __init__(self, db_path: Path) -> None:
+        self.db_path = db_path
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        # check_same_thread=False: the async handler hops threads via
+        # asyncio.to_thread on every call; all access stays serialized
+        # by ContentSearchService's lock, so the single connection is
+        # safe to share.
+        self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
+        # Fuzzy vocabulary, loaded lazily and cached until the next write:
+        # a sorted term list plus terms bucketed by length for typo scans.
+        self._vocab_cache: tuple[list[str], dict[int, list[str]]] | None = None
+        # One-row in-memory fts5 table used to porter-stem single tokens.
+        self._stem_probe: sqlite3.Connection | None = None
+        self._rebuild_if_old_tokenizer()
+        self._conn.executescript(self._SCHEMA)
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        # WAL + NORMAL: durable across crashes (WAL replays on open) without
+        # an fsync per commit — the index is disposable and rebuilt from the
+        # conversation files, so the faster setting is the right trade.
+        self._conn.execute("PRAGMA synchronous=NORMAL")
+
+    def _rebuild_if_old_tokenizer(self) -> None:
+        """Drop pre-fuzzy indexes so the next backfill rebuilds them.
+
+        An FTS table built before the porter tokenizer (or before the
+        raw-words twin existed) cannot answer stemmed or fuzzy queries, so
+        either mismatch triggers a full rebuild. Deleting the rows also
+        clears ``dir_mtime``, which the incremental backfill uses to skip
+        unchanged conversations.
+        """
+        fts_sql = self._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'messages_fts'"
+        ).fetchone()
+        if fts_sql is None:
+            return  # fresh database
+        words_sql = self._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'messages_words_fts'"
+        ).fetchone()
+        if fts_sql[0] is not None and "porter" in fts_sql[0] and words_sql is not None:
+            return  # already current
+        self._conn.executescript(
+            """
+            DROP TABLE IF EXISTS messages_vocab;
+            DROP TABLE IF EXISTS messages_words_vocab;
+            DROP TABLE IF EXISTS messages_words_fts;
+            DROP TABLE IF EXISTS messages_fts;
+            DELETE FROM messages;
+            DELETE FROM conversations;
+            """
+        )
+        self._conn.commit()
+
+    def close(self) -> None:
+        self._conn.close()
+
+    # -- incremental sync bookkeeping -----------------------------------
+
+    def conversation_mtime(self, conv_id: str) -> float | None:
+        """Indexed conversation's directory mtime, or None if unseen."""
+        row = self._conn.execute(
+            "SELECT dir_mtime FROM conversations WHERE conv_id=?", (conv_id,)
+        ).fetchone()
+        return row[0] if row is not None else None
+
+    def conversation_ids(self) -> set[str]:
+        """IDs of all conversations currently indexed."""
+        return {
+            row[0]
+            for row in self._conn.execute(
+                "SELECT conv_id FROM conversations"
+            ).fetchall()
+        }
+
+    def note_conversation_sync(self, conv_id: str, dir_mtime: float) -> None:
+        """Record that a conversation was fully re-indexed at this mtime."""
+        self._conn.execute(
+            "UPDATE conversations SET dir_mtime=? WHERE conv_id=?", (dir_mtime, conv_id)
+        )
+
+    def commit(self) -> None:
+        self._conn.commit()
+
+    def _fuzzy_terms(self, token: str) -> list[str]:
+        """Expand a user token into real indexed words.
+
+        ``messages_words_fts`` holds the same text tokenized without
+        stemming, so its vocabulary contains raw words. Typos are compared
+        against raw words — porter stems are unreliable for them (``garage``
+        stems to ``garag`` but its typo ``grage`` stems to itself) — and the
+        discovered candidates are then quoted into the stemmed MATCH query.
+        In order: raw words starting with the token (quoting matters:
+        ``huggin`` prefixes raw ``hugging`` but their porter stems differ),
+        typo matches (1-2 edits) for 4+ char tokens, substring matches for
+        5+ char tokens.
+        """
+        if len(token) < _FUZZY_MIN_TOKEN_LEN:
+            return []
+        terms, buckets = self._vocab()
+        if not terms:
+            return []
+
+        # Raw words starting with the token sit contiguously in the sorted list.
+        i = bisect.bisect_left(terms, token)
+        prefix_terms: list[str] = []
+        while i < len(terms) and terms[i].startswith(token):
+            if terms[i] != token:
+                prefix_terms.append(terms[i])
+            i += 1
+            if len(prefix_terms) >= _FUZZY_MAX_EXPANSIONS:
+                break
+        if prefix_terms:
+            return prefix_terms
+
+        max_typos = 1 if len(token) < _FUZZY_TWO_TYPO_TOKEN_LEN else 2
+        fuzzy: list[str] = []
+        for length in range(len(token) - max_typos, len(token) + max_typos + 1):
+            for term in buckets.get(length, []):
+                if _levenshtein(token, term, max_typos) <= max_typos:
+                    fuzzy.append(term)
+        if not fuzzy and len(token) >= _FUZZY_SUBSTRING_TOKEN_LEN:
+            for term in terms:
+                if token in term:
+                    fuzzy.append(term)
+        if not fuzzy and len(token) >= _FUZZY_SUBSTRING_TOKEN_LEN:
+            # Typed-too-fast fallback: every letter present, in order, but
+            # some letters were skipped ("huing" -> "hugging", "wobmt" ->
+            # "wombat"). Gap is capped so this stays a last resort, not a
+            # wildcard.
+            for term in terms:
+                if 0 <= len(term) - len(
+                    token
+                ) <= _FUZZY_SUBSEQUENCE_GAP and _is_subsequence(token, term):
+                    fuzzy.append(term)
+        return fuzzy[:_FUZZY_MAX_EXPANSIONS]
+
+    # -- writes ---------------------------------------------------------
+
+    # Stable FTS rowids are derived from sha256(conv_id, event_id): the
+    # first 8 digest bytes as a positive int63 keep ids unique across
+    # backfills while staying inside SQLite's signed rowid range.
+    _ROWID_HASH_BYTES = 8
+    _ROWID_INT63_MASK = (1 << 63) - 1
+
+    def _fts_rowid(self, conv_id: str, event_id: str) -> int:
+        h = hashlib.sha256(f"{conv_id}:{event_id}".encode()).digest()
+        return (
+            int.from_bytes(h[: self._ROWID_HASH_BYTES], "big") & self._ROWID_INT63_MASK
+        )
+
+    def _fts_rowid_assign(self, conv_id: str, event_id: str) -> int:
+        """Reserve a stable, collision-free FTS rowid for (conv_id, event_id)."""
+        rowid = self._fts_rowid(conv_id, event_id)
+        while True:
+            owner = self._conn.execute(
+                "SELECT conv_id, event_id FROM messages WHERE fts_rowid=?",
+                (rowid,),
+            ).fetchone()
+            if owner is None or owner == (conv_id, event_id):
+                return rowid
+            rowid += 1  # astronomically rare hash collision; just step aside
+
+    def _upsert_fts_rows(self, rowid: int, text: str, conv_id: str) -> None:
+        """Write masked text to both FTS twins (stemmed and raw-word).
+
+        Both tables share the same rowids, so the fuzzy vocabulary always
+        mirrors the searchable index exactly.
+        """
+        masked = mask_secrets(text)
+        for table in ("messages_fts", "messages_words_fts"):
+            self._conn.execute(
+                f"INSERT OR REPLACE INTO {table}(rowid, text, conv_id) VALUES(?,?,?)",
+                (rowid, masked, conv_id),
+            )
+
+    def index_conversation(self, conv_id: str, title: str | None) -> None:
+        """Index a conversation's title; re-indexing replaces the old one.
+
+        The synthetic event id stored in ``messages`` is the composite
+        ``conv_id:__title__``, so the rowid ownership check in
+        ``_fts_rowid_assign`` must see that same composite id — otherwise
+        every re-index steps aside to a fresh rowid, leaving the previous
+        title row in place (searchable as stale text) while the new text
+        lands in an orphan row the search join can never reach.
+        """
+        self._vocab_cache = None
+        self._conn.execute(
+            "INSERT INTO conversations(conv_id, title) VALUES(?, ?) "
+            "ON CONFLICT(conv_id) DO UPDATE SET title=excluded.title",
+            (conv_id, title),
+        )
+        # Titles are searchable via a synthetic per-conversation "title" row.
+        event_id = f"{conv_id}:__title__"
+        rowid = self._fts_rowid_assign(conv_id, event_id)
+        self._conn.execute(
+            "INSERT OR IGNORE INTO messages(event_id, conv_id, fts_rowid, source, ts) "
+            "VALUES(?,?,?,?,NULL)",
+            (event_id, conv_id, rowid, "title"),
+        )
+        self._upsert_fts_rows(rowid, title or "", conv_id)
+        self._conn.commit()
+
+    def index_event(self, conv_id: str, event: dict) -> bool:
+        """Index one event payload. Returns True if newly indexed."""
+        text = _extract_text(event)
+        if not text:
+            return False
+        event_id = event.get("id")
+        if not event_id:
+            return False
+        rowid = self._fts_rowid_assign(conv_id, event_id)
+        cur = self._conn.execute(
+            "INSERT OR IGNORE INTO messages(event_id, conv_id, fts_rowid, source, ts) "
+            "VALUES(?,?,?,?,?)",
+            (
+                event_id,
+                conv_id,
+                rowid,
+                str(event.get("source", "unknown")),
+                event.get("timestamp"),
+            ),
+        )
+        if cur.rowcount == 0:  # already indexed
+            self._conn.commit()
+            return False
+        self._upsert_fts_rows(rowid, text, conv_id)
+        self._conn.commit()
+        self._vocab_cache = None  # new words may have entered the vocabulary
+        return True
+
+    def remove_conversation(self, conv_id: str) -> None:
+        self._vocab_cache = None
+        rows = self._conn.execute(
+            "SELECT fts_rowid FROM messages WHERE conv_id=?", (conv_id,)
+        ).fetchall()
+        for (rowid,) in rows:
+            self._conn.execute("DELETE FROM messages_fts WHERE rowid=?", (rowid,))
+            self._conn.execute("DELETE FROM messages_words_fts WHERE rowid=?", (rowid,))
+        self._conn.execute("DELETE FROM messages WHERE conv_id=?", (conv_id,))
+        self._conn.execute("DELETE FROM conversations WHERE conv_id=?", (conv_id,))
+        self._conn.commit()
+
+    # -- reads ----------------------------------------------------------
+
+    def _build_fuzzy_fts_query(self, query: str) -> str:
+        """Turn user input into a fuzzy FTS5 MATCH expression.
+
+        Each token becomes a group of OR-ed quoted prefixes: the token itself
+        plus its typo/substring expansions. Groups are AND-ed so every word
+        the user typed must still appear, fuzzily, in a matching row.
+        """
+        tokens = _tokens(query)
+        if not tokens:
+            return ""
+        groups = []
+        for token in tokens:
+            # Fuzzy expansion can return the token itself; re-quoting it as
+            # a prefix would undo the truncated-stem guard below.
+            candidates = [w for w in self._fuzzy_terms(token) if w != token]
+            if self._stem_truncated(token):
+                # The token's prefix would match every word sharing its
+                # stem ("huing" -> "hu*" grabs "hub"); match only real
+                # candidates, or the stemmed word itself when the token
+                # is a known word. Candidates are exact-quoted for the
+                # same reason: prefixing a candidate whose stem is also
+                # truncated ("doings" -> candidate "doing" -> "do*")
+                # would drag in unrelated words ("door").
+                if self._vocab_contains(token):
+                    group = [_quote_exact(token)] + [
+                        _quote_exact(w) for w in candidates
+                    ]
+                elif candidates:
+                    group = [_quote_exact(w) for w in candidates]
+                else:
+                    return ""
+            else:
+                group = [_quote(token)] + [_quote(w) for w in candidates]
+            groups.append("(" + " OR ".join(group) + ")")
+        return " AND ".join(groups)
+
+    def _vocab(self) -> tuple[list[str], dict[int, list[str]]]:
+        """Sorted raw-word list + length buckets, or ([], {}) if too large."""
+        if self._vocab_cache is None:
+            terms = sorted(
+                r[0]
+                for r in self._conn.execute(
+                    "SELECT term FROM messages_words_vocab"
+                ).fetchall()
+            )
+            if len(terms) > _VOCAB_FUZZY_LIMIT:
+                terms = []  # too big to scan per search; prefix queries remain
+            buckets: dict[int, list[str]] = {}
+            for term in terms:
+                buckets.setdefault(len(term), []).append(term)
+            self._vocab_cache = (terms, buckets)
+        return self._vocab_cache
+
+    def _vocab_contains(self, token: str) -> bool:
+        """Exact raw-word membership. False when the vocabulary is unknown."""
+        terms, _ = self._vocab()
+        if not terms:
+            return False
+        i = bisect.bisect_left(terms, token)
+        return i < len(terms) and terms[i] == token
+
+    def _stem_truncated(self, token: str) -> bool:
+        """True when the porter stemmer deletes a large chunk of the token.
+
+        "Large" = 3+ letters and at least a third of the token; such stems
+        match far too many unrelated words to be used as prefixes.
+        """
+        if len(token) < _STEM_TRUNC_MIN_TOKEN_LEN:
+            return False
+        stem = self._porter_stem(token)
+        removed = len(token) - len(stem)
+        return removed >= _STEM_TRUNC_MIN_REMOVED and removed * 3 >= len(token)
+
+    def _porter_stem(self, word: str) -> str:
+        """Porter-stem one word via a one-row in-memory fts5 probe table.
+
+        The probe reuses the same tokenizer settings as the main index, so
+        the stem is exactly what the MATCH pipeline would produce.
+        """
+        if self._stem_probe is None:
+            # check_same_thread=False: lazily created in whichever worker
+            # thread stems first, then reused from other to_thread workers.
+            conn = sqlite3.connect(":memory:", check_same_thread=False)
+            conn.executescript(
+                """
+                CREATE VIRTUAL TABLE stem_probe_fts USING fts5(
+                    word, tokenize = "porter unicode61 remove_diacritics 2"
+                );
+                CREATE VIRTUAL TABLE stem_probe_vocab USING fts5vocab(
+                    "stem_probe_fts", "row"
+                );
+                """
+            )
+            self._stem_probe = conn
+        conn = self._stem_probe
+        conn.execute("DELETE FROM stem_probe_fts")
+        conn.execute("INSERT INTO stem_probe_fts(word) VALUES (?)", (word,))
+        row = conn.execute("SELECT term FROM stem_probe_vocab").fetchone()
+        return row[0] if row else word
+
+    def search(self, query: str, limit: int = DEFAULT_SEARCH_LIMIT) -> list[SearchHit]:
+        fts_query = self._build_fuzzy_fts_query(query)
+        if not fts_query:
+            return []
+        rows = self._conn.execute(
+            """
+            SELECT f.conv_id, c.title, m.event_id, m.source, m.ts,
+                   snippet(messages_fts, 0, ?, ?, ?, ?) AS snip,
+                   rank
+            FROM messages_fts f
+            JOIN messages m ON m.fts_rowid = f.rowid
+            LEFT JOIN conversations c ON c.conv_id = f.conv_id
+            WHERE messages_fts MATCH ?
+            ORDER BY rank
+            LIMIT ?
+            """,
+            (
+                _SNIPPET_MARKER_START,
+                _SNIPPET_MARKER_END,
+                _SNIPPET_ELLIPSIS,
+                _SNIPPET_MAX_TOKENS,
+                fts_query,
+                limit,
+            ),
+        ).fetchall()
+        return [
+            SearchHit(
+                conversation_id=r[0],
+                title=r[1],
+                event_id=r[2],
+                source=r[3],
+                timestamp=r[4],
+                snippet=r[5],
+                rank=r[6],
+            )
+            for r in rows
+        ]
+
+    def stats(self) -> dict:
+        convs = self._conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
+        msgs = self._conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+        return {"conversations": convs, "messages": msgs}
+
+
+def _freshness_stamp(conv_dir: Path) -> float | None:
+    """Newest mtime among the conversation dir, ``meta.json`` and ``events/``.
+
+    Returns None for directories that are not conversations (no meta.json).
+    In-place edits (title renames via PATCH, ...) rewrite meta.json or files
+    under events/ without touching the conversation directory's own mtime,
+    so the stamp must be the newest of the three; new event files bump
+    events/ directly.
+    """
+    meta_file = conv_dir / _META_FILE
+    if not meta_file.is_file():
+        return None
+    stamp = max(conv_dir.stat().st_mtime, meta_file.stat().st_mtime)
+    events_dir = conv_dir / EVENTS_DIR
+    if events_dir.is_dir():
+        stamp = max(stamp, events_dir.stat().st_mtime)
+    return stamp
+
+
+def backfill(
+    index: SearchIndex, conversations_path: Path, *, incremental: bool = False
+) -> dict:
+    """Index every conversation found under ``conversations_path``.
+
+    Idempotent: events already present are skipped. With
+    ``incremental=True``, conversations whose freshness stamp (see
+    ``_freshness_stamp``) is unchanged since the last run are skipped.
+    """
+    indexed_events = 0
+    conv_count = 0
+    skipped = 0
+    seen_ids: set[str] = set()
+    for conv_dir in sorted(conversations_path.glob("*/")):
+        stamp = _freshness_stamp(conv_dir)
+        if stamp is None:
+            continue
+        conv_id = conv_dir.name
+        seen_ids.add(conv_id)
+        if incremental:
+            if index.conversation_mtime(conv_id) == stamp:
+                skipped += 1
+                continue
+        conv_count += 1
+        meta_file = conv_dir / _META_FILE
+        try:
+            meta = json.loads(meta_file.read_text())
+        except json.JSONDecodeError:
+            continue
+        index.index_conversation(conv_id, meta.get("title"))
+        index.note_conversation_sync(conv_id, stamp)
+        for event_file in sorted((conv_dir / EVENTS_DIR).glob(_EVENT_FILE_GLOB)):
+            try:
+                event = json.loads(event_file.read_text())
+            except json.JSONDecodeError:
+                continue
+            if index.index_event(conv_id, event):
+                indexed_events += 1
+    # Drop index entries whose conversation directory is gone: the delete
+    # path prunes eagerly, but this also covers conversations deleted while
+    # the server was down or before the search feature existed.
+    pruned = 0
+    for orphan in index.conversation_ids() - seen_ids:
+        index.remove_conversation(orphan)
+        pruned += 1
+    index.commit()
+    return {
+        "conversations_seen": conv_count,
+        "events_indexed": indexed_events,
+        "skipped_unchanged": skipped,
+        "pruned_orphans": pruned,
+    }
