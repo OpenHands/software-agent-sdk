@@ -1622,11 +1622,13 @@ Preconditions:
   jq -e '.paths["/api/conversations"].post and .paths["/api/bash/execute_bash_command"].post' "$A/openapi.json" > /dev/null
   for f in package.json src .prettierrc; do ln -sfn "$PWD/clients/typescript/$f" "$A/$f"; done
   rm -f "$A/endpoint-audit.config.json"
-  jq '.allowClientOnly |= map(select(.endpoints | index("GET /alive")))' clients/typescript/endpoint-audit.config.json > "$A/endpoint-audit.config.json"
+  jq '.allowClientOnly |= map(select((.endpoints | index("GET /alive")) or (.endpoints | index("GET /api/projects"))))' \
+    clients/typescript/endpoint-audit.config.json > "$A/endpoint-audit.config.json"
   control-agent-server exec --cwd "$A" --env AGENT_SERVER_OPENAPI_PATH="$A/openapi.json" --timeout 120 \
     --expect-output 'endpoint audit passed' --save F34.endpoint-audit/audit -- node "$PWD/clients/typescript/scripts/endpoint-audit.mjs"
   jq -e '.clientOnly == [] and .client > 100' "$A/.audit/endpoint-audit.json"
-  jq -e '[.allowedClientOnly[].endpoint] == ["GET /", "GET /alive", "GET /health", "GET /ready", "GET /server_info"]' "$A/.audit/endpoint-audit.json"
+  jq -e '[.allowedClientOnly[].endpoint | select(test(" /api/projects($|/)") | not)] == ["GET /", "GET /alive", "GET /health", "GET /ready", "GET /server_info"]' "$A/.audit/endpoint-audit.json"
+  jq -e '.allowedClientOnly | map(.endpoint) | index("GET /api/projects") != null and index("POST /api/projects") != null' "$A/.audit/endpoint-audit.json"
   jq -r '.serverOnly[]' "$A/.audit/endpoint-audit.json" > "$A/server-only.txt"
   if grep -E '^(GET|POST) /api/(init|file/archive|git/commits|conversations/\{\}/(events|load_plugin))' "$A/server-only.txt"; then false; fi
   jq -e '[.explicitlyCoveredServerOperations[].endpoint] | index("GET /api/conversations/{}/events") != null' "$A/.audit/endpoint-audit.json"
@@ -1639,11 +1641,14 @@ Preconditions:
   `.github/scripts/export_agent_server_openapi.py` writes the same public
   contract CI uses for unreleased versions. The audit runs with a copy of
   `endpoint-audit.config.json` whose `allowClientOnly` keeps only the five
-  operational routes the public contract omits (F01 proves them), so its
-  client-ahead exceptions (meta-profiles, profile validation) are checked
-  too; the report-only gate never fails on client-only calls, which is why
-  the recipe asserts `clientOnly == []` on the JSON itself. It reports no
-  client-only call (every handwritten call exists on this checkout);
+  operational routes the public contract omits (F01 proves them) and the
+  `ProjectsClient` routes, which the server leaves out of its OpenAPI
+  document on purpose (`include_in_schema=False` while Projects is
+  experimental; F36 drives them), so its other client-ahead exceptions
+  (meta-profiles, profile validation) are checked too; the report-only
+  gate never fails on client-only calls, which is why the recipe asserts
+  `clientOnly == []` on the JSON itself. It reports no client-only call
+  (every handwritten call exists on this checkout);
   `server-only.txt` lists the operations without a literal client
   call (42 on this checkout: the conversation-scoped bash, file, git and VS
   Code aliases the client reaches by rewriting paths at runtime, the canvas

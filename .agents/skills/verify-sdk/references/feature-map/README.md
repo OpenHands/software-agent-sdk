@@ -10,7 +10,7 @@ agent-server map
 and follows its layout. Family IDs here are `Snn`, so they never collide with
 that map's `Fnn`.
 
-Maintenance baseline: main@722e5d403cf75d4e032b79296cfaf178f8678a93 (2026-11-20). The next maintenance pass starts from this commit, a pass proposes the next baseline in its PR, and merging that PR accepts it.
+Maintenance baseline: main@3a893a1b26de7ec02cc0dd2427906eea6aea3fc7 (2026-11-21). The next maintenance pass starts from this commit, a pass proposes the next baseline in its PR, and merging that PR accepts it.
 
 The map has **504 sub-features**, **35 of them untested** (no unit or cross
 test exercises the behavior; most of those have an example script).
@@ -119,6 +119,15 @@ Left out of this map, with the reason:
   `start_child_conversation` tool posts to the agent server's child-launch
   route and is attached only by a host; owned by the agent-server map's F27
   (the mention tools reuse its URL and key helpers, see S16).
+- `openhands-tools/openhands/tools/project/`: the project tools
+  (`list_workers`, `message_worker`, `read_worker`, the artifact and project
+  memory tools, `resolve_conversation`) call the agent server's projects API
+  and are attached only by the server to a project's coordinator and workers;
+  owned by the agent-server map's F36.
+- `openhands-sdk/openhands/sdk/errors.py`: transport-neutral domain error
+  categories (`NotFound`, `Conflict`, `Invalid`, `TooLarge`, ...) that stores
+  raise and the agent server maps to HTTP statuses; an SDK program meets them
+  only as the store errors S03 and S19 check.
 - `openhands-sdk/pyproject.toml`, `openhands-tools/pyproject.toml`: package
   metadata and dependency pins, with no SDK behavior of their own; every run's
   `uv sync --dev` exercises them, and a dependency bump calls for the full
