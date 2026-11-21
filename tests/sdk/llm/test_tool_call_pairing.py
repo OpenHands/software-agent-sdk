@@ -69,7 +69,9 @@ def test_missing_result_is_synthesized():
     synthesized = out[1]
     assert synthesized.role == "tool"
     assert synthesized.tool_call_id == "a"
-    assert "interrupted" in synthesized.content[0].text
+    content = synthesized.content[0]
+    assert isinstance(content, TextContent)
+    assert "interrupted" in content.text
 
 
 def test_orphan_result_without_call_is_dropped():
