@@ -22,7 +22,12 @@ from openhands.sdk.tool import (
     ToolExecutor,
     register_tool,
 )
-from openhands.sdk.utils import maybe_truncate
+from openhands.sdk.utils import (
+    DEFAULT_TRUNCATE_NOTICE,
+    DEFAULT_TRUNCATE_NOTICE_WITH_PERSIST,
+    TruncationMetadata,
+    truncate_with_metadata,
+)
 from openhands.tools.terminal.constants import (
     MAX_CMD_OUTPUT_SIZE,
     NO_CHANGE_TIMEOUT_SECONDS,
@@ -164,6 +169,13 @@ class TerminalObservation(Observation):
         default=None,
         description="Directory where full output files are saved",
     )
+    truncation: TruncationMetadata | None = Field(
+        default=None,
+        description=(
+            "Structured truncation metadata when command output exceeded the "
+            "inline limit, including spillover file path and line boundaries."
+        ),
+    )
 
     @property
     def command_id(self) -> int | None:
@@ -189,14 +201,24 @@ class TerminalObservation(Observation):
         if self.metadata.exit_code != -1:
             ret += f"\n[Command finished with exit code {self.metadata.exit_code}]"
 
-        # Use enhanced truncation with file saving if working directory is available
-        truncated_text = maybe_truncate(
+        # Preserve spillover path & line metadata when session already saved output
+        already_persisted = bool(self.truncation and self.truncation.spillover_path)
+        notice = DEFAULT_TRUNCATE_NOTICE
+        if already_persisted and self.truncation is not None:
+            notice = DEFAULT_TRUNCATE_NOTICE_WITH_PERSIST.format(
+                file_path=self.truncation.spillover_path,
+                line_num=(self.truncation.head_end_line or 0) + 1,
+            )
+        trunc_result = truncate_with_metadata(
             content=ret,
             truncate_after=MAX_CMD_OUTPUT_SIZE,
-            save_dir=self.full_output_save_dir,
+            truncate_notice=notice,
+            save_dir=None if already_persisted else self.full_output_save_dir,
             tool_prefix="terminal",
         )
-        llm_content.append(TextContent(text=truncated_text))
+        if self.truncation is None and trunc_result.metadata.truncated:
+            object.__setattr__(self, "truncation", trunc_result.metadata)
+        llm_content.append(TextContent(text=trunc_result.text))
 
         return llm_content
 

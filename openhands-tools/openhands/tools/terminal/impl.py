@@ -3,6 +3,7 @@ import threading
 import time
 from collections.abc import Mapping
 from contextlib import suppress
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from libtmux.exc import LibTmuxException, TmuxObjectDoesNotExist
@@ -145,6 +146,7 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
                 env=self._env,
                 max_observation_wait_seconds=self._max_observation_wait_seconds,
             )
+            self._session.full_output_save_dir = self.full_output_save_dir
             self._session.initialize()
             logger.info(
                 f"TerminalExecutor initialized with "
@@ -243,6 +245,7 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
                     self._no_change_timeout_seconds,
                     self._max_observation_wait_seconds,
                 )
+                session.full_output_save_dir = self.full_output_save_dir
                 self._sessions[pane_id] = session
             return self._sessions[pane_id]
 
@@ -400,12 +403,28 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         observation: TerminalObservation,
         conversation: "LocalConversation | None" = None,
     ) -> TerminalObservation:
-        """Apply automatic secrets masking to *observation*."""
+        """Apply automatic secrets masking to *observation* and any spillover file."""
+        if observation.full_output_save_dir is None and self.full_output_save_dir:
+            observation = observation.model_copy(
+                update={"full_output_save_dir": self.full_output_save_dir}
+            )
         content_text = observation.text
 
         if content_text and conversation is not None:
             try:
                 secret_registry = conversation.state.secret_registry
+                spillover = (
+                    observation.truncation.spillover_path
+                    if observation.truncation is not None
+                    else None
+                )
+                if spillover:
+                    spill_path = Path(spillover)
+                    if spill_path.is_file():
+                        raw_spill = spill_path.read_text(encoding="utf-8")
+                        masked_spill = secret_registry.mask_secrets_in_output(raw_spill)
+                        if masked_spill and masked_spill != raw_spill:
+                            spill_path.write_text(masked_spill, encoding="utf-8")
                 masked_content = secret_registry.mask_secrets_in_output(content_text)
                 if masked_content:
                     data = observation.model_dump(
@@ -446,6 +465,7 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
             env=self._env,
             max_observation_wait_seconds=self._max_observation_wait_seconds,
         )
+        self._session.full_output_save_dir = self.full_output_save_dir
         self._session.initialize()
 
         logger.info(

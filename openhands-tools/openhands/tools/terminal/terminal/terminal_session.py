@@ -7,7 +7,11 @@ import uuid
 from enum import Enum
 
 from openhands.sdk.logger import get_logger
-from openhands.sdk.utils import maybe_truncate
+from openhands.sdk.utils import (
+    TruncatedTextResult,
+    maybe_truncate,
+    truncate_with_metadata,
+)
 from openhands.tools.terminal.constants import (
     CMD_OUTPUT_PS1_END,
     MAX_CMD_OUTPUT_SIZE,
@@ -142,6 +146,7 @@ class TerminalSession(TerminalSessionBase):
         terminal: TerminalInterface,
         no_change_timeout_seconds: int | None = None,
         max_observation_wait_seconds: float | None = None,
+        full_output_save_dir: str | None = None,
     ):
         """Initialize the unified session with a terminal backend.
 
@@ -177,6 +182,15 @@ class TerminalSession(TerminalSessionBase):
         self._wrapper_echo: str | None = None
         # Stateful filter for terminal query sequences (handles split sequences)
         self._query_filter = TerminalQueryFilter()
+        self.full_output_save_dir: str | None = full_output_save_dir
+
+    def _truncate_output(self, command_output: str) -> TruncatedTextResult:
+        return truncate_with_metadata(
+            command_output,
+            truncate_after=MAX_CMD_OUTPUT_SIZE,
+            save_dir=self.full_output_save_dir,
+            tool_prefix="terminal",
+        )
 
     @classmethod
     def attach_to_existing(
@@ -310,18 +324,18 @@ class TerminalSession(TerminalSessionBase):
                 metadata,
                 is_final=True,
             )
-            command_output = maybe_truncate(
-                command_output, truncate_after=MAX_CMD_OUTPUT_SIZE
-            )
+            trunc = self._truncate_output(command_output)
             self.prev_status = TerminalCommandStatus.COMPLETED
             self.prev_output = ""
             self._query_filter.reset()
             self._ready_for_next_command()
             return TerminalObservation.from_text(
                 command=command,
-                text=command_output,
+                text=trunc.text,
                 metadata=metadata,
                 exit_code=metadata.exit_code,
+                full_output_save_dir=self.full_output_save_dir,
+                truncation=trunc.metadata if trunc.metadata.truncated else None,
             )
 
         if boundary_exit_code is not None:
@@ -369,9 +383,7 @@ class TerminalSession(TerminalSessionBase):
             metadata,
             is_final=True,  # Command completed, flush filter state
         )
-        command_output = maybe_truncate(
-            command_output, truncate_after=MAX_CMD_OUTPUT_SIZE
-        )
+        trunc = self._truncate_output(command_output)
 
         self.prev_status = TerminalCommandStatus.COMPLETED
         self.prev_output = ""  # Reset previous command output
@@ -379,9 +391,11 @@ class TerminalSession(TerminalSessionBase):
         self._ready_for_next_command()
         return TerminalObservation.from_text(
             command=command,
-            text=command_output,
+            text=trunc.text,
             metadata=metadata,
             exit_code=metadata.exit_code,
+            full_output_save_dir=self.full_output_save_dir,
+            truncation=trunc.metadata if trunc.metadata.truncated else None,
         )
 
     def _handle_nochange_timeout_command(
@@ -414,14 +428,14 @@ class TerminalSession(TerminalSessionBase):
             metadata,
             continue_prefix="[Below is the output of the previous command.]\n",
         )
-        command_output = maybe_truncate(
-            command_output, truncate_after=MAX_CMD_OUTPUT_SIZE
-        )
+        trunc = self._truncate_output(command_output)
         return TerminalObservation.from_text(
             command=command,
-            text=command_output,
+            text=trunc.text,
             metadata=metadata,
             exit_code=metadata.exit_code,
+            full_output_save_dir=self.full_output_save_dir,
+            truncation=trunc.metadata if trunc.metadata.truncated else None,
         )
 
     def _handle_hard_timeout_command(
@@ -455,14 +469,14 @@ class TerminalSession(TerminalSessionBase):
             metadata,
             continue_prefix="[Below is the output of the previous command.]\n",
         )
-        command_output = maybe_truncate(
-            command_output, truncate_after=MAX_CMD_OUTPUT_SIZE
-        )
+        trunc = self._truncate_output(command_output)
         return TerminalObservation.from_text(
             command=command,
             exit_code=metadata.exit_code,
-            text=command_output,
+            text=trunc.text,
             metadata=metadata,
+            full_output_save_dir=self.full_output_save_dir,
+            truncation=trunc.metadata if trunc.metadata.truncated else None,
         )
 
     def _handle_unresponsive_terminal(
@@ -493,19 +507,19 @@ class TerminalSession(TerminalSessionBase):
             continue_prefix="[Below is the output of the previous command.]\n",
             is_final=True,
         )
-        command_output = maybe_truncate(
-            command_output, truncate_after=MAX_CMD_OUTPUT_SIZE
-        )
+        trunc = self._truncate_output(command_output)
         self.prev_status = TerminalCommandStatus.COMPLETED
         self.prev_output = ""
         self._query_filter.reset()
         self.close()
         return TerminalObservation.from_text(
             command=command,
-            text=command_output,
+            text=trunc.text,
             metadata=metadata,
             exit_code=metadata.exit_code,
             is_error=True,
+            full_output_save_dir=self.full_output_save_dir,
+            truncation=trunc.metadata if trunc.metadata.truncated else None,
         )
 
     def _ready_for_next_command(self) -> None:
@@ -739,15 +753,15 @@ class TerminalSession(TerminalSessionBase):
                 metadata,
                 continue_prefix="[Below is the output of the previous command.]\n",
             )
-            command_output = maybe_truncate(
-                command_output, truncate_after=MAX_CMD_OUTPUT_SIZE
-            )
+            trunc = self._truncate_output(command_output)
             obs = TerminalObservation.from_text(
                 command=command,
-                text=command_output,
+                text=trunc.text,
                 metadata=metadata,
                 exit_code=metadata.exit_code,
                 is_error=True,
+                full_output_save_dir=self.full_output_save_dir,
+                truncation=trunc.metadata if trunc.metadata.truncated else None,
             )
             return obs
 
