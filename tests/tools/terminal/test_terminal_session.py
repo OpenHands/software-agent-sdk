@@ -953,6 +953,100 @@ def test_parser_fallback_heredocs_wait_for_trailing_command(terminal_type, comma
 
 
 @parametrize_terminal_types
+@pytest.mark.parametrize(
+    "command, delimiter",
+    [
+        pytest.param("cat > out.txt <<EOF\nhello", "EOF", id="no-terminator"),
+        pytest.param(
+            "cat > out.txt <<EOF\n  hello\n  EOF", "EOF", id="indented-terminator"
+        ),
+        pytest.param("cat > out.txt <<'PY'\nprint(1)\nPY ", "PY", id="trailing-space"),
+    ],
+)
+@pytest.mark.timeout(60)
+def test_unterminated_heredoc_is_rejected_and_shell_stays_usable(
+    terminal_type, command, delimiter
+):
+    """An unterminated heredoc must not reach the shell.
+
+    Bash would keep reading the heredoc body: no prompt comes back, the command
+    ends in a no-change timeout, and the next command is refused because the
+    previous one "is still running".
+    """
+    with tempfile.TemporaryDirectory() as temp_dir:
+        session = create_terminal_session(
+            work_dir=temp_dir, terminal_type=terminal_type, no_change_timeout_seconds=5
+        )
+        session.initialize()
+        try:
+            started = time.monotonic()
+            # A following line keeps the trailing-space case intact: execute()
+            # strips the command, and bash would read that line as body too.
+            obs = session.execute(TerminalAction(command=command + "\necho tail"))
+            elapsed = time.monotonic() - started
+
+            assert obs.is_error is True
+            assert "heredoc" in obs.text
+            assert f"`{delimiter}`" in obs.text
+            assert "NOT executed" in obs.text
+            # Rejected before sending, not after waiting out the timeout.
+            assert elapsed < 2
+            assert not Path(temp_dir, "out.txt").exists()
+
+            follow_up = _run_bash_action(session, "echo still-usable")
+            assert follow_up.is_error is False
+            assert follow_up.metadata.exit_code == 0
+            assert "still-usable" in follow_up.text
+        finally:
+            session.close()
+
+
+@parametrize_terminal_types
+@pytest.mark.timeout(60)
+def test_closed_heredoc_followed_by_command_runs_both(terminal_type):
+    """The sequence from the report: heredoc, body, terminator, then a command."""
+    command = "cat > out.txt <<'QEOF'\nblocked\nQEOF\necho after-heredoc"
+    with tempfile.TemporaryDirectory() as temp_dir:
+        session = create_terminal_session(
+            work_dir=temp_dir, terminal_type=terminal_type
+        )
+        session.initialize()
+        try:
+            obs = _run_bash_action(session, command)
+
+            assert obs.is_error is False
+            assert obs.metadata.exit_code == 0
+            assert "after-heredoc" in obs.text
+            assert Path(temp_dir, "out.txt").read_text() == "blocked\n"
+        finally:
+            session.close()
+
+
+@parametrize_terminal_types
+@pytest.mark.timeout(60)
+def test_input_to_a_running_process_may_contain_heredoc_syntax(terminal_type):
+    """`is_input` text goes to a running program, not to the shell parser."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        session = create_terminal_session(
+            work_dir=temp_dir, terminal_type=terminal_type, no_change_timeout_seconds=2
+        )
+        session.initialize()
+        try:
+            session.execute(TerminalAction(command="cat > typed.txt"))
+            obs = session.execute(TerminalAction(command="x <<EOF", is_input=True))
+            assert "heredoc is never terminated" not in obs.text
+
+            session.execute(TerminalAction(command="C-d", is_input=True))
+            deadline = time.monotonic() + 10
+            typed = Path(temp_dir, "typed.txt")
+            while time.monotonic() < deadline and "<<EOF" not in typed.read_text():
+                time.sleep(0.1)
+            assert typed.read_text() == "x <<EOF\n"
+        finally:
+            session.close()
+
+
+@parametrize_terminal_types
 def test_heredoc_completion_preserves_aliases_and_ignores_stdout_redirect(
     terminal_type,
 ):

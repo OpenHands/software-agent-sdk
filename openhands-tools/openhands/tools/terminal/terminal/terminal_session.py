@@ -28,6 +28,7 @@ from openhands.tools.terminal.terminal.interface import (
 from openhands.tools.terminal.timeout_policy import foreground_timeout_rejection_for
 from openhands.tools.terminal.utils.command import (
     escape_bash_special_chars,
+    find_unterminated_heredoc,
     needs_heredoc_completion_boundary,
     split_bash_commands,
 )
@@ -35,6 +36,15 @@ from openhands.tools.terminal.utils.escape_filter import TerminalQueryFilter
 
 
 logger = get_logger(__name__)
+
+UNTERMINATED_HEREDOC_TEMPLATE = (
+    "[Tool-argument error] The command was NOT executed: its heredoc is never "
+    "terminated. No line after the `<<` operator is exactly `{delimiter}`, so the "
+    "shell would keep reading the heredoc body and swallow every later command.\n"
+    "The terminator must be alone on its own line, with no indentation, trailing "
+    "spaces or other characters (`<<-` allows leading tabs only). Fix the "
+    "terminator, or write the content with `file_editor` instead."
+)
 
 
 class TerminalCommandStatus(Enum):
@@ -750,6 +760,21 @@ class TerminalSession(TerminalSessionBase):
                 is_error=True,
             )
             return obs
+
+        # A heredoc whose terminator never arrives leaves the shell reading the
+        # body: it shows no prompt, takes every later keystroke as body text and
+        # so never reports completion. Refuse it before anything is typed.
+        # A one-line command that only opens a heredoc is still sent: its body
+        # can be typed afterwards with `is_input`. Once the command carries
+        # further lines, the body is expected to be complete.
+        if "\n" in command and not is_input and not self.terminal.is_powershell():
+            delimiter = find_unterminated_heredoc(command)
+            if delimiter is not None:
+                return TerminalObservation.from_text(
+                    text=UNTERMINATED_HEREDOC_TEMPLATE.format(delimiter=delimiter),
+                    command=command,
+                    is_error=True,
+                )
 
         command_to_send = command
         boundary_command: str | None = None
