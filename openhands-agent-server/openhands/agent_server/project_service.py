@@ -66,6 +66,7 @@ from openhands.sdk.conversation.request import ConversationConfig
 from openhands.sdk.conversation.types import (
     BOARD_TAG_KEYS,
     PROJECT_TAG_KEY,
+    PULL_REQUESTS_TAG_KEY,
     RESOLVE_NOTE_TAG_KEY,
     RESOLVED_TAG_KEY,
 )
@@ -111,9 +112,9 @@ PROJECT_COORDINATOR_TOOLS = (
 """Tools the server adds to a coordinator it starts with a new project."""
 
 
-RESERVED_TAG_KEYS = BOARD_TAG_KEYS | {PROJECT_TAG_KEY}
-"""Tags the server owns on a project's members: membership and the board's
-state.
+RESERVED_TAG_KEYS = BOARD_TAG_KEYS | {PROJECT_TAG_KEY, PULL_REQUESTS_TAG_KEY}
+"""Tags the server owns on a project's members: membership, the board's state
+and the pull requests a member opened.
 
 Only on a conversation whose ``project`` tag names an existing project, with
 Projects on (:meth:`ProjectService.member_of`). There a client's tag ``PATCH``

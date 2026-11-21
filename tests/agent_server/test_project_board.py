@@ -15,9 +15,14 @@ from openhands.agent_server.models import (
     StartConversationRequest,
 )
 from openhands.agent_server.persistence import PersistedProjects, ProjectItem
-from openhands.agent_server.project_board import ConversationOutcomeSubscriber
+from openhands.agent_server.project_board import (
+    ConversationOutcomeSubscriber,
+    merge_pull_requests,
+)
+from openhands.agent_server.project_service import RESERVED_TAG_KEYS
 from openhands.agent_server.project_turns import (
     CardAnswered,
+    PullRequestsOpened,
     TurnEnded,
     TurnStarted,
     TurnStopped,
@@ -32,13 +37,19 @@ from openhands.sdk.conversation.resolution import (
     ResolutionVerdict,
     verdict_from_judgments,
 )
-from openhands.sdk.conversation.types import BOARD_TAG_KEYS, GOAL_LOOP_SENDER
+from openhands.sdk.conversation.types import (
+    BOARD_TAG_KEYS,
+    GOAL_LOOP_SENDER,
+    PULL_REQUESTS_TAG_KEY,
+    TAG_VALUE_MAX_LENGTH,
+)
 from openhands.sdk.critic.result import CriticResult
 from openhands.sdk.event import (
     ActionEvent,
     ConversationStateUpdateEvent,
     Event,
     MessageEvent,
+    ObservationEvent,
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.conversation_state import FULL_STATE_KEY
@@ -46,6 +57,7 @@ from openhands.sdk.llm import Message, MessageToolCall, TextContent
 from openhands.sdk.tool.builtins.finish import FinishAction
 from openhands.sdk.tool.builtins.think import ThinkAction
 from openhands.sdk.workspace import LocalWorkspace
+from openhands.tools.terminal import TerminalAction, TerminalObservation
 
 
 pytestmark = pytest.mark.projects_on
@@ -1307,3 +1319,91 @@ def test_tracker_reports_a_stop_once_and_a_finish_it_never_saw_not_at_all():
             sender_known=False,
         )
     ]
+
+
+# Pull requests a member opened
+
+
+def _terminal(command: str, call_id: str) -> ActionEvent:
+    return ActionEvent(
+        source="agent",
+        thought=[TextContent(text="")],
+        action=TerminalAction(command=command),
+        tool_name="terminal",
+        tool_call_id=call_id,
+        tool_call=MessageToolCall(
+            id=call_id,
+            name="terminal",
+            arguments=json.dumps({"command": command}),
+            origin="completion",
+        ),
+        llm_response_id="resp-3",
+    )
+
+
+def _result(action: ActionEvent, text: str) -> ObservationEvent:
+    return ObservationEvent(
+        source="environment",
+        observation=TerminalObservation.from_text(text, command=None),
+        action_id=action.id,
+        tool_name=action.tool_name,
+        tool_call_id=action.tool_call_id,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_member_records_the_pull_requests_it_opens():
+    store = _Tags({"project": "p1"})
+    first = _terminal("gh pr create --fill", "c1")
+    viewed = _terminal("gh pr view 7", "c2")
+    second = _terminal("cd app && gh pr create -t Fix -b ''", "c3")
+
+    await _feed(
+        _subscriber(store),
+        first,
+        _result(first, "https://github.com/acme/app/pull/412\n"),
+        # Reading another pull request does not make it this one's.
+        viewed,
+        _result(viewed, "https://github.com/acme/app/pull/7"),
+        second,
+        _result(second, "https://github.com/acme/lib/pull/9"),
+        # The same URL again (a retry) is listed once.
+        first,
+        _result(first, "https://github.com/acme/app/pull/412"),
+    )
+
+    assert store.tags["prs"] == "acme/app#412,acme/lib#9"
+
+
+@pytest.mark.asyncio
+async def test_pull_requests_outside_projects_are_not_recorded():
+    store = _Tags({})
+    opened = _terminal("gh pr create --fill", "c1")
+    await _feed(
+        _subscriber(store), opened, _result(opened, "https://github.com/a/b/pull/1")
+    )
+    assert store.tags == {}
+
+
+def test_the_oldest_pull_requests_drop_off_a_full_tag():
+    refs = [f"acme/application#{n}" for n in range(1, 40)]
+    value = merge_pull_requests(None, refs)
+    assert len(value) <= TAG_VALUE_MAX_LENGTH
+    assert value.endswith("acme/application#39")
+    assert not value.startswith("acme/application#1,")
+
+
+def test_the_pull_requests_tag_is_server_owned():
+    assert PULL_REQUESTS_TAG_KEY in RESERVED_TAG_KEYS
+
+
+def test_tracker_tells_the_pull_requests_the_agent_opened():
+    opened = _terminal("gh pr create --fill", "c1")
+    signals = _signals(
+        TurnTracker(),
+        _message("agent", "Opening the PR now."),
+        opened,
+        _result(opened, "https://github.com/acme/app/pull/412"),
+    )
+
+    assert signals == [PullRequestsOpened(["acme/app#412"])]

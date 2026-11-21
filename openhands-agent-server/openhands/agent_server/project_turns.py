@@ -2,12 +2,13 @@
 
 :class:`TurnTracker` reads a conversation's events in order and says, as
 :data:`TurnSignal` values, when a turn starts, when the user writes or answers
-a card, when a run stops on the user, and how a turn ended. It keeps only the
-current turn in memory: no tags, no I/O and no tasks, so each rule can be
-tested by feeding it events. The project board
+a card, when a run stops on the user, how a turn ended and which pull
+requests the agent opened. It keeps only the current turn in memory: no tags,
+no I/O and no tasks, so each rule can be tested by feeding it events. The project board
 (:mod:`openhands.agent_server.project_board`) acts on the signals.
 """
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Final, Literal
 
@@ -26,6 +27,7 @@ from openhands.sdk.event import (
     ConversationStateUpdateEvent,
     Event,
     MessageEvent,
+    ObservationEvent,
 )
 from openhands.sdk.event.ask_user import (
     ANSWER_HEADER_PREFIX,
@@ -125,6 +127,29 @@ def card_text(event: ActionEvent) -> tuple[str, str] | None:
     return ask.question, "\n".join(lines)
 
 
+_CREATES_PULL_REQUEST = re.compile(r"\bgh\s+pr\s+create\b")
+_PULL_REQUEST_URL = re.compile(
+    r"https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/(\d+)\b"
+)
+
+
+def creates_pull_request(event: ActionEvent) -> bool:
+    """Whether an agent's tool call opens a GitHub pull request: ``gh pr
+    create`` in a shell command, or a tool named for it (the GitHub MCP
+    server's ``create_pull_request``)."""
+    if "create_pull_request" in event.tool_name:
+        return True
+    command = getattr(event.action, "command", None)
+    return isinstance(command, str) and bool(_CREATES_PULL_REQUEST.search(command))
+
+
+def pull_request_refs(text: str) -> list[str]:
+    """The ``owner/repo#number`` of each GitHub pull request URL in ``text``,
+    in order, once each."""
+    refs = [f"{o}/{r}#{n}" for o, r, n in _PULL_REQUEST_URL.findall(text)]
+    return list(dict.fromkeys(refs))
+
+
 _TURN_ACTIONS_KEPT: Final[int] = 20
 
 
@@ -184,7 +209,22 @@ class TurnEnded:
     judged: ResolutionState | None
 
 
-TurnSignal = TurnStarted | UserWrote | CardAnswered | TurnStopped | TurnEnded
+@dataclass(frozen=True)
+class PullRequestsOpened:
+    """A tool call that opens a pull request returned these
+    ``owner/repo#number`` refs."""
+
+    refs: list[str]
+
+
+TurnSignal = (
+    TurnStarted
+    | UserWrote
+    | CardAnswered
+    | TurnStopped
+    | TurnEnded
+    | PullRequestsOpened
+)
 
 
 @dataclass
@@ -220,6 +260,8 @@ class TurnTracker:
     _reported_hold: str | None = field(default=None, init=False)
     _last_action: str | None = field(default=None, init=False)
     _last_error: str | None = field(default=None, init=False)
+    # Tool calls that open a pull request, until their result shows its URL.
+    _pull_request_calls: set[str] = field(default_factory=set, init=False)
 
     def observe(self, event: Event) -> list[TurnSignal]:
         """What ``event`` means for the current turn."""
@@ -230,6 +272,8 @@ class TurnTracker:
         if isinstance(event, ActionEvent):
             self._action(event)
             return []
+        if isinstance(event, ObservationEvent):
+            return self._observation(event)
         if isinstance(event, ConversationErrorEvent):
             self._last_error = f"{event.code}: {event.detail}"[:_ACTION_SUMMARY_MAX]
             return []
@@ -280,10 +324,19 @@ class TurnTracker:
             self._note_agent_output(text, event)
             self._card = question
         elif event.source == "agent":
+            if creates_pull_request(event):
+                self._pull_request_calls.add(event.id)
             self._turn_open = True
             self._last_action = describe_action(event)
             self._turn_actions.append(self._last_action)
             del self._turn_actions[:-_TURN_ACTIONS_KEPT]
+
+    def _observation(self, event: ObservationEvent) -> list[TurnSignal]:
+        if event.action_id not in self._pull_request_calls:
+            return []
+        self._pull_request_calls.discard(event.action_id)
+        refs = pull_request_refs(event.observation.text)
+        return [PullRequestsOpened(refs)] if refs else []
 
     def _state(self, event: ConversationStateUpdateEvent) -> list[TurnSignal]:
         status = _status(event)

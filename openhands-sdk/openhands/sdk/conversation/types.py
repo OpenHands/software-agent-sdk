@@ -66,6 +66,12 @@ BOARD_TAG_KEYS = frozenset(
 )
 """Tags that describe one conversation's state, so children do not copy them."""
 
+PULL_REQUESTS_TAG_KEY = "prs"
+"""Tag listing the GitHub pull requests a project conversation's agent opened,
+as comma-separated ``owner/repo#number`` refs, oldest first. Refs that do not
+fit in a tag value drop off the front. The server writes it for project
+members; a new user message keeps it."""
+
 CONVERSATION_SENDER_PREFIX = "conversation:"
 """Prefix of a user message's ``sender`` when another conversation sent it: a
 parent delivering a child's task, or a project coordinator steering a worker.
