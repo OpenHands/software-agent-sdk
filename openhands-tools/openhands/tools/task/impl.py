@@ -27,6 +27,8 @@ class TaskExecutor(ToolExecutor):
         self,
         action: TaskAction,
         conversation: LocalConversation | None = None,
+        *,
+        parent_tool_use_id: str | None = None,
     ) -> TaskObservation:
         try:
             task = self._manager.start_task(
@@ -35,6 +37,7 @@ class TaskExecutor(ToolExecutor):
                 description=action.description,
                 resume=action.resume,
                 conversation=conversation,
+                parent_tool_use_id=parent_tool_use_id,
             )
             match task.status:
                 case TaskStatus.COMPLETED:

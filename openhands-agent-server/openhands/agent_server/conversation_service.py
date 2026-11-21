@@ -616,6 +616,7 @@ class ConversationService:
     )
     acp_skill_sourcing: ACPSkillSourcing = "native"
     enable_browser: bool = True
+    forward_subagent_events: bool = False
     _event_services: dict[UUID, EventService] | None = field(default=None, init=False)
     _conversation_records: dict[UUID, _ConversationRecord] = field(
         default_factory=dict, init=False
@@ -2647,6 +2648,7 @@ class ConversationService:
             acp_skill_sourcing=config.acp_skill_sourcing,
             enable_browser=config.enable_browser,
             reconcile_projects_on_start=True,
+            forward_subagent_events=config.forward_subagent_events,
         )
 
     async def _start_event_service(
@@ -2680,6 +2682,7 @@ class ConversationService:
             credential_bindings=credential_bindings,
             owner_instance_id=self.owner_instance_id,
             lease_ttl_seconds=self.lease_ttl_seconds,
+            forward_subagent_events=self.forward_subagent_events,
         )
         # Lease renewal is handled by the centralized
         # _renew_all_leases_loop task on ConversationService.
@@ -2906,8 +2909,12 @@ class AutoTitleSubscriber(Subscriber):
     llm_profile_store: LLMProfileStore | None = None
 
     async def __call__(self, event: Event) -> None:
-        # Only act on incoming user messages
-        if not isinstance(event, MessageEvent) or event.source != "user":
+        # Only act on incoming main-agent user messages (ignore sub-agent prompts)
+        if (
+            not isinstance(event, MessageEvent)
+            or event.source != "user"
+            or event.parent_tool_use_id is not None
+        ):
             return
         # Guard: skip if a title was already set (e.g. by a concurrent task)
         if self.service.stored.title is not None:

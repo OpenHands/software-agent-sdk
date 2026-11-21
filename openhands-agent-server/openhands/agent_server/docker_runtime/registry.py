@@ -673,6 +673,8 @@ class DockerConversationRegistry(ConversationRegistry):
                 ),
             }
         )
+        if self.config.forward_subagent_events:
+            env["OH_FORWARD_SUBAGENT_EVENTS"] = "1"
         if "DEBUG" in os.environ:
             env["DEBUG"] = os.environ["DEBUG"]
 
@@ -693,6 +695,7 @@ class DockerConversationRegistry(ConversationRegistry):
             "OH_CONVERSATION_RUNTIME",
             "OH_CONVERSATION_WORKTREE_ROOT",
             "OH_ENABLE_BROWSER",
+            "OH_FORWARD_SUBAGENT_EVENTS",
             "OH_SECRET_KEY",
             V1_SESSION_API_KEY_ENV,
             "OH_RUNTIME_LAUNCHED_PROFILE",

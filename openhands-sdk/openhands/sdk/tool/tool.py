@@ -1,5 +1,7 @@
 import asyncio
 import copy
+import functools
+import inspect
 import json
 import re
 import threading
@@ -629,7 +631,11 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
         return self.parse_response(action)
 
     def __call__(
-        self, action: ActionT, conversation: "LocalConversation | None" = None
+        self,
+        action: ActionT,
+        conversation: "LocalConversation | None" = None,
+        *,
+        parent_tool_use_id: str | None = None,
     ) -> Observation:
         """Validate input, execute, and coerce output.
 
@@ -639,8 +645,15 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
         if self.executor is None:
             raise NotImplementedError(f"Tool '{self.name}' has no executor")
 
-        # Execute
-        result = self.executor(action, conversation)
+        # Execute — pass parent_tool_use_id only to executors that explicitly
+        # accept it so existing tool executors and test doubles stay unaffected.
+        executor_params = inspect.signature(self.executor.__call__).parameters
+        if "parent_tool_use_id" in executor_params:
+            result = self.executor(
+                action, conversation, parent_tool_use_id=parent_tool_use_id
+            )
+        else:
+            result = self.executor(action, conversation)
 
         # Coerce output only if we declared a model; else wrap in base Observation
         if self.observation_type:
@@ -667,7 +680,11 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
         return registry.mask_secrets_in_model(observation)
 
     async def acall(
-        self, action: ActionT, conversation: "LocalConversation | None" = None
+        self,
+        action: ActionT,
+        conversation: "LocalConversation | None" = None,
+        *,
+        parent_tool_use_id: str | None = None,
     ) -> Observation:
         """Run this tool asynchronously when called directly.
 
@@ -679,6 +696,11 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
         dispatches through :meth:`__call__` directly from its own executor.
         """
         loop = asyncio.get_running_loop()
+        if parent_tool_use_id is not None:
+            fn = functools.partial(
+                self, action, conversation, parent_tool_use_id=parent_tool_use_id
+            )
+            return await loop.run_in_executor(None, fn)
         return await loop.run_in_executor(None, self, action, conversation)
 
     def to_mcp_tool(
