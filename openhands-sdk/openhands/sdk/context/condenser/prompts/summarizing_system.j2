@@ -3,9 +3,22 @@ You will be given a list of events corresponding to actions taken by the agent, 
 If the events being summarized contain ANY task-tracking, you MUST include a TASK_TRACKING section to maintain continuity.
 When referencing tasks make sure to preserve exact task IDs and statuses.
 
+CRITICAL — ENTITY & LITERAL ANCHOR PRESERVATION:
+Whenever the events being summarized (including any previous `<preserved_facts>` blocks) contain exact load-bearing literals, you MUST copy them verbatim (character-for-character, never paraphrased, rounded, or abbreviated) into a dedicated `<preserved_facts>...</preserved_facts>` section inside the summary. Always preserve exact:
+- Identifiers, UUIDs, ticket IDs, task IDs, and anomaly/rule IDs
+- Cryptographic digests, SHA/MD5 hashes, certificate thumbprints/serials, and commit SHAs
+- ISO-8601 timestamps, dates, version numbers, ports, and configuration keys
+- Numeric totals, counts, measurements, thresholds, and non-zero exit codes
+- File paths, URLs, symbol names, and pre-redaction or audit literals observed before workspace files were modified or cleaned up
+Carry forward all still-relevant entries from any earlier `<preserved_facts>` block in the input events so multi-step condensations never lose anchored literals.
+
 Track:
 
 USER_CONTEXT: (Preserve essential user requirements, goals, and clarifications in concise form)
+
+<preserved_facts>
+- key: exact_literal_value (verbatim identifiers, hashes/thumbprints, timestamps, numeric totals, file paths, ticket/anomaly IDs)
+</preserved_facts>
 
 TASK_TRACKING: {Active tasks, their IDs and statuses - PRESERVE TASK IDs}
 
@@ -21,27 +34,40 @@ DEPS: {Dependencies, imports, external calls}
 VERSION_CONTROL_STATUS: {Repository state, current branch, PR status, commit history}
 
 PRIORITIZE:
-1. Adapt tracking format to match the actual task type
-2. Capture key user requirements and goals
-3. Distinguish between completed and pending tasks
-4. Keep all sections concise and relevant
+1. Preserve exact load-bearing literals verbatim inside `<preserved_facts>...</preserved_facts>`
+2. Adapt tracking format to match the actual task type
+3. Capture key user requirements and goals
+4. Distinguish between completed and pending tasks
+5. Keep prose sections concise while never truncating or paraphrasing anchored literals
 
-SKIP: Tracking irrelevant details for the current task type
+SKIP: Verbose boilerplate or irrelevant chatter that contains no load-bearing facts
 
 Example formats:
 
 For code tasks:
-USER_CONTEXT: Fix FITS card float representation issue
-COMPLETED: Modified mod_float() in card.py, all tests passing
+USER_CONTEXT: Fix FITS card float representation issue (ticket ASTRO-419)
+<preserved_facts>
+- ticket_id: ASTRO-419
+- file_path: src/fits/card.py
+- commit_sha: a1b2c3d
+- test_total: 14/14
+</preserved_facts>
+COMPLETED: Modified mod_float() in src/fits/card.py, all 14 tests passing
 PENDING: Create PR, update documentation
-CODE_STATE: mod_float() in card.py updated
-TESTS: test_format() passed
+CODE_STATE: mod_float() in src/fits/card.py updated
+TESTS: test_format() passed (14/14)
 CHANGES: str(val) replaces f"{val:.16G}"
 DEPS: None modified
 VERSION_CONTROL_STATUS: Branch: fix-float-precision, Latest commit: a1b2c3d
 
 For other tasks:
-USER_CONTEXT: Write 20 haikus based on coin flip results
-COMPLETED: 15 haikus written for results [T,H,T,H,T,H,T,T,H,T,H,T,H,T,H]
-PENDING: 5 more haikus needed
-CURRENT_STATE: Last flip: Heads, Haiku count: 15/20
+USER_CONTEXT: Rotate expired TLS certificate and record pre-rotation audit thumbprint
+<preserved_facts>
+- old_cert_sha256: 9F:86:D0:81:88:4C:7D:65
+- old_cert_not_after: 2026-10-14T23:59:59Z
+- config_path: /etc/ssl/old_cert.pem
+- port: 8443
+</preserved_facts>
+COMPLETED: Inspected /etc/ssl/old_cert.pem before replacement and generated new cert
+PENDING: Write final rotation audit report
+CURRENT_STATE: Service reloaded on port 8443

@@ -33,6 +33,34 @@ class Condensation(Event):
             "Completion or Response ID of the LLM response that generated this event"
         ),
     )
+    chars_before: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Total character length of the forgotten events before condensation."
+        ),
+    )
+    chars_after: int | None = Field(
+        default=None,
+        ge=0,
+        description="Character length of the replacement summary after condensation.",
+    )
+    tokens_before: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Token count of the forgotten events before condensation, when an LLM "
+            "tokenizer is available."
+        ),
+    )
+    tokens_after: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Token count of the replacement summary message after condensation, "
+            "when an LLM tokenizer is available."
+        ),
+    )
 
     source: SourceType = "environment"
 
@@ -43,6 +71,10 @@ class Condensation(Event):
         text.append("Auto Conversation Condensation Triggered.\n", style="bold")
 
         text.append(f"Forgetting {len(self.forgotten_event_ids)} events\n")
+        if self.chars_before is not None and self.chars_after is not None:
+            text.append(f"Characters: {self.chars_before} -> {self.chars_after}\n")
+        if self.tokens_before is not None and self.tokens_after is not None:
+            text.append(f"Tokens: {self.tokens_before} -> {self.tokens_after}\n")
         if self.summary:
             text.append("\n[Summary of Events Being Forgotten]\n", style="bold")
             text.append(f"{self.summary}\n")
@@ -72,6 +104,8 @@ class Condensation(Event):
         return CondensationSummaryEvent(
             id=summary_id,
             summary=self.summary,
+            forgotten_event_count=len(self.forgotten_event_ids),
+            summary_offset=self.summary_offset,
             source=self.source,
         )
 
@@ -123,10 +157,66 @@ class CondensationSummaryEvent(LLMConvertibleEvent):
     summary: str
     """The summary text."""
 
+    forgotten_event_count: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Number of conversation events replaced by this summary, when known."
+        ),
+    )
+    summary_offset: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Zero-based view index where the condensed span begins, when known."
+        ),
+    )
+
     source: SourceType = "environment"
 
+    def _format_span_notice(self) -> str | None:
+        count = self.forgotten_event_count
+        offset = self.summary_offset
+        if count is None and offset is None:
+            return None
+        if count is not None and offset is not None:
+            noun = "event" if count == 1 else "events"
+            if count > 0:
+                end_idx = offset + count - 1
+                span = (
+                    f"view index {offset}"
+                    if count == 1
+                    else f"view indices {offset}..{end_idx}"
+                )
+                return (
+                    f"[Context condensation: this summary replaces {count} earlier "
+                    f"{noun} ({span}).]"
+                )
+            return (
+                f"[Context condensation: this summary replaces 0 earlier events "
+                f"at view index {offset}.]"
+            )
+        if count is not None:
+            noun = "event" if count == 1 else "events"
+            return (
+                f"[Context condensation: this summary replaces {count} earlier {noun}.]"
+            )
+        return (
+            f"[Context condensation: this summary replaces condensed earlier "
+            f"events starting at view index {offset}.]"
+        )
+
     def to_llm_message(self) -> Message:
+        notice = self._format_span_notice()
+        if notice is None:
+            text = self.summary
+        else:
+            text = f"{notice}\n\n{self.summary}" if self.summary else notice
         return Message(
             role="user",
-            content=[TextContent(text=self.summary)],
+            content=[TextContent(text=text)],
         )
+
+    def __str__(self) -> str:
+        """Full summary text so multi-pass condensations retain all sections."""
+        return f"{self.__class__.__name__} ({self.source})\n  {self.summary}"

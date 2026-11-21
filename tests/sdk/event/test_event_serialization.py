@@ -253,3 +253,105 @@ def test_event_deserialize():
     dumped = original.model_dump_json()
     loaded = Event.model_validate_json(dumped)
     assert loaded == original
+
+
+def test_condensation_legacy_and_enriched_serialization_compat() -> None:
+    """Legacy Condensation & CondensationSummaryEvent payloads without size/span
+    fields still deserialize and apply to View cleanly; new fields round-trip.
+    """
+    from openhands.sdk.context.view import View
+    from openhands.sdk.event.condenser import Condensation, CondensationSummaryEvent
+
+    m0 = MessageEvent(
+        id="evt-0",
+        source="user",
+        llm_message=Message(role="user", content=[TextContent(text="hello")]),
+    )
+    m1 = MessageEvent(
+        id="evt-1",
+        source="agent",
+        llm_message=Message(role="assistant", content=[TextContent(text="world")]),
+    )
+
+    legacy_condensation_json = {
+        "id": "cond-legacy-1",
+        "timestamp": "2026-01-01T00:00:00",
+        "source": "environment",
+        "kind": "Condensation",
+        "forgotten_event_ids": ["evt-0"],
+        "summary": "Legacy summary",
+        "summary_offset": 0,
+        "llm_response_id": "resp-legacy",
+    }
+    legacy_cond = Event.model_validate(legacy_condensation_json)
+    assert isinstance(legacy_cond, Condensation)
+    assert legacy_cond.chars_before is None
+    assert legacy_cond.chars_after is None
+    assert legacy_cond.tokens_before is None
+    assert legacy_cond.tokens_after is None
+
+    view = View.from_events([m0, m1, legacy_cond])
+    assert len(view) == 2
+    assert isinstance(view.events[0], CondensationSummaryEvent)
+    assert view.events[0].summary == "Legacy summary"
+
+    legacy_summary_json = {
+        "id": "sum-legacy-1",
+        "timestamp": "2026-01-01T00:00:00",
+        "source": "environment",
+        "kind": "CondensationSummaryEvent",
+        "summary": "Standalone legacy summary",
+    }
+    legacy_sum = Event.model_validate(legacy_summary_json)
+    assert isinstance(legacy_sum, CondensationSummaryEvent)
+    assert legacy_sum.forgotten_event_count is None
+    assert legacy_sum.summary_offset is None
+    assert "Standalone legacy summary" in legacy_sum.to_llm_message().content[0].text  # type: ignore[union-attr]
+
+    enriched = Condensation(
+        forgotten_event_ids={"evt-0"},
+        summary="Enriched summary",
+        summary_offset=0,
+        llm_response_id="resp-2",
+        chars_before=240,
+        chars_after=16,
+        tokens_before=60,
+        tokens_after=12,
+    )
+    restored = Event.model_validate_json(enriched.model_dump_json())
+    assert isinstance(restored, Condensation)
+    assert restored.chars_before == 240
+    assert restored.chars_after == 16
+    assert restored.tokens_before == 60
+    assert restored.tokens_after == 12
+
+
+def test_condensation_size_fields_appear_in_agent_server_openapi() -> None:
+    """New optional Condensation fields are exposed in agent-server OpenAPI schema."""
+    from openhands.agent_server.api import create_app
+    from openhands.agent_server.config import Config
+
+    app = create_app(Config(session_api_keys=["test-key"], enable_vscode=False))
+    schema = app.openapi()
+    condensation_props = schema["components"]["schemas"]["Condensation"]["properties"]
+    for field_name in ("chars_before", "chars_after", "tokens_before", "tokens_after"):
+        assert field_name in condensation_props
+
+
+def test_condensation_summary_str_preserves_full_summary_beyond_preview_limit() -> None:
+    """str(CondensationSummaryEvent) keeps the entire summary (>500 chars) so
+    subsequent rolling condensations do not chop off <preserved_facts>.
+    """
+    from openhands.sdk.event.condenser import CondensationSummaryEvent
+
+    long_summary = (
+        "USER_CONTEXT: Long task\n"
+        + ("COMPLETED: Step details. " * 30)
+        + "\n<preserved_facts>\n- cert_sha256: 9F:86:D0:81:88:4C:7D:65\n"
+        + "</preserved_facts>"
+    )
+    assert len(long_summary) > 700
+    evt = CondensationSummaryEvent(summary=long_summary)
+    rendered = str(evt)
+    assert "9F:86:D0:81:88:4C:7D:65" in rendered
+    assert "</preserved_facts>" in rendered

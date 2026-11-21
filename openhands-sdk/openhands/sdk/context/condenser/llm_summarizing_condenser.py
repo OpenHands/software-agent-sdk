@@ -17,7 +17,7 @@ from openhands.sdk.context.condenser.utils import (
 from openhands.sdk.context.prompts import render_template
 from openhands.sdk.context.view import View
 from openhands.sdk.event.base import LLMConvertibleEvent
-from openhands.sdk.event.condenser import Condensation
+from openhands.sdk.event.condenser import Condensation, CondensationSummaryEvent
 from openhands.sdk.event.llm_convertible import SystemPromptEvent
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.logger import get_logger
@@ -26,6 +26,24 @@ from openhands.sdk.utils import maybe_truncate
 
 
 logger = get_logger(__name__)
+
+
+def _safe_event_token_count(
+    events: Sequence[LLMConvertibleEvent],
+    llm: LLM | None,
+) -> int | None:
+    """Return exact token count for ``events`` when ``llm`` provides an int count."""
+    if llm is None:
+        return None
+    if not events:
+        return 0
+    try:
+        count = get_total_token_count(events, llm)
+    except Exception:
+        return None
+    if isinstance(count, int) and not isinstance(count, bool) and count >= 0:
+        return count
+    return None
 
 
 def _leading_system_prompt_index(events: Sequence[LLMConvertibleEvent]) -> int | None:
@@ -225,11 +243,55 @@ class LLMSummarizingCondenser(RollingCondenser):
             Message(role="user", content=[TextContent(text=events_prompt)]),
         ]
 
+    def _build_condensation(
+        self,
+        *,
+        forgotten_events: Sequence[LLMConvertibleEvent],
+        summary: str | None,
+        summary_offset: int,
+        llm_response_id: str,
+        agent_llm: LLM | None = None,
+    ) -> Condensation:
+        chars_before = sum(len(str(event)) for event in forgotten_events)
+        chars_after = len(summary) if summary is not None else 0
+
+        tokens_before: int | None = None
+        tokens_after: int | None = None
+        for candidate_llm in (agent_llm, self.llm):
+            if candidate_llm is None:
+                continue
+            counted_before = _safe_event_token_count(forgotten_events, candidate_llm)
+            if counted_before is None:
+                continue
+            tokens_before = counted_before
+            if summary is None:
+                tokens_after = 0
+            else:
+                summary_event = CondensationSummaryEvent(
+                    summary=summary,
+                    forgotten_event_count=len(forgotten_events),
+                    summary_offset=summary_offset,
+                )
+                tokens_after = _safe_event_token_count([summary_event], candidate_llm)
+            break
+
+        return Condensation(
+            forgotten_event_ids={event.id for event in forgotten_events},
+            summary=summary,
+            summary_offset=summary_offset,
+            llm_response_id=llm_response_id,
+            chars_before=chars_before,
+            chars_after=chars_after,
+            tokens_before=tokens_before,
+            tokens_after=tokens_after,
+        )
+
     def _generate_condensation(
         self,
         forgotten_events: Sequence[LLMConvertibleEvent],
         summary_offset: int,
         max_event_str_length: int | None = None,
+        agent_llm: LLM | None = None,
     ) -> Condensation:
         """Generate a condensation by using the condenser's LLM to summarize forgotten
         events.
@@ -272,11 +334,12 @@ class LLMSummarizingCondenser(RollingCondenser):
             if isinstance(first_content, TextContent):
                 summary = first_content.text
 
-        return Condensation(
-            forgotten_event_ids={event.id for event in forgotten_events},
+        return self._build_condensation(
+            forgotten_events=forgotten_events,
             summary=summary,
             summary_offset=summary_offset,
             llm_response_id=llm_response.id,
+            agent_llm=agent_llm,
         )
 
     def _get_forgotten_events(
@@ -359,7 +422,7 @@ class LLMSummarizingCondenser(RollingCondenser):
     def hard_context_reset(
         self,
         view: View,
-        agent_llm: LLM | None = None,  # noqa: ARG002
+        agent_llm: LLM | None = None,
     ) -> Condensation | None:
         """Perform a hard context reset by summarizing all events in the view.
 
@@ -384,6 +447,7 @@ class LLMSummarizingCondenser(RollingCondenser):
                     forgotten_events=forgotten_events,
                     summary_offset=summary_offset,
                     max_event_str_length=max_event_str_length,
+                    agent_llm=agent_llm,
                 )
             except Exception as e:
                 # If we haven't set a max_event_str_length yet, set it as the largest
@@ -440,6 +504,7 @@ class LLMSummarizingCondenser(RollingCondenser):
         return self._generate_condensation(
             forgotten_events=forgotten_events,
             summary_offset=summary_offset,
+            agent_llm=agent_llm,
         )
 
     # ------------------------------------------------------------------
@@ -451,6 +516,7 @@ class LLMSummarizingCondenser(RollingCondenser):
         forgotten_events: Sequence[LLMConvertibleEvent],
         summary_offset: int,
         max_event_str_length: int | None = None,
+        agent_llm: LLM | None = None,
     ) -> Condensation:
         """Async variant of :meth:`_generate_condensation`."""
         assert len(forgotten_events) > 0, "No events to condense."
@@ -475,11 +541,12 @@ class LLMSummarizingCondenser(RollingCondenser):
             if isinstance(first_content, TextContent):
                 summary = first_content.text
 
-        return Condensation(
-            forgotten_event_ids={event.id for event in forgotten_events},
+        return self._build_condensation(
+            forgotten_events=forgotten_events,
             summary=summary,
             summary_offset=summary_offset,
             llm_response_id=llm_response.id,
+            agent_llm=agent_llm,
         )
 
     async def aget_condensation(
@@ -512,12 +579,13 @@ class LLMSummarizingCondenser(RollingCondenser):
         return await self._agenerate_condensation(
             forgotten_events=forgotten_events,
             summary_offset=summary_offset,
+            agent_llm=agent_llm,
         )
 
     async def ahard_context_reset(
         self,
         view: View,
-        agent_llm: LLM | None = None,  # noqa: ARG002
+        agent_llm: LLM | None = None,
     ) -> Condensation | None:
         """Async variant of :meth:`hard_context_reset`."""
         # Preserve the leading SystemPromptEvent (see hard_context_reset).
@@ -535,6 +603,7 @@ class LLMSummarizingCondenser(RollingCondenser):
                     forgotten_events=forgotten_events,
                     summary_offset=summary_offset,
                     max_event_str_length=max_event_str_length,
+                    agent_llm=agent_llm,
                 )
             except Exception as e:
                 if max_event_str_length is None:
