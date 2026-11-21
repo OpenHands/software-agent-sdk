@@ -962,12 +962,14 @@ def _streaming_llm() -> LLM:
     )
 
 
-def _summary_response(content: str = "A summary") -> ModelResponse:
+def _summary_response(
+    content: str = "A summary", *, finish_reason: str = "stop"
+) -> ModelResponse:
     return ModelResponse(
         id="resp-id",
         choices=[
             Choices(
-                finish_reason="stop",
+                finish_reason=finish_reason,
                 index=0,
                 message=LiteLLMMessage(content=content, role="assistant"),
             )
@@ -977,6 +979,25 @@ def _summary_response(content: str = "A summary") -> ModelResponse:
         object="chat.completion",
         usage=Usage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
     )
+
+
+@pytest.mark.parametrize("use_async", [False, True], ids=["sync", "async"])
+@pytest.mark.asyncio
+async def test_empty_summary_preserves_history_on_soft_condensation(
+    use_async: bool,
+) -> None:
+    condenser = LLMSummarizingCondenser(llm=_streaming_llm(), max_size=10)
+    view = View.from_events([message_event(f"Event {i}") for i in range(12)])
+    # A model can run out of output tokens before returning visible summary text.
+    transport = "_atransport_call" if use_async else "_transport_call"
+    with patch.object(
+        LLM, transport, return_value=_summary_response("", finish_reason="length")
+    ):
+        result = (
+            await condenser.acondense(view) if use_async else condenser.condense(view)
+        )
+
+    assert result is view
 
 
 @patch("openhands.sdk.llm.llm.LLM._transport_call", autospec=True)
