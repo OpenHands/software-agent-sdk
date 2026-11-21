@@ -98,6 +98,17 @@ def classify_error(code: str, detail: str = "") -> ErrorClassification:
     # ── detail-based classification (for opaque/generic wrapper codes) ───
     text = detail.casefold()
 
+    # A LiteLLM proxy lookup may race with key provisioning. If a typed auth
+    # error was deliberately left unmapped for retry, preserve its transient
+    # classification when retries eventually exhaust. A definite missing-key
+    # marker still takes the normal authentication/recovery path.
+    if (
+        code == "AuthenticationError"
+        and "unable to find token in cache" in text
+        and "token_not_found_in_db" not in text
+    ):
+        return _failure(FailureKind.TRANSIENT, retryable=True, user_action="retry")
+
     if any(
         token in text
         for token in (
