@@ -1,6 +1,7 @@
 """Tests for iterative refinement functionality in CriticMixin."""
 
 import json
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -16,6 +17,7 @@ from openhands.sdk.critic.base import (
 )
 from openhands.sdk.critic.impl.api import APIBasedCritic
 from openhands.sdk.event import ActionEvent
+from openhands.sdk.git.models import GitChange, GitChangeStatus, GitDiff
 from openhands.sdk.llm import MessageToolCall, TextContent
 from openhands.sdk.tool.builtins.finish import FinishAction
 
@@ -25,6 +27,72 @@ class MockCritic(CriticBase):
 
     def evaluate(self, events, git_patch=None):
         return CriticResult(score=0.5, message="Mock evaluation")
+
+
+class PatchAwareCritic(MockCritic):
+    """Mock critic that scores based on the git patch it receives."""
+
+    def evaluate(self, events, git_patch=None):
+        expected_lines = [
+            "--- a/foo.py",
+            "+++ b/foo.py",
+            "-print('old')",
+            "+print('new')",
+        ]
+        if git_patch and all(line in git_patch for line in expected_lines):
+            return CriticResult(score=1.0, message="Patch received")
+        return CriticResult(score=0.0, message="Patch missing")
+
+
+class WorkspaceWithChange:
+    """Workspace fake with one changed file."""
+
+    def git_changes(self, path):
+        return [GitChange(status=GitChangeStatus.UPDATED, path=Path("foo.py"))]
+
+    def git_diff(self, path):
+        return GitDiff(
+            original="print('old')\n",
+            modified="print('new')\n",
+        )
+
+
+class WorkspaceWithoutChanges:
+    """Workspace fake with no git changes."""
+
+    def git_changes(self, path):
+        return []
+
+    def git_diff(self, path):
+        raise AssertionError("git_diff should not be called without changes")
+
+
+class WorkspaceFailingChanges:
+    """Workspace fake that fails while collecting git changes."""
+
+    def git_changes(self, path):
+        raise RuntimeError("not a git repository")
+
+    def git_diff(self, path):
+        raise AssertionError("git_diff should not be called after git_changes fails")
+
+
+class WorkspaceWithPartialDiffFailure:
+    """Workspace fake where one changed file cannot be diffed."""
+
+    def git_changes(self, path):
+        return [
+            GitChange(status=GitChangeStatus.UPDATED, path=Path("foo.py")),
+            GitChange(status=GitChangeStatus.UPDATED, path=Path("bar.py")),
+        ]
+
+    def git_diff(self, path):
+        if Path(path) == Path("bar.py"):
+            raise RuntimeError("cannot diff bar.py")
+        return GitDiff(
+            original="print('old')\n",
+            modified="print('new')\n",
+        )
 
 
 class MockCriticMixin(CriticMixin):
@@ -324,6 +392,62 @@ class TestCheckIterativeRefinement:
                 )
             else:
                 assert should_continue is False
+
+
+def test_evaluate_with_critic_passes_workspace_git_patch():
+    """Critic evaluation should receive a patch when workspace has changes."""
+    critic = PatchAwareCritic()
+    mixin = MockCriticMixin(critic=critic)
+    conversation = create_mock_conversation()
+    conversation.state.events = []
+
+    conversation.state.workspace = WorkspaceWithChange()
+
+    result = mixin._evaluate_with_critic(conversation, create_finish_action_event())
+
+    assert result == CriticResult(score=1.0, message="Patch received")
+
+
+def test_evaluate_with_critic_runs_without_git_changes():
+    """Critic evaluation should still run when no patch is available."""
+    critic = PatchAwareCritic()
+    mixin = MockCriticMixin(critic=critic)
+    conversation = create_mock_conversation()
+    conversation.state.events = []
+
+    conversation.state.workspace = WorkspaceWithoutChanges()
+
+    result = mixin._evaluate_with_critic(conversation, create_finish_action_event())
+
+    assert result == CriticResult(score=0.0, message="Patch missing")
+
+
+def test_evaluate_with_critic_runs_when_git_changes_fails():
+    """Critic evaluation should still run if patch collection fails."""
+    critic = PatchAwareCritic()
+    mixin = MockCriticMixin(critic=critic)
+    conversation = create_mock_conversation()
+    conversation.state.events = []
+
+    conversation.state.workspace = WorkspaceFailingChanges()
+
+    result = mixin._evaluate_with_critic(conversation, create_finish_action_event())
+
+    assert result == CriticResult(score=0.0, message="Patch missing")
+
+
+def test_evaluate_with_critic_uses_available_diffs_when_one_file_fails():
+    """Critic evaluation should receive available diffs if one file fails."""
+    critic = PatchAwareCritic()
+    mixin = MockCriticMixin(critic=critic)
+    conversation = create_mock_conversation()
+    conversation.state.events = []
+
+    conversation.state.workspace = WorkspaceWithPartialDiffFailure()
+
+    result = mixin._evaluate_with_critic(conversation, create_finish_action_event())
+
+    assert result == CriticResult(score=1.0, message="Patch received")
 
 
 class TestShouldEvaluateWithCritic:
