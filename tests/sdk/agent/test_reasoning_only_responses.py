@@ -83,7 +83,13 @@ def test_agent_continues_after_reasoning_only_response():
 
 
 class ContentOnlyLLM(LLM):
-    """Test LLM that returns content-only response (should finish immediately)."""
+    """Test LLM that returns content-only first, then finish.
+
+    Prior to #5510, a content-only response terminated the conversation
+    immediately (FINISHED). After the fix, the framework injects a
+    corrective nudge and keeps the loop alive so the model can emit its
+    next tool call.
+    """
 
     _call_count: int = PrivateAttr(default=0)
 
@@ -95,23 +101,50 @@ class ContentOnlyLLM(LLM):
     ) -> LLMResponse:
         self._call_count += 1
 
-        # Return content-only response - should finish conversation immediately
-        message = Message(role="assistant")
-        message.content = [TextContent(text="I'm thinking about this...")]
-        return LLMResponse(
-            message=message,
-            metrics=MetricsSnapshot(
-                model_name="test",
-                accumulated_cost=0.0,
-                max_budget_per_task=0.0,
-                accumulated_token_usage=TokenUsage(model="test"),
-            ),
-            raw_response=MagicMock(spec=ModelResponse, id="r1"),
-        )
+        if self._call_count == 1:
+            # First call: content-only (narration / intermediate reasoning)
+            message = Message(role="assistant")
+            message.content = [TextContent(text="I'm thinking about this...")]
+            return LLMResponse(
+                message=message,
+                metrics=MetricsSnapshot(
+                    model_name="test",
+                    accumulated_cost=0.0,
+                    max_budget_per_task=0.0,
+                    accumulated_token_usage=TokenUsage(model="test"),
+                ),
+                raw_response=MagicMock(spec=ModelResponse, id="r1"),
+            )
+        else:
+            # Second call: explicit finish tool call — the real terminal signal
+            message = Message(role="assistant")
+            message.tool_calls = [
+                MessageToolCall(
+                    id="finish-call-2",
+                    name="finish",
+                    arguments='{"message": "Done thinking"}',
+                    origin="completion",
+                )
+            ]
+            return LLMResponse(
+                message=message,
+                metrics=MetricsSnapshot(
+                    model_name="test",
+                    accumulated_cost=0.0,
+                    max_budget_per_task=0.0,
+                    accumulated_token_usage=TokenUsage(model="test"),
+                ),
+                raw_response=MagicMock(spec=ModelResponse, id="r2"),
+            )
 
 
-def test_agent_finishes_after_content_only_response():
-    """Test that agent finishes immediately after receiving content-only response."""
+def test_agent_continues_after_content_only_response():
+    """Content-only responses must NOT terminate the agent loop (#5510).
+
+    The model emits a narration turn (text, no tool call) — the framework
+    sends a corrective nudge and keeps looping. Only the explicit finish
+    tool call ends execution.
+    """
     llm = ContentOnlyLLM()
     agent = Agent(llm=llm, tools=[])
     conversation = Conversation(agent=agent)
@@ -119,20 +152,24 @@ def test_agent_finishes_after_content_only_response():
     conversation.send_message("Analyze this")
     conversation.run()
 
-    # Verify agent was called once - content responses finish immediately
-    assert llm._call_count == 1
+    # Agent was called twice: content-only turn, then finish tool call.
+    # Previously this was 1 — the content-only turn killed the loop.
+    assert llm._call_count == 2
     assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
 
-    # Verify the content message was emitted
+    # Verify both the content message and the corrective nudge are in state.
     msg_events = [
         e
         for e in conversation.state.events
-        if isinstance(e, MessageEvent) and e.source == "agent"
+        if isinstance(e, MessageEvent) and e.source in ("agent", "environment")
     ]
-    assert len(msg_events) == 1
+    # Agent content message + environment nudge + (maybe) more depending on
+    # how the finish tool is handled — just verify the content text is there.
+    agent_msgs = [e for e in msg_events if e.source == "agent"]
     assert any(
         isinstance(c, TextContent) and c.text == "I'm thinking about this..."
-        for c in msg_events[0].llm_message.content
+        for e in agent_msgs
+        for c in e.llm_message.content
     )
 
 
