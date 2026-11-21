@@ -41,12 +41,7 @@ _LITERAL_ARG_HINT_TEMPLATE = (
     "structured data or multi-line code:\n"
     "  - Write a script first with `file_editor` "
     '(command="create", path="/tmp/run.py", ...), then invoke it: '
-    "`python /tmp/run.py`.\n"
-    "  - Or use a heredoc inline, e.g.:\n"
-    "        python - <<'EOF'\n"
-    "        DATABASES = {{'default': {{...}}}}\n"
-    "        # your code here\n"
-    "        EOF\n\n"
+    "`python /tmp/run.py`.\n\n"
     "Do not put a Python list/dict literal into the `command` field; the shell "
     "cannot interpret it."
 )

@@ -116,7 +116,10 @@ def test_literal_command_returns_structured_error_without_shell(
     assert "list literal" in text
     # The hint must teach a concrete recovery path.
     assert "file_editor" in text
-    assert "heredoc" in text or "<<'EOF'" in text
+    # A heredoc whose terminator goes missing wedges the shell, so the hint
+    # must not steer the model towards one.
+    assert "heredoc" not in text.lower()
+    assert "<<" not in text
 
 
 def test_bash_test_expression_not_blocked(
