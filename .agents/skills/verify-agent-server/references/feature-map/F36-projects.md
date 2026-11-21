@@ -71,6 +71,7 @@ Routes: `GET /api/projects/{project_id}/artifacts`,
 - `F36.turn`: when a member's run finishes, its `turn` tag says whether the agent's last message asked something (`asking`, attention `asking`) or not (`finished`), and an `asking` turn saves the question, in one line of at most 200 characters, as the `ask` tag (reported as `ask`); a new user message clears both.
 - `F36.resolved`: a `resolved` tag (`user` or `auto`) puts a member in the `resolved` group, reported as `resolved`; a new user message clears it. Children do not copy `resolved` or `turn`. `POST .../resolve` and `.../reopen` set and clear it (204, 404 for a non-member), and a client's tag `PATCH` cannot change `project`, `turn`, `ask`, `resolved` or `resolvenote`.
 - `F36.self-resolve`: a member with `resolve_conversation` resolves its own conversation when nothing is left, such as after the user's "merged": `POST .../resolve` with `{"by": "agent"}` answers 202 at once (the agent is inside its own tool call, which holds the state lock) and sets `resolved=auto` and `resolvenote=agent`, never over the user's `resolved=user`, and the resolution judge does not run on that turn.
+- `F36.prs`: when a member's tool call opens a pull request (`gh pr create` in a shell command, or a tool named `create_pull_request`), the `owner/repo#number` of each GitHub pull request URL in its result is added to the server-owned `prs` tag, kept across turns and listed as the member's `pull_requests`; a PR URL from any other command is not recorded, and a client's `PATCH` cannot change the tag.
 - `F36.artifacts-rest`: a project's artifacts can be uploaded (multipart), listed with `source: user`, downloaded byte for byte and deleted; unsafe names are 400.
 - `F36.artifacts-tool`: a member with `write_artifact` saves a file from its workspace; the list shows it with `source: agent` and the conversation's id, and a path outside the workspace is refused. With `list_artifacts` and `read_artifact` it sees the project's files and reads one: small UTF-8 text inline, anything else copied into its workspace (`.agent_tmp/artifacts/<name>` unless it names a path inside the workspace).
 - `F36.memory-rest`: `PUT/GET/DELETE /api/projects/{id}/memory/{name}` keep `MEMORY.md` and lowercase `.md` topic files under `projects/<id>/memory/`; `GET .../memory` lists them, index first. A write or delete with a stale `base_revision` (or a create over an existing file) is 409 with the current file; other names are 400.
@@ -97,8 +98,9 @@ Routes: `GET /api/projects/{project_id}/artifacts`,
 - REST: `GET /api/projects/{project_id}/conversations` returns
   `{"project_id", "coordinator": ProjectConversation | null, "conversations": [ProjectConversation]}`
   where a conversation is `{conversation_id, title, execution_status, attention,
-  resolved, turn, automation_id, parent_conversation_id, created_at,
-  updated_at}`. `attention` is `needs_you`, `asking`, `working`,
+  resolved, turn, automation_id, parent_conversation_id, pull_requests,
+  created_at, updated_at}`. `pull_requests` lists `{owner, repo, number}`
+  from the server-owned `prs` tag. `attention` is `needs_you`, `asking`, `working`,
   `idle` (finished or never run, not resolved) or `resolved`.
 - Tags the server sets on project members (`openhands.agent_server.project_board`):
   `turn=asking|finished` when a run finishes, and `resolved=auto` plus
@@ -481,6 +483,28 @@ Preconditions:
   The user's "merged" leaves nothing to do: the agent calls
   `resolve_conversation` and ends its turn, and the note is `agent`, not a
   judge's probability. An agent's resolve never replaces the user's.
+- **Model-backed: a member's pull requests (`F36.prs`).**
+  Requires: `F36.coordinator`
+  Needs: `llm`, `tmux`
+  ```sh
+  GH="$AGENT_SERVER_VERIFY_RUN/fixtures/qa-f36-cat/gh"
+  printf '#!/bin/sh\necho https://github.com/qa-f36/app/pull/412\n' > "$GH" && chmod +x "$GH"
+  PR=$(control-agent-server api POST "/api/conversations/$CAT/children" \
+    --json '{"title": "qa-f36-pr", "task": "Run these two shell commands, one at a time, exactly as written: `echo https://github.com/qa-f36/other/pull/7` and then `./gh pr create --title qa --body qa`. Then finish. Do nothing else.", "isolation": "shared"}' \
+    --expect 201 --field conversation_id)
+  control-agent-server conversation wait "$PR" --until finished --timeout 300
+  control-agent-server conversation events "$PR" --kinds ObservationEvent --contains 'qa-f36/other/pull/7' --expect-min 1
+  control-agent-server conversation events "$PR" --kinds ObservationEvent --contains 'qa-f36/app/pull/412' --expect-min 1
+  control-agent-server api GET "/api/conversations/$PR" --check tags.prs eq 'qa-f36/app#412' --until-ok 30 --save F36.prs/tag
+  control-agent-server api GET "/api/projects/$P2/conversations" --check conversations contains '"repo": "app", "number": 412' \
+    --check . not-contains '"repo": "other"' --save F36.prs/conversations
+  control-agent-server api PATCH "/api/conversations/$PR" --json '{"tags": {"prs": "qa-f36/forged#1"}}' --expect 200
+  control-agent-server conversation send "$PR" --wait --timeout 300 --text 'Reply with the single word ok and finish. Do not use tools.'
+  control-agent-server api GET "/api/conversations/$PR" --check tags.prs eq 'qa-f36/app#412' --until-ok 30 --save F36.prs/kept
+  ```
+  Both commands print a pull request URL, but only the one from `gh pr create`
+  is recorded. The tag survives a client's `PATCH` and the next turn. The
+  `gh` here is a stand-in that prints a URL and never contacts GitHub.
 - **Artifacts over REST (`F36.artifacts-rest`).**
   Requires: `F36.coordinator`
   ```sh
