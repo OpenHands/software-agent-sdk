@@ -2028,7 +2028,7 @@ class EventService:
             # Snapshot events under the conversation lock, then judge (an LLM
             # call) with the lock released -- both on this worker thread.
             with conversation._state:
-                events = list(conversation._state.events)
+                events = list(conversation._state.active_branch())
             return controller.on_run_finished(events)
 
         def _user(text: str) -> Message:
