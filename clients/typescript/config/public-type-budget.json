@@ -443,12 +443,12 @@
         [
           "client/http-client.d.ts::class:HttpError/constructor/parameter:response::unknown",
           "unknown",
-          "unknown | undefined"
+          "unknown"
         ],
         [
           "client/http-client.d.ts::class:HttpError/property:response::unknown",
           "unknown",
-          "unknown | undefined"
+          "unknown"
         ],
         [
           "client/http-client.d.ts::interface:HttpResponse/type-parameter:T::unknown",
