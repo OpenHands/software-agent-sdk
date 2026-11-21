@@ -87,6 +87,8 @@ class GlobTool(ToolDefinition[GlobAction, GlobObservation]):
     def create(
         cls,
         conv_state: "ConversationState",
+        restrict_to_workspace: bool = False,
+        allowed_roots: list[str] | None = None,
     ) -> Sequence["GlobTool"]:
         """Initialize GlobTool with a GlobExecutor.
 
@@ -94,6 +96,11 @@ class GlobTool(ToolDefinition[GlobAction, GlobObservation]):
             conv_state: Conversation state to get working directory from.
                          If provided, working_dir will be taken from
                          conv_state.workspace
+            restrict_to_workspace: If True, reject paths that resolve (after
+                normalizing ``..`` and following symlinks) outside the
+                workspace root or ``allowed_roots``. Defaults to False.
+            allowed_roots: Extra absolute directories the tool may access
+                when ``restrict_to_workspace`` is True.
         """
         # Import here to avoid circular imports
         from openhands.tools.glob.impl import GlobExecutor
@@ -103,7 +110,11 @@ class GlobTool(ToolDefinition[GlobAction, GlobObservation]):
             raise ValueError(f"working_dir '{working_dir}' is not a valid directory")
 
         # Initialize the executor
-        executor = GlobExecutor(working_dir=working_dir)
+        executor = GlobExecutor(
+            working_dir=working_dir,
+            restrict_to_workspace=restrict_to_workspace,
+            allowed_roots=allowed_roots,
+        )
 
         # Add working directory information to the tool description
         enhanced_description = (
