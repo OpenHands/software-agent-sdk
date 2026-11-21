@@ -5,14 +5,20 @@ recreating it: swap the agent's LLM for a caller-supplied config (inline key,
 a cipher token from an `encrypted` read, or a saved provider connection),
 switch it to a saved LLM profile, change the model and the reasoning
 effort an ACP conversation's subprocess runs, and load a plugin from the conversation's registered
-marketplaces into the live agent (its skills, commands and hooks). Every
+marketplaces into the live agent (its skills, commands and hooks). A
+conversation whose LLM is a model router (`RouterLLM`) also exposes the
+router: `GET .../model_router` reports its routes and selection, `POST
+.../model_router/routes` adds a saved profile as a route (wrapping a plain
+LLM in a router first), and `PATCH .../model_router` pins a route or returns
+to automatic routing, all without replacing the router; `switch_llm` and
+`switch_profile` still replace the whole LLM, router included. Every
 switch answers `{"success": true}`, is written to the conversation's
 `base_state.json`, shows up in `GET /api/conversations/{id}` and as a
 `ConversationStateUpdateEvent` on the events socket, and survives a restart;
 the next turn runs on the new model and its usage is recorded under the new
 LLM's `usage_id`.
 
-Source: `openhands-agent-server/openhands/agent_server/conversation_router.py`, `openhands-agent-server/openhands/agent_server/event_service.py`, `openhands-agent-server/openhands/agent_server/_secrets_exposure.py`, `openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py`, `openhands-sdk/openhands/sdk/llm/llm_registry.py`, `openhands-sdk/openhands/sdk/llm/llm_profile_store.py`, `openhands-sdk/openhands/sdk/marketplace/`, `openhands-sdk/openhands/sdk/plugin/`, `openhands-sdk/openhands/sdk/agent/acp_agent.py`
+Source: `openhands-agent-server/openhands/agent_server/conversation_router.py`, `openhands-agent-server/openhands/agent_server/event_service.py`, `openhands-agent-server/openhands/agent_server/_secrets_exposure.py`, `openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py`, `openhands-sdk/openhands/sdk/llm/llm_registry.py`, `openhands-sdk/openhands/sdk/llm/llm_profile_store.py`, `openhands-sdk/openhands/sdk/llm/router/`, `openhands-sdk/openhands/sdk/marketplace/`, `openhands-sdk/openhands/sdk/plugin/`, `openhands-sdk/openhands/sdk/agent/acp_agent.py`
 
 Needs: `llm`, `tmux`, `node`, `network`
 
@@ -20,7 +26,10 @@ Routes: `POST /api/conversations/{conversation_id}/switch_profile`,
 `POST /api/conversations/{conversation_id}/switch_llm`,
 `POST /api/conversations/{conversation_id}/load_plugin`,
 `POST /api/conversations/{conversation_id}/switch_acp_model`,
-`POST /api/conversations/{conversation_id}/switch_acp_effort`
+`POST /api/conversations/{conversation_id}/switch_acp_effort`,
+`GET /api/conversations/{conversation_id}/model_router`,
+`POST /api/conversations/{conversation_id}/model_router/routes`,
+`PATCH /api/conversations/{conversation_id}/model_router`
 
 ## Sub-features
 
@@ -55,12 +64,24 @@ Routes: `POST /api/conversations/{conversation_id}/switch_profile`,
 - `F09.ts-client`: the TypeScript client's `ConversationClient.switchLLM`, `switchProfile` and `switchAcpModel` and `ConversationManager.switchProfile` reach the routes: each switch resolves and reads back through `getConversation`, an unknown profile rejects with 404, `switchAcpModel` on a regular conversation with 400, a call without a key with 401, and `switchAcpModel` on an ACP conversation that has not run resolves and stores the model.
 - `F09.ts-client-acp-docs`: the TypeScript client's `switchAcpModel` docstrings describe what the server does before an ACP conversation's first run (200, the model is stored for the first session), not a 409.
 - `F09.ts-client-acp-effort`: the TypeScript client's `ConversationClient.switchAcpEffort` stores the level on an ACP conversation that has not run (`getConversation` shows `acp_effort` and `current_effort`), and rejects with 400 on a regular conversation and with 401 without a key.
-- `F09.load-plugin`: `load_plugin` with `<plugin>@<marketplace>` from a local marketplace registered on the agent's `agent_context` answers 200 and merges the plugin's skill, its command and its hooks into the live agent, visible in `GET`, `base_state.json` and on the socket.
+- `F09.load-plugin`: `load_plugin` with `<plugin>@<marketplace>` from a local marketplace registered on the agent's `agent_context` answers 200 and merges the plugin's skill, its command and its hooks into the live agent, visible in `GET` and `base_state.json`; the socket pushes the `agent` and `hook_config` updates, the `agent` one without skill bodies (`skills: []`).
 - `F09.load-plugin-hook-runs`: after a runtime load, the next user turn runs the plugin's `UserPromptSubmit` hook (a `HookExecutionEvent` with its output) and finishes.
 - `F09.load-plugin-errors`: no registered marketplaces and no agent context are 400, a registered marketplace whose source is missing is 400, an unknown marketplace or plugin is 404, empty and malformed refs are 400, a missing `plugin_ref` is 422 and an unknown conversation 404; a bare plugin name resolves across the registered marketplaces.
 - `F09.load-plugin-twice`: loading the same plugin twice leaves one copy of its hooks, so they still run once per message.
 - `F09.load-plugin-sdk`: the Python SDK's `RemoteConversation.load_plugin(ref)`, on a conversation reattached with `RemoteConversation.attach`, raises `HTTPStatusError` 404 for an unknown plugin and then loads the plugin, whose skill and hook `GET` shows.
 - `F09.restart-persist`: after a restart the switched LLM, the switched profile (which the next turn runs on), the deferred ACP model and the loaded plugin's skills and hooks are still in place.
+- `F09.model-router-status`: `GET .../model_router` on a plain-LLM conversation is 200 `{"enabled": false, "selection": null, "last_route_name": null, "routes": []}`; on a conversation created with a `MultimodalRouter` LLM it reports `enabled: true`, `selection.mode` `auto`, no `last_route_name` and each route's `name`, `model` and `label`; an unknown conversation is 404 and no key 401.
+- `F09.model-router-add-route`: `POST .../model_router/routes` with a saved profile wraps a plain LLM in a `base_router` (the old LLM becomes route `default`, or `base_route_name`), adds the profile as a route named `route_name` (default: the profile name) with `usage_id` `profile:<name>`, extends an existing router keeping its type, stays in `auto` mode and answers the new status; `GET`, `base_state.json` (keys encrypted) and the socket's `agent` update show the routes, and no plaintext key is stored or pushed.
+- `F09.model-router-add-route-errors`: an unknown profile is 404 `Profile '<name>' not found`, a route name already in use 400 `Model router route already exists: <name>`, an invalid profile name 400, a missing `profile_name` 422, an unknown conversation 404 and no key 401; the routes are unchanged.
+- `F09.model-router-select`: `PATCH .../model_router` with `{"selection": {"mode": "manual", "manual_route_name": ...}}` pins that route and `{"mode": "auto"}` unpins it, keeping the router and its routes; the answer, `GET .../model_router`, `GET` (`agent.llm.selection`), `base_state.json` and the socket's `agent` update all show the selection.
+- `F09.model-router-select-errors`: an unknown route is 400 naming the available routes, `manual` without a route, `auto` with one, an unknown `mode` and a missing `selection` are 422, a conversation whose LLM is not a router is 400 `Current agent LLM is not a RouterLLM.`, an unknown conversation 404 and no key 401; the selection is unchanged.
+- `F09.model-router-switch-replaces`: `switch_profile` and `switch_llm` on a router conversation install the plain LLM in place of the router (routes and pin gone, `model_router` reports `enabled: false`, `PATCH` is then 400), and a later route add wraps the switched LLM in a new router.
+- `F09.model-router-acp-refused`: on an ACP conversation `GET .../model_router` reports `enabled: false`, and adding a route or changing the selection is 400 pointing at `switch_acp_model`, leaving the `acp-managed` placeholder LLM alone.
+- `F09.model-router-sdk`: the Python SDK's `RemoteConversation.get_model_router()`, `add_model_router_route(profile, route_name=, base_route_name=)`, `update_model_router_selection(selection)`, `switch_routed_llm(route)` and `resume_auto_llm_routing()` reach the routes and return `ModelRouterStatus`; a refused route or profile raises `httpx.HTTPStatusError` 400 or 404.
+- `F09.ts-client-model-router`: the TypeScript client's `getModelRouter`, `addModelRouterRoute`, `updateModelRouter`, `switchModelRouter` and `resumeAutoModelRouting` on `ConversationClient` and `ConversationManager` reach the routes and resolve with the status; an unknown route rejects with 400, an unknown profile 404, a duplicate route 400 and a keyless client 401.
+- `F09.model-router-run`: after a first turn, a route added from the `deepseek-flash` profile and pinned serves the next turn (its tokens under `profile:deepseek-flash`, `last_route_name` the route), and after a return to `auto` the next turn runs on the first route (`default`) again.
+- `F09.model-router-before-first-run`: a route added and pinned before the conversation's first message serves the first run, and that run's tokens are recorded under the route's `usage_id` `profile:deepseek-flash`.
+- `F09.model-router-restart`: after a restart the routes and the pinned selection are still in place and the selection can be changed again; conversations whose router a switch replaced stay plain.
 
 ## How to get to it (agent POV)
 
@@ -71,6 +92,14 @@ Routes: `POST /api/conversations/{conversation_id}/switch_profile`,
   `POST /api/conversations/{id}/switch_acp_effort` `{"effort": "..."}`,
   `POST /api/conversations/{id}/load_plugin` `{"plugin_ref": "<plugin>[@<marketplace>]"}`.
   Each answers `{"success": true}`; every recipe below drives them.
+  Model router, owned here: `GET /api/conversations/{id}/model_router`,
+  `POST /api/conversations/{id}/model_router/routes`
+  `{"profile_name": "...", "route_name": "..."?, "base_route_name": "default"?}`,
+  `PATCH /api/conversations/{id}/model_router`
+  `{"selection": {"mode": "auto"|"manual", "manual_route_name": "..."?}}`.
+  Each answers a `ModelRouterStatus`
+  (`{"enabled", "selection", "last_route_name", "routes": [{"name", "model", "label"}]}`);
+  `/server_info` lists the feature flag `conversation_model_router_routes_v1`.
 - Second views: `GET /api/conversations/{id}` (`agent.llm`, `agent.condenser.llm`,
   `stats.usage_to_metrics.<usage_id>`, `current_model_id`, `agent.acp_model`,
   `current_effort`, `available_efforts`, `agent.acp_effort`,
@@ -91,12 +120,30 @@ Routes: `POST /api/conversations/{conversation_id}/switch_profile`,
   (`F09.load-plugin-sdk` drives it).
   `RemoteConversation` has no `switch_llm`, `switch_profile`,
   `switch_acp_model` or `switch_acp_effort` method; Python consumers post to the routes directly.
+  For the model router, `LocalConversation.add_model_router_route`,
+  `update_model_router_selection`, `switch_routed_llm` and
+  `resume_auto_llm_routing` are what the routes call (SDK side:
+  `S03.model-router-*` in the SDK map), and `RemoteConversation` has
+  `get_model_router()`, `add_model_router_route(...)`,
+  `update_model_router_selection(selection)`, `switch_routed_llm(route)` and
+  `resume_auto_llm_routing()`, each returning a `ModelRouterStatus`
+  (`F09.model-router-sdk` drives them).
 - TypeScript client: `ConversationClient.switchProfile(id, name)`,
   `switchLLM(id, llm)`, `switchAcpModel(id, model)`,
   `switchAcpEffort(id, effort)`;
   `RemoteConversation.switchProfile`, `switchLlm`, `switchAcpModel`,
   `switchAcpEffort`;
-  `ConversationManager.switchProfile`. There is no TypeScript `loadPlugin`.
+  `ConversationManager.switchProfile`;
+  model router: `getModelRouter`, `addModelRouterRoute(id, profileName,
+  routeName?, baseRouteName = 'default')`, `updateModelRouter(id, selection)`,
+  `switchModelRouter(id, routeName)` and `resumeAutoModelRouting(id)` on
+  `ConversationClient` and `ConversationManager`, and the same methods
+  without the id on `RemoteConversation` (types `ModelRouterSelection`,
+  `ModelRouteInfo`, `ModelRouterStatus`; `F09.ts-client-model-router` drives
+  the `ConversationClient` and `ConversationManager` ones);
+  `ConversationClient.loadPlugin(id, ref)` and
+  `PluginsClient.loadPluginForConversation(id, ref)` post
+  `{"plugin_ref": ref}` to `load_plugin` (driven by `F34.load-plugin`).
   `F09.ts-client` drives the `ConversationClient` methods and
   `ConversationManager.switchProfile` (the `RemoteConversation` methods post
   the same bodies to the same routes).
@@ -805,14 +852,17 @@ Preconditions:
     --save F09.load-plugin/get
   control-agent-server state cat "server/workspace/conversations/${PID//-/}/base_state.json" --max-chars 200 \
     --contains qa-f09-mkt-plugin-skill --check hook_config.user_prompt_submit len-eq 1
-  control-agent-server ws read qa-f09-plugin --kinds ConversationStateUpdateEvent --contains qa-f09-mkt-plugin-skill --expect-min 1 --wait 20 --save F09.load-plugin/agent-frame
+  control-agent-server ws read qa-f09-plugin --kinds ConversationStateUpdateEvent --contains '"key": "agent"' --expect-min 1 --wait 20 --save F09.load-plugin/agent-frame
+  control-agent-server ws read qa-f09-plugin --contains qa-f09-mkt-plugin-skill --expect-none
   control-agent-server ws stop qa-f09-plugin --kinds ConversationStateUpdateEvent --contains QA_PLUGIN_HOOK --expect-min 1 --wait 20
   ```
   Before the load the agent has no skills and no hooks. After it, `GET`
   (with `include_skills=true`) lists the plugin's skill and its command (as
   the skill `qa-f09-mkt-plugin:qa-hello`), `hook_config` has the plugin's
   `UserPromptSubmit` hook, `base_state.json` has both, and the socket pushed
-  state updates for `agent` and `hook_config`.
+  state updates for `agent` and `hook_config`. The `agent` update (like the
+  `full_state` snapshot) carries `agent_context.skills` as `[]`, so no frame
+  names the plugin's skill; read skills from `GET` with `include_skills=true`.
 - **The loaded hook runs (`F09.load-plugin-hook-runs`).** Run one turn on
   `PID`.
 
@@ -917,7 +967,7 @@ Preconditions:
 - **Restart (`F09.restart-persist`).** Restart the server and read every
   switched conversation back; then run a turn on `RID`.
 
-  Requires: `F09.switch-profile`, `F09.acp-model-deferred`, `F09.load-plugin`
+  Requires: `F09.switch-llm-ws`, `F09.switch-profile`, `F09.acp-model-deferred`, `F09.load-plugin`
   ```sh
   control-agent-server restart
   control-agent-server api GET "/api/conversations/$CID" --quiet --check agent.llm.model eq openai/qa-f09-ws --check agent.llm.usage_id eq qa-f09-ws --save F09.restart-persist/cid
@@ -932,6 +982,399 @@ Preconditions:
   All four conversations come back as switched, and the first turn after
   the restart runs on `deepseek-pro` again (its token count grows past
   `PRO1`).
+- **Model-router status (`F09.model-router-status`).** Save two dummy
+  profiles, `qa-f09-route-a` and `qa-f09-route-b` (unreachable endpoints:
+  nothing in the router bullets before `F09.model-router-run` calls a model),
+  and start `RQ`, an idle conversation whose agent carries a plain
+  placeholder LLM, and `RM`, one whose agent LLM is a `MultimodalRouter`
+  with routes `primary` and `secondary`.
+  ```sh
+  control-agent-server api POST /api/profiles/qa-f09-route-a --json '{"llm": {"model": "openai/qa-f09-route-a", "api_key": "sk-qa-f09-route-a", "base_url": "http://127.0.0.1:9/v1"}}' --expect 201
+  control-agent-server api POST /api/profiles/qa-f09-route-b --json '{"llm": {"model": "openai/qa-f09-route-b", "api_key": "sk-qa-f09-route-b", "base_url": "http://127.0.0.1:9/v1"}}' --expect 201
+  RQ=$(control-agent-server conversation start --no-autotitle --body-json '{"agent": {"kind": "Agent", "tools": [], "llm": {"model": "openai/qa-f09-route-base", "api_key": "sk-qa-f09-route-base", "base_url": "http://127.0.0.1:9/v1"}}}' --print-id)
+  RM=$(control-agent-server conversation start --no-autotitle --body-json '{"agent": {"kind": "Agent", "tools": [], "llm": {"router_name": "multimodal_router", "usage_id": "qa-f09-mm", "llms_for_routing": {"primary": {"model": "openai/qa-f09-primary", "api_key": "sk-qa-f09-route-mm", "base_url": "http://127.0.0.1:9/v1", "usage_id": "qa-f09-primary"}, "secondary": {"model": "openai/qa-f09-secondary", "api_key": "sk-qa-f09-route-mm", "base_url": "http://127.0.0.1:9/v1", "usage_id": "qa-f09-secondary"}}}}}' --print-id)
+  control-agent-server api GET "/api/conversations/$RQ/model_router" --expect 200 --check enabled eq false --check selection eq null \
+    --check last_route_name eq null --check routes len-eq 0 --save F09.model-router-status/plain
+  control-agent-server api GET "/api/conversations/$RM/model_router" --expect 200 --check enabled eq true --check selection.mode eq auto \
+    --check selection.manual_route_name eq null --check last_route_name eq null --check routes len-eq 2 \
+    --check routes.0.name eq primary --check routes.0.model eq openai/qa-f09-primary --check routes.0.label eq primary \
+    --check routes.1.name eq secondary --check routes.1.model eq openai/qa-f09-secondary --save F09.model-router-status/router
+  control-agent-server api GET "/api/conversations/$RM" --quiet --check agent.llm.router_name eq multimodal_router \
+    --check agent.llm.model eq multimodal_router --check agent.llm.usage_id eq qa-f09-mm \
+    --check agent.llm.llms_for_routing.primary.api_key missing --check agent.llm.selection.mode eq auto
+  control-agent-server api GET /api/conversations/00000000-0000-4000-8000-000000000000/model_router --expect 404
+  control-agent-server api GET "/api/conversations/$RM/model_router" --auth none --expect 401 --check detail eq Unauthorized
+  ```
+  The plain conversation reports `enabled: false` with no selection and no
+  routes. The router conversation reports both routes in order, each with
+  its model and its name as `label`, `selection.mode` `auto` and no
+  `last_route_name` (only a model call sets it). `GET` shows the router
+  itself: its `model` is the placeholder `multimodal_router`, its routes'
+  keys are masked. An unknown id is 404, no key 401.
+- **Add a route from a saved profile (`F09.model-router-add-route`).** Wrap
+  `RQ`'s plain LLM, add a second route under its own name, extend `RM`'s
+  router, and wrap `RQ2`'s LLM under a chosen base route name.
+
+  Requires: `F09.model-router-status`
+  ```sh
+  control-agent-server ws start "/sockets/events/$RQ" --name qa-f09-router --duration 120
+  control-agent-server api POST "/api/conversations/$RQ/model_router/routes" --json '{"profile_name": "qa-f09-route-a"}' \
+    --expect 200 --check enabled eq true --check selection.mode eq auto --check routes len-eq 2 \
+    --check routes.0.name eq default --check routes.0.model eq openai/qa-f09-route-base \
+    --check routes.1.name eq qa-f09-route-a --check routes.1.model eq openai/qa-f09-route-a --save F09.model-router-add-route/wrap
+  control-agent-server api POST "/api/conversations/$RQ/model_router/routes" --json '{"profile_name": "qa-f09-route-b", "route_name": "reviewer"}' \
+    --expect 200 --check routes len-eq 3 --check routes.2.name eq reviewer --check routes.2.model eq openai/qa-f09-route-b \
+    --check selection.mode eq auto --save F09.model-router-add-route/named
+  control-agent-server api GET "/api/conversations/$RQ" --quiet --check agent.llm.router_name eq base_router \
+    --check agent.llm.llms_for_routing.default.usage_id eq default \
+    --check agent.llm.llms_for_routing.qa-f09-route-a.usage_id eq profile:qa-f09-route-a \
+    --check agent.llm.llms_for_routing.reviewer.usage_id eq profile:qa-f09-route-b \
+    --check agent.llm.llms_for_routing.reviewer.api_key missing --save F09.model-router-add-route/get
+  control-agent-server state cat "server/workspace/conversations/${RQ//-/}/base_state.json" --max-chars 200 \
+    --check agent.llm.router_name eq base_router --check agent.llm.llms_for_routing.reviewer.model eq openai/qa-f09-route-b \
+    --check agent.llm.llms_for_routing.reviewer.api_key matches '^gAAAAA' --not-contains sk-qa-f09-route
+  control-agent-server ws read qa-f09-router --kinds ConversationStateUpdateEvent --contains 'profile:qa-f09-route-b' --expect-min 1 --wait 20 \
+    --save F09.model-router-add-route/frames
+  control-agent-server ws stop qa-f09-router --contains sk-qa-f09-route --expect-none
+  control-agent-server api POST "/api/conversations/$RM/model_router/routes" --json '{"profile_name": "qa-f09-route-b", "route_name": "reviewer", "base_route_name": "unused"}' \
+    --expect 200 --check routes len-eq 3 --check routes.0.name eq primary --check routes.2.name eq reviewer --save F09.model-router-add-route/extend
+  control-agent-server api GET "/api/conversations/$RM" --quiet --check agent.llm.router_name eq multimodal_router \
+    --check agent.llm.llms_for_routing.reviewer.usage_id eq profile:qa-f09-route-b
+  RQ2=$(control-agent-server conversation start --no-autotitle --body-json '{"agent": {"kind": "Agent", "tools": [], "llm": {"model": "openai/qa-f09-route-base2", "api_key": "sk-qa-f09-route-base2", "base_url": "http://127.0.0.1:9/v1"}}}' --print-id)
+  control-agent-server api POST "/api/conversations/$RQ2/model_router/routes" --json '{"profile_name": "qa-f09-route-a", "base_route_name": "main"}' \
+    --expect 200 --check routes.0.name eq main --check routes.0.model eq openai/qa-f09-route-base2 --check routes.1.name eq qa-f09-route-a
+  control-agent-server state grep sk-qa-f09-route --glob 'server/**/*' --expect-none
+  ```
+  The first add turns `RQ`'s LLM into a `base_router` whose route `default`
+  is the old LLM (its `usage_id` stays `default`) and whose second route is
+  named after the profile, with `usage_id` `profile:qa-f09-route-a`; the
+  second add uses the given `route_name`. The router stays in `auto` mode.
+  `GET` and `base_state.json` show the routes (keys masked in `GET`, Fernet
+  tokens on disk), the socket pushes the new `agent`, and no plaintext key
+  is stored or pushed. On `RM` the route joins the existing
+  `MultimodalRouter`, which keeps its type, so `base_route_name` is unused;
+  on the plain `RQ2` it names the wrapped LLM's route.
+- **Route add errors (`F09.model-router-add-route-errors`).** Unknown,
+  invalid and missing profiles, route names already taken, an unknown
+  conversation and no key, on `RQ`.
+
+  Requires: `F09.model-router-add-route`
+  ```sh
+  control-agent-server api POST "/api/conversations/$RQ/model_router/routes" --json '{"profile_name": "qa-f09-nope"}' \
+    --expect 404 --check detail eq "Profile 'qa-f09-nope' not found" --save F09.model-router-add-route-errors/unknown-profile
+  control-agent-server api POST "/api/conversations/$RQ/model_router/routes" --json '{"profile_name": "qa-f09-route-b", "route_name": "default"}' \
+    --expect 400 --check detail eq 'Model router route already exists: default' --save F09.model-router-add-route-errors/duplicate
+  control-agent-server api POST "/api/conversations/$RQ/model_router/routes" --json '{"profile_name": "qa-f09-route-a"}' \
+    --expect 400 --check detail eq 'Model router route already exists: qa-f09-route-a'
+  control-agent-server api POST "/api/conversations/$RQ/model_router/routes" --json '{"profile_name": "../qa"}' --expect 400 --check detail contains 'Invalid profile name'
+  control-agent-server api POST "/api/conversations/$RQ/model_router/routes" --json '{"route_name": "qa-f09-x"}' --expect 422 --check detail.0.loc.1 eq profile_name
+  control-agent-server api POST /api/conversations/00000000-0000-4000-8000-000000000000/model_router/routes --json '{"profile_name": "qa-f09-route-a"}' --expect 404
+  control-agent-server api POST "/api/conversations/$RQ/model_router/routes" --auth none --json '{"profile_name": "qa-f09-route-b", "route_name": "qa-f09-noauth"}' --expect 401
+  control-agent-server api GET "/api/conversations/$RQ/model_router" --quiet --check routes len-eq 3 --check routes.2.name eq reviewer
+  ```
+  404 with the profile's name, 400 for a route name already in the table
+  (whether it came from the wrap or from a profile), 400 for a name that
+  breaks the profile rules, 422 without `profile_name`, 404 for the unknown
+  id and 401 without a key; `RQ` still has its three routes.
+- **Pin a route and return to auto (`F09.model-router-select`).** On `RQ`,
+  then on `RM`.
+
+  Requires: `F09.model-router-add-route`
+  ```sh
+  control-agent-server ws start "/sockets/events/$RQ" --name qa-f09-router-select --duration 120
+  control-agent-server api PATCH "/api/conversations/$RQ/model_router" --json '{"selection": {"mode": "manual", "manual_route_name": "reviewer"}}' \
+    --expect 200 --check enabled eq true --check selection.mode eq manual --check selection.manual_route_name eq reviewer \
+    --check routes len-eq 3 --save F09.model-router-select/manual
+  control-agent-server api GET "/api/conversations/$RQ/model_router" --quiet --check selection.manual_route_name eq reviewer
+  control-agent-server api GET "/api/conversations/$RQ" --quiet --check agent.llm.router_name eq base_router \
+    --check agent.llm.selection.mode eq manual --check agent.llm.selection.manual_route_name eq reviewer --save F09.model-router-select/get
+  control-agent-server state cat "server/workspace/conversations/${RQ//-/}/base_state.json" --max-chars 200 \
+    --check agent.llm.selection.manual_route_name eq reviewer
+  control-agent-server ws read qa-f09-router-select --kinds ConversationStateUpdateEvent --contains '"manual_route_name": "reviewer"' \
+    --expect-min 1 --wait 20 --save F09.model-router-select/frames
+  control-agent-server ws stop qa-f09-router-select
+  control-agent-server api PATCH "/api/conversations/$RQ/model_router" --json '{"selection": {"mode": "auto"}}' \
+    --expect 200 --check selection.mode eq auto --check selection.manual_route_name eq null --check routes len-eq 3 --save F09.model-router-select/auto
+  control-agent-server state cat "server/workspace/conversations/${RQ//-/}/base_state.json" --max-chars 200 --check agent.llm.selection.mode eq auto
+  control-agent-server api PATCH "/api/conversations/$RM/model_router" --json '{"selection": {"mode": "manual", "manual_route_name": "secondary"}}' \
+    --expect 200 --check selection.manual_route_name eq secondary
+  control-agent-server api GET "/api/conversations/$RM" --quiet --check agent.llm.router_name eq multimodal_router \
+    --check agent.llm.selection.manual_route_name eq secondary
+  ```
+  The `PATCH` answers the new status; `GET .../model_router`, the router's
+  `selection` in `GET`, `base_state.json` and a `ConversationStateUpdateEvent`
+  with key `agent` all carry the pin, and `auto` clears it
+  (`manual_route_name: null`). The router and its routes are kept: on `RM`
+  the pin applies to the `MultimodalRouter`, which stays one.
+- **Selection errors (`F09.model-router-select-errors`).** Pin `RQ` to
+  `qa-f09-route-a`, then try every refused selection; finally a
+  conversation `RP` whose LLM is not a router.
+
+  Requires: `F09.model-router-add-route`
+  ```sh
+  control-agent-server api PATCH "/api/conversations/$RQ/model_router" --json '{"selection": {"mode": "manual", "manual_route_name": "qa-f09-route-a"}}' --expect 200
+  control-agent-server api PATCH "/api/conversations/$RQ/model_router" --json '{"selection": {"mode": "manual", "manual_route_name": "qa-f09-nope"}}' \
+    --expect 400 --check detail eq "LLM route 'qa-f09-nope' was not found. Available routes: default, qa-f09-route-a, reviewer" \
+    --save F09.model-router-select-errors/unknown-route
+  control-agent-server api PATCH "/api/conversations/$RQ/model_router" --json '{"selection": {"mode": "manual"}}' \
+    --expect 422 --check detail.0.msg contains 'manual_route_name is required in manual routing mode'
+  control-agent-server api PATCH "/api/conversations/$RQ/model_router" --json '{"selection": {"mode": "auto", "manual_route_name": "default"}}' \
+    --expect 422 --check detail.0.msg contains 'manual_route_name is only valid in manual routing mode'
+  control-agent-server api PATCH "/api/conversations/$RQ/model_router" --json '{"selection": {"mode": "fast"}}' --expect 422 --check detail.0.loc.2 eq mode
+  control-agent-server api PATCH "/api/conversations/$RQ/model_router" --json '{}' --expect 422 --check detail.0.loc.1 eq selection
+  control-agent-server api PATCH /api/conversations/00000000-0000-4000-8000-000000000000/model_router --json '{"selection": {"mode": "auto"}}' --expect 404
+  control-agent-server api PATCH "/api/conversations/$RQ/model_router" --auth none --json '{"selection": {"mode": "auto"}}' --expect 401
+  control-agent-server api GET "/api/conversations/$RQ/model_router" --quiet --check selection.mode eq manual --check selection.manual_route_name eq qa-f09-route-a
+  RP=$(control-agent-server conversation start --no-autotitle --body-json '{"agent": {"kind": "Agent", "tools": [], "llm": {"model": "openai/qa-f09-route-plain", "api_key": "sk-qa-f09-route-plain", "base_url": "http://127.0.0.1:9/v1"}}}' --print-id)
+  control-agent-server api PATCH "/api/conversations/$RP/model_router" --json '{"selection": {"mode": "auto"}}' \
+    --expect 400 --check detail eq 'Current agent LLM is not a RouterLLM.' --save F09.model-router-select-errors/not-a-router
+  control-agent-server api GET "/api/conversations/$RP/model_router" --quiet --check enabled eq false
+  ```
+  An unknown route is 400 and lists the routes; the selection shapes the
+  model refuses are 422 (a manual pin without a route, an `auto` that names
+  one, an unknown `mode`, no `selection`); the unknown id is 404 and no key
+  401. `RQ` stays pinned to `qa-f09-route-a`. A `PATCH` never creates a
+  router: on `RP` it is 400 and `RP` stays plain (adding a route is what
+  wraps an LLM).
+- **switch_llm and switch_profile replace the router (`F09.model-router-switch-replaces`).**
+  `switch_profile` on `RM` (a pinned `MultimodalRouter` with three routes),
+  `switch_llm` on `RQ2` (a wrapped router), then a route add on `RQ2`.
+
+  Requires: `F09.model-router-select`
+  ```sh
+  control-agent-server api POST "/api/conversations/$RM/switch_profile" --json '{"profile_name": "qa-f09-route-a"}' \
+    --expect 200 --check success eq true --save F09.model-router-switch-replaces/switch-profile
+  control-agent-server api GET "/api/conversations/$RM/model_router" --check enabled eq false --check routes len-eq 0 --save F09.model-router-switch-replaces/status
+  control-agent-server api GET "/api/conversations/$RM" --quiet --check agent.llm.model eq openai/qa-f09-route-a \
+    --check agent.llm.usage_id eq profile:qa-f09-route-a --check agent.llm.router_name missing --check agent.llm.llms_for_routing missing
+  control-agent-server api PATCH "/api/conversations/$RM/model_router" --json '{"selection": {"mode": "auto"}}' \
+    --expect 400 --check detail eq 'Current agent LLM is not a RouterLLM.'
+  control-agent-server api POST "/api/conversations/$RQ2/switch_llm" \
+    --json '{"llm": {"model": "openai/qa-f09-route-switched", "api_key": "sk-qa-f09-route-switched", "base_url": "http://127.0.0.1:9/v1", "usage_id": "qa-f09-route-switched"}}' \
+    --expect 200 --check success eq true
+  control-agent-server api GET "/api/conversations/$RQ2/model_router" --quiet --check enabled eq false
+  control-agent-server api POST "/api/conversations/$RQ2/model_router/routes" --json '{"profile_name": "qa-f09-route-b"}' \
+    --expect 200 --check routes len-eq 2 --check routes.0.name eq default --check routes.0.model eq openai/qa-f09-route-switched \
+    --check routes.1.name eq qa-f09-route-b --save F09.model-router-switch-replaces/rewrap
+  ```
+  Both switches answer `{"success": true}` and install the posted or saved
+  LLM as the agent's whole LLM: the router, its routes and its pin are gone
+  (`enabled: false`, no `router_name` or `llms_for_routing` in `GET`), and
+  a selection change is 400 as on any plain conversation. To change models
+  and keep the router, pin a route instead. A route add after the switch
+  builds a new `base_router` around the switched LLM (`default`), without
+  the routes the old router had (`main`, `qa-f09-route-a`).
+- **Model router on an ACP conversation (`F09.model-router-acp-refused`).**
+  An ACP conversation `RA` that has not run.
+
+  Requires: `F09.model-router-status`
+  ```sh
+  RA=$(control-agent-server conversation start --no-autotitle --body-json '{"agent_settings": {"agent_kind": "acp", "acp_server": "claude-code", "acp_model": "sonnet"}}' --print-id)
+  control-agent-server api GET "/api/conversations/$RA/model_router" --check enabled eq false --check routes len-eq 0
+  control-agent-server api POST "/api/conversations/$RA/model_router/routes" --json '{"profile_name": "qa-f09-route-a"}' \
+    --expect 400 --check detail contains switch_acp_model --save F09.model-router-acp-refused/add-route
+  control-agent-server api PATCH "/api/conversations/$RA/model_router" --json '{"selection": {"mode": "auto"}}' \
+    --expect 400 --check detail contains switch_acp_model --save F09.model-router-acp-refused/select
+  control-agent-server api GET "/api/conversations/$RA" --quiet --check agent.kind eq ACPAgent --check agent.llm.usage_id eq acp-managed \
+    --check agent.llm.llms_for_routing missing --check agent.acp_model eq sonnet
+  ```
+  The ACP agent's placeholder LLM is not a router (`enabled: false`); a
+  route add and a selection change are both refused with the same 400 as
+  `switch_llm` (`switch_llm and switch_profile are not supported for ACP
+  conversations; use switch_acp_model instead.`), and the placeholder stays.
+- **Model router from the Python SDK (`F09.model-router-sdk`).** A fresh
+  plain conversation `RS`, reattached from an SDK program.
+
+  Requires: `F09.model-router-status`
+  ```sh
+  RS=$(control-agent-server conversation start --no-autotitle --body-json '{"agent": {"kind": "Agent", "tools": [], "llm": {"model": "openai/qa-f09-route-sdk", "api_key": "sk-qa-f09-route-sdk", "base_url": "http://127.0.0.1:9/v1"}}}' --print-id)
+  mkdir -p "$AGENT_SERVER_VERIFY_RUN/fixtures/qa-f09-router-sdk"
+  control-agent-server exec --env RS="$RS" --env WD="$AGENT_SERVER_VERIFY_RUN/fixtures/qa-f09-router-sdk" --expect-output SDK_MODEL_ROUTER_OK \
+    --save F09.model-router-sdk/program -- .venv/bin/python - <<'PY'
+  import os
+  import uuid
+
+  import httpx
+
+  from openhands.sdk import RemoteConversation, RemoteWorkspace
+  from openhands.sdk.llm import ModelRouterSelection, ModelRouterStatus
+
+  ws = RemoteWorkspace(host=os.environ["AGENT_SERVER_URL"], api_key=os.environ["SESSION_API_KEY"], working_dir=os.environ["WD"])
+  conv = RemoteConversation.attach(ws, uuid.UUID(os.environ["RS"]), visualizer=None)
+  status = conv.get_model_router()
+  assert isinstance(status, ModelRouterStatus) and status.enabled is False and status.routes == [], status
+  status = conv.add_model_router_route("qa-f09-route-a", base_route_name="base")
+  assert [r.name for r in status.routes] == ["base", "qa-f09-route-a"], status
+  status = conv.add_model_router_route("qa-f09-route-b", route_name="reviewer")
+  assert [r.model for r in status.routes] == ["openai/qa-f09-route-sdk", "openai/qa-f09-route-a", "openai/qa-f09-route-b"], status
+  status = conv.switch_routed_llm("reviewer")
+  assert status.selection == ModelRouterSelection(mode="manual", manual_route_name="reviewer"), status
+  status = conv.resume_auto_llm_routing()
+  assert status.selection.mode == "auto" and status.selection.manual_route_name is None, status
+  status = conv.update_model_router_selection(ModelRouterSelection(mode="manual", manual_route_name="qa-f09-route-a"))
+  assert status.selection.manual_route_name == "qa-f09-route-a", status
+  for call, code in ((lambda: conv.switch_routed_llm("qa-f09-nope"), 400), (lambda: conv.add_model_router_route("qa-f09-nope"), 404)):
+      try:
+          call()
+          raise AssertionError("a refused call succeeded")
+      except httpx.HTTPStatusError as e:
+          assert e.response.status_code == code, e
+  print("SDK_MODEL_ROUTER_OK")
+  conv.close()
+  PY
+  control-agent-server api GET "/api/conversations/$RS/model_router" --quiet --check selection.manual_route_name eq qa-f09-route-a \
+    --check routes len-eq 3 --check routes.0.name eq base --save F09.model-router-sdk/get
+  ```
+  Every method returns a `ModelRouterStatus` matching what the server
+  stored: the wrap under `base_route_name` `base`, the named route, the pin,
+  the return to `auto` and the explicit selection. The unknown route and
+  the unknown profile raise `httpx.HTTPStatusError` 400 and 404 (the SDK
+  logs and re-raises), and the server keeps the `qa-f09-route-a` pin.
+- **TypeScript model-router methods (`F09.ts-client-model-router`).**
+  `ConversationClient` and `ConversationManager` from the built client
+  (rebuilt when `clients/typescript/src` is newer than `dist`), on a fresh
+  plain conversation `RTS`.
+
+  Requires: `F09.model-router-status`
+  ```sh
+  test -d clients/typescript/node_modules/typescript || (cd clients/typescript && npm ci --silent)
+  if [ ! -f clients/typescript/dist/index.js ] || \
+    [ -n "$(find clients/typescript/src clients/typescript/package.json -newer clients/typescript/dist/index.js -print -quit)" ]; then
+    (cd clients/typescript && npm run build --silent)
+  fi
+  RTS=$(control-agent-server conversation start --no-autotitle --body-json '{"agent": {"kind": "Agent", "tools": [], "llm": {"model": "openai/qa-f09-route-ts", "api_key": "sk-qa-f09-route-ts", "base_url": "http://127.0.0.1:9/v1"}}}' --print-id)
+  F="$AGENT_SERVER_VERIFY_RUN/fixtures"
+  mkdir -p "$F"
+  cat > "$F/qa-f09-ts-router.mjs" <<'JS'
+  import assert from 'node:assert/strict';
+  import { resolve } from 'node:path';
+  import { pathToFileURL } from 'node:url';
+
+  const dist = (name) => import(pathToFileURL(resolve('clients/typescript/dist', name)).href);
+  const { ConversationClient } = await dist('clients.js');
+  const { ConversationManager } = await dist('index.js');
+  const [cid] = process.argv.slice(2);
+  const host = process.env.AGENT_SERVER_URL;
+  const apiKey = process.env.SESSION_API_KEY;
+  const client = new ConversationClient({ host, apiKey });
+  const manager = new ConversationManager({ host, apiKey });
+  let status = await client.getModelRouter(cid);
+  assert.equal(status.enabled, false);
+  assert.deepEqual(status.routes, []);
+  status = await client.addModelRouterRoute(cid, 'qa-f09-route-a');
+  assert.equal(status.enabled, true);
+  assert.deepEqual(status.routes.map((r) => r.name), ['default', 'qa-f09-route-a']);
+  status = await manager.addModelRouterRoute(cid, 'qa-f09-route-b', 'reviewer');
+  assert.deepEqual(status.routes.map((r) => r.name), ['default', 'qa-f09-route-a', 'reviewer']);
+  status = await client.switchModelRouter(cid, 'reviewer');
+  assert.deepEqual(status.selection, { mode: 'manual', manual_route_name: 'reviewer' });
+  status = await manager.resumeAutoModelRouting(cid);
+  assert.equal(status.selection.mode, 'auto');
+  status = await manager.switchModelRouter(cid, 'qa-f09-route-a');
+  assert.equal(status.selection.manual_route_name, 'qa-f09-route-a');
+  status = await client.resumeAutoModelRouting(cid);
+  assert.equal(status.selection.mode, 'auto');
+  await client.updateModelRouter(cid, { mode: 'manual', manual_route_name: 'reviewer' });
+  assert.equal((await manager.getModelRouter(cid)).selection.manual_route_name, 'reviewer');
+  await assert.rejects(client.switchModelRouter(cid, 'qa-f09-nope'), (e) => e.status === 400);
+  await assert.rejects(client.addModelRouterRoute(cid, 'qa-f09-nope'), (e) => e.status === 404);
+  await assert.rejects(client.addModelRouterRoute(cid, 'qa-f09-route-a'), (e) => e.status === 400);
+  await assert.rejects(new ConversationClient({ host }).getModelRouter(cid), (e) => e.status === 401);
+  assert.equal((await client.getModelRouter(cid)).routes.length, 3);
+  console.log('TS_MODEL_ROUTER_OK');
+  JS
+  control-agent-server exec --expect-output TS_MODEL_ROUTER_OK --save F09.ts-client-model-router/program -- node "$F/qa-f09-ts-router.mjs" "$RTS"
+  control-agent-server api GET "/api/conversations/$RTS" --quiet --check agent.llm.router_name eq base_router \
+    --check agent.llm.selection.manual_route_name eq reviewer --check agent.llm.llms_for_routing.reviewer.model eq openai/qa-f09-route-b
+  ```
+  Every call resolves with the server's `ModelRouterStatus`: the wrap
+  (`default` plus the profile's route), the named route from
+  `ConversationManager`, pins and returns to `auto` through both classes,
+  and `updateModelRouter` with an explicit selection; the unknown route
+  rejects with an `HttpError` 400, the unknown profile 404, the duplicate
+  route 400 and a keyless client 401, and `GET` shows the router pinned to
+  `reviewer`. (`RemoteConversation`'s methods of the same names post the
+  same bodies to the same routes.)
+- **Turns on a pinned route (`F09.model-router-run`).** A conversation `RT`
+  from the saved settings runs one turn on `deepseek-flash`; then the
+  `deepseek-flash` profile is added as route `flash`, pinned, and a turn
+  runs; then routing returns to `auto` and a turn runs. The block re-saves
+  the DeepSeek preset (it is idempotent) so the bullet runs on its own.
+
+  Needs: `llm`
+  ```sh
+  control-agent-server llm preset deepseek
+  RT=$(control-agent-server conversation start --tools none --no-autotitle --prompt 'Reply with the single word: ok' --wait --until finished --timeout 240 --print-id)
+  DEF1=$(control-agent-server api GET "/api/conversations/$RT" --field stats.usage_to_metrics.default.accumulated_token_usage.prompt_tokens)
+  test "$DEF1" -gt 0
+  control-agent-server api POST "/api/conversations/$RT/model_router/routes" --json '{"profile_name": "deepseek-flash", "route_name": "flash"}' \
+    --expect 200 --check routes.0.name eq default --check routes.1.name eq flash
+  control-agent-server api PATCH "/api/conversations/$RT/model_router" --json '{"selection": {"mode": "manual", "manual_route_name": "flash"}}' \
+    --expect 200 --check last_route_name eq null
+  control-agent-server conversation send "$RT" --text 'Reply with the single word: ok' --wait --until finished,error --timeout 240
+  control-agent-server api GET "/api/conversations/$RT" --until-ok 60 --quiet --check execution_status eq finished \
+    --check 'stats.usage_to_metrics.profile:deepseek-flash.accumulated_token_usage.prompt_tokens' gt 0 \
+    --check stats.usage_to_metrics.default.accumulated_token_usage.prompt_tokens eq "$DEF1" --save F09.model-router-run/manual-stats
+  control-agent-server api GET "/api/conversations/$RT/model_router" --check last_route_name eq flash --check selection.manual_route_name eq flash \
+    --save F09.model-router-run/manual-status
+  FL1=$(control-agent-server api GET "/api/conversations/$RT" --field 'stats.usage_to_metrics.profile:deepseek-flash.accumulated_token_usage.prompt_tokens')
+  control-agent-server api PATCH "/api/conversations/$RT/model_router" --json '{"selection": {"mode": "auto"}}' \
+    --expect 200 --check selection.mode eq auto --check last_route_name eq flash
+  control-agent-server conversation send "$RT" --text 'Reply with the single word: ok' --wait --until finished,error --timeout 240
+  control-agent-server api GET "/api/conversations/$RT" --until-ok 60 --quiet --check execution_status eq finished \
+    --check stats.usage_to_metrics.default.accumulated_token_usage.prompt_tokens gt "$DEF1" \
+    --check 'stats.usage_to_metrics.profile:deepseek-flash.accumulated_token_usage.prompt_tokens' eq "$FL1" --save F09.model-router-run/auto-stats
+  control-agent-server api GET "/api/conversations/$RT/model_router" --check last_route_name eq default --check selection.mode eq auto
+  ```
+  The pinned turn finishes on `flash`: its tokens are recorded under
+  `profile:deepseek-flash` while `default` does not grow, and
+  `last_route_name` becomes `flash` (only a call sets it; a `PATCH` keeps
+  the last one). After the return to `auto`, the base router routes to its
+  first route: the next turn's tokens go to `default`, `flash` does not
+  grow, and `last_route_name` is `default`.
+- **A route pinned before the first run (`F09.model-router-before-first-run`), known bug #5639.**
+  Start from a placeholder agent whose model is unreachable, add the
+  `deepseek-flash` profile as route `flash` and pin it before anything
+  ran, then run.
+
+  Requires: `F09.model-router-run`
+  Needs: `llm`
+  ```sh
+  RB=$(control-agent-server conversation start --placeholder-agent --tools none --no-autotitle --print-id)
+  control-agent-server api POST "/api/conversations/$RB/model_router/routes" --json '{"profile_name": "deepseek-flash", "route_name": "flash"}' --expect 200
+  control-agent-server api PATCH "/api/conversations/$RB/model_router" --json '{"selection": {"mode": "manual", "manual_route_name": "flash"}}' --expect 200
+  control-agent-server conversation send "$RB" --text 'Reply with the single word: ok' --wait --until finished,error --timeout 240
+  control-agent-server api GET "/api/conversations/$RB" --quiet --check execution_status eq finished
+  control-agent-server api GET "/api/conversations/$RB/model_router" --quiet --check last_route_name eq flash
+  control-agent-server api GET "/api/conversations/$RB" --until-ok 20 --quiet \
+    --check 'stats.usage_to_metrics.profile:deepseek-flash.accumulated_token_usage.prompt_tokens' gt 0 --save F09.model-router-before-first-run/stats  # bug: status eq 200 && checks.0.actual eq null
+  ```
+  The run finishes and `last_route_name` is `flash`, which only the pinned
+  route can do (the placeholder points at a closed port). Expected: its
+  tokens are recorded under `profile:deepseek-flash`, as they are when the
+  route is added after the first message (`F09.model-router-run`). Today
+  `stats.usage_to_metrics` is `{}`: the route add and the pin register the
+  LLM before the stats subscribe on the first message
+  ([#5639](https://github.com/OpenHands/software-agent-sdk/issues/5639)).
+- **Restart (`F09.model-router-restart`).** Restart the server and read the
+  router conversations back.
+
+  Requires: `F09.model-router-select-errors`, `F09.model-router-switch-replaces`
+  ```sh
+  control-agent-server restart
+  control-agent-server api GET "/api/conversations/$RQ/model_router" --check enabled eq true --check selection.mode eq manual \
+    --check selection.manual_route_name eq qa-f09-route-a --check routes len-eq 3 --check routes.2.name eq reviewer --save F09.model-router-restart/rq
+  control-agent-server api GET "/api/conversations/$RQ" --quiet --check agent.llm.router_name eq base_router \
+    --check agent.llm.llms_for_routing.reviewer.usage_id eq profile:qa-f09-route-b
+  control-agent-server api PATCH "/api/conversations/$RQ/model_router" --json '{"selection": {"mode": "manual", "manual_route_name": "reviewer"}}' \
+    --expect 200 --check selection.manual_route_name eq reviewer
+  control-agent-server api GET "/api/conversations/$RM/model_router" --quiet --check enabled eq false
+  control-agent-server api GET "/api/conversations/$RQ2/model_router" --quiet --check routes len-eq 2 --check routes.1.name eq qa-f09-route-b
+  ```
+  `RQ` comes back as a `base_router` with its three routes and the
+  `qa-f09-route-a` pin, and accepts a new pin; `RM`, whose router
+  `switch_profile` replaced, is still plain, and `RQ2` still has the router
+  built after its `switch_llm`.
 
 ## Gotchas
 
@@ -955,6 +1398,19 @@ Preconditions:
   for LLMs registered after the agent initialized
   (`F09.switch-llm-before-first-run`); send one message (or create with an
   initial message) before switching when costs matter.
+- The model-router routes act on the conversation's agent LLM only when it
+  is a `RouterLLM`: `GET .../model_router` answers `enabled: false` for any
+  other LLM, `PATCH` is 400 there, and only `POST .../model_router/routes`
+  turns a plain LLM into a router. The router's own `model` is a placeholder
+  (`base_router`, `multimodal_router`), and its usage is never recorded under
+  the router: each route keeps its LLM's `usage_id` (`default` for a wrapped
+  agent LLM, `profile:<name>` for an added profile). A route is a copy of the
+  profile at the time it was added (later profile edits do not reach it),
+  and adding the same profile twice under two route names reuses the
+  conversation's cached `profile:<name>` LLM. An empty `route_name` falls back
+  to the profile name. A route added or a pin set before the first message
+  is not counted in `stats` (`F09.model-router-before-first-run`), like any
+  LLM registered then.
 - The agent is initialized by the first message (`conversation send
   --no-run` is enough) or run, not by the create; ACP agents only at the
   first run, which is when the subprocess starts.
@@ -982,7 +1438,9 @@ Preconditions:
   that the load is what adds the plugin.
 - Plugin commands become skills named `<plugin>:<command>`, and
   `GET /api/conversations/{id}` trims `agent.agent_context.skills` to `[]`
-  unless `include_skills=true`.
+  unless `include_skills=true`. Socket and webhook
+  `ConversationStateUpdateEvent`s (`full_state` and `agent`) always carry
+  `agent_context.skills` as `[]`; the persisted state keeps the skills.
 - `switch_acp_model` before the first run only persists the model; the
   provider's capability (`supports_runtime_model_switch`) and
   `available_models` are unknown (`false`, `[]`) until a session started. A

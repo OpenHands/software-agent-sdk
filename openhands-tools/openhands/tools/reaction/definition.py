@@ -55,7 +55,7 @@ class ReactionObservation(Observation):
     """The result of ``react`` or ``unreact``.
 
     On success it carries the reaction, which the agent records as a
-    :class:`ReactionEvent` right after this observation.
+    :class:`ReactionEvent` after this observation, in the same step.
     """
 
     target_event_id: EventID | None = None

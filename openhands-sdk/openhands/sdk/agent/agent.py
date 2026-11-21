@@ -40,6 +40,7 @@ from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
     Event,
+    MessageEditEvent,
     MessageEvent,
     ObservationEvent,
     SystemPromptEvent,
@@ -234,6 +235,18 @@ def _should_handle_non_multimodal_image_input(
     return _messages_contain_image(messages) and not llm.vision_is_active()
 
 
+_ONE_TURN_ENDER = (
+    "Not shown: this response already ends the turn with an earlier call. "
+    "Ask one question at a time; ask this one after the user answers."
+)
+
+_ONE_EDIT_PER_MESSAGE = (
+    "Not edited: an earlier call in this response already edits this "
+    "message, and both edits started from the same text. Edit it again in "
+    "your next response, quoting it as it reads now:\n"
+)
+
+
 @dataclass(frozen=True, slots=True)
 class _ActionBatch:
     """Immutable result of preparing a batch of actions for execution.
@@ -247,6 +260,7 @@ class _ActionBatch:
 
     action_events: list[ActionEvent]
     has_finish: bool
+    ends_turn: bool = False
     blocked_reasons: dict[str, str] = field(default_factory=dict)
     results_by_id: dict[str, list[Event]] = field(default_factory=dict)
 
@@ -277,6 +291,82 @@ class _ActionBatch:
                 f"after FinishTool: {', '.join(names)}"
             )
         return action_events[: finish_idx + 1], True
+
+    @staticmethod
+    def _ends_turn(
+        executed: list[ActionEvent],
+        results_by_id: dict[str, list[Event]],
+        tools: dict[str, ToolDefinition] | None,
+    ) -> bool:
+        """Whether a call to an ``ends_turn`` tool succeeded in this batch.
+
+        Only the first such call counts: any later one in the same batch has
+        its result replaced by an error, so one response asks one question
+        and only that one waits for an answer.
+        """
+        ended = False
+        for ae in executed:
+            tool = (tools or {}).get(ae.tool_name)
+            if tool is None or not tool.ends_turn:
+                continue
+            results = results_by_id.get(ae.id, [])
+            succeeded = any(
+                isinstance(event, ObservationEvent) and not event.observation.is_error
+                for event in results
+            )
+            if not succeeded:
+                continue
+            if not ended:
+                ended = True
+                continue
+            refused = (tool.observation_type or Observation).from_text(
+                _ONE_TURN_ENDER, is_error=True
+            )
+            results_by_id[ae.id] = [
+                event.model_copy(update={"observation": refused})
+                if isinstance(event, ObservationEvent)
+                else event
+                for event in results
+            ]
+        return ended
+
+    @staticmethod
+    def _one_edit_per_message(
+        executed: list[ActionEvent],
+        results_by_id: dict[str, list[Event]],
+        tools: dict[str, ToolDefinition] | None,
+    ) -> None:
+        """Refuse a second edit of the same message in one batch.
+
+        Every call in a batch reads the conversation before any result is
+        recorded, so two edits of one message both start from the same text
+        and the later one would silently undo the earlier. The first edit in
+        action order stands; a later one is replaced by an error that quotes
+        the message as the first edit left it.
+        """
+        edited: dict[EventID, str] = {}
+        for ae in executed:
+            results = results_by_id.get(ae.id, [])
+            edits = [e for e in results if isinstance(e, MessageEditEvent)]
+            if not edits:
+                continue
+            if all(e.target_event_id not in edited for e in edits):
+                edited.update((e.target_event_id, e.text) for e in edits)
+                continue
+            tool = (tools or {}).get(ae.tool_name)
+            current = next(
+                edited[e.target_event_id] for e in edits if e.target_event_id in edited
+            )
+            refused = (
+                (tool.observation_type if tool else None) or Observation
+            ).from_text(_ONE_EDIT_PER_MESSAGE + current, is_error=True)
+            results_by_id[ae.id] = [
+                event.model_copy(update={"observation": refused})
+                if isinstance(event, ObservationEvent)
+                else event
+                for event in results
+                if not isinstance(event, MessageEditEvent)
+            ]
 
     @classmethod
     def prepare(
@@ -309,10 +399,12 @@ class _ActionBatch:
             span_owner=span_owner,
         )
         results_by_id = dict(zip([ae.id for ae in executable], executed_results))
+        cls._one_edit_per_message(executable, results_by_id, tools)
 
         return cls(
             action_events=action_events,
             has_finish=has_finish,
+            ends_turn=cls._ends_turn(executable, results_by_id, tools),
             blocked_reasons=blocked_reasons,
             results_by_id=results_by_id,
         )
@@ -353,10 +445,12 @@ class _ActionBatch:
             span_owner=span_owner,
         )
         results_by_id = dict(zip([ae.id for ae in executable], executed_results))
+        cls._one_edit_per_message(executable, results_by_id, tools)
 
         return cls(
             action_events=action_events,
             has_finish=has_finish,
+            ends_turn=cls._ends_turn(executable, results_by_id, tools),
             blocked_reasons=blocked_reasons,
             results_by_id=results_by_id,
         )
@@ -405,6 +499,10 @@ class _ActionBatch:
             mark_finished: Called to set the conversation execution status
                 to FINISHED when the agent is done.
         """
+        if self.ends_turn:
+            mark_finished()
+            return
+
         # Nothing to finalise: no FinishTool, or it was blocked by a hook.
         if not self.has_finish or self.action_events[-1].id in self.blocked_reasons:
             return
@@ -1236,9 +1334,12 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
     def _analyze_for_confirmation(
         self, state: ConversationState, action_events: list[ActionEvent]
     ) -> tuple[list[risk.SecurityRisk], SecurityAnalysisEvent | None]:
-        # A single `FinishAction` or `ThinkAction` never requires confirmation
-        if len(action_events) == 1 and isinstance(
-            action_events[0].action, (FinishAction, ThinkAction)
+        # A single `FinishAction` or `ThinkAction` never requires confirmation,
+        # nor does a single call that only ends the turn (`ask_user`): it asks
+        # the user, so confirming it would be asking twice.
+        if len(action_events) == 1 and (
+            isinstance(action_events[0].action, (FinishAction, ThinkAction))
+            or self._only_ends_turn(action_events[0])
         ):
             return [], None
 
@@ -1260,6 +1361,16 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             },
         )
         return [analysis.risk for _, analysis in analyses], event
+
+    def _only_ends_turn(self, action_event: ActionEvent) -> bool:
+        """Whether the call is to a read-only tool that ends the turn."""
+        tool = self.tools_map.get(action_event.tool_name)
+        return (
+            tool is not None
+            and tool.ends_turn
+            and tool.annotations is not None
+            and tool.annotations.readOnlyHint is True
+        )
 
     @staticmethod
     def _set_confirmation_status(

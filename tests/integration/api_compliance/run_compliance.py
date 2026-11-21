@@ -7,18 +7,18 @@ and generates a report documenting API behavior.
 
 Usage:
     # Run all patterns against all models
-    uv run python tests/integration/api_compliance/run_compliance.py
+    uv run python -m tests.integration.api_compliance.run_compliance
 
     # Run specific patterns
-    uv run python tests/integration/api_compliance/run_compliance.py \
+    uv run python -m tests.integration.api_compliance.run_compliance \
         --patterns unmatched_tool_use,interleaved_user_message
 
     # Run against specific models
-    uv run python tests/integration/api_compliance/run_compliance.py \
+    uv run python -m tests.integration.api_compliance.run_compliance \
         --models claude-sonnet-4-5,gpt-5.5
 
     # Output to specific directory
-    uv run python tests/integration/api_compliance/run_compliance.py \
+    uv run python -m tests.integration.api_compliance.run_compliance \
         --output-dir ./compliance-results
 """
 

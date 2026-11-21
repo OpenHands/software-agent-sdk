@@ -25,6 +25,7 @@ from pydantic import SecretStr
 
 from openhands.agent_server.persistence.models import (
     CustomSecret,
+    PersistedProjects,
     PersistedSettings,
     PersistedWorkspaces,
     Secrets,
@@ -36,8 +37,9 @@ from openhands.sdk.profiles.agent_profile_store import AgentProfileStore
 from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
 from openhands.sdk.utils.path import get_user_persistence_dir
 from openhands.sdk.utils.pydantic_secrets import (
-    STRICT_DECRYPT_CONTEXT_KEY,
     SecretDecryptionError,
+    cipher_context,
+    client_context,
 )
 
 
@@ -270,13 +272,6 @@ def _file_has_stale_token(path: Path, cipher: Cipher | None) -> bool:
     return _has_stale_token(cipher, data)
 
 
-def _load_context(cipher: Cipher | None, strict: bool) -> dict[str, Any] | None:
-    """Validation context for loading a store file with ``cipher``."""
-    if cipher is None:
-        return None
-    return {"cipher": cipher, STRICT_DECRYPT_CONTEXT_KEY: strict}
-
-
 class SettingsStore(ABC):
     """Abstract base class for settings storage."""
 
@@ -301,6 +296,15 @@ class SettingsStore(ABC):
         Returns:
             The updated settings after saving.
         """
+
+    def experimental_features(self) -> dict[str, bool]:
+        """The user's experimental feature switches, as saved now.
+
+        For checks that follow a switch at once (a route, a wake-up). Raises
+        what :meth:`load` raises when the settings cannot be read.
+        """
+        settings = self.load() or PersistedSettings()
+        return dict(settings.experimental_features)
 
 
 class SecretsStore(ABC):
@@ -352,13 +356,15 @@ class FileSettingsStore(SettingsStore):
         self.filename = filename
         self._path = self.persistence_dir / filename
         self._lock_path = self.persistence_dir / ".settings.lock"
+        # The switches last read, with the file's (mtime_ns, size) then.
+        self._features_cache: tuple[tuple[int, int], dict[str, bool]] | None = None
 
     def load(self, *, strict: bool = False) -> PersistedSettings | None:
         """Load settings from file.
 
         If a cipher is provided, secrets are decrypted via Pydantic's
         validation context. The cipher is passed to model_validate which
-        flows through to field validators using validate_secret().
+        flows through to the models' ``SecretField`` validators.
 
         A secret the cipher cannot decrypt loads as ``None``. With
         ``strict=True`` (read-modify-write paths) the load fails instead,
@@ -373,8 +379,7 @@ class FileSettingsStore(SettingsStore):
                 data = json.load(f)
 
             # Pass cipher in context for automatic decryption of all secret fields
-            # This flows through to field validators using validate_secret()
-            context = _load_context(self.cipher, strict)
+            context = cipher_context(self.cipher, strict=strict)
             return PersistedSettings.from_persisted(data, context=context)
         except SecretDecryptionError as e:
             logger.error(f"Cannot load settings for update: {e}")
@@ -397,7 +402,7 @@ class FileSettingsStore(SettingsStore):
 
         If a cipher is provided, secrets are encrypted via Pydantic's
         serialization context. The cipher is passed to model_dump which
-        flows through to field serializers using serialize_secret().
+        flows through to the models' ``SecretField`` serializers.
 
         Warning:
             This method does NOT acquire a file lock. For concurrent-safe
@@ -411,11 +416,10 @@ class FileSettingsStore(SettingsStore):
         _ensure_secure_directory(self.persistence_dir)
 
         # Pass cipher in context for automatic encryption of all secret fields
-        # This flows through to field serializers using serialize_secret()
         if self.cipher:
-            context: dict[str, Any] = {"cipher": self.cipher}
+            context = cipher_context(self.cipher)
         else:
-            context = {"expose_secrets": "plaintext"}
+            context = client_context("plaintext")
             # Warn about plaintext secret storage (only if secrets exist)
             if settings.has_any_secret:
                 logger.warning(
@@ -426,7 +430,30 @@ class FileSettingsStore(SettingsStore):
         data = settings.model_dump(mode="json", context=context)
 
         _atomic_write_json(self._path, data)
+        # A file system with coarse timestamps can keep the mtime and size
+        # across a quick save; forget the switches so the next check reads.
+        self._features_cache = None
         logger.debug(f"Settings saved to {self._path}")
+
+    def experimental_features(self) -> dict[str, bool]:
+        """The saved switches, read again only when the file changed.
+
+        A flag check is then one ``stat``, not a read and a decryption of
+        every secret in the file. The file's modification time and size key
+        the cache, so a save here or by another process shows on the next
+        check.
+        """
+        try:
+            stat = self._path.stat()
+        except FileNotFoundError:
+            return {}
+        key = (stat.st_mtime_ns, stat.st_size)
+        cached = self._features_cache
+        if cached is not None and cached[0] == key:
+            return dict(cached[1])
+        features = super().experimental_features()
+        self._features_cache = (key, features)
+        return dict(features)
 
     def update(
         self, update_fn: Callable[[PersistedSettings], PersistedSettings]
@@ -528,7 +555,7 @@ class FileSecretsStore(SecretsStore):
 
         If a cipher is provided, secrets are decrypted via Pydantic's
         validation context. The cipher is passed to model_validate which
-        flows through to field validators using validate_secret().
+        flows through to the models' ``SecretField`` validators.
 
         A secret the cipher cannot decrypt loads as ``None``. With
         ``strict=True`` (read-modify-write paths) the load fails instead,
@@ -543,7 +570,7 @@ class FileSecretsStore(SecretsStore):
                 data = json.load(f)
 
             # Pass cipher in context for automatic decryption of all secret fields
-            context = _load_context(self.cipher, strict)
+            context = cipher_context(self.cipher, strict=strict)
             return Secrets.model_validate(data, context=context)
         except SecretDecryptionError as e:
             logger.error(f"Cannot load secrets for update: {e}")
@@ -622,9 +649,9 @@ class FileSecretsStore(SecretsStore):
 
         # Pass cipher in context for automatic encryption of all secret fields
         if self.cipher:
-            context: dict[str, Any] = {"cipher": self.cipher}
+            context = cipher_context(self.cipher)
         else:
-            context = {"expose_secrets": "plaintext"}
+            context = client_context("plaintext")
             # Warn about plaintext secret storage (only if secrets exist)
             if secrets.has_any_secret:
                 logger.warning(
@@ -883,6 +910,82 @@ class FileWorkspacesStore(WorkspacesStore):
             return updated
 
 
+class FileProjectsStore:
+    """File-based storage for projects.
+
+    Persists a single JSON document at ``<persistence_dir>/projects.json``
+    using the same atomic-write + file-lock primitives as
+    ``FileWorkspacesStore``. Projects hold no secrets, so no cipher is used.
+    """
+
+    def __init__(
+        self,
+        persistence_dir: Path | str,
+        filename: str = "projects.json",
+    ):
+        _validate_filename(filename)
+        self.persistence_dir = Path(persistence_dir)
+        self.filename = filename
+        self._path = self.persistence_dir / filename
+        self._lock_path = self.persistence_dir / ".projects.lock"
+
+    def exists(self) -> bool:
+        return self._path.exists()
+
+    def load(self) -> PersistedProjects | None:
+        """Load projects; ``None`` when the file is missing or unreadable.
+
+        Raises ``OSError`` when the file exists but cannot be accessed.
+        """
+        if not self._path.exists():
+            return None
+        try:
+            with self._path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            return PersistedProjects.from_persisted(data)
+        except (PermissionError, OSError) as e:
+            logger.error(f"Cannot access projects file: {e}")
+            raise
+        except json.JSONDecodeError as e:
+            logger.error(f"Projects file is corrupted: {e}")
+            return None
+        except Exception:
+            logger.error("Failed to load projects", exc_info=True)
+            return None
+
+    def save(self, projects: PersistedProjects) -> None:
+        _ensure_secure_directory(self.persistence_dir)
+        _atomic_write_json(self._path, projects.model_dump(mode="json"))
+        logger.debug(f"Projects saved to {self._path}")
+
+    def update(
+        self,
+        update_fn: Callable[[PersistedProjects], PersistedProjects],
+    ) -> PersistedProjects:
+        """Read, change and write projects under the file lock.
+
+        ``update_fn`` returns its input unchanged to skip the write.
+
+        Raises:
+            RuntimeError: If the file exists but cannot be parsed; it is never
+                overwritten with defaults.
+        """
+        with _file_lock(self._lock_path):
+            projects = self.load()
+            if projects is None:
+                if self._path.exists():
+                    raise RuntimeError(
+                        f"Cannot load projects from {self._path}. "
+                        "File may be corrupted. "
+                        "Refusing to overwrite with defaults to prevent data loss."
+                    )
+                projects = PersistedProjects()
+            updated = update_fn(projects)
+            if updated is not projects:
+                self.save(updated)
+            return updated
+
+
 # ── Per-server stores ────────────────────────────────────────────────────
 
 
@@ -988,6 +1091,14 @@ class ServerStores:
         return self._once(
             "workspaces",
             lambda: FileWorkspacesStore(persistence_dir=self.workspace_dir),
+        )
+
+    @property
+    def projects(self) -> FileProjectsStore:
+        """Stored next to the workspaces store, in ``projects.json``."""
+        return self._once(
+            "projects",
+            lambda: FileProjectsStore(persistence_dir=self.workspace_dir),
         )
 
     @property

@@ -26,6 +26,7 @@ Routes: `POST /api/auth/workspace-session`, `DELETE /api/auth/workspace-session`
 - `F02.ws-legacy-key`: the deprecated `session_api_key` query parameter and `X-Session-API-Key` header still open a socket, and a redundant auth frame sent after them is ignored.
 - `F02.ws-legacy-reject`: a wrong legacy key rejects the handshake itself (HTTP 403, no close frame), even when a correct first frame would follow.
 - `F02.workspace-session-mint`: `POST /api/auth/workspace-session` answers 204 with an HttpOnly `oh_workspace_session_key` cookie on `Path=/api/conversations`, `SameSite=none; Secure; Partitioned` on a loopback host, and 401 with no cookie without a valid header (the cookie itself cannot mint another).
+- `F02.workspace-session-plain-http`: over plain HTTP to a non-loopback host (no `X-Forwarded-Proto: https`) the workspace cookie is minted `SameSite=lax` without `Secure` or `Partitioned`, so browsers store it; the same host over HTTPS gets `SameSite=none; Secure; Partitioned`.
 - `F02.workspace-cookie-access`: the minted cookie alone (a cookie jar, no header) loads workspace files, also after a restart; a bogus cookie or no credential gets 401.
 - `F02.workspace-session-delete`: `DELETE /api/auth/workspace-session` answers 204 with a `Max-Age=0` cookie on the same path, which drops the cookie from the jar so workspace files are 401 again; 401 without a header.
 - `F02.multiple-keys`: every configured key (`OH_SESSION_API_KEYS_0`, `_1`, ...) authenticates HTTP and WebSocket clients; an unlisted key does not.
@@ -518,6 +519,25 @@ Preconditions:
   `http://[::1]:PORT`. `request.url.hostname` returns the IPv6 address
   unbracketed (`::1`), so `_request_is_secure_context` strips a `:port`
   suffix only from a bracketed host or a host with a single colon.
+- **Plain HTTP to a non-loopback host (`F02.workspace-session-plain-http`).**
+  Mint as a browser at a LAN address over plain HTTP would (Canvas served by
+  a VM, a container or another machine), then as the same host behind a
+  TLS-terminating proxy.
+  ```sh
+  control-agent-server api POST /api/auth/workspace-session --header 'Host: 10.244.8.163:8000' --expect 204 --save F02.workspace-session-plain-http/lan-http \
+    --check-header set-cookie contains 'SameSite=lax' --check-header set-cookie contains HttpOnly \
+    --check-header set-cookie not-contains Secure --check-header set-cookie not-contains Partitioned
+  control-agent-server api POST /api/auth/workspace-session --header 'Host: 10.244.8.163:8000' --header 'X-Forwarded-Proto: https' --expect 204 \
+    --save F02.workspace-session-plain-http/lan-https --check-header set-cookie contains 'SameSite=none' \
+    --check-header set-cookie contains Secure --check-header set-cookie contains Partitioned
+  ```
+  Over plain HTTP to a non-loopback host the cookie is `SameSite=lax`,
+  without `Secure` or `Partitioned`: browsers refuse to store a
+  `SameSite=none` cookie that is not `Secure`, while a `Lax` cookie is stored
+  and sent on the same-site requests Canvas makes when it shares the
+  server's origin, so its file previews load. Cross-site embedding on plain
+  HTTP stays unsupported. The same host behind HTTPS (`X-Forwarded-Proto:
+  https`) gets `SameSite=none; Secure; Partitioned`, like loopback.
 
 ## Gotchas
 
@@ -558,3 +578,4 @@ Preconditions:
 - With keys configured and no `--host`, the server binds `0.0.0.0`; without
   keys, `127.0.0.1` (`F02.default-bind`). The launcher always passes
   `--host 127.0.0.1`, so only `F02.default-bind` sees the default.
+- Agent Canvas bundles Agent Server 1.62.0 by default, which mints the cookie `SameSite=none` on plain HTTP too, so Canvas file previews on a plain-HTTP non-loopback origin get 401 until Canvas pins a release that has `F02.workspace-session-plain-http` ([OpenHands/OpenHands#15567](https://github.com/OpenHands/OpenHands/issues/15567), [#15519](https://github.com/OpenHands/OpenHands/issues/15519)).

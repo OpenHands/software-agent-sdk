@@ -1,4 +1,4 @@
-"""Classify LLM responses and dispatch to type-specific handlers.
+﻿"""Classify LLM responses and dispatch to type-specific handlers.
 
 Contains:
   - ``LLMResponseType`` — enum for response classification.

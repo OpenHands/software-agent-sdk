@@ -13,8 +13,10 @@ persistence directory and workspace) with this directory on PYTHONPATH:
     emit({"ok": True, "events": 3})
 
 `make_llm()` without a script returns the run's real model (`control-sdk new
---llm deepseek-flash`), reading the key from DEEPSEEK_API_KEY at call time. A
-missing key exits 3, which `control-sdk` and `sdk-map run` report as blocked.
+--llm deepseek-flash`), reading the key from DEEPSEEK_API_KEY at call time, or,
+with $LLM_BASE_URL and $LLM_API_KEY set, deepseek-flash through that LiteLLM
+proxy (as `control-agent-server llm preset deepseek` does). A missing key exits
+3, which `control-sdk` and `sdk-map run` report as blocked.
 Keys are never printed or written.
 """
 
@@ -42,6 +44,32 @@ MODELS: dict[str, dict[str, str]] = {
         "base_url": "https://api.deepseek.com",
     },
 }
+
+# With $LLM_BASE_URL and $LLM_API_KEY set, these models go through that LiteLLM
+# proxy instead, with the model name it serves.
+PROXY_MODELS: dict[str, str] = {
+    "deepseek-flash": "litellm_proxy/deepseek-v4.1-flash",
+}
+PROXY_ENVS = (
+    ("SDK_VERIFY_LLM_BASE_URL", "SDK_VERIFY_LLM_API_KEY"),
+    ("LLM_BASE_URL", "LLM_API_KEY"),
+)
+
+
+def model_spec(name: str) -> dict[str, str] | None:
+    """The run model's model, key variable and base URL: the proxy route when
+    $LLM_BASE_URL and $LLM_API_KEY are set and it serves the model, otherwise
+    the provider's own."""
+    spec = MODELS.get(name)
+    if spec is None:
+        return None
+    # A run drops the caller's LLM_* variables; control-sdk carries the proxy
+    # into it as SDK_VERIFY_LLM_BASE_URL and SDK_VERIFY_LLM_API_KEY.
+    for url_env, key_env in PROXY_ENVS:
+        base_url = os.environ.get(url_env)
+        if name in PROXY_MODELS and base_url and os.environ.get(key_env):
+            return {"model": PROXY_MODELS[name], "env": key_env, "base_url": base_url}
+    return spec
 
 
 def emit(result: dict[str, Any]) -> None:
@@ -154,10 +182,12 @@ def make_llm(
             f"run model is {name!r}: pass a script, or create the run with"
             f" `control-sdk new --llm {next(iter(MODELS))}`"
         )
-    spec = MODELS[name]
+    spec = model_spec(name) or MODELS[name]
     key = os.environ.get(spec["env"])
     if not key:
         blocked(f"set {spec['env']} for {name}")
+    if spec["env"] != MODELS[name]["env"]:
+        kwargs.setdefault("base_url", spec["base_url"])
     return LLM(
         model=spec["model"], api_key=SecretStr(key or ""), usage_id=usage_id, **kwargs
     )
@@ -165,7 +195,8 @@ def make_llm(
 
 def has_model_key() -> bool:
     name = run_config().get("llm", "scripted")
-    return name in MODELS and bool(os.environ.get(MODELS[name]["env"]))
+    spec = model_spec(name)
+    return spec is not None and bool(os.environ.get(spec["env"]))
 
 
 # --------------------------------------------------------------------------
@@ -252,7 +283,7 @@ def event_summary(index: int, event: Any) -> dict[str, Any]:
     observation = getattr(event, "observation", None)
     if observation is not None:
         row["tool"] = getattr(event, "tool_name", None)
-        row["text"] = _clip(_observation_text(observation))
+        row["text"] = _clip(_observation_text(observation), 2000)
         row["is_error"] = bool(getattr(observation, "is_error", False))
     message = getattr(event, "llm_message", None)
     if message is not None and type(event).__name__ == "MessageEvent":
