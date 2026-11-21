@@ -95,9 +95,11 @@ class ActivateMetaProfileResponse(BaseModel):
 
 
 def _set_active_meta_profile_if_matches(
-    settings_store: FileSettingsStore, old_name: str, new_name: str | None
+    settings_store: FileSettingsStore,
+    settings: PersistedSettings,
+    old_name: str,
+    new_name: str | None,
 ) -> bool:
-    settings = settings_store.load() or PersistedSettings()
     if settings.active_meta_profile != old_name:
         return False
 
@@ -119,12 +121,16 @@ def _set_active_meta_profile_if_matches(
     return True
 
 
-@meta_profiles_router.get("", response_model=MetaProfileListResponse)
+@meta_profiles_router.get(
+    "",
+    response_model=MetaProfileListResponse,
+    responses={409: {"description": "settings.json exists but cannot be read"}},
+)
 def list_meta_profiles(
     settings_store: FileSettingsStore = Depends(get_settings_store),
 ) -> MetaProfileListResponse:
     """List all saved meta-profiles and the currently active one."""
-    settings = settings_store.load() or PersistedSettings()
+    settings = settings_store.load_existing() or PersistedSettings()
 
     store = _get_meta_profile_store()
     summaries = store.list_summaries()
@@ -176,7 +182,11 @@ def save_meta_profile(
     )
 
 
-@meta_profiles_router.delete("/{name}", response_model=MetaProfileMutationResponse)
+@meta_profiles_router.delete(
+    "/{name}",
+    response_model=MetaProfileMutationResponse,
+    responses={409: {"description": "settings.json exists but cannot be read"}},
+)
 def delete_meta_profile(
     name: MetaProfileName,
     settings_store: FileSettingsStore = Depends(get_settings_store),
@@ -186,9 +196,12 @@ def delete_meta_profile(
     If the deleted meta-profile is the active one, ``active_meta_profile`` is
     cleared.
     """
+    # Read before deleting so corrupt settings fail the request while the
+    # meta-profile still exists, instead of after the deletion already happened.
+    settings = settings_store.load_existing() or PersistedSettings()
     store = _get_meta_profile_store()
     store.delete(name)
-    if _set_active_meta_profile_if_matches(settings_store, name, None):
+    if _set_active_meta_profile_if_matches(settings_store, settings, name, None):
         logger.info(f"Cleared active_meta_profile for deleted meta-profile '{name}'")
     logger.info(f"Deleted meta-profile '{name}'")
     return MetaProfileMutationResponse(

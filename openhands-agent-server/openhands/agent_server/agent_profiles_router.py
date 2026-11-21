@@ -239,7 +239,7 @@ def _ensure_active_profile(stores: ServerStores, cipher: Cipher | None) -> None:
     store = stores.agent_profiles
     settings_store = stores.settings
     with store.lock():
-        settings = settings_store.load() or PersistedSettings()
+        settings = settings_store.load_existing() or PersistedSettings()
         active_id = settings.active_agent_profile_id
         if active_id is not None and store.name_for_id(active_id) is not None:
             return
@@ -313,7 +313,7 @@ def active_agent_profile(
     """Return the active Agent Profile, activating ``default`` when none is."""
     store = stores.agent_profiles
     _ensure_active_profile(stores, cipher)
-    settings = stores.settings.load() or PersistedSettings()
+    settings = stores.settings.load_existing() or PersistedSettings()
     if settings.active_agent_profile_id is None:
         return None
     name = store.name_for_id(settings.active_agent_profile_id)
@@ -335,7 +335,11 @@ def _summary_id_for_name(store: AgentProfileStore, name: str) -> str | None:
     return None
 
 
-@agent_profiles_router.get("", response_model=AgentProfileListResponse)
+@agent_profiles_router.get(
+    "",
+    response_model=AgentProfileListResponse,
+    responses={409: {"description": "settings.json exists but cannot be read"}},
+)
 def list_agent_profiles(
     stores: ServerStores = Depends(get_stores),
     cipher: Cipher | None = Depends(get_cipher),
@@ -346,11 +350,11 @@ def list_agent_profiles(
     activated, and seeded from the current ``agent_settings`` when absent.
     """
     settings_store = stores.settings
-    settings = settings_store.load() or PersistedSettings()
+    settings = settings_store.load_existing() or PersistedSettings()
 
     store = stores.agent_profiles
     _ensure_active_profile(stores, cipher)
-    settings = settings_store.load() or settings
+    settings = settings_store.load_existing() or settings
 
     summaries = store.list_summaries()
 
@@ -437,7 +441,11 @@ def save_agent_profile(
     )
 
 
-@agent_profiles_router.delete("/{name}", response_model=AgentProfileMutationResponse)
+@agent_profiles_router.delete(
+    "/{name}",
+    response_model=AgentProfileMutationResponse,
+    responses={409: {"description": "settings.json exists but cannot be read"}},
+)
 def delete_agent_profile(
     name: ProfileName,
     stores: ServerStores = Depends(get_stores),
@@ -454,31 +462,33 @@ def delete_agent_profile(
     store = stores.agent_profiles
     deleted_id = _summary_id_for_name(store, name)
 
+    settings_store = stores.settings
+    # Read before deleting so corrupt settings fail the request while the
+    # profile still exists, instead of after the deletion already happened.
+    settings = settings_store.load_existing() or PersistedSettings()
+
     store.delete(name)
 
-    if deleted_id is not None:
-        settings_store = stores.settings
-        settings = settings_store.load() or PersistedSettings()
-        if settings.active_agent_profile_id == deleted_id:
+    if deleted_id is not None and settings.active_agent_profile_id == deleted_id:
 
-            def clear_pointer_and_reset_settings(
-                s: PersistedSettings,
-            ) -> PersistedSettings:
-                s.active_agent_profile_id = None
-                prior_kind = s.agent_settings.agent_kind
-                if prior_kind != "openhands":
-                    s.agent_settings = apply_agent_settings_diff(
-                        s.agent_settings, {"agent_kind": "openhands"}
-                    )
-                    logger.info(
-                        f"Reset agent_settings to default "
-                        f"(agent_settings was agent_kind='{prior_kind}')"
-                    )
-                return s
+        def clear_pointer_and_reset_settings(
+            s: PersistedSettings,
+        ) -> PersistedSettings:
+            s.active_agent_profile_id = None
+            prior_kind = s.agent_settings.agent_kind
+            if prior_kind != "openhands":
+                s.agent_settings = apply_agent_settings_diff(
+                    s.agent_settings, {"agent_kind": "openhands"}
+                )
+                logger.info(
+                    f"Reset agent_settings to default "
+                    f"(agent_settings was agent_kind='{prior_kind}')"
+                )
+            return s
 
-            settings_store.update(clear_pointer_and_reset_settings)
-            logger.info(f"Cleared active pointer for deleted profile '{name}'")
-            _ensure_active_profile(stores, cipher)
+        settings_store.update(clear_pointer_and_reset_settings)
+        logger.info(f"Cleared active pointer for deleted profile '{name}'")
+        _ensure_active_profile(stores, cipher)
 
     logger.info(f"Deleted agent profile '{name}'")
     return AgentProfileMutationResponse(
@@ -587,7 +597,7 @@ async def materialize_agent_profile(
         except FileNotFoundError:
             raise NotFound(f"Agent profile '{name}' not found")
 
-    settings = await run_store(stores.settings.load) or PersistedSettings()
+    settings = await run_store(stores.settings.load_existing) or PersistedSettings()
     context = settings.agent_settings.agent_context
     return await asyncio.to_thread(
         lambda: preview_launch(
