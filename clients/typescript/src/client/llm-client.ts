@@ -6,6 +6,7 @@ import {
   LLMSubscriptionStatusResponse,
   ModelsResponse,
   ProvidersResponse,
+  UpstreamModelsQueryOptions,
   VerifiedModelsResponse,
 } from '../models/api';
 
@@ -44,6 +45,20 @@ export class LLMMetadataClient {
 
   async getVerifiedModels(): Promise<Record<string, string[]>> {
     const response = await this.client.get<VerifiedModelsResponse>('/api/llm/models/verified');
+    return response.data.models;
+  }
+
+  async getUpstreamModels(options: UpstreamModelsQueryOptions): Promise<string[]> {
+    const params: Record<string, string> = {};
+    if (options.baseUrl) {
+      params.base_url = options.baseUrl;
+    }
+    if (options.profileName) {
+      params.profile_name = options.profileName;
+    }
+    const response = await this.client.get<ModelsResponse>('/api/llm/models/upstream', {
+      params,
+    });
     return response.data.models;
   }
 
