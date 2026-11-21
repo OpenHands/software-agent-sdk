@@ -187,7 +187,9 @@ class GlobExecutor(ToolExecutor[GlobAction, GlobObservation]):
             "--sortr=modified",
         ]
 
-        # Execute ripgrep
+        # Execute ripgrep from the search path: it resolves a -g glob that
+        # contains "/" (e.g. "src/**/*.ts") against its own working directory,
+        # not against the directory it is asked to search.
         result = subprocess.run(
             cmd,
             capture_output=True,
@@ -195,6 +197,7 @@ class GlobExecutor(ToolExecutor[GlobAction, GlobObservation]):
             timeout=30,
             check=False,
             env=sanitized_env(),
+            cwd=search_path,
         )
 
         # Parse output into file paths (ripgrep already sorted by --sortr=modified)
