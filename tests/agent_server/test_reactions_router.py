@@ -1,24 +1,30 @@
 """Tests for POST /api/conversations/{id}/reactions."""
 
 from collections.abc import AsyncIterator
+from unittest.mock import patch
 from uuid import UUID
 
 import httpx
 import pytest
 from fastapi import FastAPI
 
-from openhands.agent_server.config import Config
+from openhands.agent_server.api import add_domain_error_handler
 from openhands.agent_server.conversation_service import ConversationService
-from openhands.agent_server.dependencies import get_conversation_service
+from openhands.agent_server.dependencies import (
+    get_conversation_service,
+    get_settings_store,
+)
 from openhands.agent_server.event_router import event_router
+from openhands.agent_server.exceptions import ServiceInactive
 from openhands.agent_server.experimental_features import (
     RUNTIME_EXPERIMENTAL_FEATURES_ENV,
 )
 from openhands.agent_server.models import StartConversationRequest
-from openhands.agent_server.persistence import PersistedSettings, get_settings_store
+from openhands.agent_server.persistence import PersistedSettings, ServerStores
 from openhands.sdk import LLM, Agent, Message, TextContent
 from openhands.sdk.event import MessageEvent, ReactionEvent
 from openhands.sdk.workspace import LocalWorkspace
+from tests.agent_server.conftest import install_test_context
 
 
 @pytest.fixture
@@ -29,25 +35,27 @@ async def service(tmp_path) -> AsyncIterator[ConversationService]:
         yield service
 
 
-def _set_reactions(enabled: bool) -> None:
+def _set_reactions(stores: ServerStores, enabled: bool) -> None:
     def apply(settings: PersistedSettings) -> PersistedSettings:
         settings.experimental_features = {"conversation_reactions": enabled}
         return settings
 
-    get_settings_store().update(apply)
+    stores.settings.update(apply)
 
 
 @pytest.fixture(autouse=True)
-def reactions_on():
-    _set_reactions(True)
+def reactions_on(server_stores: ServerStores):
+    _set_reactions(server_stores, True)
 
 
 @pytest.fixture
-async def client(service) -> AsyncIterator[httpx.AsyncClient]:
+async def client(
+    service, server_stores: ServerStores
+) -> AsyncIterator[httpx.AsyncClient]:
     app = FastAPI()
-    app.state.config = Config(
-        static_files_path=None, session_api_keys=[], secret_key=None
-    )
+    add_domain_error_handler(app)
+    install_test_context(app)
+    app.dependency_overrides[get_settings_store] = lambda: server_stores.settings
     app.include_router(event_router, prefix="/api")
     app.dependency_overrides[get_conversation_service] = lambda: service
     transport = httpx.ASGITransport(app=app)
@@ -102,6 +110,11 @@ async def test_user_reacts_and_unreacts(client, service, tmp_path):
     assert removed.json()["removed"] is True
     saved = await _reactions(service, cid)
     assert [(e.emoji, e.removed) for e in saved] == [("+1", False), ("+1", True)]
+    # The response is the event as stored, parent included.
+    assert [added.json()["parent_id"], removed.json()["parent_id"]] == [
+        e.parent_id for e in saved
+    ]
+    assert added.json()["parent_id"] == answer.id
 
 
 @pytest.mark.asyncio
@@ -123,10 +136,10 @@ async def test_bad_reactions_are_refused(client, service, tmp_path):
 
 @pytest.mark.asyncio
 async def test_reactions_are_refused_while_the_feature_is_off(
-    client, service, tmp_path
+    client, service, tmp_path, server_stores
 ):
     cid, _ = await _conversation_with_answer(service, tmp_path)
-    _set_reactions(False)
+    _set_reactions(server_stores, False)
 
     response = await client.post(
         f"/api/conversations/{cid}/reactions", json={"emoji": "+1"}
@@ -138,16 +151,33 @@ async def test_reactions_are_refused_while_the_feature_is_off(
 
 @pytest.mark.asyncio
 async def test_a_docker_runtime_leaves_the_switch_to_its_host(
-    client, service, tmp_path, monkeypatch
+    client, service, tmp_path, monkeypatch, server_stores
 ):
     # In a runtime container the host checks the switch before forwarding;
     # the container's own settings are empty.
     monkeypatch.setenv(RUNTIME_EXPERIMENTAL_FEATURES_ENV, "{}")
     cid, _ = await _conversation_with_answer(service, tmp_path)
-    _set_reactions(False)
+    _set_reactions(server_stores, False)
 
     response = await client.post(
         f"/api/conversations/{cid}/reactions", json={"emoji": "+1"}
     )
 
     assert response.status_code == 200, response.text
+
+
+@pytest.mark.asyncio
+async def test_an_inactive_service_is_not_a_bad_reaction(client, service, tmp_path):
+    """ServiceInactive is a server state, not a bad request: it is not a 400."""
+    cid, _ = await _conversation_with_answer(service, tmp_path)
+    event_service = await service.get_event_service(cid)
+    assert event_service is not None
+
+    async def inactive(*args, **kwargs):
+        raise ServiceInactive()
+
+    with (
+        patch.object(event_service, "react", inactive),
+        pytest.raises(ServiceInactive),
+    ):
+        await client.post(f"/api/conversations/{cid}/reactions", json={"emoji": "+1"})

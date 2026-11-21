@@ -1,3 +1,4 @@
+import math
 import threading
 import time
 from collections.abc import Mapping
@@ -52,9 +53,19 @@ _TMUX_POOL_RECOVERY_MESSAGE = (
 
 _TMUX_RECOVERABLE_ERROR_MARKERS = (
     "no server running",
+    "server exited unexpectedly",
+    # The server is still alive but has no sessions left (the persistent shell
+    # exited and took the session with it before the server noticed). tmux
+    # cannot resolve the pane target, so it reports "no current target".
+    "no current target",
     "can't find session",
+    "can't find pane",
     "could not find window_id",
     "could not find pane_id",
+    # tmux reports this when a command's target pane is already gone and
+    # the server has no current session/window/pane context to fall back
+    # to (e.g. a server that briefly outlives its last session).
+    "no current target",
 )
 
 logger = get_logger(__name__)
@@ -73,6 +84,7 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         env: Mapping[str, str] | None = None,
         full_output_save_dir: str | None = None,
         max_panes: int = DEFAULT_MAX_PANES,
+        max_observation_wait_seconds: float | None = None,
     ):
         """Initialize TerminalExecutor with auto-detected or specified session type.
 
@@ -90,7 +102,16 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
             full_output_save_dir: Path to directory to save full output
                                   logs and files, used when truncation is needed.
             max_panes: Maximum number of concurrent panes in pool mode.
+            max_observation_wait_seconds: Finite positive cap on each execution
+                observation-loop wait, including follow-up polls. None leaves existing
+                timeout behavior unchanged. Does not terminate running commands.
         """
+        if max_observation_wait_seconds is not None and (
+            not math.isfinite(max_observation_wait_seconds)
+            or max_observation_wait_seconds <= 0
+        ):
+            raise ValueError("max_observation_wait_seconds must be finite and positive")
+        self._max_observation_wait_seconds = max_observation_wait_seconds
         self.shell_path = shell_path
         self._working_dir = working_dir
         self._username = username
@@ -122,6 +143,7 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
                 terminal_type=terminal_type,
                 shell_path=shell_path,
                 env=self._env,
+                max_observation_wait_seconds=self._max_observation_wait_seconds,
             )
             self._session.initialize()
             logger.info(
@@ -217,7 +239,9 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
                 # attach_to_existing to skip session.initialize() which
                 # would create a duplicate tmux session.
                 session = TerminalSession.attach_to_existing(
-                    terminal, self._no_change_timeout_seconds
+                    terminal,
+                    self._no_change_timeout_seconds,
+                    self._max_observation_wait_seconds,
                 )
                 self._sessions[pane_id] = session
             return self._sessions[pane_id]
@@ -420,6 +444,7 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
             terminal_type=None,
             shell_path=self.shell_path,
             env=self._env,
+            max_observation_wait_seconds=self._max_observation_wait_seconds,
         )
         self._session.initialize()
 
@@ -451,7 +476,15 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         conversation: "LocalConversation | None" = None,
     ) -> TerminalObservation:
         """Execute *action* in single-session (non-pool) mode."""
-        if action.reset or self.session._closed:
+        # Self-heal: a session whose shell exited, was killed, or was declared
+        # unresponsive after a failed interrupt is replaced before the command
+        # is accepted, so the model never has to discover that itself.
+        if action.reset or self.session._closed or not self.session.is_alive():
+            if not action.reset and not self.session._closed:
+                logger.warning(
+                    "Terminal session is no longer alive; recreating it before "
+                    "running the next command"
+                )
             reset_result = self._reset_single_session()
 
             if action.command.strip():

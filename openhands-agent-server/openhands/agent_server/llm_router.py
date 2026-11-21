@@ -10,9 +10,10 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Query
 from pydantic import BaseModel, Field
 
+from openhands.sdk.errors import NotFound, UpstreamFailed, UpstreamTimeout
 from openhands.sdk.llm.auth.openai import (
     DEVICE_CODE_TIMEOUT_SECONDS,
     OPENAI_CODEX_MODELS,
@@ -113,21 +114,12 @@ def _openai_upstream_errors() -> Iterator[None]:
     try:
         yield
     except httpx.TimeoutException as exc:
-        raise HTTPException(
-            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-            detail="OpenAI did not answer in time",
-        ) from exc
+        raise UpstreamTimeout("OpenAI did not answer in time") from exc
     except httpx.HTTPError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="OpenAI is unreachable",
-        ) from exc
+        raise UpstreamFailed("OpenAI is unreachable") from exc
     except RuntimeError as exc:
         # The SDK raises RuntimeError for a non-2xx or malformed OpenAI answer.
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"OpenAI device login failed: {exc}",
-        ) from exc
+        raise UpstreamFailed(f"OpenAI device login failed: {exc}") from exc
 
 
 def _drop_expired_device_logins() -> None:
@@ -256,10 +248,7 @@ async def poll_openai_subscription_device_login(
         if pending is None:
             if request.device_code in _IN_FLIGHT_OPENAI_DEVICE_LOGINS:
                 return SubscriptionStatusResponse(connected=False)
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Subscription device login not found or expired",
-            )
+            raise NotFound("Subscription device login not found or expired")
         _IN_FLIGHT_OPENAI_DEVICE_LOGINS.add(request.device_code)
 
     auth = _get_openai_subscription_auth()

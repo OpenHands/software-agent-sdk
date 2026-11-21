@@ -16,7 +16,7 @@ from typing import Final, Protocol
 from urllib.parse import unquote, urlparse
 
 import httpx
-from fastapi import HTTPException, Request, Response, WebSocket, status
+from fastapi import Request, Response, WebSocket
 from pydantic import BaseModel
 
 from openhands.agent_server.auth_router import (
@@ -27,6 +27,17 @@ from openhands.agent_server.docker_runtime.proxy import (
     bridge_websocket,
     proxy_http,
     strip_auth_query,
+)
+from openhands.sdk.errors import (
+    Conflict,
+    DomainError,
+    Forbidden,
+    Invalid,
+    Misdirected,
+    Unauthenticated,
+    Unavailable,
+    UpstreamFailed,
+    UpstreamTimeout,
 )
 
 
@@ -232,16 +243,10 @@ def get_app_backend_session_store(
 def _public_url(config: Config) -> str:
     value = config.app_backend_public_url
     if not value:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            "Canvas App backend ingress is not configured",
-        )
+        raise Unavailable("Canvas App backend ingress is not configured")
     parsed = urlparse(value)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            "Canvas App backend ingress is misconfigured",
-        )
+        raise Unavailable("Canvas App backend ingress is misconfigured")
     return value.rstrip("/")
 
 
@@ -272,7 +277,7 @@ def _allowed_control_origin(config: Config, origin: str) -> bool:
     )
 
 
-def _request_origin(request: Request | WebSocket) -> str | None:
+def _request_origin(request: Request | WebSocket, config: Config) -> str | None:
     """Derive the request origin from the connection the server actually saw.
 
     ``X-Forwarded-Proto``/``X-Forwarded-Host`` are client-controllable, so they
@@ -280,9 +285,7 @@ def _request_origin(request: Request | WebSocket) -> str | None:
     proxy terminates TLS in front of this server. Otherwise the request's own
     scheme and ``Host`` decide — the same inputs a spoofing client cannot fake.
     """
-    config: Config | None = getattr(request.app.state, "config", None)
-    trust_forwarded = bool(config and config.trust_forwarded_headers)
-    if trust_forwarded:
+    if config.trust_forwarded_headers:
         forwarded_proto = request.headers.get("x-forwarded-proto", "")
         scheme = forwarded_proto.split(",")[0].strip() or request.url.scheme
         forwarded_host = request.headers.get("x-forwarded-host", "")
@@ -294,30 +297,27 @@ def _request_origin(request: Request | WebSocket) -> str | None:
     return _origin(f"{scheme}://{host}")
 
 
-def _require_ingress_host(request: Request | WebSocket, public_url: str) -> None:
-    if _request_origin(request) != _origin(public_url):
-        raise HTTPException(
-            status.HTTP_421_MISDIRECTED_REQUEST,
-            "Canvas App request must use the configured ingress origin",
-        )
+def _require_ingress_host(
+    request: Request | WebSocket, public_url: str, config: Config
+) -> None:
+    if _request_origin(request, config) != _origin(public_url):
+        raise Misdirected("Canvas App request must use the configured ingress origin")
 
 
-def _require_bootstrap_origin(request: Request, public_url: str) -> None:
-    _require_ingress_host(request, public_url)
+def _require_bootstrap_origin(
+    request: Request, public_url: str, config: Config
+) -> None:
+    _require_ingress_host(request, public_url, config)
     origin = request.headers.get("origin", "")
-    config: Config = request.app.state.config
     if not _allowed_control_origin(config, origin):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Origin is not allowed")
+        raise Forbidden("Origin is not allowed")
     if _origin(origin) == _origin(public_url):
-        raise HTTPException(
-            status.HTTP_409_CONFLICT,
-            "Canvas App ingress must use a separate browser origin",
-        )
+        raise Conflict("Canvas App ingress must use a separate browser origin")
 
 
 def _require_app_origin(origin: str | None, public_url: str) -> None:
     if not origin or _origin(origin) != _origin(public_url):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Origin is not allowed")
+        raise Forbidden("Origin is not allowed")
 
 
 def _validate_proxy_path(path: str) -> None:
@@ -338,9 +338,9 @@ def _validate_proxy_path(path: str) -> None:
             break
         candidate = decoded
     else:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid backend path")
+        raise Invalid("Invalid backend path")
     if "\\" in candidate or any(part in {".", ".."} for part in candidate.split("/")):
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid backend path")
+        raise Invalid("Invalid backend path")
 
 
 def _ready_endpoint(
@@ -351,16 +351,10 @@ def _ready_endpoint(
     )
     endpoint = manager.ready_endpoint(extension_name) if manager is not None else None
     if endpoint is None:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            "Canvas App backend is not ready",
-        )
+        raise Unavailable("Canvas App backend is not ready")
     host, port = endpoint
     if host not in {"127.0.0.1", "::1", "localhost"}:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            "Canvas App backend target is not loopback",
-        )
+        raise Unavailable("Canvas App backend target is not loopback")
     return host, port
 
 
@@ -374,14 +368,14 @@ def _cookie_path(extension_name: str) -> str:
     return f"{_APP_BACKEND_PATH}/{extension_name}"
 
 
-def _session_cookie_is_secure(request: Request) -> bool:
+def _session_cookie_is_secure(request: Request, config: Config) -> bool:
     """Whether a ``Secure`` app-session cookie can be issued for this request.
 
     Uses :func:`_request_origin`, so it makes the same non-spoofable
     trusted-proxy decision as the ingress checks rather than reading
     ``X-Forwarded-*`` unconditionally.
     """
-    origin = _request_origin(request)
+    origin = _request_origin(request, config)
     if origin is None:
         return False
     parsed = urlparse(origin)
@@ -396,11 +390,11 @@ def _set_session_cookie(
     extension_name: str,
     token: str,
     max_age: int,
+    config: Config,
 ) -> None:
-    if not _session_cookie_is_secure(request):
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            "Canvas App sessions require HTTPS or a loopback secure context",
+    if not _session_cookie_is_secure(request, config):
+        raise Unavailable(
+            "Canvas App sessions require HTTPS or a loopback secure context"
         )
     response.set_cookie(
         key=APP_BACKEND_SESSION_COOKIE_NAME,
@@ -415,10 +409,10 @@ def _set_session_cookie(
 
 
 async def create_app_backend_session(
-    request: Request, response: Response, extension_name: str
+    request: Request, response: Response, extension_name: str, config: Config
 ) -> AppBackendSessionResponse:
-    public_url = _public_url(request.app.state.config)
-    _require_bootstrap_origin(request, public_url)
+    public_url = _public_url(config)
+    _require_bootstrap_origin(request, public_url, config)
     endpoint = _ready_endpoint(request, extension_name)
     token, session = await get_app_backend_session_store(request).create(
         extension_name, endpoint
@@ -429,6 +423,7 @@ async def create_app_backend_session(
         extension_name,
         token,
         APP_BACKEND_SESSION_TTL_SECONDS,
+        config,
     )
     return AppBackendSessionResponse(
         ingress_url=f"{public_url}{_cookie_path(extension_name)}/",
@@ -437,21 +432,21 @@ async def create_app_backend_session(
 
 
 async def delete_app_backend_session(
-    request: Request, response: Response, extension_name: str
+    request: Request, response: Response, extension_name: str, config: Config
 ) -> None:
-    public_url = _public_url(request.app.state.config)
-    _require_bootstrap_origin(request, public_url)
+    public_url = _public_url(config)
+    _require_bootstrap_origin(request, public_url, config)
     token = request.cookies.get(APP_BACKEND_SESSION_COOKIE_NAME)
     await get_app_backend_session_store(request).revoke_token(token)
-    _set_session_cookie(response, request, extension_name, "", 0)
+    _set_session_cookie(response, request, extension_name, "", 0, config)
 
 
 async def proxy_app_backend_http(
-    request: Request, extension_name: str, path: str
+    request: Request, extension_name: str, path: str, config: Config
 ) -> Response:
     _validate_proxy_path(path)
-    public_url = _public_url(request.app.state.config)
-    _require_ingress_host(request, public_url)
+    public_url = _public_url(config)
+    _require_ingress_host(request, public_url, config)
     if request.method not in _SAFE_METHODS:
         _require_app_origin(request.headers.get("origin"), public_url)
     endpoint = _ready_endpoint(request, extension_name)
@@ -460,7 +455,7 @@ async def proxy_app_backend_http(
         token, extension_name, endpoint
     )
     if session is None:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED)
+        raise Unauthenticated()
     query = strip_auth_query("?" + request.url.query).lstrip("?")
     upstream_path = f"/{path}" if path else "/"
     if query:
@@ -472,33 +467,31 @@ async def proxy_app_backend_http(
             upstream_path=upstream_path,
             reject_redirects=True,
         )
-    except HTTPException as exc:
+    except UpstreamFailed as exc:
         # proxy_http words connection failures for the Docker runtime
         # ("Conversation container unreachable"); name the Canvas backend.
-        if exc.status_code == status.HTTP_502_BAD_GATEWAY and isinstance(
+        if not isinstance(exc, UpstreamTimeout) and isinstance(
             exc.__cause__, httpx.HTTPError
         ):
-            raise HTTPException(
-                status.HTTP_502_BAD_GATEWAY, "Canvas App backend unreachable"
-            ) from exc.__cause__
+            raise UpstreamFailed("Canvas App backend unreachable") from exc.__cause__
         raise
 
 
 async def proxy_app_backend_websocket(
-    websocket: WebSocket, extension_name: str, path: str
+    websocket: WebSocket, extension_name: str, path: str, config: Config
 ) -> None:
     try:
         _validate_proxy_path(path)
-        public_url = _public_url(websocket.app.state.config)
-        _require_ingress_host(websocket, public_url)
+        public_url = _public_url(config)
+        _require_ingress_host(websocket, public_url, config)
         _require_app_origin(websocket.headers.get("origin"), public_url)
         endpoint = _ready_endpoint(websocket, extension_name)
         token = websocket.cookies.get(APP_BACKEND_SESSION_COOKIE_NAME)
         store = get_app_backend_session_store(websocket)
         session = await store.authorize(token, extension_name, endpoint)
         if session is None:
-            raise HTTPException(status.HTTP_401_UNAUTHORIZED)
-    except HTTPException:
+            raise Unauthenticated()
+    except DomainError:
         await websocket.close(code=1008)
         return
 

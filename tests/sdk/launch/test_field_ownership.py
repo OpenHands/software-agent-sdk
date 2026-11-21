@@ -99,6 +99,7 @@ OPENHANDS_CONTEXT = {
     "load_project_skills": Fixed(True),
     "load_memory": LAUNCH,
     "memory_context": LAUNCH,
+    "project_context": LAUNCH,
     "disabled_skills": PROFILE,
     "secrets": NotOnProfile("a profile is secret-free; secrets ride the request"),
     "current_datetime": LAUNCH,
@@ -160,6 +161,8 @@ ACP_FIELDS: dict[str, Any] = {
 
 PROFILE_IDENTITY = {"schema_version", "id", "name", "revision", "agent_kind"}
 PROFILE_SCOPE = {"secret_refs", "integration_refs"}
+# Read by the host that provisions the sandbox; never resolved into settings.
+PROFILE_HOST = {"sandbox"}
 
 SETTINGS_MODELS: dict[type[BaseModel], dict[str, Any]] = {
     OpenHandsAgentSettings: OPENHANDS_FIELDS,
@@ -224,7 +227,7 @@ def test_every_profile_owned_field_exists_on_the_profile(settings_model, profile
     ids=["openhands", "acp"],
 )
 def test_every_profile_field_has_a_use(settings_model, profile_model):
-    used = PROFILE_IDENTITY | PROFILE_SCOPE
+    used = PROFILE_IDENTITY | PROFILE_SCOPE | PROFILE_HOST
     for path, owner in _leaves(SETTINGS_MODELS[settings_model]):
         if isinstance(owner, Profile):
             used.add(path.removeprefix("agent_context.").split(".")[0])

@@ -781,7 +781,7 @@ def test_git_pull_request_status_without_token_is_409_with_code(client):
     }
 
 
-def test_git_pull_request_status_rate_limit_is_429(client):
+def test_git_pull_request_status_rate_limit_keeps_retry_after(client):
     """The route sets GitHub's Retry-After on the exception (kept by #6706)."""
     with patch(
         "openhands.agent_server.git_router.get_provider_pull_request",
@@ -793,6 +793,7 @@ def test_git_pull_request_status_rate_limit_is_429(client):
         response = client.get(_PR_PATH, params={"provider": "github"})
 
     assert response.status_code == 429
+    assert response.headers["retry-after"] == "30"
 
 
 @pytest.mark.parametrize(
