@@ -119,6 +119,13 @@ class ApplyPatchExecutor(ToolExecutor[ApplyPatchAction, ApplyPatchObservation]):
             msg, fuzz, commit = process_patch(
                 action.patch, open_file, write_file, remove_file
             )
+            for path, change in commit.changes.items():
+                if change.move_path and self._resolve_path(path) == self._resolve_path(
+                    change.move_path
+                ):
+                    raise DiffError(
+                        "Move source and destination must be different paths"
+                    )
             for operation in pending:
                 operation()
             # Include a human-readable summary in content so Responses API sees

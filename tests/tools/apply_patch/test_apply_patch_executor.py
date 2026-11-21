@@ -328,3 +328,61 @@ def test_update_preserves_crlf_line_endings(tmp_ws: Path):
 
     assert not obs.is_error
     assert fp.read_bytes() == b"a\r\nB\r\n"
+
+
+@pytest.mark.parametrize(
+    "move_to",
+    [
+        "source.txt",
+        "./source.txt",
+        pytest.param(
+            "source-link.txt",
+            marks=pytest.mark.skipif(os.name == "nt", reason="requires POSIX symlinks"),
+        ),
+    ],
+)
+def test_move_to_same_resolved_path_rejects_whole_patch(tmp_ws: Path, move_to: str):
+    source = tmp_ws / "source.txt"
+    source.write_text("before\n")
+    if move_to == "source-link.txt":
+        (tmp_ws / move_to).symlink_to("source.txt")
+    patch = (
+        "*** Begin Patch\n"
+        "*** Add File: earlier.txt\n"
+        "+queued\n"
+        "*** Update File: source.txt\n"
+        f"*** Move to: {move_to}\n"
+        "@@\n"
+        "-before\n"
+        "+after\n"
+        "*** End Patch"
+    )
+
+    obs = run_exec(tmp_ws, patch)
+
+    assert obs.is_error
+    assert "different paths" in obs.text
+    assert source.read_text() == "before\n"
+    assert not (tmp_ws / "earlier.txt").exists()
+    if move_to == "source-link.txt":
+        assert (tmp_ws / move_to).is_symlink()
+
+
+def test_move_to_distinct_path_preserves_updated_content(tmp_ws: Path):
+    source = tmp_ws / "source.txt"
+    source.write_text("before\n")
+    patch = (
+        "*** Begin Patch\n"
+        "*** Update File: source.txt\n"
+        "*** Move to: nested/renamed.txt\n"
+        "@@\n"
+        "-before\n"
+        "+after\n"
+        "*** End Patch"
+    )
+
+    obs = run_exec(tmp_ws, patch)
+
+    assert not obs.is_error
+    assert not source.exists()
+    assert (tmp_ws / "nested/renamed.txt").read_text() == "after\n"
