@@ -262,6 +262,7 @@ class LocalConversation(BaseConversation):
     _cleanup_initiated: bool
     _cleanup_complete: bool
     _hook_processor: HookEventProcessor | None
+    _session_start_source: str
     delete_on_close: bool = True
     _arun_task: asyncio.Task[None] | None
     _cancel_token: CancellationToken | None
@@ -496,6 +497,9 @@ class LocalConversation(BaseConversation):
             stuck_detection=stuck_detection,
             cipher=cipher,
             tags=tags,
+        )
+        self._session_start_source = (
+            "resume" if self._state._restored_from_persistence else "startup"
         )
         # base_state.json is the source of truth for the agent. On resume with
         # ``agent=None`` the state holds the persisted agent; adopt it here so
@@ -1563,7 +1567,7 @@ class LocalConversation(BaseConversation):
             )
             self._on_event = self._tree_stamping(self._rules_injecting(raw_on_event))
             self._hook_processor.set_conversation_state(self._state)
-            self._hook_processor.run_session_start()
+            self._hook_processor.run_session_start(source=self._session_start_source)
 
         self._plugins_loaded = True
 
@@ -1657,7 +1661,7 @@ class LocalConversation(BaseConversation):
         )
         self._on_event = self._tree_stamping(self._rules_injecting(raw_on_event))
         self._hook_processor.set_conversation_state(self._state)
-        self._hook_processor.run_session_start()
+        self._hook_processor.run_session_start(source=self._session_start_source)
 
     def _runtime_mcp_tools(
         self,

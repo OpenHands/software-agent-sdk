@@ -338,6 +338,7 @@ class ConversationState(OpenHandsModel):
     )  # FIFO lock for thread safety
     _save_depth: int = PrivateAttr(default=0)  # context-manager nesting depth
     _dirty: bool = PrivateAttr(default=False)  # pending unsaved field changes
+    _restored_from_persistence: bool = PrivateAttr(default=False)
 
     @model_validator(mode="before")
     @classmethod
@@ -701,6 +702,7 @@ class ConversationState(OpenHandsModel):
             # Use cipher context for decrypting secrets if provided
             context = cipher_context(cipher)
             state = cls.model_validate(json.loads(base_text), context=context)
+            state._restored_from_persistence = True
 
             # Restore the conversation with the same id
             if state.id != id:

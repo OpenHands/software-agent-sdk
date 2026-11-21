@@ -151,13 +151,17 @@ class HookManager:
 
         return should_continue, additional_context, results
 
-    def run_session_start(self) -> list[HookResult]:
+    def run_session_start(self, source: str = "startup") -> list[HookResult]:
         """Run SessionStart hooks when a conversation begins."""
-        hooks = self.config.get_hooks_for_event(HookEventType.SESSION_START)
+        hooks = self.config.get_hooks_for_event(
+            HookEventType.SESSION_START, source=source
+        )
         if not hooks:
             return []
 
-        event = self._create_event(HookEventType.SESSION_START)
+        event = self._create_event(
+            HookEventType.SESSION_START, metadata={"source": source}
+        )
         return self.executor.execute_all(hooks, event, stop_on_block=False)
 
     def run_session_end(self) -> list[HookResult]:

@@ -485,6 +485,46 @@ class TestAsyncHooks:
         assert start_hooks[0].async_ is True
 
 
+@pytest.mark.parametrize(
+    ("source", "expected_commands"),
+    [
+        pytest.param("startup", ["startup.sh", "all.sh", "empty.sh"], id="startup"),
+        pytest.param("resume", ["resume.sh", "all.sh", "empty.sh"], id="resume"),
+        pytest.param(None, ["all.sh", "empty.sh"], id="unspecified"),
+    ],
+)
+def test_session_start_matchers_use_session_source(
+    source: str | None, expected_commands: list[str]
+):
+    config = HookConfig(
+        session_start=[
+            HookMatcher(
+                matcher="startup|clear|compact",
+                hooks=[HookDefinition(command="startup.sh")],
+            ),
+            HookMatcher(matcher="resume", hooks=[HookDefinition(command="resume.sh")]),
+            HookMatcher(matcher="*", hooks=[HookDefinition(command="all.sh")]),
+            HookMatcher(matcher="", hooks=[HookDefinition(command="empty.sh")]),
+        ]
+    )
+
+    hooks = config.get_hooks_for_event(HookEventType.SESSION_START, source=source)
+
+    assert [hook.command for hook in hooks] == expected_commands
+
+
+def test_session_start_keeps_positional_match_value_compatibility():
+    config = HookConfig(
+        session_start=[
+            HookMatcher(matcher="startup", hooks=[HookDefinition(command="startup.sh")])
+        ]
+    )
+
+    hooks = config.get_hooks_for_event(HookEventType.SESSION_START, "startup")
+
+    assert [hook.command for hook in hooks] == ["startup.sh"]
+
+
 def test_issue_2749():
     """Prompt-based stop hooks should not cause a validation error.
 

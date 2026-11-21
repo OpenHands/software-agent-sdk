@@ -2471,3 +2471,59 @@ def test_public_skills_disabled_keeps_marketplace_github(
     assert set(skills) == {"github"}
     assert "PUBLIC" not in skills["github"]
     conversation.close()
+
+
+def test_session_start_source_distinguishes_new_and_resumed_conversations(
+    tmp_path: Path, basic_agent: Agent
+):
+    persistence_dir = tmp_path / "conversations"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    conversation_id = uuid.uuid4()
+    hook_config = HookConfig(
+        session_start=[
+            HookMatcher(
+                matcher="startup|resume",
+                hooks=[HookDefinition(command="echo session-start")],
+            )
+        ]
+    )
+    processors = []
+
+    def create_processor(*args, **kwargs):
+        processor = MagicMock()
+        processor.on_event = MagicMock()
+        processors.append(processor)
+        return processor, processor.on_event
+
+    with patch(
+        "openhands.sdk.conversation.impl.local_conversation.create_hook_callback",
+        side_effect=create_processor,
+    ):
+        conversation = LocalConversation(
+            agent=basic_agent,
+            workspace=workspace,
+            conversation_id=conversation_id,
+            persistence_dir=str(persistence_dir),
+            hook_config=hook_config,
+            visualizer=None,
+            delete_on_close=False,
+        )
+        conversation._ensure_plugins_loaded()
+        conversation.close()
+
+        resumed = LocalConversation(
+            agent=None,
+            workspace=workspace,
+            conversation_id=conversation_id,
+            persistence_dir=str(persistence_dir),
+            hook_config=hook_config,
+            visualizer=None,
+            delete_on_close=False,
+        )
+        resumed._ensure_plugins_loaded()
+        resumed.close()
+
+    assert len(processors) == 2
+    processors[0].run_session_start.assert_called_once_with(source="startup")
+    processors[1].run_session_start.assert_called_once_with(source="resume")
