@@ -43,6 +43,8 @@ from openhands.sdk.conversation.types import (
     ConversationTokenCallbackType,
     StuckDetectionThresholds,
     TraceMetadataValue,
+    WebSocketClient,
+    WebSocketClientFactory,
 )
 from openhands.sdk.conversation.visualizer import (
     ConversationVisualizerBase,
@@ -185,7 +187,6 @@ class WebSocketCallbackClient:
 
     host: str
     conversation_id: str
-    callback: ConversationCallbackType
     on_reconnect: Callable[[], object] | None
     api_key: str | None
     _thread: threading.Thread | None
@@ -202,7 +203,7 @@ class WebSocketCallbackClient:
     ):
         self.host = host
         self.conversation_id = conversation_id
-        self.callback = callback
+        self.callback: ConversationCallbackType = callback
         self.api_key = api_key
         self.on_reconnect = on_reconnect
         self._thread = None
@@ -782,7 +783,8 @@ class RemoteConversation(BaseConversation):
     _id: uuid.UUID
     _state: "RemoteState"
     _visualizer: ConversationVisualizerBase | None
-    _ws_client: "WebSocketCallbackClient | None"
+    _ws_client: WebSocketClient | None
+    _websocket_client_factory: WebSocketClientFactory | None
     agent: AgentBase
     _callbacks: list[ConversationCallbackType]
     max_iteration_per_run: int
@@ -820,6 +822,8 @@ class RemoteConversation(BaseConversation):
         observability_span_name: str = "conversation",
         observability_parent_span_context: str | None = None,
         token_callbacks: list[ConversationTokenCallbackType] | None = None,
+        *,
+        websocket_client_factory: WebSocketClientFactory | None = None,
         **_: object,
     ) -> None:
         """Remote conversation proxy that talks to an agent server.
@@ -831,6 +835,8 @@ class RemoteConversation(BaseConversation):
                     is a PluginSource specifying source, ref, and repo_path.
             conversation_id: Optional existing conversation id to attach to
             callbacks: Optional callbacks to receive events (not yet streamed)
+            websocket_client_factory: Optional event transport factory. The default
+                WebSocket client is resolved when the connection is initialized.
             max_iteration_per_run: Max iterations configured on server
             max_budget_per_run: Optional hard cost ceiling (USD) enforced on
                     the server. Only applied when creating a new conversation;
@@ -1012,6 +1018,7 @@ class RemoteConversation(BaseConversation):
             initial_state=initial_state,
             client_tools=[*(client_tools or []), *attached_client_tools],
             visualizer=visualizer,
+            websocket_client_factory=websocket_client_factory,
         )
 
         # Initialize secrets if provided
@@ -1043,6 +1050,7 @@ class RemoteConversation(BaseConversation):
         visualizer: (
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ) = DefaultConversationVisualizer,
+        websocket_client_factory: WebSocketClientFactory | None = None,
     ) -> Self:
         """Submit a creation request and connect to the returned conversation.
 
@@ -1077,7 +1085,9 @@ class RemoteConversation(BaseConversation):
         )
         info = response.json()
         workspace.register_conversation(info["id"])
-        conversation = cls._from_info(workspace, info, callbacks, visualizer)
+        conversation = cls._from_info(
+            workspace, info, callbacks, visualizer, websocket_client_factory
+        )
         conversation._start_observability_span(
             str(conversation.id),
             span_name=request.observability_span_name,
@@ -1099,6 +1109,7 @@ class RemoteConversation(BaseConversation):
         visualizer: (
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ) = DefaultConversationVisualizer,
+        websocket_client_factory: WebSocketClientFactory | None = None,
     ) -> Self:
         """Connect using the saved agent; never create or update a conversation.
 
@@ -1107,7 +1118,9 @@ class RemoteConversation(BaseConversation):
         response = _send_request(
             workspace.client, "GET", f"{CONVERSATIONS_PATH}/{conversation_id}"
         )
-        conversation = cls._from_info(workspace, response.json(), callbacks, visualizer)
+        conversation = cls._from_info(
+            workspace, response.json(), callbacks, visualizer, websocket_client_factory
+        )
         conversation._start_observability_span(str(conversation.id))
         return conversation
 
@@ -1120,6 +1133,7 @@ class RemoteConversation(BaseConversation):
         visualizer: (
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ),
+        websocket_client_factory: WebSocketClientFactory | None = None,
     ) -> Self:
         _restore_tool_registrations(info.get("tool_module_qualnames") or {})
         conversation = cls.__new__(cls)
@@ -1135,6 +1149,7 @@ class RemoteConversation(BaseConversation):
                 for spec in info.get("client_tools") or []
             ],
             visualizer=visualizer,
+            websocket_client_factory=websocket_client_factory,
         )
         return conversation
 
@@ -1152,6 +1167,7 @@ class RemoteConversation(BaseConversation):
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ),
         token_callbacks: list[ConversationTokenCallbackType] | None = None,
+        websocket_client_factory: WebSocketClientFactory | None = None,
     ) -> None:
         super().__init__()  # Initialize base class with span tracking
         self.agent = agent
@@ -1162,6 +1178,8 @@ class RemoteConversation(BaseConversation):
         self.workspace = workspace
         self._client = workspace.client
         self._cleanup_initiated = False
+        self._ws_client = None
+        self._websocket_client_factory = websocket_client_factory
         self._terminal_status_queue: Queue[str] = Queue()
         self._run_armed = threading.Event()
 
@@ -1290,54 +1308,59 @@ class RemoteConversation(BaseConversation):
                     logger.exception("ws_replay_callback_error", stack_info=True)
 
         # Initialize WebSocket client for callbacks
-        self._ws_client = WebSocketCallbackClient(
+        factory = (
+            WebSocketCallbackClient
+            if websocket_client_factory is None
+            else websocket_client_factory
+        )
+        self._ws_client = factory(
             host=self.workspace.host,
             conversation_id=str(self._id),
             callback=socket_callback,
             api_key=self.workspace.api_key,
             on_reconnect=replay_missed_events,
         )
-        self._ws_client.start()
+        try:
+            self._ws_client.start()
 
-        # Wait for WebSocket subscription to complete before allowing operations.
-        # This ensures events emitted during send_message() are not missed.
-        # The server sends a ConversationStateUpdateEvent after subscription.
-        ws_timeout = float(os.getenv("OPENHANDS_REMOTE_WS_READY_TIMEOUT", "30"))
-        if not self._ws_client.wait_until_ready(timeout=ws_timeout):
-            if os.getenv("OPENHANDS_REMOTE_WS_READY_REQUIRED", "true").lower() in (
-                "0",
-                "false",
-                "no",
-            ):
-                logger.warning(
-                    "WebSocket subscription did not become ready within %.1f "
-                    "seconds for conversation %s; continuing after REST "
-                    "reconciliation because OPENHANDS_REMOTE_WS_READY_REQUIRED "
-                    "is false.",
-                    ws_timeout,
-                    self._id,
-                )
-            else:
-                failure_reason = self._ws_client.failure_reason
-                try:
-                    self._ws_client.stop()
-                except Exception:
-                    pass
-                finally:
-                    self._ws_client = None
-                raise WebSocketConnectionError(
-                    conversation_id=self._id,
-                    timeout=ws_timeout,
-                    message=failure_reason,
-                )
+            # Wait for WebSocket subscription to complete before allowing operations.
+            # This ensures events emitted during send_message() are not missed.
+            # The server sends a ConversationStateUpdateEvent after subscription.
+            ws_timeout = float(os.getenv("OPENHANDS_REMOTE_WS_READY_TIMEOUT", "30"))
+            if not self._ws_client.wait_until_ready(timeout=ws_timeout):
+                if os.getenv("OPENHANDS_REMOTE_WS_READY_REQUIRED", "true").lower() in (
+                    "0",
+                    "false",
+                    "no",
+                ):
+                    logger.warning(
+                        "WebSocket subscription did not become ready within %.1f "
+                        "seconds for conversation %s; continuing after REST "
+                        "reconciliation because OPENHANDS_REMOTE_WS_READY_REQUIRED "
+                        "is false.",
+                        ws_timeout,
+                        self._id,
+                    )
+                else:
+                    failure_reason = getattr(self._ws_client, "failure_reason", None)
+                    raise WebSocketConnectionError(
+                        conversation_id=self._id,
+                        timeout=ws_timeout,
+                        message=failure_reason,
+                    )
 
-        # Reconcile events after WebSocket is ready to catch any events that
-        # were emitted between the initial REST sync and WebSocket subscription.
-        # This is the "reconciliation" part of the subscription handshake.
-        self._state.events.reconcile()
-        # Callbacks are not replayed history: only events recorded after this
-        # point and missed by the socket are replayed on reconnect.
-        delivered_ids.update(event.id for event in self._state.events[:])
+            self._state.events.reconcile()
+            # Preserve upstream's reconnect replay boundary: historical events
+            # are already known, while later missed events reach callbacks.
+            delivered_ids.update(event.id for event in self._state.events[:])
+        except BaseException:
+            try:
+                self._ws_client.stop()
+            except Exception:
+                pass
+            finally:
+                self._ws_client = None
+            raise
 
     def _create_llm_completion_log_callback(self) -> ConversationCallbackType:
         """Create a callback that writes LLM completion logs to client filesystem."""
@@ -1987,6 +2010,7 @@ class RemoteConversation(BaseConversation):
             max_iteration_per_run=self.max_iteration_per_run,
             delete_on_close=self.delete_on_close,
             tags=server_tags,
+            websocket_client_factory=self._websocket_client_factory,
         )
 
     def navigate_to(self, event_id: EventID | None) -> None:
@@ -2077,7 +2101,7 @@ class RemoteConversation(BaseConversation):
             # SessionEnd hooks are executed server-side (via hook_config in payload).
             try:
                 # Stop WebSocket client if it exists
-                if self._ws_client:
+                if self._ws_client is not None:
                     self._ws_client.stop()
                     self._ws_client = None
             except Exception:
