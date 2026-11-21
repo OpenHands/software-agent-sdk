@@ -654,10 +654,17 @@ Preconditions:
     --contains 'Project memory: MEMORY.md as it was when this conversation started' --expect-count 1 \
     --save F36.memory-tool/child
   control-agent-server conversation events "$MEMCHILD" --kinds SystemPromptEvent --contains 'Deploys go through staging.' --expect-count 1
+  control-agent-server conversation wait "$MEMCHILD" --until finished --timeout 300
+  control-agent-server api GET "/api/conversations/$CAT/events/search" --query kind=MessageEvent --query 'body=Update from' \
+    --query sort_order=TIMESTAMP_DESC --check items contains "conversation:${MEM//-/}" \
+    --check items contains "conversation:${MEMCHILD//-/}" --until-ok 120
+  control-agent-server conversation wait "$CAT" --until idle,finished --timeout 300
   ```
   The member merges its line into the index it read, and the next
   conversation the coordinator starts sees the index, with that line, in the
-  `<PROJECT>` block of its system prompt.
+  `<PROJECT>` block of its system prompt. Both members' updates reach the
+  coordinator, and the recipe waits for its run on them, so a later restart
+  does not leave an update unanswered.
 - **Restart (`F36.persist-restart`).**
   Requires: `F36.create`, `F36.coordinator`
   ```sh
