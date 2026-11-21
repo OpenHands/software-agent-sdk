@@ -1740,11 +1740,39 @@ class LocalConversation(BaseConversation):
         prefixed: bool,
     ) -> list[MCPToolDefinition]:
         # A multi-server config has always named its tools `{server}_{tool}`;
-        # keep that, also for tools the server adds or changes later.
+        # keep that, also for tools the server adds or changes later. Even on a
+        # single-server config (`not prefixed`), fall back to `{server}_{tool}`
+        # when an MCP tool collides with a reserved/existing agent tool (such as
+        # built-in `terminal`) or duplicates an earlier tool from the same server,
+        # preserving native executors and valid sibling MCP tools.
         def named(tools: Sequence[MCPToolDefinition]) -> list[MCPToolDefinition]:
-            if not prefixed:
-                return list(tools)
-            return [tool.with_server_prefix(name) for tool in tools]
+            reserved = (
+                {
+                    t_name
+                    for t_name, t_def in self.agent.tools_map.items()
+                    if not isinstance(t_def, MCPToolDefinition)
+                }
+                if self.agent._initialized
+                else set()
+            )
+            seen: set[str] = set()
+            resolved: list[MCPToolDefinition] = []
+            for tool in tools:
+                candidate = (
+                    tool.with_server_prefix(name)
+                    if (prefixed or tool.name in reserved or tool.name in seen)
+                    else tool
+                )
+                if candidate.name in reserved or candidate.name in seen:
+                    logger.warning(
+                        "Skipping colliding MCP tool %r from server %r",
+                        candidate.name,
+                        name,
+                    )
+                    continue
+                seen.add(candidate.name)
+                resolved.append(candidate)
+            return resolved
 
         create_kwargs = dict(create_kwargs)
         on_changed = create_kwargs.get("on_tools_changed")
