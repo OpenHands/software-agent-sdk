@@ -58,8 +58,6 @@ export interface ProjectConversation {
   turn: 'asking' | 'finished' | null;
   /** The question, in one line, while `turn` is `asking`. */
   ask: string | null;
-  /** The first line of the agent's latest message, kept across turns. */
-  last_message: string | null;
   /** GitHub pull requests the agent opened, oldest first. */
   pull_requests: ProjectPullRequest[];
   automation_id: string | null;

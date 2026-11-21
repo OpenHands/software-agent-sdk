@@ -30,7 +30,6 @@ from openhands.agent_server.project_turns import card_text
 from openhands.agent_server.project_wake import notify_coordinator, pass_on_answer
 from openhands.agent_server.projects_router import projects_router
 from openhands.sdk import LLM, Agent
-from openhands.sdk.conversation.types import ACTIVITY_TAG_KEYS
 from openhands.sdk.event import ActionEvent, Event, MessageEvent, ObservationEvent
 from openhands.sdk.event.ask_user import AskUserAnswerEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
@@ -107,12 +106,6 @@ def test_only_the_coordinators_ask_user_names_a_conversation():
 # The board: a turn that ends on a card
 
 
-def _board(tags: dict[str, str]) -> dict[str, str]:
-    """The tags without the activity ones (latest line, pull requests), which
-    the board tests do not look at."""
-    return {k: v for k, v in tags.items() if k not in ACTIVITY_TAG_KEYS}
-
-
 class _Tags:
     def __init__(self, tags: dict[str, str]):
         self.tags = tags
@@ -179,7 +172,7 @@ async def test_a_turn_ending_on_a_card_is_asked_and_reported():
 
     await _feed(subscriber, _user("Write config.yaml", cat), ask, _finished())
 
-    assert _board(store.tags) == {
+    assert store.tags == {
         "project": "p1",
         "turn": "asking",
         "ask": "Which database should config.yaml use?",

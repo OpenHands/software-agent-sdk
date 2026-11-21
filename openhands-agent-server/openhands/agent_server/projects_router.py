@@ -87,7 +87,6 @@ from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.title_utils import extract_message_text
 from openhands.sdk.conversation.types import (
     ASK_TAG_KEY,
-    LAST_MESSAGE_TAG_KEY,
     PROJECT_TAG_KEY,
     PROJECTS_OFF_DETAIL,
     PULL_REQUESTS_TAG_KEY,
@@ -340,13 +339,6 @@ class ProjectConversation(BaseModel):
             "new user message clears it."
         ),
     )
-    last_message: str | None = Field(
-        default=None,
-        description=(
-            "The first line of the agent's latest message, at most 160 "
-            "characters. Backed by the `lastmessage` tag; kept across turns."
-        ),
-    )
     pull_requests: list[ProjectPullRequest] = Field(
         default_factory=list,
         description=(
@@ -501,7 +493,6 @@ def _conversation(
         else None,
         turn=turn,
         ask=(stored.tags.get(ASK_TAG_KEY) or None) if turn == "asking" else None,
-        last_message=stored.tags.get(LAST_MESSAGE_TAG_KEY) or None,
         pull_requests=_pull_requests(stored.tags.get(PULL_REQUESTS_TAG_KEY)),
         automation_id=stored.tags.get(AUTOMATION_ID_TAG_KEY) or None,
         parent_conversation_id=stored.parent_conversation_id,

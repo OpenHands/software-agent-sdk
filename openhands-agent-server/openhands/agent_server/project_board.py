@@ -17,9 +17,8 @@ but never judged or resolved: the coordinator is how the user steers the
 project, so it stays open. A new
 user message removes these tags, since the conversation is open again. It also
 tells the coordinator what it needs to hear: finished turns, stops on the
-user, the user's own messages and answers to cards. Across turns it keeps
-what a member did: the first line of the agent's latest message
-(``lastmessage``) and the pull requests it opened (``prs``).
+user, the user's own messages and answers to cards. Across turns it keeps the
+pull requests a member opened (``prs``).
 
 The board reads these tags from the conversation catalog, so listing a project
 never loads conversation state or events.
@@ -32,7 +31,6 @@ from typing import Any, Final, Literal
 from uuid import UUID
 
 from openhands.agent_server.project_turns import (
-    AgentSaid,
     CardAnswered,
     PullRequestsOpened,
     TurnEnded,
@@ -49,7 +47,6 @@ from openhands.sdk.conversation.resolution import ResolutionState, ResolutionVer
 from openhands.sdk.conversation.types import (
     ASK_TAG_KEY,
     BOARD_TAG_KEYS,
-    LAST_MESSAGE_TAG_KEY,
     PROJECT_TAG_KEY,
     PULL_REQUESTS_TAG_KEY,
     RESOLVE_NOTE_TAG_KEY,
@@ -191,8 +188,6 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
         elif isinstance(signal, TurnStopped):
             if self.on_stopped is not None:
                 self._notify_stopped(project, signal, self.on_stopped)
-        elif isinstance(signal, AgentSaid):
-            self._enqueue(lambda: self._set_activity(LAST_MESSAGE_TAG_KEY, signal.line))
         elif isinstance(signal, PullRequestsOpened):
             self._enqueue(lambda: self._add_pull_requests(signal.refs))
         else:
@@ -243,17 +238,13 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
 
         self._tail = asyncio.create_task(run())
 
-    async def _set_activity(self, key: str, value: str) -> None:
+    async def _add_pull_requests(self, refs: list[str]) -> None:
         if not await self._member():
             return
-        if self.tags().get(key) != value:
-            await self.set_tag(self.conversation_id, key, value)
-
-    async def _add_pull_requests(self, refs: list[str]) -> None:
         current = self.tags().get(PULL_REQUESTS_TAG_KEY)
-        await self._set_activity(
-            PULL_REQUESTS_TAG_KEY, merge_pull_requests(current, refs)
-        )
+        merged = merge_pull_requests(current, refs)
+        if merged != current:
+            await self.set_tag(self.conversation_id, PULL_REQUESTS_TAG_KEY, merged)
 
     async def _member(self) -> bool:
         return self.is_member is None or await self.is_member()

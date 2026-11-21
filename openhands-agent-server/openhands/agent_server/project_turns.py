@@ -2,10 +2,9 @@
 
 :class:`TurnTracker` reads a conversation's events in order and says, as
 :data:`TurnSignal` values, when a turn starts, when the user writes or answers
-a card, when a run stops on the user, how a turn ended, what the agent last
-said and which pull requests it opened. It keeps only the current turn in
-memory: no tags, no I/O and no tasks, so each rule can be
-tested by feeding it events. The project board
+a card, when a run stops on the user, how a turn ended and which pull
+requests the agent opened. It keeps only the current turn in memory: no tags,
+no I/O and no tasks, so each rule can be tested by feeding it events. The project board
 (:mod:`openhands.agent_server.project_board`) acts on the signals.
 """
 
@@ -22,7 +21,6 @@ from openhands.sdk.conversation.types import (
     CONVERSATION_SENDER_PREFIX,
     GOAL_LOOP_SENDER,
     HELD_FOR_USER_STATUSES,
-    LAST_MESSAGE_MAX_LENGTH,
 )
 from openhands.sdk.event import (
     ActionEvent,
@@ -129,25 +127,6 @@ def card_text(event: ActionEvent) -> tuple[str, str] | None:
     return ask.question, "\n".join(lines)
 
 
-_CODE_BLOCK = re.compile(r"```.*?(?:```|$)", re.DOTALL)
-_MARKUP = re.compile(r"^[\s>*_#`-]+|[*_`]+")
-
-
-def summary_line(text: str | None) -> str | None:
-    """The first line of an agent message outside code blocks, without simple
-    Markdown, cut to :data:`LAST_MESSAGE_MAX_LENGTH`. ``None`` when it has no
-    prose."""
-    if not text:
-        return None
-    for raw in _CODE_BLOCK.sub("", text).splitlines():
-        line = " ".join(_MARKUP.sub("", raw).split())
-        if line:
-            if len(line) > LAST_MESSAGE_MAX_LENGTH:
-                line = line[: LAST_MESSAGE_MAX_LENGTH - 1].rstrip() + "…"
-            return line
-    return None
-
-
 _CREATES_PULL_REQUEST = re.compile(r"\bgh\s+pr\s+create\b")
 _PULL_REQUEST_URL = re.compile(
     r"https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/(\d+)\b"
@@ -231,14 +210,6 @@ class TurnEnded:
 
 
 @dataclass(frozen=True)
-class AgentSaid:
-    """The agent wrote a message (or a card, or its finish): ``line`` is its
-    first line, from :func:`summary_line`."""
-
-    line: str
-
-
-@dataclass(frozen=True)
 class PullRequestsOpened:
     """A tool call that opens a pull request returned these
     ``owner/repo#number`` refs."""
@@ -252,7 +223,6 @@ TurnSignal = (
     | CardAnswered
     | TurnStopped
     | TurnEnded
-    | AgentSaid
     | PullRequestsOpened
 )
 
@@ -300,7 +270,8 @@ class TurnTracker:
         if isinstance(event, MessageEvent):
             return self._message(event)
         if isinstance(event, ActionEvent):
-            return self._action(event)
+            self._action(event)
+            return []
         if isinstance(event, ObservationEvent):
             return self._observation(event)
         if isinstance(event, ConversationErrorEvent):
@@ -316,7 +287,8 @@ class TurnTracker:
             # a coordinator's awareness neither answers it nor starts one.
             return []
         if event.source == "agent":
-            return self._note_agent_output(extract_message_text(event), event)
+            self._note_agent_output(extract_message_text(event), event)
+            return []
         if event.source != "user":
             return []
         self._reset()
@@ -342,24 +314,22 @@ class TurnTracker:
                 signals.append(UserWrote(text))
         return signals
 
-    def _action(self, event: ActionEvent) -> list[TurnSignal]:
+    def _action(self, event: ActionEvent) -> None:
         card = card_text(event) if event.source == "agent" else None
         if event.source == "agent" and isinstance(event.action, FinishAction):
-            return self._note_agent_output(event.action.message, event)
-        if card is not None:
+            self._note_agent_output(event.action.message, event)
+        elif card is not None:
             # ask_user ends the turn on a question card.
             question, text = card
-            signals = self._note_agent_output(text, event)
+            self._note_agent_output(text, event)
             self._card = question
-            return signals
-        if event.source == "agent":
+        elif event.source == "agent":
             if creates_pull_request(event):
                 self._pull_request_calls.add(event.id)
             self._turn_open = True
             self._last_action = describe_action(event)
             self._turn_actions.append(self._last_action)
             del self._turn_actions[:-_TURN_ACTIONS_KEPT]
-        return []
 
     def _observation(self, event: ObservationEvent) -> list[TurnSignal]:
         if event.action_id not in self._pull_request_calls:
@@ -420,7 +390,7 @@ class TurnTracker:
 
     def _note_agent_output(
         self, text: str | None, event: MessageEvent | ActionEvent
-    ) -> list[TurnSignal]:
+    ) -> None:
         # Output after a card means its call failed and the turn went on.
         self._card = None
         self._seen_agent_output = True
@@ -429,8 +399,6 @@ class TurnTracker:
             self._last_text = text
         if event.critic_result is not None:
             self._last_score = event.critic_result.score
-        line = summary_line(text)
-        return [AgentSaid(line)] if line else []
 
     def _reset(self) -> None:
         self._last_text = None
