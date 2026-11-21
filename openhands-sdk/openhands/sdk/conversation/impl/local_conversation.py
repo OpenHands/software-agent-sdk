@@ -422,7 +422,8 @@ class LocalConversation(BaseConversation):
         desired_id = conversation_id or uuid.uuid4()
         # The registry owns this conversation's LLM sessions (usage metrics and
         # telemetry per usage_id); the call context carries them to every LLM
-        # call. Agent LLMs are registered later, in _ensure_agent_ready().
+        # call, along with the cipher a fallback needs to read its profiles.
+        # Agent LLMs are registered later, in _ensure_agent_ready().
         self.llm_registry = LLMRegistry()
         self._llm_call_context = (
             _parent_llm_call_context or LLMCallContext()
@@ -430,6 +431,7 @@ class LocalConversation(BaseConversation):
             str(desired_id),
             prompt_cache_key=prompt_cache_key,
             sessions=self.llm_registry.sessions,
+            cipher=cipher,
         )
 
         # Resolve client-defined tools, then register them and inject the matching
@@ -640,7 +642,7 @@ class LocalConversation(BaseConversation):
 
         # Agent initialization is deferred to _ensure_agent_ready() for lazy loading
         # This ensures plugins are loaded before agent initialization
-        self._profile_store = LLMProfileStore(profile_store_dir)
+        self._profile_store = LLMProfileStore(profile_store_dir, cipher=cipher)
         self._cipher = cipher
 
         # Seed agent_context.secrets into the registry for every agent (regular
@@ -2284,7 +2286,7 @@ class LocalConversation(BaseConversation):
         try:
             cached = self.llm_registry.get(usage_id)
         except KeyError:
-            loaded = self._profile_store.load(profile_name, cipher=self._cipher)
+            loaded = self._profile_store.load(profile_name)
             cached = loaded.model_copy(update={"usage_id": usage_id})
         self.switch_llm(cached)
 
@@ -2299,7 +2301,7 @@ class LocalConversation(BaseConversation):
         try:
             return self.llm_registry.get(usage_id)
         except KeyError:
-            loaded = self._profile_store.load(profile_name, cipher=self._cipher)
+            loaded = self._profile_store.load(profile_name)
             llm = loaded.model_copy(update={"usage_id": usage_id})
             llm = create_subscription_llm_from_config(llm)
             self.llm_registry.add(llm)

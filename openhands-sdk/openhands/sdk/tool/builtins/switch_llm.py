@@ -85,7 +85,9 @@ _DESCRIPTION_TEMPLATE = (
 
 def get_llm_profile_names() -> list[str]:
     """Return saved LLM profile names that can be shown to the agent."""
-    return [summary["name"] for summary in LLMProfileStore().list_summaries()]
+    # Summaries carry names only, never a secret, so no cipher is needed.
+    store = LLMProfileStore(cipher=None)
+    return [summary["name"] for summary in store.list_summaries()]
 
 
 def _format_profiles(profile_names: Sequence[str]) -> str:

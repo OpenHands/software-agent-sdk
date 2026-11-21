@@ -1103,12 +1103,17 @@ class ServerStores:
 
     @property
     def llm_profiles(self) -> LLMProfileStore:
-        """Stored at ``<profile_dir>/profiles``, never workspace-relative."""
+        """Stored at ``<profile_dir>/profiles``, never workspace-relative.
+
+        Bound to the server cipher, so no caller can load a profile and
+        forget to decrypt it (#4558).
+        """
         return self._once(
             "llm_profiles",
             lambda: LLMProfileStore(
                 base_dir=self.profile_dir / "profiles",
                 provider_store=self.provider_connections,
+                cipher=self.cipher,
             ),
         )
 

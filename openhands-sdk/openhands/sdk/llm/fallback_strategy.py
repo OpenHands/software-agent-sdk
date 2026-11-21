@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Generator
-from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
@@ -28,6 +27,7 @@ if TYPE_CHECKING:
     from openhands.sdk.llm.llm import LLM
     from openhands.sdk.llm.llm_response import LLMResponse
     from openhands.sdk.llm.utils.metrics import Metrics
+    from openhands.sdk.utils.cipher import Cipher
 
 logger = get_logger(__name__)
 
@@ -60,8 +60,10 @@ class FallbackStrategy(BaseModel):
         "If not specified, defaults to `.openhands/profiles`.",
     )
 
-    # Private: lazily resolved LLM instances
-    _resolved: list[Any] | None = PrivateAttr(default=None)
+    # Private: lazily resolved LLM instances, per cipher they were decrypted
+    # with. Conversations with different ciphers can share a strategy (they
+    # share the LLM), and each must only get what its own cipher decrypts.
+    _resolved: dict[Cipher | None, list[Any]] = PrivateAttr(default_factory=dict)
 
     def should_fallback(self, error: Exception) -> bool:
         """Whether this error type is eligible for fallback."""
@@ -78,6 +80,7 @@ class FallbackStrategy(BaseModel):
         call_fn: Callable[[Any], LLMResponse],
         *,
         primary: LLM | None = None,
+        cipher: Cipher | None = None,
     ) -> LLMResponse | None:
         """Try fallback models in the caller's role and session.
 
@@ -87,13 +90,15 @@ class FallbackStrategy(BaseModel):
             primary_metrics: The primary LLM's metrics for legacy direct callers.
             call_fn: A callable that takes an LLM instance and returns an LLMResponse.
             primary: The caller whose usage ID and aggregate accounting are kept.
+            cipher: Decrypts fallback profiles stored encrypted at rest. An LLM
+                passes the cipher of the conversation making the call.
 
         Returns:
             LLMResponse from the first successful fallback, or None if all fail.
         """
         total = len(self.fallback_llms)
         tried = 0
-        for i, fb in enumerate(self._iter_fallbacks()):
+        for i, fb in enumerate(self._iter_fallbacks(cipher)):
             tried += 1
             remaining = total - i - 1
             logger.warning(
@@ -139,30 +144,29 @@ class FallbackStrategy(BaseModel):
             )
         return None
 
-    @cached_property
-    def _profile_store(self) -> LLMProfileStore:
-        return LLMProfileStore(self.profile_store_dir)
-
-    def _iter_fallbacks(self) -> Generator[Any]:
+    def _iter_fallbacks(self, cipher: Cipher | None = None) -> Generator[Any]:
         """Yield fallback LLM instances, resolving lazily from profiles.
 
-        Profiles are loaded one at a time and appended to ``_resolved``
-        progressively.  On subsequent calls the already-cached instances
-        are yielded first, then resolution continues for any remaining
-        profiles that were not yet loaded.
+        Profiles are loaded one at a time, decrypted with ``cipher``, and
+        appended to that cipher's ``_resolved`` list progressively.  On
+        subsequent calls the already-cached instances are yielded first, then
+        resolution continues for any remaining profiles that were not yet
+        loaded.
         """
-        if self._resolved is None:
-            self._resolved = []
+        resolved = self._resolved.setdefault(cipher, [])
 
         # Yield already-cached instances
-        yield from self._resolved
+        yield from resolved
 
         # Continue resolving profiles that haven't been loaded yet
-        remaining_names = self.fallback_llms[len(self._resolved) :]
+        remaining_names = self.fallback_llms[len(resolved) :]
+        if not remaining_names:
+            return
+        store = LLMProfileStore(self.profile_store_dir, cipher=cipher)
         for name in remaining_names:
             try:
-                fb = self._profile_store.load(name)
-                self._resolved.append(fb)
+                fb = store.load(name)
+                resolved.append(fb)
                 yield fb
             except (FileNotFoundError, ValueError) as exc:
                 logger.error(

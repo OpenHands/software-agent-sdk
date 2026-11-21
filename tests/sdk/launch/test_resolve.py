@@ -10,6 +10,7 @@ from openhands.sdk.launch import (
     UnresolvedProfileReferences,
     resolve,
 )
+from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.meta_profile_store import MetaProfile, MetaProfileClass
 from openhands.sdk.llm.provider_connection_store import ProviderConnectionNotFound
 from openhands.sdk.mcp.config import MCPServer
@@ -21,6 +22,8 @@ from openhands.sdk.profiles.agent_profile import (
 from openhands.sdk.profiles.resolver import ProfileNotFound
 from openhands.sdk.settings.model import ACPAgentSettings, OpenHandsAgentSettings
 from openhands.sdk.skills import Skill
+from openhands.sdk.utils import deprecation
+from openhands.sdk.utils.cipher import Cipher
 from tests.sdk.launch import fakes
 
 
@@ -365,3 +368,55 @@ def test_a_failing_skill_discovery_is_a_store_error():
 def test_a_custom_acp_profile_without_a_command_is_rejected():
     with pytest.raises(AgentLaunchError, match="acp_command"):
         resolve(ACPAgentProfile(name="a", acp_server="custom"), fakes.stores())
+
+
+@pytest.fixture
+def deprecation_active(monkeypatch):
+    monkeypatch.setattr(deprecation, "_current_version", lambda: "1.63.0")
+
+
+def test_the_deprecated_stores_cipher_still_decrypts_llm_profiles(
+    tmp_path, deprecation_active
+):
+    """``LaunchStores(cipher=...)`` was the published way to decrypt profiles."""
+    cipher = Cipher("server-key")
+    LLMProfileStore(base_dir=tmp_path, cipher=cipher).save(
+        "default", fakes.llm(api_key=SecretStr("sk-real")), include_secrets=True
+    )
+
+    with pytest.warns(deprecation.DeprecatedWarning, match=r"LaunchStores\(cipher="):
+        stores = LaunchStores(
+            llm_profiles=LLMProfileStore(base_dir=tmp_path),
+            mcp_config={},
+            skills=lambda: [],
+            cipher=cipher,
+        )
+    with pytest.warns(deprecation.DeprecatedWarning):
+        api_key = _openhands(resolve(_profile(), stores)).llm.api_key
+
+    assert isinstance(api_key, SecretStr)
+    assert api_key.get_secret_value() == "sk-real"
+
+
+def test_the_deprecated_stores_cipher_is_handed_to_a_custom_loader(
+    deprecation_active,
+):
+    received = []
+
+    class PerCallCipherLoader(fakes.LLMProfiles):
+        def load(self, name, *, cipher=None):
+            received.append(cipher)
+            return super().load(name)
+
+    cipher = Cipher("server-key")
+    with pytest.warns(deprecation.DeprecatedWarning):
+        stores = LaunchStores(
+            llm_profiles=PerCallCipherLoader({"default": fakes.llm()}),
+            mcp_config={},
+            skills=lambda: [],
+            cipher=cipher,
+        )
+
+    resolve(_profile(), stores)
+
+    assert received == [cipher]

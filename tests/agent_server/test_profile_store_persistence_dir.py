@@ -25,6 +25,27 @@ def test_llm_profile_store_uses_persistence_dir(isolated_persistence_dir: Path) 
     assert store.list() == []
 
 
+def test_llm_profile_store_is_bound_to_the_server_cipher(
+    isolated_persistence_dir: Path,
+) -> None:
+    """A load that names no cipher still decrypts (#4558)."""
+    from openhands.sdk.llm import LLM
+
+    config = Config(secret_key=SecretStr("server-key"))
+    ServerStores.from_config(config).llm_profiles.save(
+        "enc",
+        LLM(usage_id="enc", model="openai/gpt-4o", api_key=SecretStr("sk-enc")),
+        include_secrets=True,
+    )
+
+    assert "sk-enc" not in (isolated_persistence_dir / "profiles/enc.json").read_text()
+    decrypted = ServerStores.from_config(config).llm_profiles.load("enc").api_key
+    assert isinstance(decrypted, SecretStr)
+    assert decrypted.get_secret_value() == "sk-enc"
+    other = Config(secret_key=SecretStr("other-key"))
+    assert ServerStores.from_config(other).llm_profiles.load("enc").api_key is None
+
+
 def test_agent_profile_store_uses_persistence_dir(
     isolated_persistence_dir: Path,
 ) -> None:

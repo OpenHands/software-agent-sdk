@@ -120,7 +120,7 @@ def _require_llm_profile(
     profile_name: str, stores: ServerStores, cipher: Cipher | None
 ) -> None:
     try:
-        stores.llm_profiles.load(profile_name, cipher=cipher)
+        stores.llm_profiles.with_cipher(cipher).load(profile_name)
     except FileNotFoundError:
         raise NotFound(f"Profile '{profile_name}' not found")
     except TimeoutError:

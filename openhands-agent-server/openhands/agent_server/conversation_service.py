@@ -2974,7 +2974,8 @@ class AutoTitleSubscriber(Subscriber):
             return None
 
         try:
-            return self.llm_profile_store.load(profile_name, cipher=self.service.cipher)
+            store = self.llm_profile_store.with_cipher(self.service.cipher)
+            return store.load(profile_name)
         except (FileNotFoundError, ValueError) as e:
             logger.warning(
                 f"Failed to load title LLM profile '{profile_name}': {e}. "
