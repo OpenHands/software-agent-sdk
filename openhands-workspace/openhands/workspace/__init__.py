@@ -19,6 +19,7 @@ from .remote_api import APIRemoteWorkspace
 
 if TYPE_CHECKING:
     from .docker import DockerDevWorkspace
+    from .smol import SmolWorkspace
 
 __all__ = [
     "APIRemoteWorkspace",
@@ -32,14 +33,19 @@ __all__ = [
     "PlatformType",
     "RepoMapping",
     "RepoSource",
+    "SmolWorkspace",
     "TargetType",
 ]
 
 
 def __getattr__(name: str):
-    """Lazy import DockerDevWorkspace to avoid build module imports."""
+    """Load providers with optional or build-time dependencies on demand."""
     if name == "DockerDevWorkspace":
         from .docker import DockerDevWorkspace
 
         return DockerDevWorkspace
+    if name == "SmolWorkspace":
+        from .smol import SmolWorkspace
+
+        return SmolWorkspace
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
