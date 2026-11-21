@@ -52,13 +52,18 @@ def run_goal(
         max_iterations: Hard cap on audit rounds before giving up.
     """
     controller = GoalController(objective, judge_llm, max_iterations=max_iterations)
-    pending = find_pending_ask(conversation.state.events)
+    if not callable(getattr(conversation.state, "active_branch", None)):
+        raise NotImplementedError(
+            "run_goal requires state.active_branch() to exclude abandoned history. "
+            "Update the conversation adapter before running a goal."
+        )
+    pending = find_pending_ask(conversation.state.active_branch())
     if pending is not None:
         return GoalAsked(ask_id=pending.ask_id, question=pending.question)
     conversation.send_message(controller.start(), sender=GOAL_LOOP_SENDER)
     while True:
         conversation.run()
-        step = controller.on_run_finished(conversation.state.events)
+        step = controller.on_run_finished(conversation.state.active_branch())
         if isinstance(step, GoalDone):
             return step.outcome
         if isinstance(step, GoalAsked):

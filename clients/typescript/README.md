@@ -630,3 +630,32 @@ the application to use `ConversationClient.sendEvent` as a REST fallback.
 The client requires a Web-standard global `WebSocket` only when started and has
 no Node-specific imports. Pass credentials through `sessionApiKey`; credentials
 in the socket URL or query parameters are rejected.
+
+### Reading the current conversation branch
+
+On an Agent Server that supports `GET /api/conversations/{conversation_id}/events/active-branch`,
+use the typed client when evaluating the current conversation rather than its complete history:
+
+```typescript
+const events = await client.getActiveBranch(conversationId);
+const recentEvents = await client.getActiveBranch(conversationId, { limit: 100 });
+```
+
+`client` is a `ConversationClient`. Results are raw events in root-first order;
+`limit` is a positive integer selecting the last events of that branch. After
+navigating to an empty HEAD, the result is `[]`. Abandoned branches remain in the
+append-only event log returned by `searchEvents`, but are excluded here.
+
+The response is an authoritative snapshot, not a subscription or a guarantee
+that the HEAD cannot change afterward. The read uses the existing conversation
+access controls. An inactive, persisted-history-only runtime returns HTTP 409;
+attach the conversation runtime before requesting its active branch. HTTP 404
+may mean a missing conversation or an older server without this endpoint.
+Upgrade the server when necessary; do not substitute `searchEvents` on failure.
+This endpoint is a development addition and is not promised by the currently
+pinned release image until released.
+
+The Python `run_goal` driver now requires branch-aware conversation state for
+both pending-question checks and judge input. Custom conversation adapters must
+implement `state.active_branch()`; an unanswered question blocks a goal only
+when it belongs to the active branch.

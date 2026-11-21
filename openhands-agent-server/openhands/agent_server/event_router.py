@@ -103,6 +103,32 @@ def normalize_datetime_to_server_timezone(dt: datetime) -> datetime:
 
 
 @event_read_router.get(
+    "/active-branch",
+    response_model=list[Event],
+    responses=error_responses(
+        {
+            NotFound: "Conversation not found",
+            Conflict: "Conversation runtime is inactive",
+        }
+    ),
+)
+async def get_active_branch(
+    limit: Annotated[int | None, Query(gt=0)] = None,
+    event_service: EventService = Depends(get_event_service),
+) -> JSONResponse:
+    """Return a coherent current-branch snapshot in root-first order."""
+    try:
+        events = await event_service.active_branch(limit=limit)
+        return JSONResponse(
+            [event.model_dump(mode="json", exclude_none=True) for event in events]
+        )
+    except ServiceInactive as exc:
+        raise Conflict(
+            "Active branch requires an attached conversation runtime"
+        ) from exc
+
+
+@event_read_router.get(
     "/search", responses=error_responses({NotFound: "Conversation not found"})
 )
 async def search_conversation_events(
