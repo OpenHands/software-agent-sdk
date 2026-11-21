@@ -40,6 +40,12 @@ All pull requests must comply with [`.agents/skills/custom-codereview-guide.md`]
 For issue triage, read [the review guide](.agents/skills/custom-codereview-guide.md#issue-triage-ownership-and-scope)
 for ownership and scope; PR evidence is not an issue-readiness requirement.
 
+## Verification Skill Independence
+
+Implementor agents must use `.agents/skills/verify-*/` as read-only verification tools. Do not update their feature maps, expected results, known-bug recipes, drivers, or fixtures while implementing a product change. This separation applies even when an issue's acceptance criteria ask for verification-skill updates. Report a mismatch or missing coverage instead of changing the specification to match the implementation.
+
+Verification-skill maintenance belongs in a separate PR and a separate agent context. For a product fix, make that follow-up after the fix lands. A verify-skill PR may include only verify-skill paths, `AGENTS.md` files, and root `.pr/` evidence. Product source, tests, CI, and other docs must stay separate.
+
 ## Review-Facing Implementation Checklist
 
 Code should satisfy the repository review checkpoints before the PR is opened:
