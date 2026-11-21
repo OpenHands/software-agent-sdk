@@ -1,0 +1,47 @@
+{
+  "base_commit": "722e5d403cf75d4e032b79296cfaf178f8678a93",
+  "runtime": "Linux, unprivileged user, CPython 3.13.18; frozen uv.lock, make build",
+  "model_inference": false,
+  "scope": "Public file-editor permission failure and retry; not a production incident or crash-atomic history transaction",
+  "results": {
+    "baseline_live_exit": 1,
+    "candidate_live_exit": 0,
+    "baseline_new_test": "1 failed",
+    "candidate_new_test": "1 passed",
+    "related_regression": "185 passed, 1 pre-existing anyio warning, 41.78s"
+  },
+  "logs": {
+    "openhands-editor-precommit.log": {
+      "raw_sha256": "8530f3ac2b701c5890b57b7b96adb7822d19ad4351667efda0d6542c513faea5",
+      "public_sha256": "8530f3ac2b701c5890b57b7b96adb7822d19ad4351667efda0d6542c513faea5"
+    },
+    "openhands-history-precommit.log": {
+      "raw_sha256": "8530f3ac2b701c5890b57b7b96adb7822d19ad4351667efda0d6542c513faea5",
+      "public_sha256": "8530f3ac2b701c5890b57b7b96adb7822d19ad4351667efda0d6542c513faea5"
+    },
+    "openhands-test-precommit-local-cache.log": {
+      "raw_sha256": "21944eb7e39eb30f39c06a65096645a3287456150fc3fbb38de0df53d868a5bd",
+      "public_sha256": "21944eb7e39eb30f39c06a65096645a3287456150fc3fbb38de0df53d868a5bd"
+    },
+    "openhands-undo-baseline-live.log": {
+      "raw_sha256": "2c2a3badcd322967a91567a3c6961de9977adf1cc99a1e1bbfe420322f551dbe",
+      "public_sha256": "0446b0b5e5d2004754073f92cdbaff49ea737e48544bcbc2abfe412f7157e76a"
+    },
+    "openhands-undo-baseline-test.log": {
+      "raw_sha256": "7e62bf4e5afacc3610daa72fc11276b30890ec6331e8cd553da8db9752c69fd7",
+      "public_sha256": "752dd009b5f1945b8d1d230fcbbd319f6f3b942bcb80b2f8c0d9a8e34dc002ca"
+    },
+    "openhands-undo-candidate-live.log": {
+      "raw_sha256": "67d778feedb144ce8f3f4fa4264d221242ffadefb068a52188dd6fb00be05b9c",
+      "public_sha256": "67d778feedb144ce8f3f4fa4264d221242ffadefb068a52188dd6fb00be05b9c"
+    },
+    "openhands-undo-candidate-test.log": {
+      "raw_sha256": "f760d497886f8928271a00b09f243f6489bbad9e8c23e85644c4af20fabb2057",
+      "public_sha256": "5083cd54a839f5c967786b0e01f406f6a7699c683f4ab42ed2a7447faad514d1"
+    },
+    "openhands-undo-regression.log": {
+      "raw_sha256": "04c114f2148f515b5b5759982fc9602385b7e148700b75da42ba46a3d3749c2f",
+      "public_sha256": "1085cddfd7004cea73b6d63f1db0271ed0c710aab1e06dce5af66f16d8b4f561"
+    }
+  }
+}

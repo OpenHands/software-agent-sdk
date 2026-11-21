@@ -31,6 +31,39 @@ def _create_test_conv_state(temp_dir: str) -> ConversationState:
     )
 
 
+def test_failed_undo_can_be_retried_without_losing_history(tmp_path, monkeypatch):
+    path = tmp_path / "example.py"
+    path.write_text("value = 0\n")
+    tool = FileEditorTool.create(_create_test_conv_state(str(tmp_path)))[0]
+    for before, after in ((0, 1), (1, 2)):
+        result = tool(
+            FileEditorAction(
+                command="str_replace",
+                path=str(path),
+                old_str=f"value = {before}",
+                new_str=f"value = {after}",
+            )
+        )
+        assert isinstance(result, FileEditorObservation)
+        assert not result.is_error
+
+    def fail_replace(source: Path, target: str | Path) -> Path:
+        raise PermissionError("Temporarily read-only filesystem")
+
+    with monkeypatch.context() as failure:
+        failure.setattr(Path, "replace", fail_replace)
+        result = tool(FileEditorAction(command="undo_edit", path=str(path)))
+        assert isinstance(result, FileEditorObservation)
+        assert result.is_error
+        assert path.read_text() == "value = 2\n"
+
+    for expected in (1, 0):
+        result = tool(FileEditorAction(command="undo_edit", path=str(path)))
+        assert isinstance(result, FileEditorObservation)
+        assert not result.is_error
+        assert path.read_text() == f"value = {expected}\n"
+
+
 def test_file_editor_tool_initialization():
     """Test that FileEditorTool initializes correctly."""
     with tempfile.TemporaryDirectory() as temp_dir:
