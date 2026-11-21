@@ -20,7 +20,7 @@ import socket
 import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import cast
 
@@ -80,18 +80,38 @@ def _make_mcp_tool(name: str) -> mcp_types.Tool:
 
 
 class _FakeClient:
-    """Minimal stand-in for ``MCPClient`` used by ``_refresh_tools``.
-
-    ``_refresh_tools`` only needs ``list_tools()`` (async) and the
-    ``_tools`` / ``_closed`` attributes, so a lightweight fake keeps the diff
-    logic unit-testable without spinning up a real server.
-    """
+    """Minimal stand-in for ``MCPClient`` used by ``_refresh_tools``."""
 
     def __init__(self, tools: list[mcp_types.Tool]):
         self._server_tools = list(tools)
         self._tools: list[MCPToolDefinition] = []
         self._closed = False
-        self._tools_reconciled_callback = None
+        self._tools_reconciled_callback: (
+            Callable[[MCPClient, Sequence[MCPToolDefinition]], None] | None
+        ) = None
+
+    @property
+    def tools(self) -> list[MCPToolDefinition]:
+        return list(self._tools)
+
+    @property
+    def is_closed(self) -> bool:
+        return self._closed
+
+    @property
+    def tools_reconciled_callback(
+        self,
+    ) -> Callable[[MCPClient, Sequence[MCPToolDefinition]], None] | None:
+        return self._tools_reconciled_callback
+
+    def set_tools_reconciled_callback(
+        self,
+        callback: Callable[[MCPClient, Sequence[MCPToolDefinition]], None] | None,
+    ) -> None:
+        self._tools_reconciled_callback = callback
+
+    def replace_tools(self, tools: Sequence[MCPToolDefinition]) -> None:
+        self._tools = list(tools)
 
     async def list_tools(self) -> list[mcp_types.Tool]:
         return list(self._server_tools)
@@ -120,8 +140,11 @@ def test_refresh_tools_reports_only_new_tools():
     """``_refresh_tools`` diffs against existing tools and reports additions."""
     client = _FakeClient([_make_mcp_tool("a"), _make_mcp_tool("b")])
     # Simulate a prior connect that already discovered ``a``.
-    client._tools = list(
-        MCPToolDefinition.create(mcp_tool=_make_mcp_tool("a"), mcp_client=client)  # type: ignore[arg-type]
+    client.replace_tools(
+        MCPToolDefinition.create(
+            mcp_tool=_make_mcp_tool("a"),
+            mcp_client=cast(MCPClient, client),
+        )
     )
 
     received: list[list[str]] = []
@@ -134,17 +157,24 @@ def test_refresh_tools_reports_only_new_tools():
 
     asyncio.new_event_loop().run_until_complete(run())
 
-    assert {t.name for t in client._tools} == {"a", "b"}
+    assert {t.name for t in client.tools} == {"a", "b"}
     assert received == [["b"]]
 
 
 def test_refresh_tools_drops_removed_tools():
     """Tools the server no longer advertises are dropped from the client."""
     client = _FakeClient([_make_mcp_tool("a")])
-    client._tools = list(
-        MCPToolDefinition.create(mcp_tool=_make_mcp_tool("a"), mcp_client=client)  # type: ignore[arg-type]
-    ) + list(
-        MCPToolDefinition.create(mcp_tool=_make_mcp_tool("gone"), mcp_client=client)  # type: ignore[arg-type]
+    client.replace_tools(
+        [
+            *MCPToolDefinition.create(
+                mcp_tool=_make_mcp_tool("a"),
+                mcp_client=cast(MCPClient, client),
+            ),
+            *MCPToolDefinition.create(
+                mcp_tool=_make_mcp_tool("gone"),
+                mcp_client=cast(MCPClient, client),
+            ),
+        ]
     )
 
     async def run():
@@ -152,7 +182,7 @@ def test_refresh_tools_drops_removed_tools():
 
     asyncio.new_event_loop().run_until_complete(run())
 
-    assert {t.name for t in client._tools} == {"a"}
+    assert {t.name for t in client.tools} == {"a"}
 
 
 def test_refresh_tools_reconciles_updates_and_removals():
@@ -181,13 +211,15 @@ def test_refresh_tools_reconciles_updates_and_removals():
         mcp_client=cast(MCPClient, client),
     )[0]
     old_definition.action_from_arguments({"old": "value"})
-    client._tools = [
-        old_definition,
-        MCPToolDefinition.create(
-            mcp_tool=_make_mcp_tool("gone"),
-            mcp_client=cast(MCPClient, client),
-        )[0],
-    ]
+    client.replace_tools(
+        [
+            old_definition,
+            MCPToolDefinition.create(
+                mcp_tool=_make_mcp_tool("gone"),
+                mcp_client=cast(MCPClient, client),
+            )[0],
+        ]
+    )
     received: list[tuple[object, list[MCPToolDefinition]]] = []
 
     async def run():
@@ -219,14 +251,17 @@ def test_refresh_tools_no_callback_still_reconciles():
 
     asyncio.new_event_loop().run_until_complete(run())
 
-    assert {t.name for t in client._tools} == {"a", "b"}
+    assert {t.name for t in client.tools} == {"a", "b"}
 
 
 def test_handler_invokes_refresh_on_list_changed():
     """``_ToolListChangedHandler`` re-lists and calls back on notification."""
     client = _FakeClient([_make_mcp_tool("a"), _make_mcp_tool("b")])
-    client._tools = list(
-        MCPToolDefinition.create(mcp_tool=_make_mcp_tool("a"), mcp_client=client)  # type: ignore[arg-type]
+    client.replace_tools(
+        MCPToolDefinition.create(
+            mcp_tool=_make_mcp_tool("a"),
+            mcp_client=cast(MCPClient, client),
+        )
     )
     received: list[list[str]] = []
     handler = _ToolListChangedHandler(
@@ -242,7 +277,7 @@ def test_handler_invokes_refresh_on_list_changed():
 
     asyncio.new_event_loop().run_until_complete(run())
 
-    assert {t.name for t in client._tools} == {"a", "b"}
+    assert {t.name for t in client.tools} == {"a", "b"}
     assert received == [["b"]]
 
 
@@ -259,7 +294,7 @@ def test_handler_skips_when_client_closed():
         handler.on_tool_list_changed(mcp_types.ToolListChangedNotification())
     )
 
-    assert client._tools == []
+    assert client.tools == []
 
 
 @pytest.fixture
@@ -371,14 +406,17 @@ def test_default_provider_wires_on_tools_reconciled_before_connect(
         }
     )
 
-    def on_tools_reconciled(client, tools):  # noqa: ANN001
+    def on_tools_reconciled(
+        client: MCPClient,
+        tools: Sequence[MCPToolDefinition],
+    ) -> None:
         pass
 
     client = DefaultMCPToolProvider().create_tools(
         config, timeout=10.0, on_tools_reconciled=on_tools_reconciled
     )
     try:
-        assert client._tools_reconciled_callback is on_tools_reconciled
+        assert client.tools_reconciled_callback is on_tools_reconciled
     finally:
         client.sync_close()
 
