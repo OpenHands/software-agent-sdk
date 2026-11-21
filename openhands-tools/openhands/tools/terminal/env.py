@@ -4,6 +4,7 @@ import codecs
 import locale
 import os
 import re
+import sys
 from collections.abc import Mapping
 
 from openhands.sdk.logger import get_logger
@@ -13,7 +14,8 @@ from openhands.sdk.utils import sanitized_env
 logger = get_logger(__name__)
 
 ENV_VAR_NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
-UTF8_FALLBACK_LOCALE = "C.UTF-8"
+# C.UTF-8 is unavailable on older supported macOS releases.
+UTF8_FALLBACK_LOCALE = "en_US.UTF-8" if sys.platform == "darwin" else "C.UTF-8"
 
 
 def normalize_terminal_env(

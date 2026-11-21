@@ -20,6 +20,7 @@ from contextlib import suppress
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import httpx
 import psutil
 import pytest
 from websockets.exceptions import ConnectionClosed
@@ -115,8 +116,22 @@ def test_llm_stub_preserves_explicit_error_body(run_dir, capsys, body):
     )
     assert code == 0, out
     url = json.loads(out)["url"]
+    # The spawned fixture can still be starting: macOS runner reverse DNS
+    # stalls HTTPServer before listen (actions/runner-images#14409). Keep the
+    # real CLI/fixture unchanged and wait for its HTTP endpoint before testing
+    # the error-body contract.
+    deadline = time.monotonic() + 60
     with cas.http_client() as client:
-        response = client.post(url + "/v1/chat/completions", json={"messages": []})
+        while True:
+            try:
+                response = client.post(
+                    url + "/v1/chat/completions", json={"messages": []}
+                )
+                break
+            except (httpx.ConnectError, httpx.ConnectTimeout):
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.1)
     assert response.status_code == 429
     assert response.json() == body
 
