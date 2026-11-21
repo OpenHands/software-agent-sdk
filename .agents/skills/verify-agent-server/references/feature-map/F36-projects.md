@@ -911,6 +911,12 @@ Preconditions:
   the coordinator when it ends, so the coordinator runs after every member
   recipe here. Wait for it (`conversation wait "$CAT" --until idle,finished`)
   before checking its status.
+- A graceful restart while the coordinator runs on a member's update pauses
+  that run, as for any running conversation (`F05.restart-running-graceful`),
+  and nothing runs it again: the coordinator stays `paused` with the update
+  unanswered, because startup catch-up counts a saved update as delivered
+  ([#7058](https://github.com/OpenHands/software-agent-sdk/issues/7058), open).
+  Recipes wait for the coordinator's run before a restart.
 - A question for the user (`turn=asking`) stays open until the user writes in
   the conversation, or answers the coordinator's `ask_user` card made for it
   (`for_conversation`), which passes their answer on. Other messages from the
