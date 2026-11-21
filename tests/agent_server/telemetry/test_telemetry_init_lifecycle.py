@@ -17,6 +17,7 @@ from openhands.agent_server.init_router import InitRequest, InitService
 from openhands.agent_server.server_context import (
     build_server_context,
     install_server_context,
+    server_context_of,
 )
 from openhands.agent_server.telemetry import models as m
 from openhands.agent_server.telemetry.factory import (
@@ -128,7 +129,7 @@ async def test_failed_init_emits_no_start_and_retry_emits_exactly_one(
 
 
 def _keep_sink(sink):
-    async def _build(_config, _settings_store):
+    async def _build(_config, _settings_store, **_kwargs):
         service_mod._telemetry_sink = sink
         return sink
 
@@ -137,3 +138,30 @@ def _keep_sink(sink):
 
 async def _noop_async(*_args, **_kwargs):
     return None
+
+
+async def test_initialized_deferred_pod_reports_deferred_init_true(tmp_path):
+    """Events from a pod that booted deferred must say so after /api/init.
+
+    The merged config clears ``deferred_init`` (the server is no longer
+    dormant), but the telemetry runtime property describes how the pod booted.
+    """
+    service_mod.reset_telemetry_sink()
+    base = Config(
+        deferred_init=True,
+        conversations_path=tmp_path / "convs",
+        bash_events_dir=tmp_path / "bash",
+    )
+    app = FastAPI()
+    install_server_context(app, build_server_context(base))
+    svc = InitService(app, base_config=base)
+    try:
+        result = await svc.initialize(InitRequest())
+        assert result.state == "ready"
+        assert server_context_of(app).config.deferred_init is False
+        factory = service_mod.get_event_factory()
+        assert factory is not None
+        assert factory.runtime.deferred_init is True
+    finally:
+        await svc.teardown()
+        service_mod.reset_telemetry_sink()
