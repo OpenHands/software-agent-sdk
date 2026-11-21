@@ -209,8 +209,6 @@ class FileEditor:
             path: Path to the file
             old_str: String to replace
             new_str: Replacement string
-            enable_linting: Whether to run linting on the changes
-            encoding: The encoding to use (auto-detected by decorator)
         """
         self.validate_file(path)
         new_str = new_str or ""
@@ -572,7 +570,6 @@ class FileEditor:
             path: Path to the file
             insert_line: Line number where to insert the new content
             new_str: Content to insert
-            enable_linting: Whether to run linting on the changes
             encoding: The encoding to use (auto-detected by decorator)
         """
         # Validate file and count lines

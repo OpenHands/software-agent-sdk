@@ -158,7 +158,6 @@ def get_planning_agent(
 
     Args:
         llm: The LLM to use for the planning agent.
-        enable_security_analyzer: Whether to enable security analysis.
 
     Returns:
         A fully configured planning agent with read-only file operations and
