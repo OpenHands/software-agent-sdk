@@ -739,7 +739,8 @@ async def remove_project_conversation(
     stores: _Stores,
     service: ConversationService = Depends(get_conversation_service),
 ) -> DeleteResponse:
-    """Remove a conversation from a project by clearing its ``project`` tag.
+    """Remove a conversation from a project: clear its ``project`` tag and
+    its board state (``resolved``, ``resolvenote``, ``turn``, ``ask``).
 
     The conversation itself is not changed otherwise. Workers it started keep
     their own tag. Clear the coordinator before removing it.
@@ -747,13 +748,7 @@ async def remove_project_conversation(
     project = _find(await _load(_store(stores)), project_id)
     if project.coordinator_conversation_id == conversation_id:
         raise Conflict("Conversation is the project's coordinator")
-    try:
-        tags = await service.projects.set_conversation_tag(
-            conversation_id, PROJECT_TAG, None, expected=project_id.hex
-        )
-    except ValueError:
-        tags = None
-    if tags is None:
+    if not await service.projects.release_member(conversation_id, project_id.hex):
         raise NotFound("Conversation not in project")
     return DeleteResponse()
 

@@ -391,12 +391,14 @@ async def test_tagged_children_are_conversations_with_their_parent(
 
 
 @pytest.mark.asyncio
-async def test_remove_conversation_clears_only_the_project_tag(
+async def test_remove_conversation_clears_the_project_and_board_tags(
     client, service, tmp_path
 ):
     project = (await client.post("/api/projects", json={"name": "P"})).json()
     worker = await _start(service, tmp_path, tags={"insiderrole": "worker"})
     await _join(service, project["id"], worker)
+    await service.projects.set_conversation_tag(worker, "turn", "asking")
+    await service.projects.set_conversation_tag(worker, "ask", "Ship it?")
 
     removed = await client.delete(
         f"/api/projects/{project['id']}/conversations/{worker.hex}"

@@ -55,7 +55,7 @@ dev = [
     { name = "pyinstaller", specifier = ">=6.22.3" },
     { name = "pyright", extras = ["nodejs"], specifier = ">=1.1.414" },
     { name = "pytest", specifier = ">=9.2.0" },
-    { name = "pytest-asyncio", specifier = ">=1.4.1.post1" },
+    { name = "pytest-asyncio", specifier = ">=1.5.0" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
     { name = "pytest-forked", specifier = ">=1.7.5" },
     { name = "pytest-timeout", specifier = ">=2.4.0" },
@@ -1405,7 +1405,7 @@ wheels = [
 
 [[package]]
 name = "google-cloud-aiplatform"
-version = "2.8.0"
+version = "2.9.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "certifi" },
@@ -1423,9 +1423,9 @@ dependencies = [
     { name = "pydantic" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/15/59/ad53d558da9460ad35b9795c1026aaa84e2472823fcd65bc6660133c6818/google_cloud_aiplatform-2.8.0.tar.gz", hash = "sha256:3f589660f54e0b4030630440d24733b0ec5c7a4e9ce799cc4f38c13736a60f6f", size = 11241713, upload-time = "2026-11-10T21:50:43.29Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/2e/98/9184cdacdc755c62d83de84fc7118d4769ace8d78f5679d918dd69f3c55c/google_cloud_aiplatform-2.9.0.tar.gz", hash = "sha256:054b6cb76b5e22bad2265e28f15233cec0e153a50c93fb26fe1b28eafc4740b0", size = 11242591, upload-time = "2026-11-12T17:42:09.395Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/73/71/3b4cbc43d33ebc405e7ff441d811c86f1e8bd79c44879aaf4dbe66eb0199/google_cloud_aiplatform-2.8.0-py2.py3-none-any.whl", hash = "sha256:db2e29fffbe725719b47b286f142cc75c6c7e7b3535202732422aefab7f3554f", size = 9397450, upload-time = "2026-11-10T21:50:40.064Z" },
+    { url = "https://files.pythonhosted.org/packages/59/84/e2d0168d203433b8feb5729613c04240406ca905f147be29a54707c08d8d/google_cloud_aiplatform-2.9.0-py2.py3-none-any.whl", hash = "sha256:2cbe65abbe7c229b6bf8d48ec0c9e449b3f7053e26da2be9d59d6eb5e3bf25c8", size = 9397202, upload-time = "2026-11-12T17:42:06.077Z" },
 ]
 
 [[package]]
@@ -2879,7 +2879,7 @@ requires-dist = [
     { name = "fakeredis", extras = ["lua"], specifier = ">=2.40.0" },
     { name = "fastmcp", specifier = ">=4.1.8,<5" },
     { name = "filelock", specifier = ">=3.20.1" },
-    { name = "google-cloud-aiplatform", marker = "extra == 'vertex'", specifier = ">=2.8.0" },
+    { name = "google-cloud-aiplatform", marker = "extra == 'vertex'", specifier = ">=2.9.0" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.28.1" },
     { name = "joserfc", specifier = ">=1.8.0" },
     { name = "jsonschema", specifier = ">=4.26.0" },
@@ -6588,15 +6588,15 @@ wheels = [
 
 [[package]]
 name = "pytest-asyncio"
-version = "1.4.1.post1"
+version = "1.5.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pytest" },
     { name = "typing-extensions", marker = "python_full_version < '3.13'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/73/7f/c60a4338420b33453d4f814ac0c930abd399f162b9bdd21af4b9e363037f/pytest_asyncio-1.4.1.post1.tar.gz", hash = "sha256:f582d9ea4a1c082195abe8bd29a1fe106aeb1cd435e3dad2d3bc2749935c36a2", size = 145360, upload-time = "2026-11-01T18:26:03.732Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/2c/de/80724f9b5b9eca1a654179cae6edc51aaa0a355a9834a736e2a188b91780/pytest_asyncio-1.5.0.tar.gz", hash = "sha256:92c8fa83ca419fd0d4bd6a34df6520dae435841d3733c319343249492adf37f7", size = 146227, upload-time = "2026-11-12T16:35:49.845Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e3/de/adbc7578959cfab07e5e7c05cf6d54224a51e7667ea2c07458b6bc571e75/pytest_asyncio-1.4.1.post1-py3-none-any.whl", hash = "sha256:0755e488cc0a2b9bd2eab7292cc6390d4cbb8390f1020745647bae5a708e0165", size = 17140, upload-time = "2026-11-01T18:26:02.168Z" },
+    { url = "https://files.pythonhosted.org/packages/27/2d/e600d8f47597a803641704aba367c7266cd621f86561ec36da9888f160ec/pytest_asyncio-1.5.0-py3-none-any.whl", hash = "sha256:557f255ee03cc84f84a8d5f438bc9c6e0f714bf86970ae743c7ecb5a38d7e07d", size = 17215, upload-time = "2026-11-12T16:35:48.446Z" },
 ]
 
 [[package]]
