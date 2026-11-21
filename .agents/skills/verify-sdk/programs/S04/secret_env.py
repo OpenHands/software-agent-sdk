@@ -1,10 +1,14 @@
 """Give a conversation secrets the way a program does, then let the agent use
 them in terminal commands: `update_secrets`, `Conversation(secrets=...)`, a
 `SecretSource` subclass, overwriting a key, masking in observations and in the
-persisted events. The model is a scripted `TestLLM`; the terminal is real.
+persisted events, and what `base_state.json` holds right after each call. The
+model is a scripted `TestLLM`; the terminal is real.
 
 Usage: secret_env.py
 """
+
+import json
+from pathlib import Path
 
 from sdk_verify import emit, make_llm, run_paths
 
@@ -30,6 +34,13 @@ class CountingSource(SecretSource):
 
 def term(command: str) -> dict:
     return {"tool": "terminal", "args": {"command": command}}
+
+
+def saved_secret_names(conversation) -> list[str]:
+    """Secret names in the conversation's base_state.json on disk right now."""
+    state_file = Path(conversation.state.persistence_dir) / "base_state.json"
+    saved = json.loads(state_file.read_text())
+    return sorted(saved["secret_registry"]["secret_sources"])
 
 
 def observations(conversation) -> list[str]:
@@ -67,6 +78,7 @@ conversation = Conversation(
 conversation.update_secrets(
     {"SECRET_TOKEN": "first-secret-value-123", "FUNCTION_TOKEN": CountingSource()}
 )
+out["saved_after_update"] = saved_secret_names(conversation)
 conversation.send_message("Use the secrets.")
 conversation.run()
 obs = observations(conversation)
@@ -125,9 +137,11 @@ script3 = [term("echo api=$API_KEY src=$SRC_KEY"), {"finish": "constructor"}]
 conversation3 = Conversation(
     agent=Agent(llm=make_llm(script3), tools=[Tool(name=TerminalTool.name)]),
     workspace=str(paths["workspace"]),
+    persistence_dir=str(BASE),
     secrets={"API_KEY": "constructor-value-1", "SRC_KEY": CountingSource()},
     visualizer=None,
 )
+out["saved_after_constructor"] = saved_secret_names(conversation3)
 conversation3.send_message("Echo the keys.")
 conversation3.run()
 out["constructor"] = observations(conversation3)[0]
