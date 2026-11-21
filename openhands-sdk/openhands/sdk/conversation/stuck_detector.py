@@ -514,6 +514,11 @@ class StuckDetector:
         if isinstance(event1, ObservationEvent) and isinstance(
             event2, ObservationEvent
         ):
+            if any(
+                event.observation.is_in_progress and not event.observation.is_error
+                for event in (event1, event2)
+            ):
+                return False
             return (
                 event1.source == event2.source
                 and event1.observation == event2.observation
