@@ -379,6 +379,7 @@ export type {
   ReadyStatus,
   ProvidersResponse,
   ModelsResponse,
+  UpstreamModelsQueryOptions,
   VerifiedModelsResponse,
   SettingsSchema,
   ExposedUrl,

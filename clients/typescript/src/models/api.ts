@@ -26,6 +26,11 @@ export interface ModelsResponse {
   models: string[];
 }
 
+export interface UpstreamModelsQueryOptions {
+  baseUrl?: string;
+  profileName?: string;
+}
+
 export interface VerifiedModelsResponse {
   models: Record<string, string[]>;
 }
@@ -343,6 +348,7 @@ export interface ValidateProfileError {
 export interface ValidateProfileResponse {
   valid: boolean;
   error?: ValidateProfileError | null;
+  warnings?: string[];
 }
 
 export interface RenameProfileRequest {
