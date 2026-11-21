@@ -11,6 +11,7 @@ from openhands.sdk.security.defense_in_depth import (
 )
 from openhands.sdk.security.ensemble import EnsembleSecurityAnalyzer
 from openhands.sdk.security.grayswan import GraySwanAnalyzer
+from openhands.sdk.security.jev_analyzer import JevSecurityAnalyzer
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.security.risk import SecurityRisk
 from openhands.sdk.security.toolshield_helpers import (
@@ -39,6 +40,7 @@ __all__ = [
     "mcp_tools_from_config",
     "safety_experiences_for_mcp_config",
     "GraySwanAnalyzer",
+    "JevSecurityAnalyzer",
     "PatternSecurityAnalyzer",
     "PolicyRailSecurityAnalyzer",
     "EnsembleSecurityAnalyzer",
