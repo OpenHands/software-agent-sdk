@@ -2,6 +2,7 @@
 
 import math
 import re
+import signal
 import time
 import uuid
 from enum import Enum
@@ -424,6 +425,54 @@ class TerminalSession(TerminalSessionBase):
             exit_code=metadata.exit_code,
         )
 
+    def _wait_for_prompt_recovery(self, budget_seconds: float) -> bool:
+        waited = 0.0
+        poll = 0.05
+        while waited < budget_seconds:
+            time.sleep(poll)
+            waited += poll
+            if not self.terminal.is_alive():
+                return False
+            try:
+                screen = self.terminal.read_screen()
+            except Exception:
+                return False
+            if screen.rstrip().endswith(CMD_OUTPUT_PS1_END.rstrip()):
+                return True
+        return False
+
+    def _terminate_timed_out_command(self) -> None:
+        """Escalate SIGINT -> SIGTERM -> SIGKILL to stop a timed-out command."""
+        try:
+            self.terminal.interrupt()
+        except Exception:
+            logger.debug(
+                "Interrupt raised while terminating timed-out command",
+                exc_info=True,
+            )
+        recovered = self._wait_for_prompt_recovery(0.4)
+        kill_fg = getattr(self.terminal, "terminate_foreground", None)
+        if not recovered and callable(kill_fg):
+            kill_fg(signal.SIGTERM)
+            recovered = self._wait_for_prompt_recovery(0.4)
+        if not recovered and callable(kill_fg):
+            kill_fg(signal.SIGKILL)
+            recovered = self._wait_for_prompt_recovery(0.4)
+
+        self.prev_status = TerminalCommandStatus.INTERRUPTED
+        self.prev_output = ""
+        self._boundary_marker = None
+        self._boundary_echo = None
+        self._wrapper_echo = None
+        self._query_filter.reset()
+        if recovered:
+            try:
+                self.terminal.clear_screen()
+            except Exception:
+                pass
+        else:
+            self.close()
+
     def _handle_hard_timeout_command(
         self,
         command: str,
@@ -431,9 +480,10 @@ class TerminalSession(TerminalSessionBase):
         ps1_matches: list[re.Match],
         timeout: float,
         echoed_command: str | None = None,
+        *,
+        terminate: bool = False,
     ) -> TerminalObservation:
         """Handle a command that timed out due to hard timeout."""
-        self.prev_status = TerminalCommandStatus.HARD_TIMEOUT
         if len(ps1_matches) != 1:
             logger.warning(
                 "Expected exactly one PS1 metadata block before command execution, "
@@ -445,15 +495,25 @@ class TerminalSession(TerminalSessionBase):
             terminal_content, ps1_matches
         )
         metadata = CmdOutputMetadata()  # No metadata available
-        metadata.suffix = (
-            f"\n[The command timed out after {timeout} seconds. "
-            f"{TIMEOUT_MESSAGE_TEMPLATE}]"
-        )
+        if terminate:
+            self._terminate_timed_out_command()
+            metadata.suffix = (
+                f"\n[The command timed out after {timeout} seconds and was terminated.]"
+            )
+            continue_prefix = ""
+        else:
+            self.prev_status = TerminalCommandStatus.HARD_TIMEOUT
+            metadata.suffix = (
+                f"\n[The command timed out after {timeout} seconds. "
+                f"{TIMEOUT_MESSAGE_TEMPLATE}]"
+            )
+            continue_prefix = "[Below is the output of the previous command.]\n"
         command_output = self._get_command_output(
             echoed_command or command,
             raw_command_output,
             metadata,
-            continue_prefix="[Below is the output of the previous command.]\n",
+            continue_prefix=continue_prefix,
+            is_final=terminate,
         )
         command_output = maybe_truncate(
             command_output, truncate_after=MAX_CMD_OUTPUT_SIZE
@@ -463,6 +523,9 @@ class TerminalSession(TerminalSessionBase):
             exit_code=metadata.exit_code,
             text=command_output,
             metadata=metadata,
+            timeout=True,
+            is_error=terminate,
+            process_terminated=terminate,
         )
 
     def _handle_unresponsive_terminal(
@@ -923,6 +986,7 @@ class TerminalSession(TerminalSessionBase):
                             if command_boundary_marker is not None
                             else None
                         ),
+                        terminate=action.hard_timeout,
                     )
                     return obs
 

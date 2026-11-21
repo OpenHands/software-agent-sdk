@@ -238,13 +238,15 @@ class SubprocessTerminal(TerminalInterface):
                 except Exception:
                     pass
                 try:
-                    self.process.wait(timeout=2)
+                    self.process.wait(timeout=0.5)
                 except subprocess.TimeoutExpired:
-                    # Escalate
+                    # Escalate both foreground job PGID and shell PGID
+                    self.terminate_foreground(signal.SIGTERM)
                     try:
                         os.killpg(os.getpgid(self.process.pid), signal.SIGTERM)
-                        self.process.wait(timeout=1)
+                        self.process.wait(timeout=0.5)
                     except subprocess.TimeoutExpired:
+                        self.terminate_foreground(signal.SIGKILL)
                         os.killpg(os.getpgid(self.process.pid), signal.SIGKILL)
         except Exception as e:
             logger.error(f"Error closing PTY terminal: {e}", exc_info=True)
@@ -515,13 +517,42 @@ class SubprocessTerminal(TerminalInterface):
             if start_idx != -1 and end_idx != -1 and end_idx >= start_idx:
                 self.output_buffer.append(data[start_idx:])
 
+    def _foreground_pgid(self) -> int | None:
+        if self._pty_master_fd is None:
+            return None
+        try:
+            pgid = os.tcgetpgrp(self._pty_master_fd)
+            return pgid if pgid > 0 else None
+        except OSError:
+            return None
+
+    def terminate_foreground(self, sig: signal.Signals = signal.SIGTERM) -> bool:
+        """Signal the active foreground job process group without killing the shell."""
+        if not self._initialized or not self.process:
+            return False
+        try:
+            shell_pgid = os.getpgid(self.process.pid)
+            fg_pgid = self._foreground_pgid()
+            if fg_pgid is not None and fg_pgid != shell_pgid:
+                os.killpg(fg_pgid, sig)
+                return True
+        except ProcessLookupError:
+            return True
+        except Exception as e:
+            logger.debug(f"Failed to signal foreground pgid with {sig}: {e}")
+        return False
+
     def interrupt(self) -> bool:
-        """Send SIGINT to the PTY process group (fallback to signal-based interrupt)."""
+        """Send SIGINT to the foreground PTY job group (falling back to shell PGID)."""
         if not self._initialized or not self.process:
             return False
 
         try:
-            os.killpg(os.getpgid(self.process.pid), signal.SIGINT)
+            fg_pgid = self._foreground_pgid()
+            target_pgid = (
+                fg_pgid if fg_pgid is not None else os.getpgid(self.process.pid)
+            )
+            os.killpg(target_pgid, signal.SIGINT)
             self._current_command_running = False
             return True
         except Exception as e:
