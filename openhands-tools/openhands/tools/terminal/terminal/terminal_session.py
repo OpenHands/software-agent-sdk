@@ -22,8 +22,10 @@ from openhands.tools.terminal.definition import (
 )
 from openhands.tools.terminal.metadata import CmdOutputMetadata
 from openhands.tools.terminal.terminal.interface import (
+    SUPPORTED_SPECIAL_KEYS,
     TerminalInterface,
     TerminalSessionBase,
+    parse_ctrl_key,
 )
 from openhands.tools.terminal.timeout_policy import foreground_timeout_rejection_for
 from openhands.tools.terminal.utils.command import (
@@ -45,6 +47,17 @@ class TerminalCommandStatus(Enum):
     INTERRUPTED = "interrupted"
     NO_CHANGE_TIMEOUT = "no_change_timeout"
     HARD_TIMEOUT = "hard_timeout"
+
+
+def _strip_leading_bash_comments(command: str) -> str:
+    # Interactive Bash can emit a prompt after each leading comment or blank line.
+    body = re.sub(r"^(?:#[^\n]*\n[ \t\n]*)+", "", command)
+    if body == command or not body or body.startswith("#"):
+        return command
+    if body.upper() in SUPPORTED_SPECIAL_KEYS or parse_ctrl_key(body) is not None:
+        # Keep the backend from interpreting the shell command as a keypress.
+        return f"{body} #"
+    return body
 
 
 def _normalize_echo_line(line: str) -> str:
@@ -470,6 +483,7 @@ class TerminalSession(TerminalSessionBase):
         command: str,
         terminal_content: str,
         ps1_matches: list[re.Match],
+        echoed_command: str | None = None,
     ) -> TerminalObservation:
         """Handle the shell exiting or wedging while a command was running.
 
@@ -487,7 +501,7 @@ class TerminalSession(TerminalSessionBase):
         metadata = CmdOutputMetadata(exit_code=-1, working_dir=self._cwd)
         metadata.suffix = _UNRESPONSIVE_TERMINAL_SUFFIX
         command_output = self._get_command_output(
-            command,
+            echoed_command or command,
             raw_command_output,
             metadata,
             continue_prefix="[Below is the output of the previous command.]\n",
@@ -752,6 +766,7 @@ class TerminalSession(TerminalSessionBase):
             return obs
 
         command_to_send = command
+        echoed_command: str | None = None
         boundary_command: str | None = None
         command_boundary_marker: re.Pattern[str] | None = None
         if command and not is_input:
@@ -759,6 +774,7 @@ class TerminalSession(TerminalSessionBase):
             self._boundary_echo = None
             self._wrapper_echo = None
         if command and not is_input and not self.terminal.is_powershell():
+            command_to_send = _strip_leading_bash_comments(command)
             if needs_heredoc_completion_boundary(command_to_send):
                 marker_id = uuid.uuid4().hex
                 marker_start = f"__OH_COMMAND_FINISHED_{marker_id}_"
@@ -772,10 +788,16 @@ class TerminalSession(TerminalSessionBase):
                     '> /dev/tty; exit "$__openhands_status")'
                 )
                 self._boundary_marker = command_boundary_marker
+            had_leading_comments = command_to_send != command
             command_to_send = escape_bash_special_chars(command_to_send)
+            if had_leading_comments:
+                echoed_command = command_to_send
             if boundary_command is not None:
                 self._boundary_echo = boundary_command
                 self._wrapper_echo = command_to_send
+        timeout_echo = (
+            command_to_send if boundary_command is not None else echoed_command
+        )
 
         # Send actual command/inputs to the terminal
         sent_command = command != ""
@@ -860,6 +882,7 @@ class TerminalSession(TerminalSessionBase):
                     command,
                     terminal_content=completed_terminal_output,
                     ps1_matches=completed_ps1_matches,
+                    echoed_command=echoed_command,
                     boundary_exit_code=boundary_exit_code,
                 )
                 return obs
@@ -872,6 +895,7 @@ class TerminalSession(TerminalSessionBase):
                     command,
                     terminal_content=cur_terminal_output,
                     ps1_matches=ps1_matches,
+                    echoed_command=echoed_command,
                 )
 
             # Timeout checks should only trigger if a new prompt hasn't appeared yet.
@@ -895,9 +919,7 @@ class TerminalSession(TerminalSessionBase):
                     command,
                     terminal_content=stripped_output,
                     ps1_matches=CmdOutputMetadata.matches_ps1_metadata(stripped_output),
-                    echoed_command=(
-                        command_to_send if command_boundary_marker is not None else None
-                    ),
+                    echoed_command=timeout_echo,
                 )
                 return obs
 
@@ -918,11 +940,7 @@ class TerminalSession(TerminalSessionBase):
                             stripped_output
                         ),
                         timeout=action.timeout,
-                        echoed_command=(
-                            command_to_send
-                            if command_boundary_marker is not None
-                            else None
-                        ),
+                        echoed_command=timeout_echo,
                     )
                     return obs
 
@@ -941,11 +959,7 @@ class TerminalSession(TerminalSessionBase):
                             stripped_output
                         ),
                         timeout=self.max_observation_wait_seconds,
-                        echoed_command=(
-                            command_to_send
-                            if command_boundary_marker is not None
-                            else None
-                        ),
+                        echoed_command=timeout_echo,
                     )
 
             # Poll in proportion to the command's run time so a short command is
