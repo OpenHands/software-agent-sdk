@@ -65,7 +65,7 @@ Routes: `GET /api/projects/{project_id}/artifacts`,
 - `F36.start-member`: only the coordinator starts conversations in its project: its `POST .../children` starts a member tagged `project=<id>`, and a member's own `POST .../children` is 409.
 - `F36.client-tags`: a client cannot start or fork a conversation whose `project` tag names an existing project: 422, and nothing is created. The other project keys (`turn`, `ask`, `resolved`, `resolvenote`), or a `project` tag naming no project, are ordinary client tags.
 - `F36.attention`: conversations are grouped `needs_you` (waiting for confirmation), then `working`, `idle` (finished or never run), newest-updated first within a group; non-members are left out.
-- `F36.remove-conversation`: `DELETE .../conversations/{conversation_id}` clears only the `project` tag; a second delete, or a delete through another project, is 404.
+- `F36.remove-conversation`: `DELETE .../conversations/{conversation_id}` clears the `project` tag and the board tags (`resolved`, `resolvenote`, `turn`, `ask`), and no other tag; a second delete, or a delete through another project, is 404.
 - `F36.remove-coordinator`: removing the coordinator from the project is 409.
 - `F36.message-rest`: `POST /api/conversations/{id}/events` saves the message and starts a run. Without `sender_conversation_id` the message has no `sender`; a member sending to a conversation outside its project is 422.
 - `F36.turn`: when a member's run finishes, its `turn` tag says whether the agent's last message asked something (`asking`, attention `asking`) or not (`finished`), and an `asking` turn saves the question, in one line of at most 200 characters, as the `ask` tag (reported as `ask`); a new user message clears both.
@@ -115,8 +115,11 @@ Routes: `GET /api/projects/{project_id}/artifacts`,
   substantive question, choice, review or check (>= 0.5) makes the turn
   `asking` (Needs you), with the reply's last paragraph as `ask`; work left
   that waits on no one stays `finished` and unresolved (Idle). There are no
-  text heuristics: without a verdict (no judge, or it failed) a turn is
-  `finished`, and a critic score >= 0.9 still resolves (`0.95 critic`).
+  text heuristics: without a judge a turn is `finished`, and a critic score
+  >= 0.9 still resolves (`0.95 critic`). When the judge fails or times out,
+  the turn is `asking` (Needs you) with the reply's last paragraph as `ask`,
+  and nothing resolves it. The coordinator's turns get `turn` (and `ask` from
+  an `ask_user` card) but are never judged or resolved automatically.
   The board shows the note as `resolve_note`.
   Clients resolve with `POST /api/projects/{id}/conversations/{cid}/resolve`
   and reopen with `.../reopen` (both 204, idempotent, and both clear
