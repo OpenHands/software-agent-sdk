@@ -7,7 +7,10 @@ Business logic is delegated to hooks_service.py.
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
-from openhands.agent_server.hooks_service import load_hooks
+from openhands.agent_server.hooks_service import (
+    HooksSourceError,
+    load_hooks_with_errors,
+)
 from openhands.sdk.hooks import HookConfig
 
 
@@ -30,13 +33,17 @@ class HooksRequest(BaseModel):
 
 
 class HooksResponse(BaseModel):
-    """Response containing hooks configuration."""
+    """Response containing hooks configuration and any source load errors."""
 
     hook_config: HookConfig | None = Field(
         default=None,
         description=(
             "Project and user hook configuration, merged, or None if neither has hooks"
         ),
+    )
+    errors: list[HooksSourceError] = Field(
+        default_factory=list,
+        description="Errors from hook sources that existed on disk but failed to load",
     )
 
 
@@ -52,11 +59,11 @@ def get_hooks(request: HooksRequest) -> HooksResponse:
         request: HooksRequest with the project directory and the sources to load.
 
     Returns:
-        HooksResponse containing the hook configuration or None.
+        HooksResponse containing the hook configuration (or None) and any load errors.
     """
-    hook_config = load_hooks(
+    hook_config, errors = load_hooks_with_errors(
         project_dir=request.project_dir,
         load_project_hooks=request.load_project_hooks,
         load_user_hooks=request.load_user_hooks,
     )
-    return HooksResponse(hook_config=hook_config)
+    return HooksResponse(hook_config=hook_config, errors=errors)
