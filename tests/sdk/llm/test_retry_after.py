@@ -203,3 +203,33 @@ def test_missing_hint_preserves_existing_backoff_when_min_exceeds_max():
         attempt()
     assert len(calls) == 2
     assert waits == [8]
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_jittered_wait_stops_retry():
+    calls = []
+    sleeping = asyncio.Event()
+
+    @RetryMixin().retry_decorator(
+        retry_exceptions=(RateLimitError,),
+        retry_min_wait=1,
+        retry_max_wait=4,
+        retry_multiplier=1,
+        retry_jitter=1,
+    )
+    async def attempt():
+        calls.append(1)
+        raise rate_limit()
+
+    async def sleep(seconds):
+        assert 1 <= seconds <= 2
+        sleeping.set()
+        await asyncio.sleep(seconds)
+
+    cast(Any, attempt).retry.sleep = sleep
+    task = asyncio.create_task(attempt())
+    await asyncio.wait_for(sleeping.wait(), timeout=2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert len(calls) == 1

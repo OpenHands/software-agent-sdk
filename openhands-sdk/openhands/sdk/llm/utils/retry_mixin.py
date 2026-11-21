@@ -1,3 +1,4 @@
+import random
 import time
 from collections.abc import Callable, Iterable
 from typing import Any, NoReturn, Protocol, cast, runtime_checkable
@@ -195,6 +196,7 @@ class RetryMixin:
         retry_multiplier: float = 2.0,
         retry_listener: RetryListener | None = None,
         timeout: float | None = None,
+        retry_jitter: float = 0.0,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """
         Create a LLM retry decorator with customizable parameters.
@@ -204,6 +206,11 @@ class RetryMixin:
         as-is) or a tenacity retry predicate (e.g. a combined
         ``retry_if_exception_type(...) & retry_if_not_exception(...)``) for
         finer-grained control over which exceptions are retried.
+
+        ``retry_jitter`` bounds the random variation around each exponential
+        wait, in seconds, within the configured minimum and maximum. Set it to
+        zero for deterministic backoff. Fixed or inverted bounds keep their
+        existing wait behavior. ``LLM`` enables one-second jitter by default.
 
         ``timeout`` is the per-attempt timeout. When set, timeouts stop being
         retried once the call has spent ``TIMEOUT_RETRY_BUDGET_MULTIPLIER``
@@ -252,7 +259,13 @@ class RetryMixin:
 
         def wait(retry_state: RetryCallState) -> float:
             error = retry_state.outcome.exception() if retry_state.outcome else None
-            return max(exponential_wait(retry_state), retry_after_seconds(error))
+            delay = exponential_wait(retry_state)
+            if retry_jitter > 0 and retry_min_wait < retry_max_wait:
+                delay = random.uniform(
+                    max(retry_min_wait, delay - retry_jitter),
+                    min(retry_max_wait, delay + retry_jitter),
+                )
+            return max(delay, retry_after_seconds(error))
 
         clock = _AttemptClock()
         retry_decorator: Callable[[Callable[..., Any]], Callable[..., Any]] = retry(
