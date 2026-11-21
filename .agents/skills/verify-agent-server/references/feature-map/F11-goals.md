@@ -31,11 +31,11 @@ Routes: `POST /api/conversations/{conversation_id}/goal`,
 - `F11.goal-auth`: all three routes return 401 without a session key or with a wrong one, while the right key is accepted.
 - `F11.goal-stop-noop`: `/goal/stop` with no active loop returns 200 and records nothing.
 - `F11.goal-resume-none`: `/goal/resume` on a conversation that never had a goal returns 400 `no_resumable_goal` and records nothing.
-- `F11.goal-complete`: on DeepSeek flash a small objective runs to a goal status `complete` (`active: false`, a verdict with `complete: true`), the agent's file is in the workspace and the conversation is `finished`.
+- `F11.goal-complete`: on DeepSeek flash a small objective runs to a goal status `complete` (`active: false`, a verdict with `complete: true`), the agent's file is in the workspace and the conversation is `finished`. Same promise: `S04.goal-loop`.
 - `F11.goal-ws`: the events socket pushes the goal status as `ConversationStateUpdateEvent` frames with `key: "goal"`: `running` at the start, then the terminal status.
 - `F11.goal-in-place`: the loop creates no conversation; the objective is a user message and the agent's tool work is in the same conversation's event log.
-- `F11.goal-followup`: an incomplete verdict records a `running` status with `iteration: 1` and that verdict, then posts a follow-up user message carrying the judge's `missing` text and runs another round.
-- `F11.goal-capped`: when no verdict says complete, the loop stops after `max_iterations` rounds with `status: capped`, `iteration` equal to the cap and the last verdict, after exactly one agent and one judge call per round.
+- `F11.goal-followup`: an incomplete verdict records a `running` status with `iteration: 1` and that verdict, then posts a follow-up user message carrying the judge's `missing` text and runs another round. Same promise: `S04.goal-loop`.
+- `F11.goal-capped`: when no verdict says complete, the loop stops after `max_iterations` rounds with `status: capped`, `iteration` equal to the cap and the last verdict, after exactly one agent and one judge call per round. Same promise: `S04.goal-loop`.
 - `F11.goal-resume-finished`: `/goal/resume` after a `complete` or `capped` goal returns 400 `no_resumable_goal`.
 - `F11.goal-busy`: while a goal round is in flight, a second `/goal`, `/goal/resume` and `/run` return 409 and add no goal status; an omitted `max_iterations` defaults to 10.
 - `F11.goal-stop`: `/goal/stop` on an active loop returns 200 at once and records `interrupted` (`active: false`) with the same objective and iteration, but cancels only the loop: the in-flight round keeps the conversation `running` until it is interrupted.

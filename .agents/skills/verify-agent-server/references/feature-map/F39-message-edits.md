@@ -32,8 +32,8 @@ Routes: none of its own (the flag's routes are F18's).
 
 - `F39.flag-gates`: `GET /api/settings/experimental` lists `message_edits` with `enabled: false`; a conversation started while it is off has no `edit_message`, and one started after `PATCH .../message_edits` `{"enabled": true}` has it without naming it.
 - `F39.tool`: a real model that asked the user a question, then got the answer, edits the question: one agent `MessageEditEvent` targets its earlier message, its `text` strikes the question with `~~` and carries an `[Edit:` note, and the stored message is unchanged.
-- `F39.agent-sees`: with an `llm-stub` recorder, the requests after an edit carry the message as first written plus the `edit_message` call and its `Edited.` result, and nothing else for the edit.
-- `F39.miss`: an `old_str` the agent never wrote answers an error observation (`old_str is not in any of your messages`) and records no `MessageEditEvent`.
+- `F39.agent-sees`: with an `llm-stub` recorder, the requests after an edit carry the message as first written plus the `edit_message` call and its `Edited.` result, and nothing else for the edit. Same promise: `S16.message-edit-llm-view`.
+- `F39.miss`: an `old_str` the agent never wrote answers an error observation (`old_str is not in any of your messages`) and records no `MessageEditEvent`. Same promise: `S16.message-edit-tool`.
 - `F39.reaction-quotes-edit`: with `conversation_reactions` also on, a user's reaction on the edited message keeps the edited text in `target_text_ending`.
 
 ## How to get to it (agent POV)

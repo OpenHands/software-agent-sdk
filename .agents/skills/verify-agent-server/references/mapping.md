@@ -114,6 +114,10 @@ Then exactly four H2 sections, in this order:
 
 1. `## Sub-features`: one bullet per ID:
    `` - `F03.pause`: pausing a running conversation stops it and reports `paused`. ``
+   When the SDK map has a bullet for the same promise, end the line with
+   `` Same promise: `S04.pause`. `` and add `` Server: `F03.pause`. `` to that
+   SDK bullet (see the index's
+   [Twin links](feature-map/README.md#twin-links-with-the-sdk-map)).
 2. `## How to get to it (agent POV)`: every entry point, as a consumer meets
    it: the REST route, the WebSocket, the SDK method
    (`RemoteConversation.pause()`), the TypeScript client method, the config
@@ -366,10 +370,13 @@ control-agent-server map check --file F03   # one entry while others are being w
 control-agent-server map check              # whole map: structure, IDs, index, commands parse, routes exist
 control-agent-server map coverage           # routes no family owns or drives
 control-agent-server map ids                # every ID with its file, for the index table
+control-agent-server map links              # SDK/server twin pairs (`Same promise:` / `Server:`)
 ```
 
 `map check` parses every `control-agent-server ...` command in the map with the
-real argument parser (so a renamed flag fails the check), verifies every route
+real argument parser (so a renamed flag fails the check), checks that every
+`Same promise:` and SDK `Server:` link names an existing bullet that links
+back, verifies every route
 on a `Routes:` line and every `api METHOD PATH` call against the app's route
 table, and checks the index counts. Whoever owns the index
 ([feature-map/README.md](feature-map/README.md)) adds the new file to the

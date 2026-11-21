@@ -85,6 +85,14 @@ nothing in `BASE..TARGET` touched is not driven: it waits for the weekly pass.
    it is reproduced and gets its note, so bugs filed outside a pass reach the
    map. Model-backed recipes run only inside the LLM budget; without a key
    they are `blocked` with the missing prerequisite.
+3. **Twins.** For every family step 2 drove, `control-agent-server map links
+   --file Fnn` lists its SDK twins (`Same promise:` links). When verify-sdk's
+   map is in the checkout, replay each twin in-process too (`sdk-map run
+   --file Snn --only Snn.x`) unless its family is replayed anyway. Put each
+   pair side by side: a pair whose results disagree is a finding, usually at
+   the seam between the SDK and the server (serialization, the async path,
+   persistence, restart), unless the difference is already a known bug on
+   one side. Drive each bullet once.
 
 ## Reading the result
 

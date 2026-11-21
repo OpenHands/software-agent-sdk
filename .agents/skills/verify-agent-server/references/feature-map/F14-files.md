@@ -32,7 +32,7 @@ Routes: `GET /api/file/home`, `GET /api/file/search_subdirs`,
 - `F14.upload-download`: a multipart upload creates missing parent directories, a download returns byte-identical bytes as an `application/octet-stream` attachment named after the basename, and a second upload to the same path replaces the content.
 - `F14.upload-errors`: an upload without the `file` part or without `path` is 422, and a relative `path` is 400 `Path must be absolute`.
 - `F14.upload-onto-directory`: uploading onto an existing directory, or to a path whose parent is a file, is a client error (400), as `create_directory` answers for the same collisions.
-- `F14.upload-size`: the SDK's `RemoteWorkspace.file_upload` and the TypeScript `RemoteWorkspace.fileUpload` report the uploaded `file_size`, as `LocalWorkspace.file_upload` does; the upload response carries it as `{"success": true, "file_size": N}`.
+- `F14.upload-size`: the SDK's `RemoteWorkspace.file_upload` and the TypeScript `RemoteWorkspace.fileUpload` report the uploaded `file_size`, as `LocalWorkspace.file_upload` does; the upload response carries it as `{"success": true, "file_size": N}`. Same promise: `S18.remote-files-git`.
 - `F14.upload-atomic`: an overwrite that fails mid-write leaves the previous file intact; today the target is truncated before streaming and keeps a partial file.
 - `F14.download-errors`: downloading a missing file is 404 `File not found`, a directory 400 `Path is not a file`, a relative path 400.
 - `F14.mkdir`: `create_directory` creates missing parents, is idempotent and keeps existing contents, the new directory is listed by `search_subdirs`, and a path that is or runs through a file is 400.
@@ -56,7 +56,7 @@ Routes: `GET /api/file/home`, `GET /api/file/search_subdirs`,
 - `F14.scoped-path-guard`: scoped routes reject paths outside the workspace (another conversation's workspace, `..` traversal, a symlink escape, a sibling with the same prefix, a relative path) with 422 and write nothing, while the global route serves the same path.
 - `F14.scoped-conversation-errors`: a scoped route for an unknown conversation is 404 and does nothing; a malformed conversation id is 422.
 - `F14.scoped-trajectory-archive`: the scoped trajectory route serves only its own conversation (another or malformed id is 422), and the scoped archive packs the workspace, including the agent's file, but refuses a path outside it with 422.
-- `F14.sdk-workspace`: the SDK's `RemoteWorkspace.file_upload`/`file_download` round-trip bytes through the global routes and, with `runtime_conversation_id`, through the scoped routes; a scoped upload outside the workspace returns `success=False` with the 422 and writes nothing.
+- `F14.sdk-workspace`: the SDK's `RemoteWorkspace.file_upload`/`file_download` round-trip bytes through the global routes and, with `runtime_conversation_id`, through the scoped routes; a scoped upload outside the workspace returns `success=False` with the 422 and writes nothing. Same promise: `S18.remote-files-git`.
 - `F14.restart`: after a restart, uploaded files, the scoped download and the trajectory are still served.
 
 ## How to get to it (agent POV)

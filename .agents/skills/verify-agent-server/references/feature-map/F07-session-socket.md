@@ -29,7 +29,7 @@ Routes: `WS /sockets/session/{conversation_id}`
 - `F07.snapshot-compact-stats`: the `full_state` snapshot carries each LLM's aggregate stats (`accumulated_cost`, `accumulated_token_usage`) but not the per-call `costs`, `response_latencies` and `token_usages` lists, so it stays small however long the conversation runs; `GET /api/conversations/{id}` returns the same aggregates with empty per-call lists.
 - `F07.snapshot-no-skill-bodies`: the `full_state` snapshot and live `agent` state updates carry the agent with `agent_context.skills` emptied, so skill bodies never ride the socket live, while `GET /api/conversations/{id}?include_skills=true` and the stored event keep them.
 - `F07.full-replay`: `after_seq=-1` (or any value below it) replays every persisted event as `durable` frames with `seq` 0..`through_seq`, in order, once each, with the same ids REST returns.
-- `F07.seq-on-disk`: a durable frame's `seq` is the event's on-disk index, the `NNNNN` in `events/event-NNNNN-<event id>.json`.
+- `F07.seq-on-disk`: a durable frame's `seq` is the event's on-disk index, the `NNNNN` in `events/event-NNNNN-<event id>.json`. Same promise: `S04.persist-events`, `S05.event-log-files`.
 - `F07.resume-cursor`: `after_seq=k` replays exactly the events with `seq > k`; `after_seq=through_seq` replays nothing.
 - `F07.live-durable`: on a live-only connection, an event appended later (a REST message with `run: false`) arrives as a `durable` frame with the next `seq`.
 - `F07.live-order`: live `durable` frames on one connection arrive in ascending `seq` order.

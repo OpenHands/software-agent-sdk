@@ -446,3 +446,66 @@ def test_every_command_documents_examples(capsys):
         with pytest.raises(SystemExit):
             parser.parse_args([name, "--help"])
         assert "Examples:" in capsys.readouterr().out, name
+
+
+def _twin_maps(tmp_path, sdk_line: str, server_line: str) -> Path:
+    """A skills tree with one SDK family and one agent-server family."""
+    skills = tmp_path / "skills"
+    sdk = skills / "verify-sdk" / "references" / "feature-map"
+    server = skills / "verify-agent-server" / "references" / "feature-map"
+    sdk.mkdir(parents=True)
+    server.mkdir(parents=True)
+    (sdk / "S98-demo.md").write_text(
+        f"# Demo\n\n## Sub-features\n\n{sdk_line}\n- `S98.alone`: x.\n"
+    )
+    (server / "F98-demo.md").write_text(
+        f"# Demo\n\n## Sub-features\n\n{server_line}\n- `F98.other`: y.\n"
+    )
+    return sdk
+
+
+def test_twin_links_are_checked_both_ways(tmp_path, monkeypatch):
+    sdk = _twin_maps(
+        tmp_path,
+        "- `S98.pause`: pauses. Unit: none. Server: `F98.pause`, `F98.other`.",
+        "- `F98.pause`: pauses. Same promise: `S98.pause`, `S98.alone`.",
+    )
+    monkeypatch.setattr(sdk_map, "FEATURE_MAP_DIR", sdk)
+    problems = sdk_map.twin_link_problems("S")
+    assert problems == {
+        "S98-demo.md": [
+            "line 5: S98.pause: `Server:` names F98.other, whose `Same promise:`"
+            " does not name it back (F98-demo.md line 6)"
+        ],
+        "F98-demo.md": [
+            "line 5: F98.pause: `Same promise:` names S98.alone, whose `Server:`"
+            " does not name it back (S98-demo.md line 6)"
+        ],
+    }
+    # Limited to the IDs of one family, only links that touch them count.
+    assert sdk_map.twin_link_problems("S", {"S98.alone"}) == {
+        "F98-demo.md": [problems["F98-demo.md"][0]]
+    }
+    assert sdk_map.twin_pairs("S") == [
+        {"sdk": "S98.pause", "server": "F98.pause"},
+        {"sdk": "S98.pause", "server": "F98.other"},
+    ]
+
+
+def test_twin_links_must_name_existing_ids_in_the_exact_form(tmp_path, monkeypatch):
+    sdk = _twin_maps(
+        tmp_path,
+        "- `S98.pause`: pauses. Server: `F98.gone`.",
+        "- `F98.pause`: pauses. Same promise: S98.pause",
+    )
+    monkeypatch.setattr(sdk_map, "FEATURE_MAP_DIR", sdk)
+    problems = sdk_map.twin_link_problems("S")
+    assert problems["S98-demo.md"] == [
+        "line 5: S98.pause: `Server:` names F98.gone, not in the other map"
+    ]
+    assert "must end the line" in problems["F98-demo.md"][0]
+
+
+def test_twin_links_are_skipped_without_the_other_map(demo_map):
+    assert sdk_map.twin_link_problems("S") == {}
+    assert sdk_map.twin_pairs("S") == []

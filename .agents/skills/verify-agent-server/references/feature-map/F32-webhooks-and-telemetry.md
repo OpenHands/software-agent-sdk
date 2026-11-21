@@ -30,7 +30,7 @@ Routes: none
 - `F32.events-post`: a run's events reach `POST {base_url}/events/<conversation id hex, no dashes>` as JSON arrays, through the agent's reply and the `finished` status update.
 - `F32.events-session-key`: every webhook request carries `Content-Type: application/json` and the server's first session key as `X-Session-API-Key`.
 - `F32.events-full-state`: each attach of a conversation (its creation, and its first use after a restart) posts a transient `ConversationStateUpdateEvent` with key `full_state`.
-- `F32.events-no-deltas`: a streaming run's `StreamingDeltaEvent`s reach the events WebSocket but never a webhook.
+- `F32.events-no-deltas`: a streaming run's `StreamingDeltaEvent`s reach the events WebSocket but never a webhook. Same promise: `S05.streaming-delta`.
 - `F32.conversation-created`: creating a conversation POSTs its `ConversationInfo` to `{base_url}/conversations`.
 - `F32.conversation-lifecycle`: pausing, interrupting, updating and deleting a conversation each POST its info again (`paused`, `paused`, the new title, `deleting`).
 - `F32.custom-headers`: a webhook's `headers` and a `base_url` path prefix apply to both event and conversation posts.
