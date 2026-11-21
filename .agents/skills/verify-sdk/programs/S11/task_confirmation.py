@@ -13,7 +13,7 @@ Conversation 1 (handler: reject task 1, approve task 2):
                   and the handler says yes
   finish
 Conversation 2 (plain TaskToolSet, no handler):
-  task(careful)   the sub-agent's actions are approved without asking
+  task(careful)   pending confirmations fail closed and are rejected
 """
 
 from s11_helpers import scripted, task_observations
@@ -124,7 +124,7 @@ status = conversation.state.execution_status.value
 observations = task_observations(conversation.state.events)
 conversation.close()
 
-# No handler: the sub-agent's confirmations are approved.
+# No handler: the sub-agent's confirmations fail closed and are rejected.
 plain = Conversation(
     agent=Agent(
         llm=scripted(
