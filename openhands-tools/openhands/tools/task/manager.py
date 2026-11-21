@@ -24,6 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from openhands.sdk import Agent
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.response_utils import get_agent_final_response
+from openhands.sdk.conversation.secret_registry import SecretRegistry
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
@@ -239,6 +240,7 @@ class TaskManager:
                     observability_tags=["delegate"],
                 )
 
+            self._seed_subagent_masked_values(conversation)
             self._set_confirmation_policy(
                 conversation,
                 factory.definition.get_confirmation_policy(),
@@ -292,6 +294,7 @@ class TaskManager:
                 hook_config=factory.definition.hooks,
             )
 
+            self._seed_subagent_masked_values(sub_conversation)
             self._set_confirmation_policy(
                 sub_conversation,
                 factory.definition.get_confirmation_policy(),
@@ -437,6 +440,7 @@ class TaskManager:
             task.set_error(str(e))
             logger.warning(f"Task {task.id} failed with error: {e}")
         finally:
+            self._sync_subagent_masked_values(parent, task)
             self._update_parent_metrics(parent, task)
             self._evict_task(task)
 
@@ -498,6 +502,28 @@ class TaskManager:
             )
         else:
             conversation.set_confirmation_policy(confirmation_policy)
+
+    def _seed_subagent_masked_values(self, conversation: LocalConversation) -> None:
+        """Copy historical masked secret values from parent to sub-agent."""
+        parent_reg = getattr(self.parent_conversation.state, "secret_registry", None)
+        child_reg = getattr(conversation.state, "secret_registry", None)
+        if isinstance(parent_reg, SecretRegistry) and isinstance(
+            child_reg, SecretRegistry
+        ):
+            child_reg.track_masked_values(parent_reg.get_masked_values())
+
+    def _sync_subagent_masked_values(
+        self, parent: LocalConversation, task: Task
+    ) -> None:
+        """Merge secret values resolved by the sub-agent back into parent masking."""
+        if task.conversation is None:
+            return
+        parent_reg = getattr(parent.state, "secret_registry", None)
+        child_reg = getattr(task.conversation.state, "secret_registry", None)
+        if isinstance(parent_reg, SecretRegistry) and isinstance(
+            child_reg, SecretRegistry
+        ):
+            parent_reg.track_masked_values(child_reg.get_masked_values())
 
     def _update_parent_metrics(self, parent: LocalConversation, task: Task) -> None:
         """
