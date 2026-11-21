@@ -618,6 +618,9 @@ Preconditions:
 - **Project memory over REST (`F36.memory-rest`).**
   Requires: `F36.coordinator`
   ```sh
+  for N in $(control-agent-server api GET "/api/projects/$P2/memory" --expect 200 --field files | jq -r '.[].name'); do
+    control-agent-server api DELETE "/api/projects/$P2/memory/$N" --expect 200 --check deleted eq true
+  done
   control-agent-server api GET "/api/projects/$P2/memory" --expect 200 --check files len-eq 0
   REV=$(control-agent-server api PUT "/api/projects/$P2/memory/MEMORY.md" --json '{"content": "- The user prefers short answers.\n"}' \
     --expect 200 --check revision matches '^[0-9a-f]{16}$' --field revision)
@@ -630,8 +633,10 @@ Preconditions:
   control-agent-server api DELETE "/api/projects/$P2/memory/deploy.md" --expect 200 --check deleted eq true
   control-agent-server api GET "/api/projects/$P2/memory/MEMORY.md" --check revision eq "$REV" --check content contains 'short answers'
   ```
-  The index is created, a blind overwrite is refused with the current file,
-  and a topic file is added, listed after the index and deleted.
+  The coordinator may already have written to the project's memory on its
+  own (earlier bullets give it turns), so the recipe first deletes what is
+  there. The index is created, a blind overwrite is refused with the current
+  file, and a topic file is added, listed after the index and deleted.
 - **Model-backed: an agent keeps project memory (`F36.memory-tool`).**
   Requires: `F36.memory-rest`
   Needs: `llm`
