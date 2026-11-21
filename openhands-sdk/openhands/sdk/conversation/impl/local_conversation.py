@@ -3,6 +3,7 @@ import atexit
 import contextlib
 import copy
 import json
+import os
 import threading
 import uuid
 from collections.abc import Collection, Mapping, Sequence
@@ -1728,7 +1729,7 @@ class LocalConversation(BaseConversation):
                     "MCP server startup failed for %s; continuing without its "
                     "tools: %s",
                     name,
-                    exc,
+                    self._mcp_start_failure_reason(exc, for_warning=True),
                 )
         return tools
 
@@ -1775,7 +1776,7 @@ class LocalConversation(BaseConversation):
                     "MCP server startup failed for %s; continuing without its "
                     "tools: %s",
                     name,
-                    exc,
+                    self._mcp_start_failure_reason(exc, for_warning=True),
                 )
                 return
             # Under the lock, close() either sees these tools in the agent or
@@ -1895,11 +1896,23 @@ class LocalConversation(BaseConversation):
                     *mcp_config,
                 ]
 
-    def _mcp_start_failure_reason(self, exc: Exception) -> str:
-        """One line saying why a server did not start, without its secrets."""
+    def _mcp_start_failure_reason(
+        self, exc: Exception, *, for_warning: bool = False
+    ) -> str:
+        """Explain why a server did not start, without its secrets."""
         # The client's bare "MCP Connection Failure" hides the cause, e.g. a
         # missing executable; report the cause instead.
         cause = exc.__cause__ if type(exc) is MCPError else None
+        if for_warning:
+            transport_error = cause.__cause__ if cause is not None else exc
+            if (
+                isinstance(transport_error, OSError)
+                and transport_error.errno is not None
+            ):
+                # Omit paths, which can contain expanded environment values.
+                error_number = transport_error.errno
+                return f"[Errno {error_number}] {os.strerror(error_number)}"
+            return str(exc)
         lines = str(cause or exc).strip().splitlines()
         text = lines[0] if lines else type(exc).__name__
         return redact_text_secrets(

@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import re
 import sys
 import threading
 import time
@@ -603,10 +604,14 @@ def _failed_servers(caplog: pytest.LogCaptureFixture) -> list[str]:
 
 
 @pytest.mark.parametrize(
-    "broken",
+    ("broken", "reason"),
     [
-        pytest.param(UNRESPONSIVE_SERVER, id="never-answers"),
-        pytest.param({"command": "missing-mcp-server-command"}, id="missing-command"),
+        pytest.param(UNRESPONSIVE_SERVER, r"timed out", id="never-answers"),
+        pytest.param(
+            {"command": "${TEST_MCP_MISSING_EXECUTABLE}"},
+            r"\[Errno 2\]",
+            id="missing-command",
+        ),
     ],
 )
 def test_failing_mcp_server_keeps_the_other_servers_tools(
@@ -614,7 +619,10 @@ def test_failing_mcp_server_keeps_the_other_servers_tools(
     caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
     broken: dict[str, Any],
+    reason: str,
 ) -> None:
+    missing_executable = str(tmp_path / "missing-mcp-server-command")
+    monkeypatch.setenv("TEST_MCP_MISSING_EXECUTABLE", missing_executable)
     monkeypatch.setattr(
         local_conversation, "_RUNTIME_MCP_TIMEOUT_SECS", STARTUP_TIMEOUT
     )
@@ -645,6 +653,13 @@ def test_failing_mcp_server_keeps_the_other_servers_tools(
 
     assert _mcp_tool_names(conversation) == {"docs_fetch"}
     assert _failed_servers(caplog) == ["broken"]
+    warning = next(
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith(f"{STARTUP_FAILED} broken;")
+    )
+    assert re.search(reason, warning), warning
+    assert "missing-mcp-server-command" not in warning
     observations = [
         event
         for event in conversation.state.events
