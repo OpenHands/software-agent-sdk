@@ -1,4 +1,4 @@
-"""Tests for PlanningFileEditorTool create() behavior with optional plan_path."""
+"""Tests for planning file editor setup and execution."""
 
 import tempfile
 from pathlib import Path
@@ -13,6 +13,7 @@ from openhands.sdk.llm import LLM
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.planning_file_editor import PlanningFileEditorTool
 from openhands.tools.planning_file_editor.definition import PlanningFileEditorAction
+from openhands.tools.planning_file_editor.impl import PlanningFileEditorExecutor
 
 
 def _create_conv_state(working_dir: str) -> ConversationState:
@@ -112,3 +113,44 @@ def test_create_with_relative_path_raises_value_error():
             ValueError, match="plan_path must be an absolute path, got: relative"
         ):
             PlanningFileEditorTool.create(conv_state, plan_path=relative_path)
+
+
+def test_create_observation_preserves_new_file_state(tmp_path: Path):
+    plan = tmp_path / "PLAN.md"
+    editor = PlanningFileEditorExecutor(
+        workspace_root=str(tmp_path), plan_path=str(plan)
+    )
+
+    observation = editor(
+        PlanningFileEditorAction(command="create", path=str(plan), file_text="# Plan\n")
+    )
+
+    assert plan.read_text() == "# Plan\n"
+    assert not observation.is_error
+    assert observation.prev_exist is False
+    assert observation.new_content == "# Plan\n"
+
+
+def test_edit_observation_preserves_the_rendered_diff(tmp_path: Path):
+    plan = tmp_path / "PLAN.md"
+    plan.write_text("# Plan\nWrite first draft\n")
+    editor = PlanningFileEditorExecutor(
+        workspace_root=str(tmp_path), plan_path=str(plan)
+    )
+
+    observation = editor(
+        PlanningFileEditorAction(
+            command="str_replace",
+            path=str(plan),
+            old_str="Write first draft",
+            new_str="Review first draft",
+        )
+    )
+
+    assert not observation.is_error
+    assert observation.prev_exist is True
+    assert observation.old_content == "# Plan\nWrite first draft\n"
+    assert observation.new_content == plan.read_text() == "# Plan\nReview first draft\n"
+    assert "-2|Write first draft" in observation.visualize.plain
+    assert "+2|Review first draft" in observation.visualize.plain
+    assert observation.model_dump()["kind"] == "PlanningFileEditorObservation"
