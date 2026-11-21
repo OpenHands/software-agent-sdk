@@ -9,8 +9,8 @@ override that for a new entry, so every write path that can create one
 forces ``enabled=False`` as an explicit post-write step.
 
 Staged refresh -- ``check``/``apply`` replace ``update()``/
-``install(force=True)``, which rmtree+copytree straight onto the live
-install path with no staging directory. ``check`` fetches and validates
+``install(force=True)``, which fetch and swap in one step, with nothing to
+confirm in between. ``check`` fetches and validates
 into ``.staging/`` without touching the active install; ``apply`` swaps it
 in via two atomic renames (POSIX can't atomically replace a non-empty
 directory in one rename), rolling back if the second fails.
@@ -18,6 +18,7 @@ directory in one rename), rolling back if the second fails.
 
 import os
 import shutil
+import tempfile
 from contextlib import suppress
 from pathlib import Path
 
@@ -34,11 +35,13 @@ from openhands.sdk.extensions.installation import (
     InstallationInfo,
     InstallationInterface,
     InstallationManager,
-    InstallationMetadata,
 )
 from openhands.sdk.extensions.installation.manager import DEFAULT_CACHE_DIR
+from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.path import get_user_persistence_dir
 
+
+logger = get_logger(__name__)
 
 # Matches the InstalledPluginInfo naming convention.
 InstalledCanvasExtensionInfo = InstallationInfo
@@ -76,19 +79,6 @@ def _manager(installed_dir: Path) -> InstallationManager[CanvasExtensionManifest
         installation_dir=installed_dir,
         installation_interface=CanvasExtensionInstallationInterface(),
     )
-
-
-def _tracked_names(installed_dir: Path) -> set[str]:
-    """Names with a real, valid tracked entry, not just a metadata key.
-
-    A stale record with no matching directory must not count as "already
-    installed" -- otherwise a real install of that name would wrongly
-    inherit its state as if this were a force-reinstall.
-    """
-    if not installed_dir.exists():
-        return set()
-    metadata = InstallationMetadata.load_from_dir(installed_dir)
-    return {info.name for info in metadata.validate_tracked(installed_dir)}
 
 
 def _force_disable_new(
@@ -132,9 +122,14 @@ def install_canvas_extension(
     """
     installed_dir = _resolve_installed_dir(installed_dir)
     manager = _manager(installed_dir)
-    pre_existing = _tracked_names(installed_dir)
-    info = manager.install(source, ref=ref, repo_path=repo_path, force=force)
-    return _force_disable_new(manager, info, pre_existing)
+    # Whether this replaced an installed extension is decided inside the
+    # install's own metadata session: a snapshot taken before the install
+    # can be made stale by a concurrent uninstall.
+    outcome = manager.install_with_outcome(
+        source, ref=ref, repo_path=repo_path, force=force
+    )
+    pre_existing = {outcome.info.name} if outcome.was_installed else set()
+    return _force_disable_new(manager, outcome.info, pre_existing)
 
 
 def uninstall_canvas_extension(name: str, installed_dir: Path | None = None) -> bool:
@@ -172,9 +167,16 @@ def list_installed_canvas_extensions(
     discovered this way also land disabled.
     """
     installed_dir = _resolve_installed_dir(installed_dir)
+    if not installed_dir.exists():
+        return []
     manager = _manager(installed_dir)
-    pre_existing = _tracked_names(installed_dir)
-    infos = manager.list_installed()
+    # Decided under the lock the listing takes: a reinstall swapping the
+    # directory in can't make an installed extension look new meanwhile.
+    with manager.metadata_session() as session:
+        pre_existing = {
+            info.name for info in session.metadata.validate_tracked(installed_dir)
+        }
+        infos = session.sync()
     return [_force_disable_new(manager, info, pre_existing) for info in infos]
 
 
@@ -422,8 +424,7 @@ def apply_canvas_extension_update(
     """
     installed_dir = _resolve_installed_dir(installed_dir)
     manager = _manager(installed_dir)
-    current_info = manager.get(name)
-    if current_info is None:
+    if manager.get(name) is None:
         return None
 
     staged_path = _staged_path(installed_dir, name, resolved_ref)
@@ -435,31 +436,50 @@ def apply_canvas_extension_update(
     manifest = _load_validated_manifest(staged_path, name)
 
     install_path = installed_dir / name
-    backup_path = _staging_root(installed_dir) / f"{name}.previous"
-    shutil.rmtree(backup_path, ignore_errors=True)
-
-    # POSIX rename() can't atomically replace a non-empty directory, so the
-    # active bundle moves aside first; roll back if the second rename fails.
-    os.replace(install_path, backup_path)
-    try:
-        os.replace(staged_path, install_path)
-    except OSError:
-        os.replace(backup_path, install_path)
-        raise
-    shutil.rmtree(backup_path, ignore_errors=True)
-    shutil.rmtree(_staging_root(installed_dir) / name, ignore_errors=True)
-
-    info = InstallationInfo.from_extension(
-        manifest,
-        source=current_info.source,
-        install_path=install_path,
-        requested_ref=current_info.requested_ref,
-        resolved_ref=resolved_ref,
-        repo_path=current_info.repo_path,
+    # A directory of its own per apply: the previous bundle is deleted after
+    # the lock is released, so a shared backup path could be cleared while
+    # another apply is between its renames.
+    backup_root = Path(
+        tempfile.mkdtemp(prefix=f"{name}.previous-", dir=_staging_root(installed_dir))
     )
-    info.enabled = enabled
+    backup_path = backup_root / name
+    try:
+        # The swap and the metadata write share one session, so a concurrent
+        # list can't see the install path missing between the two renames
+        # and prune the entry.
+        with manager.metadata_session() as session:
+            current_info = session.extensions.get(name)
+            if current_info is None or not install_path.is_dir():
+                return None
 
-    with manager.metadata_session as session:
-        session.extensions[name] = info
+            # POSIX rename() can't atomically replace a non-empty directory, so
+            # the active bundle moves aside first; roll back if the second
+            # rename fails.
+            os.replace(install_path, backup_path)
+            try:
+                os.replace(staged_path, install_path)
+            except OSError:
+                os.replace(backup_path, install_path)
+                raise
 
+            info = InstallationInfo.from_extension(
+                manifest,
+                source=current_info.source,
+                install_path=install_path,
+                requested_ref=current_info.requested_ref,
+                resolved_ref=resolved_ref,
+                repo_path=current_info.repo_path,
+            )
+            info.enabled = enabled
+            session.extensions[name] = info
+    finally:
+        if backup_path.exists() and not install_path.exists():
+            logger.error(
+                f"Could not restore {install_path} after a failed update;"
+                f" the previous version was kept at {backup_path}"
+            )
+        else:
+            shutil.rmtree(backup_root, ignore_errors=True)
+
+    shutil.rmtree(_staging_root(installed_dir) / name, ignore_errors=True)
     return info

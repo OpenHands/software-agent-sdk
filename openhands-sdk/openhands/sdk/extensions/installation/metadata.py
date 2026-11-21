@@ -1,20 +1,102 @@
 from __future__ import annotations
 
+import os
+import stat
+import sys
 from pathlib import Path
 from types import TracebackType
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Final
 
+from filelock import BaseFileLock, FileLock, Timeout
 from pydantic import BaseModel, Field, model_validator
 
+from openhands.sdk.errors import LockTimeout
 from openhands.sdk.extensions.installation.info import InstallationInfo
 from openhands.sdk.extensions.installation.interface import (
     InstallationInterface,
 )
 from openhands.sdk.extensions.installation.utils import validate_extension_name
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils.files import atomic_write_text, read_text_retrying
 
 
 logger = get_logger(__name__)
+
+_LOCK_TIMEOUT_SECONDS: Final[float] = 30.0
+
+
+def _running_as_root() -> bool:
+    return sys.platform != "win32" and os.geteuid() == 0
+
+
+def _give_lock_file_to_directory_owner(lock_path: Path) -> None:
+    """Make the installation directory's owner own the lock file root holds.
+
+    A root process (an agent-server container, say) sharing the directory with
+    its user would otherwise leave a root-owned lock file that user can never
+    open again. The file is changed through a descriptor opened without
+    following symlinks, and only if it is a regular file with a single link,
+    so the directory's owner can't redirect the change to another file. Best
+    effort: a failure is logged and the session goes on.
+    """
+    if sys.platform == "win32":
+        return
+    try:
+        directory = lock_path.parent.stat()
+        fd = os.open(lock_path, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            current = os.fstat(fd)
+            if (
+                stat.S_ISREG(current.st_mode)
+                and current.st_nlink == 1
+                and (current.st_uid, current.st_gid)
+                != (directory.st_uid, directory.st_gid)
+            ):
+                os.fchown(fd, directory.st_uid, directory.st_gid)
+        finally:
+            os.close(fd)
+    except OSError as e:
+        logger.warning(f"Could not give {lock_path} to its directory's owner: {e}")
+
+
+class InstallationMetadataLoadError(Exception):
+    """An existing metadata file could not be read or parsed.
+
+    A write session raises this instead of starting from empty metadata,
+    because saving that fallback would overwrite every recorded source and
+    enabled state. The file is left unchanged.
+    """
+
+    def __init__(self, metadata_path: Path, cause: BaseException) -> None:
+        super().__init__(
+            f"Could not load installation metadata at {metadata_path} "
+            f"({type(cause).__name__}); the file was left unchanged"
+        )
+        self.metadata_path = metadata_path
+
+
+class InstallationMetadataLockTimeoutError(LockTimeout):
+    """The installation metadata lock was not acquired in time.
+
+    Another operation (an install, update, uninstall or listing) held it for
+    the whole timeout. Retrying later can succeed, so the agent server answers
+    503. The client sees a generic message; the local path is only logged.
+
+    Like every ``LockTimeout`` it is also a ``TimeoutError``, and so an
+    ``OSError``: code that maps ``OSError`` to another error must re-raise
+    ``LockTimeout`` first.
+    """
+
+    def __init__(self, installed_dir: Path, timeout: float) -> None:
+        super().__init__(
+            "Another plugin, skill or extension operation is in progress. "
+            "Please retry.",
+            message=(
+                f"Timed out after {timeout}s waiting for the installation "
+                f"metadata lock in {installed_dir}"
+            ),
+        )
+        self.installed_dir = installed_dir
 
 
 class MetadataSession:
@@ -32,10 +114,12 @@ class MetadataSession:
         installed_dir: Path,
         metadata: InstallationMetadata,
         interface: InstallationInterface | None = None,
+        lock: BaseFileLock | None = None,
     ) -> None:
         self.installed_dir = installed_dir
         self.metadata = metadata
         self.interface = interface
+        self.lock = lock
 
     @property
     def extensions(self) -> dict[str, InstallationInfo]:
@@ -73,8 +157,12 @@ class MetadataSession:
         exc_val: BaseException | None,
         exc_tb: TracebackType | None,
     ) -> None:
-        if exc_type is None:
-            self.metadata.save_to_dir(self.installed_dir)
+        try:
+            if exc_type is None:
+                self.metadata.save_to_dir(self.installed_dir)
+        finally:
+            if self.lock is not None:
+                self.lock.release()
 
 
 class InstallationMetadata(BaseModel):
@@ -125,19 +213,56 @@ class InstallationMetadata(BaseModel):
         installed_dir: Path,
         *,
         interface: InstallationInterface | None = None,
-        strict: bool = False,
     ) -> MetadataSession:
         """Load metadata and return a session that auto-saves on exit.
+
+        Acquires a file lock on ``installed_dir`` before loading and holds it
+        until the session exits, so a load-modify-save cycle cannot interleave
+        with another one (another thread or process). Always use the result in
+        a ``with`` block, and do not nest sessions on the same directory.
 
         Args:
             installed_dir: Root directory where extensions are installed.
             interface: Optional installation interface, required if the
                 session will call ``sync()``.
-            strict: Raise on invalid metadata instead of treating it as empty.
+
+        Raises:
+            InstallationMetadataLockTimeoutError: Another session held the
+                lock for the whole timeout.
+            InstallationMetadataLoadError: The metadata file exists but cannot
+                be read or parsed. The lock is released and the file is left
+                unchanged.
         """
-        return MetadataSession(
-            installed_dir, cls.load_from_dir(installed_dir, strict=strict), interface
-        )
+        installed_dir.mkdir(parents=True, exist_ok=True)
+        lock = cls._acquire_lock(installed_dir)
+        try:
+            return MetadataSession(
+                installed_dir,
+                cls._load_for_session(installed_dir),
+                interface,
+                lock=lock,
+            )
+        except BaseException:
+            lock.release()
+            raise
+
+    @staticmethod
+    def _acquire_lock(installed_dir: Path) -> BaseFileLock:
+        lock_path = installed_dir / ".metadata.lock"
+        lock = FileLock(lock_path)
+        try:
+            lock.acquire(timeout=_LOCK_TIMEOUT_SECONDS)
+        except Timeout as e:
+            logger.error(
+                f"Failed to acquire installation metadata lock in "
+                f"{_LOCK_TIMEOUT_SECONDS}s: {installed_dir}"
+            )
+            raise InstallationMetadataLockTimeoutError(
+                installed_dir, _LOCK_TIMEOUT_SECONDS
+            ) from e
+        if _running_as_root():
+            _give_lock_file_to_directory_owner(lock_path)
+        return lock
 
     @classmethod
     def get_metadata_path(cls, installed_dir: Path) -> Path:
@@ -148,24 +273,67 @@ class InstallationMetadata(BaseModel):
     def load_from_dir(
         cls, installed_dir: Path, *, strict: bool = False
     ) -> InstallationMetadata:
-        """Load metadata from the installed extensions directory."""
+        """Load metadata from the installed extensions directory.
+
+        For read-only callers. Takes no lock: a save swaps in a complete file,
+        so a concurrent read sees the old or the new version, never a partial
+        one. On Windows, a read that meets the swap is retried. A file that
+        cannot be read or parsed loads as empty, or raises with ``strict``.
+        """
         metadata_path = cls.get_metadata_path(installed_dir)
         if not metadata_path.exists():
             return cls()
 
         try:
-            return cls.model_validate_json(metadata_path.read_text(encoding="utf-8"))
+            return cls.model_validate_json(read_text_retrying(metadata_path))
         except Exception as e:
             if strict:
                 raise
             logger.warning(f"Failed to load installed extension metadata: {e}")
             return cls()
 
+    @classmethod
+    def _load_for_session(cls, installed_dir: Path) -> InstallationMetadata:
+        """Load metadata for a write session.
+
+        Unlike ``load_from_dir``, a file that exists but cannot be read or
+        parsed raises instead of loading as empty, since the session would
+        save that empty fallback over it. A missing file still loads as empty.
+        """
+        metadata_path = cls.get_metadata_path(installed_dir)
+        try:
+            text = metadata_path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return cls()
+        except (OSError, UnicodeDecodeError) as e:
+            raise InstallationMetadataLoadError(metadata_path, e) from e
+        try:
+            return cls.model_validate_json(text)
+        except Exception as e:
+            raise InstallationMetadataLoadError(metadata_path, e) from e
+
     def save_to_dir(self, installed_dir: Path) -> None:
-        """Save metadata to the installed extensions directory."""
+        """Save metadata to the installed extensions directory.
+
+        An existing regular file keeps its permission bits, and, when root saves
+        it, its owner. A new file gets its mode from the umask.
+        """
         metadata_path = self.get_metadata_path(installed_dir)
         metadata_path.parent.mkdir(parents=True, exist_ok=True)
-        metadata_path.write_text(self.model_dump_json(indent=2), encoding="utf-8")
+        mode: int | None = None
+        owner: tuple[int, int] | None = None
+        try:
+            existing = metadata_path.lstat()
+        except FileNotFoundError:
+            pass
+        else:
+            if stat.S_ISREG(existing.st_mode):
+                mode = stat.S_IMODE(existing.st_mode)
+                if _running_as_root():
+                    owner = (existing.st_uid, existing.st_gid)
+        atomic_write_text(
+            metadata_path, self.model_dump_json(indent=2), mode=mode, owner=owner
+        )
 
     def validate_tracked(self, installed_dir: Path) -> list[InstallationInfo]:
         """Validate tracked extensions exist on disk.

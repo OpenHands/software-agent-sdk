@@ -29,7 +29,13 @@ from openhands.agent_server.skills_service import (
     service_update_skill,
     sync_public_skills,
 )
-from openhands.sdk.errors import Conflict, Invalid, NotFound, Unprocessable
+from openhands.sdk.errors import (
+    Conflict,
+    Invalid,
+    LockTimeout,
+    NotFound,
+    Unprocessable,
+)
 from openhands.sdk.extensions.fetch import ExtensionFetchError
 from openhands.sdk.marketplace.registration import MarketplaceRegistration
 from openhands.sdk.skills import (
@@ -402,6 +408,7 @@ def sync_skills() -> SyncResponse:
             Invalid: "Failed to fetch skill source",
             Conflict: "Skill already installed (use force=true)",
             Unprocessable: "Invalid skill (missing SKILL.md, etc.)",
+            LockTimeout: "Another extension operation is in progress",
         }
     ),
 )
@@ -440,7 +447,13 @@ def install_skill_endpoint(request: InstallSkillRequest) -> InstalledSkillRespon
         )
 
 
-@skills_router.get("/installed", response_model=InstalledSkillsListResponse)
+@skills_router.get(
+    "/installed",
+    response_model=InstalledSkillsListResponse,
+    responses=error_responses(
+        {LockTimeout: "Another extension operation is in progress"}
+    ),
+)
 def list_installed_skills_endpoint() -> InstalledSkillsListResponse:
     """List all installed skills.
 
@@ -482,7 +495,12 @@ def get_installed_skill_endpoint(skill_name: SkillNamePath) -> InstalledSkillRes
 @skills_router.patch(
     "/installed/{skill_name}",
     response_model=UpdateSkillStateResponse,
-    responses=error_responses({NotFound: "Skill not installed"}),
+    responses=error_responses(
+        {
+            NotFound: "Skill not installed",
+            LockTimeout: "Another extension operation is in progress",
+        }
+    ),
 )
 def set_skill_enabled_endpoint(
     skill_name: SkillNamePath, request: UpdateSkillStateRequest
@@ -512,7 +530,12 @@ def set_skill_enabled_endpoint(
 @skills_router.delete(
     "/installed/{skill_name}",
     response_model=UninstallSkillResponse,
-    responses=error_responses({NotFound: "Skill not installed"}),
+    responses=error_responses(
+        {
+            NotFound: "Skill not installed",
+            LockTimeout: "Another extension operation is in progress",
+        }
+    ),
 )
 def uninstall_skill_endpoint(skill_name: SkillNamePath) -> UninstallSkillResponse:
     """Uninstall a skill by name.
@@ -543,6 +566,7 @@ def uninstall_skill_endpoint(skill_name: SkillNamePath) -> UninstallSkillRespons
         {
             Invalid: "Failed to fetch the skill's recorded source",
             NotFound: "Skill not installed",
+            LockTimeout: "Another extension operation is in progress",
         }
     ),
 )
@@ -583,7 +607,13 @@ def refresh_skill_endpoint(skill_name: SkillNamePath) -> UpdateSkillResponse:
     )
 
 
-@skills_router.get("/marketplace", response_model=MarketplaceCatalogResponse)
+@skills_router.get(
+    "/marketplace",
+    response_model=MarketplaceCatalogResponse,
+    responses=error_responses(
+        {LockTimeout: "Another extension operation is in progress"}
+    ),
+)
 def get_marketplace_catalog() -> MarketplaceCatalogResponse:
     """Get the marketplace catalog with installation status.
 

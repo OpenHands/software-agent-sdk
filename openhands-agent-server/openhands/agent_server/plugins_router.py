@@ -35,6 +35,7 @@ from openhands.agent_server.plugins_service import (
 from openhands.sdk.errors import (
     Conflict,
     Invalid,
+    LockTimeout,
     NotFound,
     Unprocessable,
     UpstreamFailed,
@@ -331,6 +332,7 @@ def fetch_plugin_endpoint(request: FetchPluginRequest) -> FetchPluginResponse:
             Invalid: "Failed to fetch plugin source",
             Conflict: "Plugin already installed (use force=true)",
             Unprocessable: "Invalid plugin (bad name, etc.)",
+            LockTimeout: "Another extension operation is in progress",
         }
     ),
 )
@@ -352,7 +354,13 @@ def install_plugin_endpoint(request: InstallPluginRequest) -> InstalledPluginRes
         raise Unprocessable("Invalid plugin. Ensure it has a valid kebab-case name.")
 
 
-@plugins_router.get("/installed", response_model=InstalledPluginsListResponse)
+@plugins_router.get(
+    "/installed",
+    response_model=InstalledPluginsListResponse,
+    responses=error_responses(
+        {LockTimeout: "Another extension operation is in progress"}
+    ),
+)
 def list_installed_plugins_endpoint() -> InstalledPluginsListResponse:
     """List all installed plugins (enabled and disabled)."""
     plugins = service_list_installed_plugins()
@@ -379,7 +387,12 @@ def get_installed_plugin_endpoint(
 @plugins_router.patch(
     "/installed/{plugin_name}",
     response_model=UpdatePluginStateResponse,
-    responses=error_responses({NotFound: "Plugin not installed"}),
+    responses=error_responses(
+        {
+            NotFound: "Plugin not installed",
+            LockTimeout: "Another extension operation is in progress",
+        }
+    ),
 )
 def set_plugin_enabled_endpoint(
     plugin_name: PluginNamePath, request: UpdatePluginStateRequest
@@ -394,7 +407,12 @@ def set_plugin_enabled_endpoint(
 @plugins_router.delete(
     "/installed/{plugin_name}",
     response_model=UninstallPluginResponse,
-    responses=error_responses({NotFound: "Plugin not installed"}),
+    responses=error_responses(
+        {
+            NotFound: "Plugin not installed",
+            LockTimeout: "Another extension operation is in progress",
+        }
+    ),
 )
 def uninstall_plugin_endpoint(plugin_name: PluginNamePath) -> UninstallPluginResponse:
     """Uninstall a plugin by name."""
@@ -410,6 +428,7 @@ def uninstall_plugin_endpoint(plugin_name: PluginNamePath) -> UninstallPluginRes
         {
             Invalid: "Failed to fetch the plugin's recorded source",
             NotFound: "Plugin not installed",
+            LockTimeout: "Another extension operation is in progress",
         }
     ),
 )
@@ -438,7 +457,13 @@ def refresh_plugin_endpoint(plugin_name: PluginNamePath) -> UpdatePluginResponse
     )
 
 
-@plugins_router.get("/marketplace", response_model=MarketplaceCatalogResponse)
+@plugins_router.get(
+    "/marketplace",
+    response_model=MarketplaceCatalogResponse,
+    responses=error_responses(
+        {LockTimeout: "Another extension operation is in progress"}
+    ),
+)
 def get_marketplace_catalog() -> MarketplaceCatalogResponse:
     """Get the plugins marketplace catalog with installation status.
 
