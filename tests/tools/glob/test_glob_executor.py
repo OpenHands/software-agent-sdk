@@ -454,3 +454,58 @@ def test_python_fallback_expands_brace_patterns(tmp_path):
 )
 def test_expand_braces(pattern, expected):
     assert _expand_braces(pattern) == expected
+
+
+@pytest.mark.parametrize(
+    "pattern, use_path_argument, expected",
+    [
+        pytest.param("src/*.ts", False, {"src/app.ts"}, id="directory-prefix"),
+        pytest.param(
+            "src/**/*.ts",
+            False,
+            {"src/app.ts", "src/core/engine.ts"},
+            id="example-from-tool-description",
+        ),
+        pytest.param("src/app.ts", False, {"src/app.ts"}, id="literal-relative-path"),
+        pytest.param(
+            "src/**/*.ts",
+            True,
+            {"src/app.ts", "src/core/engine.ts"},
+            id="explicit-path-argument",
+        ),
+    ],
+)
+def test_ripgrep_directory_patterns_do_not_depend_on_process_cwd(
+    pattern, use_path_argument, expected, tmp_path, monkeypatch
+):
+    """A pattern with a directory part is anchored at the search path.
+
+    ripgrep resolves a ``-g`` glob that contains ``/`` against its own working
+    directory, not against the directory it is asked to search. Without a
+    matching ``cwd`` the documented ``src/**/*.ts`` example finds nothing
+    whenever the process runs somewhere other than the search path.
+    """
+    project = tmp_path / "project"
+    for relative in ("src/app.ts", "src/core/engine.ts", "docs/guide.md", "main.ts"):
+        file_path = project / relative
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_text("content")
+
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    executor = GlobExecutor(working_dir=str(project))
+    if not executor.is_parallel_safe():
+        pytest.skip("ripgrep not installed")
+
+    action = GlobAction(
+        pattern=pattern, path=str(project) if use_path_argument else None
+    )
+    observation = executor(action)
+
+    assert observation.is_error is False
+    root = project.resolve()
+    found = {Path(f).relative_to(root).as_posix() for f in observation.files}
+    assert found == expected
+    assert Path.cwd() == elsewhere.resolve()
