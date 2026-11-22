@@ -1,12 +1,17 @@
 """Unit tests for LLM response classification and dispatch."""
 
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable, Iterator
 from typing import Literal
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from litellm.types.llms.openai import ResponsesAPIResponse
-from litellm.types.utils import ModelResponse
+from litellm.types.utils import (
+    Delta,
+    ModelResponse,
+    ModelResponseStream,
+    StreamingChoices,
+)
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.agent.response_dispatch import LLMResponseType, classify_response
@@ -296,12 +301,15 @@ def test_content_response_sets_finished():
     assert msg_events[0].source == "agent"
 
 
-@pytest.mark.parametrize("api_mode", ["chat", "responses"])
+@pytest.mark.parametrize(
+    ("api_mode", "stream"), [("chat", False), ("chat", True), ("responses", False)]
+)
 @pytest.mark.parametrize("async_run", [False, True])
 @pytest.mark.parametrize("end_turn", [False, True, None])
 async def test_content_follows_explicit_turn_boundary(
     monkeypatch,
     api_mode: Literal["chat", "responses"],
+    stream: bool,
     async_run: bool,
     end_turn: bool | None,
 ):
@@ -338,15 +346,47 @@ async def test_content_follows_explicit_turn_boundary(
         )
 
     metadata = {} if end_turn is None else {"end_turn": end_turn}
-    replies = [response("Checking the result.", **metadata), response("Verified.")]
+
+    def chunks(
+        text: str, **metadata: bool
+    ) -> Iterator[ModelResponseStream] | AsyncIterator[ModelResponseStream]:
+        items = [
+            ModelResponseStream(
+                choices=[
+                    StreamingChoices(
+                        index=0, delta=Delta(role="assistant", content=text)
+                    )
+                ],
+            ),
+            ModelResponseStream(
+                choices=[
+                    StreamingChoices(index=0, finish_reason="stop", delta=Delta())
+                ],
+            ).model_copy(update=metadata),
+            ModelResponseStream(choices=[]),
+        ]
+        if not async_run:
+            return iter(items)
+
+        async def iterate() -> AsyncIterator[ModelResponseStream]:
+            for item in items:
+                yield item
+
+        return iterate()
+
+    make_reply = chunks if stream else response
+    replies = [make_reply("Checking the result.", **metadata), make_reply("Verified.")]
     transport = (AsyncMock if async_run else MagicMock)(side_effect=replies)
     endpoint = "completion" if api_mode == "chat" else "responses"
     transport_name = f"litellm_{'a' if async_run else ''}{endpoint}"
     monkeypatch.setattr(f"openhands.sdk.llm.llm.{transport_name}", transport)
     agent = Agent(
-        llm=LLM(model="openai/gpt-5.2", api_key="test", api_mode=api_mode), tools=[]
+        llm=LLM(
+            model="openai/gpt-5.2", api_key="test", api_mode=api_mode, stream=stream
+        ),
+        tools=[],
     )
-    conversation = Conversation(agent=agent)
+    conversation = Conversation(agent=agent, token_callbacks=[lambda _: None])
     try:
         conversation.send_message("Check the result and report it.")
         if async_run:
