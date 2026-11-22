@@ -9,6 +9,9 @@ errors without leaking credentials in responses, errors, or logs.
 
 from __future__ import annotations
 
+import asyncio
+import ipaddress
+import socket
 from collections.abc import Iterable
 from typing import Any
 from urllib.parse import urlparse, urlunparse
@@ -25,9 +28,16 @@ logger = get_logger(__name__)
 UPSTREAM_MODELS_TIMEOUT_SECONDS = 10.0
 
 _MODEL_ID_KEYS = ("id", "slug", "name")
+_BLOCKED_METADATA_HOSTS = frozenset(
+    {
+        "metadata.google.internal",
+        "metadata.goog",
+        "metadata",
+    }
+)
 
 
-def _redact_message(text: str, api_key: str | None) -> str:
+def redact_upstream_message(text: str, api_key: str | None) -> str:
     """Redact known secret patterns and the explicit upstream API key."""
     safe = redact_text_secrets(text)
     if api_key:
@@ -35,11 +45,72 @@ def _redact_message(text: str, api_key: str | None) -> str:
     return safe
 
 
+def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Reject link-local/metadata, unspecified, multicast, and broadcast IPs.
+
+    Loopback (127.0.0.1, ::1) and private LAN addresses remain allowed so
+    self-hosted / local OpenAI-compatible proxies (LiteLLM, Ollama, vLLM, etc.)
+    work as intended.
+    """
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        return _is_blocked_ip(ip.ipv4_mapped)
+    return (
+        ip.is_link_local
+        or ip.is_unspecified
+        or ip.is_multicast
+        or (
+            isinstance(ip, ipaddress.IPv4Address)
+            and ip == ipaddress.IPv4Address("255.255.255.255")
+        )
+    )
+
+
+def _validate_upstream_hostname(hostname: str) -> None:
+    """Validate host against malformed characters and blocked metadata targets."""
+    host_lower = hostname.strip().rstrip(".").lower()
+    if not host_lower or any(ch.isspace() or ord(ch) < 32 for ch in host_lower):
+        raise Invalid("base_url contains an invalid hostname")
+    if host_lower in _BLOCKED_METADATA_HOSTS:
+        raise Invalid("base_url host is not allowed")
+    try:
+        ip = ipaddress.ip_address(host_lower)
+    except ValueError:
+        return
+    if _is_blocked_ip(ip):
+        raise Invalid("base_url IP address is not allowed")
+
+
+async def _validate_resolved_host(hostname: str, port: int) -> None:
+    """Resolve ``hostname`` asynchronously and block unsafe IP destinations."""
+    try:
+        ipaddress.ip_address(hostname)
+        return
+    except ValueError:
+        pass
+
+    loop = asyncio.get_running_loop()
+    try:
+        addrinfo = await loop.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
+    except OSError as exc:
+        raise UpstreamFailed(f"Failed to resolve upstream host '{hostname}'") from exc
+
+    for _, _, _, _, sockaddr in addrinfo:
+        ip_str = sockaddr[0]
+        try:
+            ip = ipaddress.ip_address(ip_str)
+        except ValueError:
+            continue
+        if _is_blocked_ip(ip):
+            raise Invalid("base_url resolves to a disallowed IP address")
+
+
 def normalize_upstream_base_url(base_url: str) -> str:
     """Validate and normalize an upstream ``base_url`` without trailing slash."""
     raw = base_url.strip()
     if not raw:
         raise Invalid("base_url must be a non-empty http or https URL")
+    if any(ch.isspace() or ord(ch) < 32 for ch in raw):
+        raise Invalid("base_url must not contain whitespace or control characters")
 
     parsed = urlparse(raw)
     if (
@@ -51,8 +122,23 @@ def normalize_upstream_base_url(base_url: str) -> str:
     if parsed.username or parsed.password:
         raise Invalid("base_url must not contain embedded credentials")
 
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise Invalid("base_url contains an invalid port") from exc
+
+    hostname = parsed.hostname.lower()
+    _validate_upstream_hostname(hostname)
+
+    host_part = f"[{hostname}]" if ":" in hostname else hostname
+    default_port = 80 if parsed.scheme == "http" else 443
+    netloc = (
+        f"{host_part}:{port}"
+        if port is not None and port != default_port
+        else host_part
+    )
     normalized_path = parsed.path.rstrip("/")
-    return urlunparse((parsed.scheme, parsed.netloc, normalized_path, "", "", ""))
+    return urlunparse((parsed.scheme, netloc, normalized_path, "", "", ""))
 
 
 def build_upstream_models_url(base_url: str) -> str:
@@ -146,14 +232,26 @@ async def fetch_upstream_models(
         UPSTREAM_MODELS_TIMEOUT_SECONDS if request_timeout is None else request_timeout
     )
     own_client = http_client is None
-    client = http_client or httpx.AsyncClient(timeout=effective_timeout)
+    if own_client:
+        parsed_url = urlparse(url)
+        assert parsed_url.hostname is not None
+        port = parsed_url.port or (443 if parsed_url.scheme == "https" else 80)
+        await _validate_resolved_host(parsed_url.hostname, port)
+
+    client = http_client or httpx.AsyncClient(
+        timeout=effective_timeout, follow_redirects=False
+    )
     try:
-        response = await client.get(url, headers=headers)
+        response = await client.get(url, headers=headers, follow_redirects=False)
+    except httpx.InvalidURL as exc:
+        raise Invalid("base_url is not a valid URL") from exc
     except httpx.TimeoutException as exc:
         logger.debug("Upstream model catalog request timed out for %s", url)
         raise UpstreamTimeout("Upstream model catalog request timed out") from exc
     except httpx.HTTPError as exc:
-        safe_detail = _redact_message(str(exc) or type(exc).__name__, cleaned_key)
+        safe_detail = redact_upstream_message(
+            str(exc) or type(exc).__name__, cleaned_key
+        )
         logger.debug(
             "Upstream model catalog request failed for %s: %s", url, safe_detail
         )

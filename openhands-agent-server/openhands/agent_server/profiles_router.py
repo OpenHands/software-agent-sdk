@@ -31,8 +31,9 @@ from openhands.agent_server.upstream_models import (
     fetch_upstream_models,
     model_matches_upstream_catalog,
     normalize_upstream_base_url,
+    redact_upstream_message,
 )
-from openhands.sdk.errors import Conflict, DomainError, NotFound, OperationFailed
+from openhands.sdk.errors import Conflict, NotFound, OperationFailed
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.exceptions import (
     LLMError,
@@ -373,11 +374,11 @@ async def _upstream_catalog_warnings(
                 f"Model '{llm.model}' was not found in the upstream catalog at "
                 f"{safe_url}."
             ]
-    except (DomainError, Exception) as exc:  # noqa: BLE001 - warning-only check
+    except Exception as exc:  # noqa: BLE001 - warning-only check
         logger.debug(
             "Profile '%s' upstream catalog check skipped due to error: %s",
             name,
-            redact_text_secrets(str(exc) or type(exc).__name__),
+            redact_upstream_message(str(exc) or type(exc).__name__, api_key_value),
         )
     return []
 

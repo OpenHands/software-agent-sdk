@@ -52,7 +52,7 @@ class _StandInServer:
 
     @property
     def base_url(self) -> str:
-        host, port = self._server.server_address
+        host, port = self._server.server_address[:2]
         return f"http://{host}:{port}"
 
     def __enter__(self) -> _StandInServer:
@@ -373,3 +373,206 @@ def test_validate_profile_failed_catalog_fetch_does_not_fail_validation(env):
     assert body["valid"] is True
     assert body["error"] is None
     assert not body.get("warnings")
+
+
+def test_upstream_models_blocks_unsafe_urls_and_redirects(env):
+    """Rejects malformed ports, embedded creds, metadata IPs, and 3xx redirects."""
+    client, profile_store, _ = env
+
+    # Malformed port -> 400 (never unhandled 500)
+    assert (
+        client.get(
+            "/api/llm/models/upstream",
+            params={"base_url": "http://example.com:99999"},
+        ).status_code
+        == 400
+    )
+
+    # Whitespace in URL -> 400
+    assert (
+        client.get(
+            "/api/llm/models/upstream",
+            params={"base_url": "http://foo bar.example.com"},
+        ).status_code
+        == 400
+    )
+
+    # Embedded credentials -> 400
+    assert (
+        client.get(
+            "/api/llm/models/upstream",
+            params={"base_url": "http://user:pass@127.0.0.1:8080"},
+        ).status_code
+        == 400
+    )
+
+    # Cloud metadata / link-local / unspecified hosts -> 400
+    for blocked in (
+        "http://169.254.169.254",
+        "http://metadata.google.internal",
+        "http://0.0.0.0:8000",
+    ):
+        assert (
+            client.get(
+                "/api/llm/models/upstream", params={"base_url": blocked}
+            ).status_code
+            == 400
+        ), f"Expected 400 for blocked URL {blocked}"
+
+    # 3xx redirect must NOT be followed and must NOT forward Authorization header
+    secret_key = "custom-non-sk-bearer-token-77777"
+    with _StandInServer(
+        lambda req: _write_json(req, 200, {"data": [{"id": "attacker-model"}]})
+    ) as redirect_target:
+
+        def redirect_handler(req: BaseHTTPRequestHandler) -> None:
+            req.send_response(302)
+            req.send_header("Location", f"{redirect_target.base_url}/v1/models")
+            req.send_header("Content-Length", "0")
+            req.end_headers()
+
+        with _StandInServer(redirect_handler) as redirector:
+            profile_store.save(
+                "redirect-profile",
+                LLM(
+                    model="openai/private",
+                    base_url=redirector.base_url,
+                    api_key=secret_key,
+                ),
+                include_secrets=True,
+            )
+            res = client.get(
+                "/api/llm/models/upstream",
+                params={"profile_name": "redirect-profile"},
+            )
+
+    assert res.status_code == 502
+    assert secret_key not in res.text
+    assert redirect_target.received_paths == []
+    assert redirect_target.received_auth_headers == []
+
+
+def test_upstream_models_empty_unrecognized_dns_and_profile_edge_cases(
+    env, monkeypatch
+):
+    """Covers empty catalogs, unrecognized shapes, DNS failure, and profile lookups."""
+    client, profile_store, _ = env
+
+    # Empty catalog -> 200 with empty list
+    with _StandInServer(lambda req: _write_json(req, 200, {"data": []})) as server:
+        res_empty = client.get(
+            "/api/llm/models/upstream", params={"base_url": server.base_url}
+        )
+    assert res_empty.status_code == 200
+    assert res_empty.json() == {"models": []}
+
+    # Unrecognized JSON shape -> 502
+    with _StandInServer(
+        lambda req: _write_json(req, 200, {"unexpected": "shape"})
+    ) as server:
+        res_shape = client.get(
+            "/api/llm/models/upstream", params={"base_url": server.base_url}
+        )
+    assert res_shape.status_code == 502
+
+    # DNS failure -> 502 (not 400 or 500)
+    async def fail_dns(hostname: str, port: int) -> None:
+        raise upstream_models.UpstreamFailed(
+            f"Failed to resolve upstream host '{hostname}'"
+        )
+
+    monkeypatch.setattr(upstream_models, "_validate_resolved_host", fail_dns)
+    res_dns = client.get(
+        "/api/llm/models/upstream", params={"base_url": "https://nonexistent.invalid"}
+    )
+    assert res_dns.status_code == 502
+
+    # Missing profile -> 404, invalid profile name -> 400
+    assert (
+        client.get(
+            "/api/llm/models/upstream", params={"profile_name": "does-not-exist"}
+        ).status_code
+        == 404
+    )
+    assert (
+        client.get(
+            "/api/llm/models/upstream", params={"profile_name": "../escape"}
+        ).status_code
+        == 400
+    )
+
+    # Profile without base_url -> 400
+    profile_store.save("no-base-url", LLM(model="openai/gpt-4o"), include_secrets=False)
+    assert (
+        client.get(
+            "/api/llm/models/upstream", params={"profile_name": "no-base-url"}
+        ).status_code
+        == 400
+    )
+
+
+def test_upstream_models_blank_base_url_falls_back_to_profile_and_v1_matches_key(env):
+    """Blank base_url falls back to profile; /v1 variant still attaches profile key."""
+    client, profile_store, _ = env
+    secret_key = "custom-proxy-secret-abcde"
+
+    def handle(req: BaseHTTPRequestHandler) -> None:
+        if req.headers.get("Authorization") != f"Bearer {secret_key}":
+            _write_json(req, 401, {"error": "unauthorized"})
+            return
+        _write_json(req, 200, {"data": [{"id": "proxy-model"}]})
+
+    with _StandInServer(handle) as server:
+        profile_store.save(
+            "v1-proxy",
+            LLM(
+                model="openai/proxy-model",
+                base_url=f"{server.base_url}/v1",
+                api_key=secret_key,
+            ),
+            include_secrets=True,
+        )
+        # Blank base_url falls back to profile's base_url
+        res_blank = client.get(
+            "/api/llm/models/upstream",
+            params={"profile_name": "v1-proxy", "base_url": "   "},
+        )
+        assert res_blank.status_code == 200
+        assert res_blank.json() == {"models": ["proxy-model"]}
+
+        # Same upstream without /v1 still attaches profile key
+        res_same = client.get(
+            "/api/llm/models/upstream",
+            params={"profile_name": "v1-proxy", "base_url": server.base_url},
+        )
+        assert res_same.status_code == 200
+        assert res_same.json() == {"models": ["proxy-model"]}
+
+
+def test_validate_profile_default_skips_upstream_catalog_and_omits_warnings_key(env):
+    """By default check_upstream_catalog is False, no catalog call, no warnings key."""
+    client, _, _ = env
+
+    with (
+        _StandInServer(
+            lambda req: _write_json(req, 200, {"data": [{"id": "other-model"}]})
+        ) as server,
+        patch("openhands.sdk.llm.llm.LLM.uses_responses_api", return_value=False),
+        patch("openhands.sdk.llm.llm.LLM.acompletion", return_value=MagicMock()),
+    ):
+        response = client.post(
+            "/api/profiles/default-behavior/validate",
+            json={
+                "llm": {
+                    "model": "openai/stale-model",
+                    "base_url": server.base_url,
+                    "api_key": "sk-test",
+                },
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body == {"valid": True, "error": None}
+    assert "warnings" not in body
+    assert server.received_paths == []

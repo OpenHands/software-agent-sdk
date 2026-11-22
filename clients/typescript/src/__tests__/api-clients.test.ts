@@ -690,6 +690,60 @@ describe('Auxiliary API clients', () => {
     expect(JSON.parse(init.body as string)).toEqual(request);
   });
 
+  it('LLMMetadataClient.getUpstreamModels sends base_url and profile_name params', async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ models: ['custom-a', 'custom-b'] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+
+    const client = new LLMMetadataClient({ host: 'http://example.com', apiKey: 'secret' });
+    const models = await client.getUpstreamModels({
+      baseUrl: 'http://localhost:4000/v1',
+      profileName: 'local-proxy',
+    });
+
+    expect(models).toEqual(['custom-a', 'custom-b']);
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/llm/models/upstream?base_url=http%3A%2F%2Flocalhost%3A4000%2Fv1&profile_name=local-proxy',
+      expect.objectContaining({ method: 'GET' })
+    );
+  });
+
+  it('LLMMetadataClient.getUpstreamModels supports profileName-only queries and surfaces HttpError', async () => {
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ models: ['proxy-model'] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ detail: 'Upstream model catalog timed out' }), {
+          status: 504,
+          statusText: 'Gateway Timeout',
+          headers: { 'content-type': 'application/json' },
+        })
+      ) as typeof fetch;
+
+    const client = new LLMMetadataClient({ host: 'http://example.com' });
+    const models = await client.getUpstreamModels({ profileName: 'my-proxy' });
+    expect(models).toEqual(['proxy-model']);
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      1,
+      'http://example.com/api/llm/models/upstream?profile_name=my-proxy',
+      expect.objectContaining({ method: 'GET' })
+    );
+
+    const err = await client
+      .getUpstreamModels({ baseUrl: 'http://127.0.0.1:9999' })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(HttpError);
+    expect((err as HttpError).status).toBe(504);
+  });
+
   it('LLMMetadataClient.getOpenAISubscriptionModels returns models array', async () => {
     global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ vendor: 'openai', models: ['gpt-5.2', 'gpt-5.3-codex'] }), {
@@ -1678,6 +1732,44 @@ describe('Auxiliary API clients', () => {
       .catch((e: unknown) => e);
     expect(error).toBeInstanceOf(HttpError);
     expect((error as HttpError).status).toBe(404);
+  });
+
+  it('ProfilesClient.validateProfile supports check_upstream_catalog and returns warnings', async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          valid: true,
+          error: null,
+          warnings: [
+            "Model 'openai/stale-model' was not found in the upstream catalog at http://localhost:4000.",
+          ],
+        }),
+        {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }
+      )
+    ) as typeof fetch;
+
+    const client = new ProfilesClient({ host: 'http://example.com' });
+    const request = {
+      llm: { model: 'openai/stale-model', base_url: 'http://localhost:4000' },
+      check_upstream_catalog: true,
+    };
+    const result = await client.validateProfile('drift-test', request);
+
+    expect(result.valid).toBe(true);
+    expect(result.error).toBeNull();
+    expect(result.warnings).toEqual([
+      "Model 'openai/stale-model' was not found in the upstream catalog at http://localhost:4000.",
+    ]);
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/profiles/drift-test/validate',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify(request),
+      })
+    );
   });
 
   it('ProfilesClient.renameProfile percent-encodes the source name', async () => {

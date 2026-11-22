@@ -328,6 +328,15 @@ export interface SaveProfileRequest {
   include_secrets?: boolean;
 }
 
+export interface ValidateProfileRequest extends SaveProfileRequest {
+  /**
+   * When true and ``llm.base_url`` is configured, also query the upstream
+   * ``/v1/models`` catalog and return a non-blocking warning if ``llm.model``
+   * is not listed.
+   */
+  check_upstream_catalog?: boolean;
+}
+
 /**
  * Structured error from the LLM pre-flight validation endpoint
  * (``POST /api/profiles/{name}/validate``). ``type`` carries the SDK's typed

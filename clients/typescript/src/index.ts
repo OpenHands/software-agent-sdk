@@ -422,6 +422,7 @@ export type {
   ActivateProfileResponse,
   SaveProfileRequest,
   RenameProfileRequest,
+  ValidateProfileRequest,
   ValidateProfileError,
   ValidateProfileResponse,
   MetaProfileClass,
