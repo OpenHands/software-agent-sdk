@@ -559,7 +559,7 @@ Preconditions:
   exactly one request on its `hang` step, would only answer after 30 s; a
   server that ignored the posted `timeout` would wait for that reply and
   fail the bound. Nothing is saved.
-- **Exhausted quota (`F20.validate-quota-exhausted`), known bug.** An
+- **Exhausted quota (`F20.validate-quota-exhausted`).** An
   OpenAI-compatible provider distinguishes a transient 429 from exhausted
   quota through the response's structured `error.type` and `error.code`.
   ```sh
@@ -576,14 +576,12 @@ Preconditions:
     --save F20.validate-quota-exhausted/provider-request
   control-agent-server api GET /api/profiles --check profiles eq "$QUOTA_PROFILES"
   control-agent-server assert --json "$F20/quota-result.json" --check response.body.valid eq false \
-    --check response.body.error.type eq LLMRateLimitError  # bug: value.status eq 200 && value.response.body.valid eq true && value.response.body.error missing
+    --check response.body.error.type eq LLMRateLimitError
   ```
   Expected: exhausted quota blocks validation (#5768), with a typed error,
   while the transient positive control succeeds and neither draft is saved.
-  Today the real HTTP error is reduced to its human-readable message before
-  `is_quota_exhaustion_error` checks for `insufficient_quota`. The structured
-  code is lost, so this response incorrectly returns `valid: true` and no
-  error ([OpenHands/software-agent-sdk#6185](https://github.com/OpenHands/software-agent-sdk/issues/6185)).
+  The structured `error.type` and `error.code` survive the provider-to-SDK
+  mapping, so the response is `valid: false` with `LLMRateLimitError`.
   The existing unit test embeds the JSON code directly in a mocked
   exception string and does not exercise that provider-to-SDK mapping.
 - **Subscription without a login (`F20.validate-subscription-login`).**

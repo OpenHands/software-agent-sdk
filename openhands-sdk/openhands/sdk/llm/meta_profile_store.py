@@ -20,6 +20,7 @@ from typing import Any, Final
 from filelock import FileLock, Timeout
 from pydantic import BaseModel, Field, model_validator
 
+from openhands.sdk.errors import Invalid, LockTimeout
 from openhands.sdk.llm.llm_profile_store import PROFILE_NAME_REGEX
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.path import get_user_persistence_dir
@@ -140,8 +141,11 @@ class MetaProfileStore:
             logger.error(
                 f"[Meta-profile Store] Failed to acquire lock within {timeout}s"
             )
-            raise TimeoutError(
-                f"Meta-profile store lock acquisition timed out after {timeout}s"
+            raise LockTimeout(
+                "Meta-profile store is busy. Please retry.",
+                message=(
+                    f"Meta-profile store lock acquisition timed out after {timeout}s"
+                ),
             )
 
     def list(self) -> list[str]:
@@ -160,7 +164,7 @@ class MetaProfileStore:
     def _get_path(self, name: str) -> Path:
         clean_name = name.removesuffix(".json")
         if not PROFILE_NAME_REGEX.match(clean_name):
-            raise ValueError(
+            raise Invalid(
                 f"Invalid meta-profile name: {name!r}. "
                 "Names must be 1-64 characters, start with a letter or digit, "
                 "and contain only letters, digits, '.', '_', or '-'."
@@ -185,7 +189,7 @@ class MetaProfileStore:
             data = json.loads(path.read_text(encoding="utf-8"))
             return MetaProfile.model_validate(data)
         except Exception as e:
-            raise ValueError(f"Failed to load meta-profile `{name}`: {e}") from e
+            raise Invalid(f"Failed to load meta-profile `{name}`: {e}") from e
 
     def save(
         self,

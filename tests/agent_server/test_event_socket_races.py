@@ -3,7 +3,7 @@
 import asyncio
 import json
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -14,8 +14,10 @@ from starlette.websockets import WebSocketState
 from openhands.agent_server import session_socket, sockets
 from openhands.agent_server.config import Config
 from openhands.agent_server.event_service import EventService
+from openhands.agent_server.exceptions import ServiceInactive
 from openhands.agent_server.models import StoredConversation
 from openhands.agent_server.pub_sub import PubSub, Subscriber
+from openhands.agent_server.server_context import build_server_context
 from openhands.sdk import Message, TextContent
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation.state import ConversationExecutionStatus
@@ -40,7 +42,9 @@ class _FakeWS:
         self.client_state = WebSocketState.CONNECTED
         self.headers: dict = {}
         self.app = SimpleNamespace(
-            state=SimpleNamespace(config=Config(session_api_keys=[]))
+            state=SimpleNamespace(
+                server_context=build_server_context(Config(session_api_keys=[]))
+            )
         )
 
     async def accept(self):
@@ -80,7 +84,7 @@ async def _wait_until(predicate):
 
 
 @pytest.fixture
-async def svc(tmp_path, monkeypatch):
+async def svc(tmp_path):
     with patch("openhands.sdk.llm.utils.model_info.httpx.get") as mock_get:
         mock_get.return_value = MagicMock(json=lambda: {"data": []})
         service = EventService(
@@ -96,14 +100,6 @@ async def svc(tmp_path, monkeypatch):
         )
         await service.start()
 
-    async def get_event_service(_cid):
-        return service
-
-    monkeypatch.setattr(
-        sockets,
-        "conversation_service",
-        SimpleNamespace(get_event_service=get_event_service),
-    )
     yield service
     if service.is_open():
         await service.close()
@@ -131,12 +127,19 @@ def _legacy(ws, svc, resend_mode=None):
         resend_mode=resend_mode,
         after_timestamp=None,
         resend_all=False,
+        config=ws.app.state.server_context.config,
+        conv_service=MagicMock(get_event_service=AsyncMock(return_value=svc)),
     )
 
 
 def _session(ws, svc, after_seq=None):
     return session_socket.session_socket(
-        svc.stored.id, ws, session_api_key=None, after_seq=after_seq
+        svc.stored.id,
+        ws,
+        session_api_key=None,
+        after_seq=after_seq,
+        config=ws.app.state.server_context.config,
+        conv_service=MagicMock(get_event_service=AsyncMock(return_value=svc)),
     )
 
 
@@ -239,7 +242,7 @@ async def test_failed_subscribe_releases_its_slot(svc, monkeypatch):
     baseline = svc._pub_sub.subscriber_ids()
 
     def boom():
-        raise ValueError("inactive_service")
+        raise ServiceInactive()
 
     monkeypatch.setattr(svc, "_create_initial_state_sync", boom)
     ws = _FakeWS()

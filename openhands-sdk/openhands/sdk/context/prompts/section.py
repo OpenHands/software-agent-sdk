@@ -93,6 +93,7 @@ class PromptContext(BaseModel):
     custom_suffix: str | None = None
     memory_context: str | None = None
     secret_infos: tuple[SecretInfo, ...] = Field(default_factory=tuple)
+    project_context: str | None = None
 
     @field_validator("template_kwargs", mode="after")
     @classmethod

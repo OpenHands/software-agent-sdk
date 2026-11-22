@@ -1,7 +1,7 @@
 # state.py
 import json
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import AbstractContextManager
 from enum import Enum
 from pathlib import Path
@@ -24,6 +24,7 @@ from openhands.sdk.conversation.types import (
 from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
+    MessageEvent,
     ObservationEvent,
     UserRejectObservation,
 )
@@ -40,6 +41,7 @@ from openhands.sdk.security.confirmation_policy import (
 )
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.models import OpenHandsModel
+from openhands.sdk.utils.pydantic_secrets import cipher_context
 from openhands.sdk.workspace.base import BaseWorkspace
 
 
@@ -78,6 +80,57 @@ class ConversationExecutionStatus(str, Enum):
             ConversationExecutionStatus.ERROR,
             ConversationExecutionStatus.STUCK,
         )
+
+
+_Status = ConversationExecutionStatus
+
+# Moves no code path makes: ConversationState.transition() rejects these and
+# accepts every other move. In practice the lifecycle is almost fully
+# connected:
+# - a run can fail, be paused or (re)start from any status;
+# - a step can run under any status (``condense()``, a direct ``agent.step()``,
+#   or the sync loop retrying after ACPAgent reported a timeout as ERROR), so
+#   FINISHED, WAITING_FOR_CONFIRMATION and STUCK can follow ERROR;
+# - a pause can land mid-step (arun() releases the state lock for LLM I/O, ACP
+#   steps run without it), so PAUSED can be followed by the step's outcome;
+# - DELETING is only ever set on the webhook payload, never on the state, so
+#   it gets no special case. ERROR and PAUSED, the targets of the run loop's
+#   exception handlers, stay reachable from every status, so a handler can
+#   never mask the original error.
+_UNREACHED_MOVES: dict[_Status, frozenset[_Status]] = {
+    # Stuck detection runs under the same lock right after the run loop has
+    # stopped on PAUSED or FINISHED.
+    _Status.PAUSED: frozenset({_Status.STUCK}),
+    _Status.FINISHED: frozenset({_Status.STUCK}),
+    # Only send_message() (from FINISHED/STUCK), reject_pending_actions() (from
+    # WAITING_FOR_CONFIRMATION) and the run loop move to IDLE, and the run loop
+    # stops on ERROR.
+    _Status.ERROR: frozenset({_Status.IDLE}),
+}
+
+_ALLOWED_TRANSITIONS: dict[_Status, frozenset[_Status]] = {
+    status: frozenset(_Status) - {status} - _UNREACHED_MOVES.get(status, frozenset())
+    for status in _Status
+}
+
+
+class InvalidExecutionStatusTransitionError(ValueError):
+    """Raised when ``ConversationState.transition`` is asked for a move the
+    status table does not allow."""
+
+    def __init__(
+        self,
+        current: ConversationExecutionStatus,
+        target: ConversationExecutionStatus,
+        reason: str,
+    ) -> None:
+        super().__init__(
+            f"execution_status cannot move from {current.value} to "
+            f"{target.value} ({reason})"
+        )
+        self.current = current
+        self.target = target
+        self.reason = reason
 
 
 class ConversationState(OpenHandsModel):
@@ -152,6 +205,30 @@ class ConversationState(OpenHandsModel):
             "Names of progressive-disclosure skills explicitly invoked via the "
             "`invoke_skill` tool. Parallel to `activated_knowledge_skills`, "
             "which tracks trigger-based activations."
+        ),
+    )
+
+    # Ambient (installed/local) plugins are re-discovered on every load, but their
+    # contributions are merged into the persisted agent. Recording what they
+    # contributed lets a resumed conversation drop them before re-discovery, so
+    # a since-disabled or removed plugin does not linger. ``None`` marks a
+    # conversation persisted before these fields existed.
+    ambient_plugin_skills: list[str] | None = Field(
+        default=None,
+        description="Skill names contributed by ambient plugins at the last load.",
+    )
+    ambient_plugin_mcp_servers: list[str] | None = Field(
+        default=None,
+        description="MCP server names contributed by ambient plugins at the last load.",
+    )
+
+    runtime_mcp_servers: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Names of MCP servers added with add_mcp_servers after the "
+            "conversation started. Their tools are named `<server>_<tool>`; "
+            "recording them keeps those names, and the names of the other "
+            "servers, when the conversation is reopened."
         ),
     )
 
@@ -345,6 +422,55 @@ class ConversationState(OpenHandsModel):
         """
         return self._events.path_to_root(self._resolve_active_leaf(), limit=limit)
 
+    def walk_back(self, until: EventID | None = None) -> Iterator[Event]:
+        """The active branch newest first, read only as far as the caller goes.
+
+        With ``until``, the walk ends at that event, or as soon as it is behind
+        it when it is not on the active branch (see ``EventLog.walk_back``).
+        """
+        return self._events.walk_back(self._resolve_active_leaf(), until=until)
+
+    def waiting_actions(self) -> list[ActionEvent]:
+        """The tool calls still waiting for their results, in order.
+
+        Like ``get_unmatched_actions`` on the active branch, but it reads back
+        only through the agent's latest batch of tool calls, never the whole
+        log: a step answers its calls before the agent samples again. A batch
+        is the calls of one LLM response (one ``llm_response_id``); other
+        events can sit between its calls (a malformed call's error, a hook's
+        record). The walk ends before the batch, at a message or a result, or
+        at the agent's latest message (a step with no tool calls) when no
+        call came after it.
+        """
+        observed_action_ids: set[EventID] = set()
+        observed_tool_call_ids: set[str] = set()
+        waiting: list[ActionEvent] = []
+        batch: str | None = None
+        for event in self.walk_back():
+            if isinstance(event, ActionEvent):
+                if batch is None:
+                    batch = event.llm_response_id
+                elif event.llm_response_id != batch:
+                    break
+                if (
+                    event.action is not None
+                    and event.id not in observed_action_ids
+                    and event.tool_call_id not in observed_tool_call_ids
+                ):
+                    waiting.append(event)
+            elif isinstance(event, (ObservationEvent, UserRejectObservation)):
+                if batch is not None:
+                    break
+                observed_action_ids.add(event.action_id)
+            elif isinstance(event, AgentErrorEvent):
+                # A malformed call's error sits inside its batch.
+                observed_tool_call_ids.add(event.tool_call_id)
+            elif isinstance(event, MessageEvent) and (
+                batch is not None or event.source == "agent"
+            ):
+                break
+        return waiting[::-1]
+
     def _stamp_parent_id(self, event: Event) -> Event:
         """Return ``event`` with ``parent_id`` set to the active leaf if unset."""
         if event.parent_id is not None:
@@ -478,7 +604,7 @@ class ConversationState(OpenHandsModel):
         If a cipher is configured, secrets will be encrypted. Otherwise, they
         will be redacted (serialized as '**********').
         """
-        context = {"cipher": self._cipher} if self._cipher else None
+        context = cipher_context(self._cipher)
         # Warn if secrets exist but no cipher is configured
         if not self._cipher and self.secret_registry.secret_sources:
             logger.warning(
@@ -573,7 +699,7 @@ class ConversationState(OpenHandsModel):
         # ---- Resume path ----
         if base_text:
             # Use cipher context for decrypting secrets if provided
-            context = {"cipher": cipher} if cipher else None
+            context = cipher_context(cipher)
             state = cls.model_validate(json.loads(base_text), context=context)
 
             # Restore the conversation with the same id
@@ -634,6 +760,8 @@ class ConversationState(OpenHandsModel):
             max_budget_per_run=max_budget_per_run,
             stuck_detection=stuck_detection,
             tags=tags or {},
+            ambient_plugin_skills=[],
+            ambient_plugin_mcp_servers=[],
         )
         state._fs = file_store
         state._events = EventLog(file_store, dir_path=EVENTS_DIR)
@@ -699,6 +827,38 @@ class ConversationState(OpenHandsModel):
                     logger.exception(
                         f"State change callback failed for field {name}", exc_info=True
                     )
+
+    def transition(self, to: ConversationExecutionStatus, reason: str) -> None:
+        """Move ``execution_status`` to ``to``; the only way SDK code changes it.
+
+        The move is checked against the status table, so a status the run
+        loop can never produce (IDLE straight from ERROR, STUCK after FINISHED
+        or PAUSED) fails loudly instead of being persisted. The assignment
+        goes through the autosave hook, so it is persisted and published as a
+        ``ConversationStateUpdateEvent`` like any other field change. Moving to
+        the current status is a no-op.
+
+        Args:
+            to: The status to move to.
+            reason: Short description of why, for the debug log and the error.
+
+        Raises:
+            InvalidExecutionStatusTransitionError: If the table does not allow
+                moving from the current status to ``to``.
+        """
+        current = self.execution_status
+        if to == current:
+            return
+        if to not in _ALLOWED_TRANSITIONS[current]:
+            raise InvalidExecutionStatusTransitionError(current, to, reason)
+        logger.debug(
+            "Conversation %s execution_status %s -> %s: %s",
+            self.id,
+            current.value,
+            to.value,
+            reason,
+        )
+        self.execution_status = to  # status-write: the checked write
 
     def block_action(self, action_id: str, reason: str) -> None:
         """Persistently record a hook-blocked action."""
@@ -807,12 +967,38 @@ class ConversationState(OpenHandsModel):
         """Context manager exit — flushes any deferred save."""
         try:
             self._save_depth -= 1
-            if self._save_depth == 0 and self._dirty:
-                fs = self._fs
-                autosave_enabled = self._autosave_enabled
-                if autosave_enabled and fs is not None:
-                    self._save_base_state(fs)
-                self._dirty = False
+            self._flush_deferred_save()
+        finally:
+            self._lock.release()
+
+    def _flush_deferred_save(self) -> None:
+        if self._save_depth > 0 or not self._dirty:
+            return
+        # Cleared before the save: a change that save_soon() marks from another
+        # thread while this one serializes stays pending for the next flush.
+        self._dirty = False
+        fs = self._fs
+        if self._autosave_enabled and fs is not None:
+            try:
+                self._save_base_state(fs)
+            except Exception:
+                self._dirty = True
+                raise
+
+    def save_soon(self) -> None:
+        """Persist a change made inside a field, without waiting for the lock.
+
+        Assigning a field autosaves; changing a field's value in place (usage
+        recorded in ``stats``) does not. With the lock free the state is saved
+        now. Otherwise the change is marked pending and the lock holder's
+        ``with`` block saves it on exit, so a caller that must not wait for a
+        running step (``ask_agent``) never does.
+        """
+        self._dirty = True
+        if not self._lock.acquire(blocking=False):
+            return
+        try:
+            self._flush_deferred_save()
         finally:
             self._lock.release()
 

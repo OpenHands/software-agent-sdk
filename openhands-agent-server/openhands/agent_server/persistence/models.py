@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from typing import Any, TypedDict
+from datetime import datetime
+from typing import Annotated, Any, TypedDict
+from uuid import uuid4
 
 from pydantic import (
     BaseModel,
@@ -31,13 +33,15 @@ from openhands.sdk.settings import (
     default_agent_settings,
     validate_agent_settings,
 )
-from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
+from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.datetime import OpenHandsUUID, utc_now
+from openhands.sdk.utils.pydantic_secrets import SecretField, cipher_context
 
 
-class _SecretProbeCipher:
+class _SecretProbeCipher(Cipher):
     """Fake cipher that flags secret serialization without needing a real key.
 
-    Passed as ``context={"cipher": probe}`` this forces every secret field's
+    Passed as ``context=cipher_context(probe)`` this forces every secret field's
     serializer down the "encrypted" branch (see ``resolve_expose_mode``),
     reusing the real serialization pipeline to detect secret-bearing fields
     instead of hand-walking the model for ``SecretStr`` instances. That
@@ -50,11 +54,11 @@ class _SecretProbeCipher:
     def __init__(self) -> None:
         self.found = False
 
-    def try_decrypt_str(self, raw: str) -> str | None:  # noqa: ARG002
+    def try_decrypt_str(self, value: str) -> str | None:  # noqa: ARG002
         return None
 
-    def encrypt(self, value: SecretStr) -> str:
-        if value.get_secret_value():
+    def encrypt(self, secret: SecretStr | None) -> str | None:
+        if secret is not None and secret.get_secret_value():
             self.found = True
         return ""
 
@@ -62,7 +66,7 @@ class _SecretProbeCipher:
 def _contains_secret_value(model: BaseModel) -> bool:
     """Check if serializing `model` would touch any secret-bearing field."""
     probe = _SecretProbeCipher()
-    model.model_dump(mode="json", context={"cipher": probe})
+    model.model_dump(mode="json", context=cipher_context(probe))
     return probe.found
 
 
@@ -196,6 +200,15 @@ class PersistedSettings(BaseModel):
         default=None,
         description="Name of the currently active meta-profile used for "
         "intelligent model routing.",
+    )
+    experimental_features: dict[str, bool] = Field(
+        default_factory=dict,
+        description=(
+            "Experimental features the user turned on or off, by feature key. "
+            "An absent key means off. Changed through "
+            "PATCH /api/settings/experimental/{key}; see "
+            "openhands.agent_server.experimental_features for the known features."
+        ),
     )
     misc_settings: dict[str, Any] = Field(
         default_factory=dict,
@@ -385,7 +398,7 @@ class PersistedSettings(BaseModel):
 
     @classmethod
     def from_persisted(
-        cls, data: Any, *, context: dict[str, Any] | None = None
+        cls, data: Any, *, context: Mapping[str, Any] | None = None
     ) -> PersistedSettings:
         """Load persisted settings.
 
@@ -407,6 +420,10 @@ class PersistedSettings(BaseModel):
           (removed deprecated live input paths; persisted inputs still migrate).
         - **v7** (current): nested ``agent_settings`` advanced to schema v10
           (MCP servers with neither ``command`` nor ``url`` are dropped).
+
+        ``experimental_features`` was added within v7 without a bump: it is
+        additive and defaults to empty. An older server ignores it and drops
+        it on its next save, so after a downgrade every feature is off again.
         """
         if not isinstance(data, dict):
             return cls.model_validate(data, context=context)
@@ -482,7 +499,7 @@ class CustomSecret(BaseModel):
     """A custom secret with name, value, and optional description."""
 
     name: str
-    secret: SecretStr | None
+    secret: Annotated[SecretStr | None, SecretField()]
     description: str | None = None
 
     @field_validator("name")
@@ -506,17 +523,6 @@ class CustomSecret(BaseModel):
                 "letters/numbers/underscores, and be 1-64 characters"
             )
         return v
-
-    @field_validator("secret")
-    @classmethod
-    def _validate_secret(
-        cls, v: str | SecretStr | None, info: ValidationInfo
-    ) -> SecretStr | None:
-        return validate_secret(v, info)
-
-    @field_serializer("secret", when_used="always")
-    def _serialize_secret(self, v: SecretStr | None, info: SerializationInfo):
-        return serialize_secret(v, info)
 
 
 class Secrets(BaseModel):
@@ -566,8 +572,8 @@ class Secrets(BaseModel):
     def custom_secrets_serializer(
         self, custom_secrets: dict[str, CustomSecret], info: SerializationInfo
     ) -> dict[str, dict[str, Any]]:
-        # Delegate to CustomSecret.model_dump which uses serialize_secret
-        # This ensures cipher context flows through for encryption
+        # Delegate to CustomSecret.model_dump so the cipher context reaches
+        # its SecretField
         result = {}
         for name, secret in custom_secrets.items():
             result[name] = secret.model_dump(mode="json", context=info.context)
@@ -581,7 +587,7 @@ class Secrets(BaseModel):
         Note: We deliberately keep values as raw strings/dicts here so that
         Pydantic's field validators can handle cipher-based decryption via
         the validation context. Wrapping in SecretStr here would bypass the
-        validate_secret() call that handles decryption.
+        SecretField decryption.
         """
         if not isinstance(data, dict):
             return data
@@ -659,6 +665,59 @@ class PersistedWorkspaces(BaseModel):
             )
         payload["schema_version"] = WORKSPACES_SCHEMA_VERSION
         return cls.model_validate(payload)
+
+
+# ── Projects ─────────────────────────────────────────────────────────────
+
+PROJECTS_SCHEMA_VERSION = 1
+
+
+class ProjectItem(BaseModel):
+    """A project: a named group of conversations led by a coordinator.
+
+    Membership is not stored here. A conversation belongs to a project when
+    its ``project`` tag holds the project's id. The coordinator's workers
+    get that tag when the coordinator starts them.
+    """
+
+    id: OpenHandsUUID = Field(default_factory=uuid4)
+    name: str = Field(..., min_length=1, max_length=256)
+    description: str = Field(default="", max_length=4096)
+    coordinator_conversation_id: OpenHandsUUID | None = Field(
+        default=None,
+        description=(
+            "The conversation the user mainly talks to about this project. "
+            "It is also a member of the project."
+        ),
+    )
+    worker_agent_profile_id: OpenHandsUUID | None = Field(
+        default=None,
+        description=(
+            "Agent profile for the conversations project members start. "
+            "Unset, they start from the user's active agent profile."
+        ),
+    )
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class PersistedProjects(BaseModel):
+    schema_version: int = Field(default=PROJECTS_SCHEMA_VERSION)
+    projects: list[ProjectItem] = Field(default_factory=list)
+
+    @classmethod
+    def from_persisted(cls, data: Any) -> PersistedProjects:
+        if not isinstance(data, dict):
+            return cls.model_validate(data)
+        version = data.get("schema_version", PROJECTS_SCHEMA_VERSION)
+        if not isinstance(version, int):
+            raise ValueError("PersistedProjects schema_version must be an integer")
+        if version > PROJECTS_SCHEMA_VERSION:
+            raise ValueError(
+                f"PersistedProjects schema_version {version} is newer than "
+                f"supported {PROJECTS_SCHEMA_VERSION}"
+            )
+        return cls.model_validate({**data, "schema_version": PROJECTS_SCHEMA_VERSION})
 
 
 # ── Helper Functions ─────────────────────────────────────────────────────

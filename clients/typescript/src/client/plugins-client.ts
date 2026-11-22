@@ -1,4 +1,6 @@
 import { HttpClient } from './http-client';
+import { ConversationClient } from './conversation-client';
+import type { AgentServerLoadPluginResponse } from '../models/agent-server-api';
 import type {
   InstallPluginRequest,
   InstalledPluginInfo,
@@ -72,6 +74,17 @@ export class PluginsClient {
       `/api/plugins/installed/${encodeURIComponent(pluginName)}`
     );
     return response.data;
+  }
+
+  /** Load a plugin into one conversation from its registered marketplaces. */
+  async loadPluginForConversation(
+    conversationId: string,
+    pluginRef: string
+  ): Promise<AgentServerLoadPluginResponse> {
+    return new ConversationClient({
+      host: this.host,
+      apiKey: this.apiKey,
+    }).loadPlugin(conversationId, pluginRef);
   }
 
   async refreshPlugin(pluginName: string): Promise<RefreshPluginResponse> {

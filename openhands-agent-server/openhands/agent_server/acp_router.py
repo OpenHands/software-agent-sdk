@@ -9,17 +9,18 @@ import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 
-from openhands.agent_server._secrets_exposure import get_config
 from openhands.agent_server.config import Config
 from openhands.agent_server.credential_binding import LocalVersionedCredentialBinding
-from openhands.agent_server.persistence import get_secrets_store
+from openhands.agent_server.dependencies import get_config, get_secrets_store
+from openhands.agent_server.persistence import FileSecretsStore
 from openhands.sdk.agent.acp_file_credentials import CODEX_AUTH_SECRET_NAME
 from openhands.sdk.agent.acp_model_discovery import discover_acp_models
 from openhands.sdk.agent.acp_models import ACPModelDiscovery
 from openhands.sdk.credential import VersionedCredentialBinding
+from openhands.sdk.errors import NotSupported, Unprocessable
 from openhands.sdk.logger import get_logger
 from openhands.sdk.secret import SecretSource
 from openhands.sdk.settings.model import ACPAgentSettings
@@ -130,11 +131,10 @@ def _cache_key(
 
 
 def _codex_bindings(
-    settings: ACPAgentSettings, config: Config, secrets: dict[str, str]
+    settings: ACPAgentSettings, store: FileSecretsStore, secrets: dict[str, str]
 ) -> dict[str, VersionedCredentialBinding]:
     if settings.acp_server != "codex":
         return {}
-    store = get_secrets_store(config)
     if store.get_secret(CODEX_AUTH_SECRET_NAME) is None:
         return {}
     # A stored ChatGPT login refreshes through the store, as in a conversation.
@@ -148,7 +148,10 @@ def _codex_bindings(
 
 @acp_router.post("/models", response_model=ACPModelDiscovery)
 async def discover_models(
-    body: ACPModelDiscoveryRequest, request: Request
+    body: ACPModelDiscoveryRequest,
+    request: Request,
+    config: Config = Depends(get_config),
+    secrets_store: FileSecretsStore = Depends(get_secrets_store),
 ) -> ACPModelDiscovery:
     """Start the ACP server in a throwaway session and report its models.
 
@@ -156,20 +159,20 @@ async def discover_models(
     given credentials; a launch or authentication failure comes back in
     ``error`` rather than as an HTTP error.
     """
-    config: Config = get_config(request)
     if config.conversation_runtime == "docker":
-        raise HTTPException(
-            status.HTTP_501_NOT_IMPLEMENTED,
-            "ACP model discovery runs only where conversations run in-process",
+        raise NotSupported(
+            "ACP model discovery runs only where conversations run in-process"
         )
     settings = body.agent_settings
     try:
         command = settings.resolve_acp_command()
     except ValueError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+        raise Unprocessable(str(exc)) from exc
 
     secrets = await asyncio.to_thread(_resolve_secrets, body.secrets)
-    bindings = await asyncio.to_thread(_codex_bindings, settings, config, secrets)
+    bindings = await asyncio.to_thread(
+        _codex_bindings, settings, secrets_store, secrets
+    )
     key = _cache_key(settings, command, secrets)
 
     async def run() -> ACPModelDiscovery:

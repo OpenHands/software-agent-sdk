@@ -899,6 +899,16 @@ def cmd_restart(args: argparse.Namespace) -> dict[str, Any]:
         usage_error("--keep-previous-secret-key needs an earlier --rotate-secret-key")
     # Per restart: a later restart without the flag drops the previous key.
     run.data["keep_previous_secret_key"] = bool(args.keep_previous_secret_key)
+    if args.checkout:
+        # Upgrade or downgrade: another version of the server on the same state.
+        checkout = Path(args.checkout).resolve()
+        if not (checkout / "openhands-agent-server").is_dir():
+            usage_error(f"{checkout} is not an agent-sdk checkout")
+        run.data["checkout"] = str(checkout)
+        run.data["checkout_sha"] = git("rev-parse", "HEAD", cwd=checkout)
+        run.data["checkout_ref"] = git(
+            "rev-parse", "--abbrev-ref", "HEAD", cwd=checkout
+        )
     if args.reset_config:
         run.data["config_overrides"] = {}
         run.data["extra_env"] = {}
@@ -1374,6 +1384,7 @@ def cmd_api(args: argparse.Namespace) -> dict[str, Any]:
                     "content-length",
                     "cache-control",
                     "etag",
+                    "x-content-type-options",
                     "access-control-allow-origin",
                     "access-control-allow-credentials",
                     "access-control-expose-headers",
@@ -1917,8 +1928,36 @@ PRESETS: dict[str, dict[str, Any]] = {
                 "activate": False,
             },
         ],
+        # With $LLM_BASE_URL and $LLM_API_KEY set, the preset goes through
+        # that LiteLLM proxy instead, with the flash model it serves.
+        "proxy": {
+            "env": "LLM_API_KEY",
+            "base_url_env": "LLM_BASE_URL",
+            "profiles": [
+                {
+                    "name": "deepseek-flash",
+                    "model": "litellm_proxy/deepseek-v4.1-flash",
+                    "activate": True,
+                },
+            ],
+        },
     }
 }
+
+
+def preset_route(preset: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
+    """The proxy variant when its base URL and key are set and no key was
+    named on the command line; otherwise the provider's own."""
+    proxy = preset.get("proxy")
+    if (
+        proxy
+        and not args.api_key_env
+        and not args.api_key_file
+        and os.environ.get(proxy["base_url_env"])
+        and os.environ.get(proxy["env"])
+    ):
+        return {**proxy, "base_url": os.environ[proxy["base_url_env"]]}
+    return {**preset, "base_url": None}
 
 
 def read_api_key(args: argparse.Namespace, default_env: str) -> str:
@@ -1989,21 +2028,33 @@ def cmd_llm_preset(args: argparse.Namespace) -> dict[str, Any]:
     preset = PRESETS.get(args.preset)
     if not preset:
         usage_error(f"Unknown preset {args.preset!r}; known: {', '.join(PRESETS)}")
-    key = read_api_key(args, str(preset["env"]))
+    route = preset_route(preset, args)
+    key = read_api_key(args, str(route["env"]))
     rows = [
         save_llm_profile(
             run,
             p["name"],
             p["model"],
             key,
-            None,
+            route["base_url"],
             p["activate"],
             not args.no_validate and p["activate"],
         )
-        for p in preset["profiles"]
+        for p in route["profiles"]
     ]
     ok = all("error" not in r and r.get("activated", 200) < 400 for r in rows)
-    return {"ok": ok, "profiles": rows}
+    result = {
+        "ok": ok,
+        "via": "proxy" if route["base_url"] else "provider",
+        "profiles": rows,
+    }
+    if args.print_model:
+        if not ok:
+            emit(result)
+            raise SystemExit(1)
+        print(next(p["model"] for p in route["profiles"] if p["activate"]))
+        raise SystemExit(0)
+    return result
 
 
 def cmd_llm_set(args: argparse.Namespace) -> dict[str, Any]:
@@ -2035,7 +2086,16 @@ def cmd_llm_show(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def conversation_status(run: Run, conversation_id: str) -> str:
+    if not conversation_id.strip():
+        raise CliError(
+            "conversation id is empty",
+            hint="the variable holding it is set by a step that failed or did not run",
+        )
     info = api_json(run, "GET", f"/api/conversations/{conversation_id}")
+    if not isinstance(info, dict):
+        raise CliError(
+            f"GET /api/conversations/{conversation_id} did not return a conversation"
+        )
     return str(info.get("execution_status", "unknown")).lower()
 
 
@@ -2561,7 +2621,7 @@ def fixture_mcp_server(run: Run, name: str) -> dict[str, Any]:
     folder.mkdir(parents=True, exist_ok=True)
     script = folder / f"{name}.py"
     script.write_text(
-        "from mcp.server.fastmcp import FastMCP\n\n"
+        "from fastmcp import FastMCP\n\n"
         f"mcp = FastMCP({name!r})\n\n\n"
         "@mcp.tool()\n"
         "def qa_echo(text: str) -> str:\n"
@@ -3678,7 +3738,7 @@ def route_templates(checkout: Path | None = None) -> list[dict[str, Any]]:
         "from fastapi.routing import APIRoute, APIWebSocketRoute\n"
         "from starlette.routing import Route\n"
         "from openhands.agent_server.api import create_app\n"
-        "from openhands.agent_server.config import get_default_config\n"
+        "from openhands.agent_server.config import load_config\n"
         "def table(app):\n"
         "    out = []\n"
         "    for r in app.routes:\n"
@@ -3698,7 +3758,7 @@ def route_templates(checkout: Path | None = None) -> list[dict[str, Any]]:
         "    return out\n"
         "out = table(create_app())\n"
         "seen = {(r['method'], r['path']) for r in out}\n"
-        "docker = get_default_config().model_copy(update={'conversation_runtime': 'docker'})\n"
+        "docker = load_config().model_copy(update={'conversation_runtime': 'docker'})\n"
         "for r in table(create_app(docker)):\n"
         "    if (r['method'], r['path']) not in seen:\n"
         "        out.append({**r, 'config': 'conversation_runtime=docker'})\n"
@@ -5507,6 +5567,11 @@ secret key all private to the run. Without --new, an already-live run
         action="store_true",
         help="SIGKILL instead of a graceful stop (crash recovery)",
     )
+    p.add_argument(
+        "--checkout",
+        help="restart on another agent-sdk checkout (an upgrade or downgrade "
+        "over the same settings and conversations)",
+    )
     p.add_argument("--env", action="append", metavar="K=V")
     p.add_argument("--config-json")
     p.add_argument("--timeout", type=float, default=180)
@@ -5828,7 +5893,8 @@ under <run>/evidence/FEATURE/NAME.json.""",
         description="LLM profiles: preset | set | show",
         formatter_class=Formatter,
         epilog=f"""Examples:
-  {CLI} llm preset deepseek                 # deepseek-flash (active) + deepseek-pro from $DEEPSEEK_API_KEY
+  {CLI} llm preset deepseek                 # deepseek-flash (active) + deepseek-pro from $DEEPSEEK_API_KEY;
+                                            # with $LLM_BASE_URL and $LLM_API_KEY: deepseek-flash through that proxy
   {CLI} llm set --profile alt --model deepseek/deepseek-v4-pro --api-key-env DEEPSEEK_API_KEY --no-activate
   {CLI} llm show""",
     )
@@ -5838,7 +5904,11 @@ under <run>/evidence/FEATURE/NAME.json.""",
         "preset",
         help="save a known set of profiles",
         formatter_class=Formatter,
-        epilog=f"Examples:\n  {CLI} llm preset deepseek\n  {CLI} llm preset deepseek --api-key-file ~/.deepseek",
+        epilog=(
+            f"Examples:\n  {CLI} llm preset deepseek\n"
+            f"  {CLI} llm preset deepseek --api-key-file ~/.deepseek\n"
+            f"  MODEL=$({CLI} llm preset deepseek --print-model)"
+        ),
     )
     add_run_flag(lp)
     lp.set_defaults(func=cmd_llm_preset)
@@ -5847,6 +5917,11 @@ under <run>/evidence/FEATURE/NAME.json.""",
     lp.add_argument("--api-key-file")
     lp.add_argument(
         "--no-validate", action="store_true", help="skip the one-call validation"
+    )
+    lp.add_argument(
+        "--print-model",
+        action="store_true",
+        help="print only the active profile's model (it differs through the proxy)",
     )
     ls = llm_sub.add_parser(
         "set",

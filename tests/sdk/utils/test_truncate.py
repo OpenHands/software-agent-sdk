@@ -1,5 +1,7 @@
 """Tests for truncate utility functions."""
 
+from pathlib import Path
+
 import pytest
 
 from openhands.sdk.utils import (
@@ -7,6 +9,23 @@ from openhands.sdk.utils import (
     DEFAULT_TRUNCATE_NOTICE,
     maybe_truncate,
 )
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_maybe_truncate_when_persistence_directory_is_a_file(
+    tmp_path: Path, nested: bool
+):
+    blocker = tmp_path / "output"
+    blocker.write_text("existing file", encoding="utf-8")
+    save_dir = blocker / "nested" if nested else blocker
+    content = "head\n" + "line\n" * 200 + "tail\n"
+
+    expected = maybe_truncate(content, truncate_after=500)
+    result = maybe_truncate(content, truncate_after=500, save_dir=str(save_dir))
+
+    assert result == expected
+    assert len(result) == 500
+    assert blocker.read_text(encoding="utf-8") == "existing file"
 
 
 @pytest.mark.parametrize(

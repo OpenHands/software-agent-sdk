@@ -642,23 +642,29 @@ def detect_acp_provider_by_command(
     return None
 
 
-def build_session_model_meta(agent_name: str, acp_model: str | None) -> dict[str, Any]:
-    """Build ACP session ``_meta`` content for model selection.
+def build_session_model_meta(
+    agent_name: str, acp_model: str | None, acp_effort: str | None = None
+) -> dict[str, Any]:
+    """Build ACP session ``_meta`` content for model and effort selection.
 
     Returns the dict to spread into ``new_session()`` kwargs for providers
     that select their model via ``_meta`` (i.e. those whose
-    :attr:`~ACPProviderInfo.session_meta_key` is not ``None``).
+    :attr:`~ACPProviderInfo.session_meta_key` is not ``None``). ``acp_effort``
+    wins over a ``<model>/<effort>`` suffix on ``acp_model``.
 
-    Returns an empty dict when *acp_model* is ``None`` or when the detected
+    Returns an empty dict when there is nothing to select or when the detected
     provider uses the ``set_session_model`` protocol call instead.
     """
-    if not acp_model:
-        return {}
     provider = detect_acp_provider_by_agent_name(agent_name)
     if provider is None or provider.session_meta_key is None:
         return {}
-    model, effort = provider.split_model_effort(acp_model)
-    options: dict[str, str] = {"model": model}
-    if effort is not None and provider.effort_config_id is not None:
+    options: dict[str, str] = {}
+    suffix_effort = None
+    if acp_model:
+        options["model"], suffix_effort = provider.split_model_effort(acp_model)
+    effort = acp_effort or suffix_effort
+    if effort and provider.effort_config_id is not None:
         options[provider.effort_config_id] = effort
+    if not options:
+        return {}
     return {provider.session_meta_key: {"options": options}}

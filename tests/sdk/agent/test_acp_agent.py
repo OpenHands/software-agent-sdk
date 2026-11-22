@@ -41,7 +41,6 @@ from openhands.sdk.agent.acp_agent import (
     _mask_json_value,
     _maybe_set_session_model,
     _mcp_config_to_acp_servers,
-    _model_config_options,
     _NewSessionResponse,
     _npx_packages,
     _OpenHandsACPBridge,
@@ -49,6 +48,7 @@ from openhands.sdk.agent.acp_agent import (
     _reapply_session_model_on_resume,
     _select_auth_method,
     _serialize_tool_content,
+    _split_effort_suffix,
     _stringify_acp_error_data,
     _strip_inherited_npm_env,
     _warn_auth_selection_failure,
@@ -4946,6 +4946,66 @@ class TestACPAgentAskAgent:
         assert mock_client._fork_session_id is None
         assert mock_client._fork_accumulated_text == []
 
+    def test_ask_agent_records_fork_usage_update_without_waiting(self, caplog):
+        """A UsageUpdate for the fork session is billed and releases the wait."""
+        from acp.schema import AgentMessageChunk, TextContentBlock, UsageUpdate
+
+        agent = _make_agent()
+        client = _OpenHandsACPBridge()
+        client._context_window = 200000
+        agent._client = client
+        agent._conn = MagicMock()
+        agent._session_id = "main-session"
+        agent._working_dir = "/workspace"
+
+        mock_fork_response = MagicMock()
+        mock_fork_response.session_id = "fork-session-usage"
+        mock_prompt_response = MagicMock()
+        mock_prompt_response.usage = None
+
+        async def _fake_prompt(*args, **kwargs):
+            await client.session_update(
+                "fork-session-usage",
+                AgentMessageChunk(
+                    session_update="agent_message_chunk",
+                    content=TextContentBlock(type="text", text="Fork answer"),
+                ),
+            )
+            update = MagicMock(spec=UsageUpdate)
+            update.cost = MagicMock()
+            update.cost.amount = 0.05
+            update.size = 150000
+            await client.session_update("fork-session-usage", update)
+            return mock_prompt_response
+
+        def _fake_run_async(coro_fn, **_kwargs):
+            loop = asyncio.new_event_loop()
+            try:
+                _agent_conn(agent).fork_session = AsyncMock(
+                    return_value=mock_fork_response
+                )
+                _agent_conn(agent).prompt = _fake_prompt
+                return loop.run_until_complete(coro_fn())
+            finally:
+                loop.close()
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        t0 = time.monotonic()
+        with caplog.at_level("WARNING"):
+            result = agent.ask_agent("Which files did you list?")
+        elapsed = time.monotonic() - t0
+
+        assert result == "Fork answer"
+        assert agent.llm.metrics.accumulated_cost == pytest.approx(0.05)
+        assert "UsageUpdate not received" not in caplog.text
+        assert elapsed < 1.0
+        # The fork's window does not overwrite the main session's.
+        assert client._context_window == 200000
+        assert "fork-session-usage" not in client._turn_usage_updates
+
 
 # ---------------------------------------------------------------------------
 # Client fork text routing
@@ -5391,43 +5451,41 @@ class TestWithCodexBaseUrl:
         assert _with_codex_base_url("codex-acp", [], env) == env
 
 
-class TestModelConfigOptions:
+class TestSplitEffortSuffix:
     def test_codex_splits_reasoning_effort(self):
-        assert _model_config_options("codex-acp", "gpt-5.5/high") == (
-            ("model", "gpt-5.5"),
-            ("reasoning_effort", "high"),
-        )
+        assert _split_effort_suffix("codex-acp", "gpt-5.5/high") == ("gpt-5.5", "high")
 
     def test_claude_splits_effort(self):
-        assert _model_config_options("claude-agent-acp", "opus[1m]/max") == (
-            ("model", "opus[1m]"),
-            ("effort", "max"),
+        assert _split_effort_suffix("claude-agent-acp", "opus[1m]/max") == (
+            "opus[1m]",
+            "max",
         )
 
     def test_leaves_base_or_custom_model_id_unchanged(self):
-        assert _model_config_options("codex-acp", "gpt-5.5") == (("model", "gpt-5.5"),)
-        assert _model_config_options("codex-acp", "custom/provider/model") == (
-            ("model", "custom/provider/model"),
+        assert _split_effort_suffix("codex-acp", "gpt-5.5") == ("gpt-5.5", None)
+        assert _split_effort_suffix("codex-acp", "custom/provider/model") == (
+            "custom/provider/model",
+            None,
         )
         # `ultra` is a Codex level, not a Claude one.
-        assert _model_config_options("claude-agent-acp", "opus[1m]/ultra") == (
-            ("model", "opus[1m]/ultra"),
+        assert _split_effort_suffix("claude-agent-acp", "opus[1m]/ultra") == (
+            "opus[1m]/ultra",
+            None,
         )
 
     @pytest.mark.parametrize("effort", ["max", "ultra"])
     def test_codex_splits_top_reasoning_efforts(self, effort):
-        assert _model_config_options("codex-acp", f"gpt-6.1-sol/{effort}") == (
-            ("model", "gpt-6.1-sol"),
-            ("reasoning_effort", effort),
+        assert _split_effort_suffix("codex-acp", f"gpt-6.1-sol/{effort}") == (
+            "gpt-6.1-sol",
+            effort,
         )
 
     def test_provider_without_effort_option_is_unchanged(self):
-        assert _model_config_options("gemini-cli", "gemini-2.5-pro/high") == (
-            ("model", "gemini-2.5-pro/high"),
+        assert _split_effort_suffix("gemini-cli", "gemini-2.5-pro/high") == (
+            "gemini-2.5-pro/high",
+            None,
         )
-        assert _model_config_options("my-acp", "model/high") == (
-            ("model", "model/high"),
-        )
+        assert _split_effort_suffix("my-acp", "model/high") == ("model/high", None)
 
 
 # ---------------------------------------------------------------------------
@@ -5516,7 +5574,7 @@ class TestMaybeSetSessionModel:
             ]
         )
         assert conn.set_config_option.await_count == 2
-        assert applied == "gpt-5.4/low"
+        assert applied == "gpt-5.4"
 
     @pytest.mark.asyncio
     async def test_pi_model_switch_mechanism(self):
@@ -5658,7 +5716,7 @@ class TestReapplySessionModelOnResume:
             ]
         )
         assert conn.set_config_option.await_count == 2
-        assert applied == "gpt-5.4/low"
+        assert applied == "gpt-5.4"
 
     @pytest.mark.asyncio
     async def test_missing_model_skips_reapply(self):
@@ -5858,7 +5916,7 @@ class TestSetACPModel:
         assert _agent_conn(agent).set_config_option.await_count == 2
         _agent_conn(agent).set_session_model.assert_not_called()
         assert agent.llm.model == "gpt-5.5/high"
-        assert agent._current_model_id == "gpt-5.5/high"
+        assert agent._current_model_id == "gpt-5.5"
 
     def test_switches_claude_via_config_option_single_call(self):
         # A bare id (no `/`) applies as a single `model` selection — no effort.
@@ -5879,7 +5937,7 @@ class TestSetACPModel:
             ]
         )
         assert _agent_conn(agent).set_config_option.await_count == 2
-        assert agent._current_model_id == "opus[1m]/high"
+        assert agent._current_model_id == "opus[1m]"
 
     def test_switch_with_rejected_effort_reports_base_model(self):
         agent = self._wire(_make_agent(), "claude-agent-acp", via_config_option=True)

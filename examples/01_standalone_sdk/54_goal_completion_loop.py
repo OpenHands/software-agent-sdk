@@ -30,7 +30,7 @@ import os
 import tempfile
 
 from openhands.sdk import LLM, Agent, Conversation, Tool
-from openhands.sdk.conversation.goal import run_goal
+from openhands.sdk.conversation.goal import GoalAsked, run_goal
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.terminal import TerminalTool
 
@@ -60,6 +60,8 @@ objective = (
 
 # Drive the conversation toward the objective, re-judging after each run.
 outcome = run_goal(conversation, objective, judge_llm, max_iterations=3)
+# This agent has no ask_user tool, so it never stops on a question for the user.
+assert not isinstance(outcome, GoalAsked)
 
 print("\n" + "=" * 70)
 print(f"Goal {outcome.status} after {outcome.iterations} audit round(s).")
