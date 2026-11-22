@@ -51,7 +51,7 @@ from openhands.agent_server.local_storage import (
 from openhands.agent_server.mcp_oauth_store import (
     create_settings_backed_mcp_tool_provider,
 )
-from openhands.agent_server.message_sender import sender_message_header
+from openhands.agent_server.message_sender import sender_message_line
 from openhands.agent_server.models import (
     ConversationInfo,
     ConversationPage,
@@ -68,6 +68,8 @@ from openhands.agent_server.persistence import (
     ServerStores,
     run_store,
 )
+from openhands.agent_server.project_service import ProjectService
+from openhands.agent_server.project_wake import project_sender_line
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.agent_server.telemetry import (
@@ -82,7 +84,9 @@ from openhands.agent_server.utils import safe_rmtree, utc_now
 from openhands.sdk import LLM, Event, Message, TextContent
 from openhands.sdk.agent import ACPAgent
 from openhands.sdk.agent.acp_file_credentials import CODEX_AUTH_SECRET_NAME
-from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.agent.base import (
+    AgentBase,
+)
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.persistence_const import BASE_STATE
 from openhands.sdk.conversation.request import ConversationWorktreeOptions
@@ -94,7 +98,10 @@ from openhands.sdk.conversation.title_utils import (
     extract_message_text,
     generate_title_from_message,
 )
-from openhands.sdk.conversation.types import conversation_sender
+from openhands.sdk.conversation.types import (
+    PROJECT_TAG_KEY,
+    conversation_sender,
+)
 from openhands.sdk.credential import (
     CredentialAuthorizationRejected,
     CredentialBindingError,
@@ -105,6 +112,7 @@ from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.launch import LaunchedAgent, LaunchStoreError, LaunchStores, finalize
+from openhands.sdk.launch.finalize import ProjectRole
 from openhands.sdk.llm.call_context import LLMCallContext
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.mcp.utils import MCPToolProvider
@@ -627,11 +635,23 @@ class ConversationService:
     )
     _lease_renewal_task: asyncio.Task | None = field(default=None, init=False)
     _eviction_task: asyncio.Task | None = field(default=None, init=False)
+    # Set by get_instance(), once the projects store has its config: catch up
+    # on coordinator updates a restart left undelivered.
+    reconcile_projects_on_start: bool = False
+    projects: ProjectService = field(init=False)
     _run_executor: ThreadPoolExecutor | None = field(default=None, init=False)
     _run_semaphore: asyncio.Semaphore | None = field(default=None, init=False)
     _credential_bindings: dict[UUID, dict[str, VersionedCredentialBinding]] = field(
         default_factory=dict, init=False
     )
+
+    def __post_init__(self) -> None:
+        self.projects = ProjectService(self)
+
+    def ensure_active(self) -> None:
+        """Raise :class:`ServiceInactive` unless the service is running."""
+        if self._event_services is None:
+            raise ServiceInactive()
 
     def _load_catalog_sync(
         self, conversation_id: UUID | None = None
@@ -1557,9 +1577,18 @@ class ConversationService:
             return await asyncio.to_thread(fn, *args, **kwargs)
 
     async def start_conversation(
-        self, request: StartConversationRequest, *, gateway_run: bool = False
+        self,
+        request: StartConversationRequest,
+        *,
+        gateway_run: bool = False,
+        project_role: ProjectRole | None = None,
     ) -> tuple[ConversationInfo, bool]:
-        return await self._start_conversation(request, gateway_run=gateway_run)
+        """Start a conversation. ``project_role`` gives a project's
+        coordinator or worker its prompt, project context and tools; only the
+        server sets it."""
+        return await self._start_conversation(
+            request, gateway_run=gateway_run, project_role=project_role
+        )
 
     async def start_acp_conversation(
         self, request: StartConversationRequest
@@ -1571,6 +1600,7 @@ class ConversationService:
         request: StartConversationRequest,
         *,
         gateway_run: bool = False,
+        project_role: ProjectRole | None = None,
     ) -> tuple[ConversationInfo, bool]:
         """Start a local event_service and return its id."""
         if self._event_services is None:
@@ -1583,11 +1613,13 @@ class ConversationService:
                 )
 
         with await RunSlot.acquire(self._run_semaphore) as run_slot:
-            if gateway_run:
-                return await self._create_conversation(
-                    request, conversation_id, run_slot, gateway_run=True
-                )
-            return await self._create_conversation(request, conversation_id, run_slot)
+            return await self._create_conversation(
+                request,
+                conversation_id,
+                run_slot,
+                gateway_run=gateway_run,
+                project_role=project_role,
+            )
 
     async def _create_conversation(
         self,
@@ -1596,6 +1628,7 @@ class ConversationService:
         run_slot: RunSlot,
         *,
         gateway_run: bool = False,
+        project_role: ProjectRole | None = None,
     ) -> tuple[ConversationInfo, bool]:
         # The link is immutable after creation, so cycles beyond self-parent are
         # impossible; allowing reparenting would require a real ancestor walk.
@@ -1624,14 +1657,14 @@ class ConversationService:
             content = list(initial_message.content)
             sender_id = initial_message.sender_conversation_id
             if sender_id is not None:
-                content.insert(
-                    0,
-                    TextContent(
-                        text=await sender_message_header(
-                            self, sender_id, conversation_id
-                        )
-                    ),
+                sender_line = await sender_message_line(
+                    self, sender_id, conversation_id
                 )
+                sender_line = (
+                    await project_sender_line(self, sender_id, request.tags)
+                    or sender_line
+                )
+                content.insert(0, TextContent(text=sender_line))
                 initial_sender = conversation_sender(sender_id)
             first_message = Message(role=initial_message.role, content=content)
 
@@ -1722,6 +1755,7 @@ class ConversationService:
                 experimental_feature_tools=experimental_feature_tools(
                     experimental_features
                 ),
+                project_role=project_role,
                 load_memory=load_memory,
                 managed_secrets=(
                     [CODEX_AUTH_SECRET_NAME] if managed_codex_credential else ()
@@ -2062,6 +2096,29 @@ class ConversationService:
         )
         return True
 
+    async def list_tagged_conversations(
+        self, key: str, value: str
+    ) -> list[tuple[StoredConversation, ConversationExecutionStatus]]:
+        """Return conversations whose tag ``key`` equals ``value``.
+
+        Reads the in-memory catalog with refreshed execution statuses, as the
+        status-filtered search does, so no full ``ConversationState`` is
+        loaded. Results are newest-updated first; deleting conversations are
+        left out.
+        """
+        if self._event_services is None:
+            raise ServiceInactive()
+        await self._reconcile_active_records()
+        await self._refresh_execution_statuses()
+        matches = [
+            (record.stored, record.execution_status)
+            for record in self._conversation_records.values()
+            if record.stored.tags.get(key) == value
+            and record.execution_status != ConversationExecutionStatus.DELETING
+        ]
+        matches.sort(key=lambda item: item[0].updated_at, reverse=True)
+        return matches
+
     async def get_event_service(self, conversation_id: UUID) -> EventService | None:
         return await self._get_or_load_event_service(conversation_id)
 
@@ -2232,6 +2289,10 @@ class ConversationService:
         shares the parent's directory. The link is recorded via
         ``parent_conversation_id``.
 
+        In a project, the coordinator starts workers instead (see
+        :meth:`ProjectService.start_worker`): a worker runs an agent profile,
+        not a copy of the coordinator's agent.
+
         Returns ``None`` when *parent_id* does not exist.
 
         Raises:
@@ -2244,6 +2305,11 @@ class ConversationService:
         parent_service = await self._get_or_load_event_service(parent_id)
         if parent_service is None:
             return None
+
+        # Only a member of an existing project, with Projects on, starts
+        # workers; any other conversation starts an ordinary child.
+        if await self.projects.member_of(parent_service.stored.tags) is not None:
+            return await self.projects.start_worker(parent_service, request)
 
         # Admission first, as in a normal start: a full server refuses the
         # launch before a worktree or the child's persistence directory exists.
@@ -2387,6 +2453,8 @@ class ConversationService:
             self._eviction_task = asyncio.create_task(
                 self._evict_idle_conversations_loop()
             )
+        if self.reconcile_projects_on_start:
+            self.projects.catch_up()
 
         return self
 
@@ -2476,6 +2544,7 @@ class ConversationService:
                         pending.setdefault(secret_name, binding)
 
     async def __aexit__(self, exc_type, exc_value, traceback):
+        await self.projects.close()
         if self._eviction_task is not None:
             self._eviction_task.cancel()
             with suppress(asyncio.CancelledError):
@@ -2577,6 +2646,7 @@ class ConversationService:
             conversation_worktree_root=config.conversation_worktree_root,
             acp_skill_sourcing=config.acp_skill_sourcing,
             enable_browser=config.enable_browser,
+            reconcile_projects_on_start=True,
         )
 
     async def _start_event_service(
@@ -2627,6 +2697,8 @@ class ConversationService:
             await event_service.subscribe_to_events(
                 _EventSubscriber(service=event_service)
             )
+            if PROJECT_TAG_KEY in stored.tags:
+                await self.projects.watch(event_service)
             if stored.autotitle and stored.title is None:
                 await event_service.subscribe_to_events(
                     AutoTitleSubscriber(

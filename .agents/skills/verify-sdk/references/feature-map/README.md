@@ -10,9 +10,9 @@ agent-server map
 and follows its layout. Family IDs here are `Snn`, so they never collide with
 that map's `Fnn`.
 
-Maintenance baseline: main@141423921fdaeb08cd5f53464a69e860da70b66f (2026-11-19). The next maintenance pass starts from this commit, a pass proposes the next baseline in its PR, and merging that PR accepts it.
+Maintenance baseline: main@3a893a1b26de7ec02cc0dd2427906eea6aea3fc7 (2026-11-21). The next maintenance pass starts from this commit, a pass proposes the next baseline in its PR, and merging that PR accepts it.
 
-The map has **504 sub-features**, **36 of them untested** (no unit or cross
+The map has **504 sub-features**, **35 of them untested** (no unit or cross
 test exercises the behavior; most of those have an example script).
 
 ## What each sub-feature links
@@ -83,7 +83,7 @@ an interactive login are labeled **blocked**.
 | S06 | [Agent context, system prompt, condensers and memory](S06-context-condensers.md) | `AgentContext`, system prompt sections and vendor files, persona, persistent memory, the condenser `View`, `LLMSummarizingCondenser`, `condense()`, overflow condensation, no-op and pipeline condensers | `Agent(agent_context=, system_prompt=, condenser=)`, `AgentContext(load_memory=)`, `conversation.condense()` | llm, tmux | 24 | 1 |
 | S07 | [Skills](S07-skills.md) | skill sources (programmatic, Markdown, AGENTS.md, SKILL.md, user, project, public, installed), keyword, task and path triggers, `<available_skills>`, `invoke_skill`, inline commands, disabling, install and marketplace, the `OH_PUBLIC_SKILLS_ENABLED` switch | `AgentContext(skills=, load_*_skills=, disabled_skills=)`, `.agents/skills/`, `install_skill`, `OH_PUBLIC_SKILLS_ENABLED` | llm, git, network | 25 | 0 |
 | S08 | [Plugins, marketplaces and the extension store](S08-plugins-marketplace.md) | both plugin layouts, path containment, commands as skills, merging into the agent, `resolved_plugins`, fetch cache, installed and ambient plugins, marketplace registry, `load_plugin()` | `Conversation(plugins=[PluginSource(...)])`, `Plugin.load`, `conversation.load_plugin()` | llm, git, network, uvx | 20 | 0 |
-| S09 | [MCP client and tools](S09-mcp.md) | stdio, HTTP and SSE servers, auth and OAuth, enabled flag, timeouts, failing servers, schema conversion, observations, secrets in calls, reconnection, `list_changed`, tool filtering, servers added to a running conversation, the startup budget | `Agent(mcp_config=, filter_tools_regex=)`, `create_mcp_tools`, `MCPOAuthAuthentication`, `LocalConversation.add_mcp_servers`, `LocalConversation(mcp_startup_budget=)` | llm, uvx, node, network | 23 | 1 |
+| S09 | [MCP client and tools](S09-mcp.md) | stdio, HTTP and SSE servers, auth and OAuth, enabled flag, timeouts, failing servers, schema conversion, observations, secrets in calls, reconnection, `list_changed`, tool filtering, servers added to a running conversation, the startup budget | `Agent(mcp_config=, filter_tools_regex=)`, `create_mcp_tools`, `MCPOAuthAuthentication`, `LocalConversation.add_mcp_servers`, `LocalConversation(mcp_startup_budget=)` | llm, uvx, node, network | 23 | 0 |
 | S10 | [Hooks](S10-hooks.md) | config format and discovery, matchers, command hooks, blocking tool calls and prompts, context injection, Stop, SessionStart and SessionEnd, `HookExecutionEvent`, prompt and agent hooks, plugin hooks | `Conversation(hook_config=HookConfig(...))`, `HookDefinition(type=)`, `HookManager` | llm, git | 21 | 1 |
 | S11 | [Sub-agents and delegation](S11-subagents-delegation.md) | the `task` tool lifecycle, agent registry, Markdown agent files and `AgentDefinition`, built-in agents, `SubAgentScope`, the legacy delegate executor | `Tool(name=TaskToolSet.name)`, `register_agent`, `.agents/agents/*.md` | llm | 24 | 2 |
 | S12 | [Critic and critic-driven refinement](S12-critic.md) | `CriticResult`, rule critics, evaluation modes, iterative refinement, `APIBasedCritic`, critic from settings | `Agent(critic=APIBasedCritic(...))`, `event.critic_result` | llm, network | 15 | 4 |
@@ -119,6 +119,15 @@ Left out of this map, with the reason:
   `start_child_conversation` tool posts to the agent server's child-launch
   route and is attached only by a host; owned by the agent-server map's F27
   (the mention tools reuse its URL and key helpers, see S16).
+- `openhands-tools/openhands/tools/project/`: the project tools
+  (`list_workers`, `message_worker`, `read_worker`, the artifact and project
+  memory tools, `resolve_conversation`) call the agent server's projects API
+  and are attached only by the server to a project's coordinator and workers;
+  owned by the agent-server map's F36.
+- `openhands-sdk/openhands/sdk/errors.py`: transport-neutral domain error
+  categories (`NotFound`, `Conflict`, `Invalid`, `TooLarge`, ...) that stores
+  raise and the agent server maps to HTTP statuses; an SDK program meets them
+  only as the store errors S03 and S19 check.
 - `openhands-sdk/pyproject.toml`, `openhands-tools/pyproject.toml`: package
   metadata and dependency pins, with no SDK behavior of their own; every run's
   `uv sync --dev` exercises them, and a dependency bump calls for the full

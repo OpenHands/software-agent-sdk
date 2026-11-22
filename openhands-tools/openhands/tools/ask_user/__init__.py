@@ -14,6 +14,7 @@ Usage:
 
 from openhands.tools.ask_user.definition import (
     AskUserAction,
+    AskUserForConversationAction,
     AskUserObservation,
     AskUserOption,
     AskUserTool,
@@ -22,6 +23,7 @@ from openhands.tools.ask_user.definition import (
 
 __all__ = [
     "AskUserAction",
+    "AskUserForConversationAction",
     "AskUserObservation",
     "AskUserOption",
     "AskUserTool",

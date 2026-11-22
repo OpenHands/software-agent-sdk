@@ -2,7 +2,7 @@
 choose it?
 
 Each variant builds an Agent the way a user would (model name, inline prompt,
-template file, persona, planning preset, project vendor files), runs one
+template file, persona, planning and project presets, project vendor files), runs one
 scripted turn, and reads the SystemPromptEvent the conversation saved.
 """
 
@@ -77,6 +77,18 @@ out["soul_custom"] = soul_file.is_file() and soul_file.read_text().strip() in st
 planning, _ = system_prompt(system_prompt_filename="system_prompt_planning.j2")
 out["planning_differs"] = planning != static_a
 out["planning_tags"] = tags(planning)
+
+# Project presets: a coordinator and a worker, each with a project context.
+project_ctx = AgentContext(project_context="Project Apollo: ship the launcher.")
+for name in ("coordinator", "worker"):
+    static, dynamic = system_prompt(
+        system_prompt_filename=f"system_prompt_project_{name}.j2",
+        agent_context=project_ctx,
+    )
+    out[f"project_{name}_tags"] = tags(static)
+    out[f"project_{name}_context"] = (
+        "<PROJECT>\nProject Apollo: ship the launcher.\n</PROJECT>" in dynamic
+    )
 
 # Model-specific sections.
 for name, model, kwargs, agent_kwargs in [
