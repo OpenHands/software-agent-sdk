@@ -152,6 +152,65 @@ async def test_async_tool_thought_matches_sync_behavior(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("use_async", [False, True])
+async def test_tool_call_thought_secret_is_not_saved(tmp_path, use_async: bool):
+    """A registered value in the text sent with a tool call stays out of the
+    saved conversation, on both run loops (#5525)."""
+    secret = "dummy-not-a-real-secret-7f3a9c"
+    message = Message(
+        role="assistant",
+        content=[TextContent(text=f"token is {secret}")],
+        reasoning_content=f"I will use {secret}",
+        tool_calls=[
+            MessageToolCall(
+                id="finish-call",
+                origin="completion",
+                name="finish",
+                arguments='{"message":"done"}',
+            )
+        ],
+    )
+    persistence_dir = tmp_path / "persist"
+    conversation = Conversation(
+        agent=Agent(
+            llm=TestLLM.from_messages([message]),
+            tools=[],
+            include_default_tools=["FinishTool", "ThinkTool"],
+        ),
+        workspace=str(tmp_path / "workspace"),
+        persistence_dir=str(persistence_dir),
+        visualizer=None,
+        secrets={"TOKEN": secret},
+    )
+    try:
+        conversation.send_message("finish")
+        if use_async:
+            await asyncio.wait_for(conversation.arun(), timeout=5)
+        else:
+            await asyncio.to_thread(conversation.run)
+        action_events = [
+            event
+            for event in conversation.state.events
+            if isinstance(event, ActionEvent)
+        ]
+        status = conversation.state.execution_status
+    finally:
+        await asyncio.to_thread(conversation.close)
+
+    assert len(action_events) == 1
+    assert action_events[0].thought == [TextContent(text="token is <secret-hidden>")]
+    assert action_events[0].reasoning_content == "I will use <secret-hidden>"
+    assert status == ConversationExecutionStatus.FINISHED
+    saved = "\n".join(
+        path.read_text(encoding="utf-8", errors="replace")
+        for path in persistence_dir.rglob("*")
+        if path.is_file()
+    )
+    assert '"ActionEvent"' in saved
+    assert secret not in saved
+
+
+@pytest.mark.asyncio
 async def test_async_response_masks_secrets_registered_during_lookup(tmp_path):
     requested = []
     values = ["first-secret-value", "second-secret-value", "third-secret-value"]

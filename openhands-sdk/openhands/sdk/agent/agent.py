@@ -1258,18 +1258,17 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
 
         message: Message = llm_response.message
         response_type = classify_response(message)
-        if response_type is not LLMResponseType.TOOL_CALLS:
-            # Resolve outside the event loop and state lock. A lookup may call
-            # this server, and update_secrets() may register another source while
-            # we await it. Repeat until the registry is stable under the lock.
-            while True:
-                sources = dict(state.secret_registry.secret_sources)
-                async with conversation._released_state_lock_during_io():
-                    message = await asyncio.to_thread(
-                        self._mask_secrets, message, conversation
-                    )
-                if sources == state.secret_registry.secret_sources:
-                    break
+        # Resolve outside the event loop and state lock. A lookup may call
+        # this server, and update_secrets() may register another source while
+        # we await it. Repeat until the registry is stable under the lock.
+        while True:
+            sources = dict(state.secret_registry.secret_sources)
+            async with conversation._released_state_lock_during_io():
+                message = await asyncio.to_thread(
+                    self._mask_secrets, message, conversation
+                )
+            if sources == state.secret_registry.secret_sources:
+                break
 
         match response_type:
             case LLMResponseType.TOOL_CALLS:
