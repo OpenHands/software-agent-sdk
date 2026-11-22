@@ -560,7 +560,8 @@ RUN set -eux; \
       aarch64) arch=arm64; sha256="${CODE_SERVER_ARM64_SHA256}";; \
       *) echo "Unsupported code-server architecture" >&2; exit 1;; \
     esac; \
-    wget -O /tmp/code-server.tar.gz "https://github.com/coder/code-server/releases/download/v${CODE_SERVER_VERSION}/code-server-${CODE_SERVER_VERSION}-linux-${arch}.tar.gz"; \
+    curl -fsSL --retry 5 --retry-delay 2 --retry-connrefused \
+        -o /tmp/code-server.tar.gz "https://github.com/coder/code-server/releases/download/v${CODE_SERVER_VERSION}/code-server-${CODE_SERVER_VERSION}-linux-${arch}.tar.gz"; \
     echo "${sha256}  /tmp/code-server.tar.gz" | sha256sum -c -; \
     mkdir -p "${CODE_SERVER_ROOT}"; \
     tar -xzf /tmp/code-server.tar.gz -C "${CODE_SERVER_ROOT}" --strip-components=1; \
