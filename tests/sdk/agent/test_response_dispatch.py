@@ -1,6 +1,7 @@
 """Unit tests for LLM response classification and dispatch."""
 
 from collections.abc import Callable
+from typing import Literal
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -295,12 +296,29 @@ def test_content_response_sets_finished():
     assert msg_events[0].source == "agent"
 
 
+@pytest.mark.parametrize("api_mode", ["chat", "responses"])
 @pytest.mark.parametrize("async_run", [False, True])
 @pytest.mark.parametrize("end_turn", [False, True, None])
-async def test_responses_content_follows_explicit_turn_boundary(
-    monkeypatch, async_run: bool, end_turn: bool | None
+async def test_content_follows_explicit_turn_boundary(
+    monkeypatch,
+    api_mode: Literal["chat", "responses"],
+    async_run: bool,
+    end_turn: bool | None,
 ):
-    def response(text: str, **metadata: bool) -> ResponsesAPIResponse:
+    def response(text: str, **metadata: bool) -> ModelResponse | ResponsesAPIResponse:
+        if api_mode == "chat":
+            return ModelResponse.model_validate(
+                {
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": text},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    **metadata,
+                }
+            )
         return ResponsesAPIResponse.model_validate(
             {
                 "id": "response",
@@ -322,9 +340,12 @@ async def test_responses_content_follows_explicit_turn_boundary(
     metadata = {} if end_turn is None else {"end_turn": end_turn}
     replies = [response("Checking the result.", **metadata), response("Verified.")]
     transport = (AsyncMock if async_run else MagicMock)(side_effect=replies)
-    transport_name = "litellm_aresponses" if async_run else "litellm_responses"
+    endpoint = "completion" if api_mode == "chat" else "responses"
+    transport_name = f"litellm_{'a' if async_run else ''}{endpoint}"
     monkeypatch.setattr(f"openhands.sdk.llm.llm.{transport_name}", transport)
-    agent = Agent(llm=LLM(model="openai/gpt-5.2", api_key="test"), tools=[])
+    agent = Agent(
+        llm=LLM(model="openai/gpt-5.2", api_key="test", api_mode=api_mode), tools=[]
+    )
     conversation = Conversation(agent=agent)
     try:
         conversation.send_message("Check the result and report it.")
