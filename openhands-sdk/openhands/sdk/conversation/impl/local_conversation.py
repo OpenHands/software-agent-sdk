@@ -142,6 +142,7 @@ from openhands.sdk.tool import ToolDefinition
 from openhands.sdk.tool.builtins import InvokeSkillTool
 from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.tool.schema import Action, Observation
+from openhands.sdk.trajectory.capture import AdmissionTicket, ShadowCapture, capture_run
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.pydantic_secrets import client_context
 from openhands.sdk.utils.redact import (
@@ -522,6 +523,11 @@ class LocalConversation(BaseConversation):
                 self._state.ambient_plugin_skills = []
                 self._state.ambient_plugin_mcp_servers = []
         self.agent = agent
+        self._trajectory = (
+            ShadowCapture.from_environment(str(desired_id))
+            if not isinstance(agent, ACPAgent)
+            else None
+        )
 
         # Default callback: persist every event to state
         def _default_callback(e):
@@ -530,6 +536,14 @@ class LocalConversation(BaseConversation):
             # regions), so updating state here is thread-safe.
             # Single chokepoint: stamps parent_id (catching any event a hook
             # swapped in downstream of _tree_stamping) and advances HEAD.
+            if self._trajectory is not None:
+                stamped = self._state._stamp_parent_id(e)
+                action_id = (
+                    stamped.action_id
+                    if isinstance(stamped, (ObservationEvent, UserRejectObservation))
+                    else None
+                )
+                self._trajectory.append_event(stamped, action_id=action_id)
             self._state.append_event(e)
 
         def _track_last_user_message(e):
@@ -1052,6 +1066,15 @@ class LocalConversation(BaseConversation):
                 _parent_llm_call_context=self._llm_call_context,
             )
 
+            if fork_conv._trajectory is not None:
+                fork_conv._trajectory.append(
+                    "fork",
+                    {
+                        "parent_conversation_id": str(self._state.id),
+                        "from_event_id": from_event_id,
+                    },
+                )
+
             # Branch slice copies path_to_root(event) (root-first, re-rootable);
             # a full fork copies the whole log and inherits the source's HEAD.
             if from_event_id is not None:
@@ -1064,9 +1087,15 @@ class LocalConversation(BaseConversation):
                 fork_leaf = self._state.leaf_event_id
 
             for event in source_events:
-                fork_conv._state.events.append(
-                    _copy_event_for_fork(event, self._state.events)
-                )
+                copied = _copy_event_for_fork(event, self._state.events)
+                fork_conv._state.events.append(copied)
+                if fork_conv._trajectory is not None:
+                    action_id = (
+                        copied.action_id
+                        if isinstance(copied, (ObservationEvent, UserRejectObservation))
+                        else None
+                    )
+                    fork_conv._trajectory.append_event(copied, action_id=action_id)
             fork_conv._state.leaf_event_id = fork_leaf
             # A full fork inherits the source's empty-HEAD state; a branch slice
             # roots HEAD at a real event (from_event_id), so it is never empty.
@@ -2664,8 +2693,24 @@ class LocalConversation(BaseConversation):
             ConversationRunError: If an error is raised during the run, such
                 as an LLM error.
         """
-        with llm_call_context_scope(self._llm_call_context):
+        with (
+            llm_call_context_scope(self._llm_call_context),
+            capture_run(
+                self._trajectory, self._trajectory_head, self._trajectory_status
+            ),
+        ):
             self._run()
+
+    def _admit_trajectory_run(self) -> AdmissionTicket | None:
+        return self._trajectory.admit() if self._trajectory is not None else None
+
+    def _trajectory_head(self) -> str | None:
+        with self._state:
+            return self._state.leaf_event_id
+
+    def _trajectory_status(self) -> str:
+        with self._state:
+            return self._state.execution_status.value
 
     def _run(self) -> None:
         """Implement :meth:`run` inside the active LLM context scope."""
@@ -2877,7 +2922,12 @@ class LocalConversation(BaseConversation):
         observation is patched with a synthetic ``AgentErrorEvent`` so
         the LLM conversation history stays consistent.
         """
-        with llm_call_context_scope(self._llm_call_context):
+        with (
+            llm_call_context_scope(self._llm_call_context),
+            capture_run(
+                self._trajectory, self._trajectory_head, self._trajectory_status
+            ),
+        ):
             await self._arun()
 
     async def _arun(self) -> None:
@@ -3502,17 +3552,18 @@ class LocalConversation(BaseConversation):
                 ae.id,
                 ae.tool_name,
             )
-            self._on_event(
-                AgentErrorEvent(
-                    error=(
-                        "Tool call interrupted before completion. "
-                        "The conversation was paused."
-                    ),
-                    tool_name=ae.tool_name,
-                    tool_call_id=ae.tool_call_id,
-                    classification=AGENT_OUTCOME,
-                )
+            error = AgentErrorEvent(
+                error=(
+                    "Tool call interrupted before completion. "
+                    "The conversation was paused."
+                ),
+                tool_name=ae.tool_name,
+                tool_call_id=ae.tool_call_id,
+                classification=AGENT_OUTCOME,
             )
+            if self._trajectory is not None:
+                self._trajectory.append_tool_result(ae.id, "cancelled", error)
+            self._on_event(error)
 
     def pause(self) -> None:
         """Pause agent execution.

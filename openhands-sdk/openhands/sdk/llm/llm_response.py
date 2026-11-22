@@ -10,7 +10,7 @@ from typing import ClassVar
 
 from litellm import ResponsesAPIResponse
 from litellm.types.utils import ModelResponse
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, PrivateAttr
 
 from openhands.sdk.llm.message import Message
 from openhands.sdk.llm.utils.metrics import MetricsSnapshot
@@ -42,6 +42,8 @@ class LLMResponse(BaseModel):
     message: Message
     metrics: MetricsSnapshot
     raw_response: ModelResponse | ResponsesAPIResponse
+
+    _trajectory_attempt_id: str | None = PrivateAttr(default=None)
 
     model_config: ClassVar[ConfigDict] = ConfigDict(arbitrary_types_allowed=True)
 

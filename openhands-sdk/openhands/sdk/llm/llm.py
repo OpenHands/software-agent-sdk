@@ -12,6 +12,7 @@ from collections.abc import (
     Awaitable,
     Callable,
     Iterable,
+    Iterator,
     Mapping,
     Sequence,
 )
@@ -67,6 +68,16 @@ from openhands.sdk.llm.utils.runtime_metadata import (
     store_result,
 )
 from openhands.sdk.settings.metadata import SettingProminence, field_meta
+from openhands.sdk.trajectory.capture import (
+    record_async_attempt,
+    record_async_request,
+    record_attempt,
+    record_request,
+    selected_attempt_id,
+    transport_fragment,
+    transport_request,
+    transport_response,
+)
 from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.pydantic_secrets import SecretField
 
@@ -1391,11 +1402,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             session = self.session
         first_choice = resp["choices"][0]
         message = Message.from_llm_chat_message(first_choice["message"])
-        return LLMResponse(
+        result = LLMResponse(
             message=message,
             metrics=session.metrics.get_snapshot(),
             raw_response=resp,
         )
+        result._trajectory_attempt_id = selected_attempt_id()
+        return result
 
     def _build_responses_result(
         self, resp: ResponsesAPIResponse, session: LLMSession | None = None
@@ -1404,11 +1417,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if session is None:
             session = self.session
         message = Message.from_llm_responses_output(resp.output)
-        return LLMResponse(
+        result = LLMResponse(
             message=message,
             metrics=session.metrics.get_snapshot(),
             raw_response=resp,
         )
+        result._trajectory_attempt_id = selected_attempt_id()
+        return result
 
     def _build_responses_call_kwargs(
         self,
@@ -1950,6 +1965,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # Chat Completion API
     # =========================================================================
 
+    @record_request
     def completion(
         self,
         messages: list[Message],
@@ -2016,6 +2032,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         )
 
         @self._make_retry_decorator()
+        @record_attempt
         def _one_attempt(**retry_kwargs: Any) -> ModelResponse:
             session.telemetry.on_request(telemetry_ctx=telemetry_ctx)
             final_kwargs = {**call_kwargs, **retry_kwargs}
@@ -2086,6 +2103,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # =========================================================================
     # Async Chat Completion API
     # =========================================================================
+    @record_async_request
     async def acompletion(
         self,
         messages: list[Message],
@@ -2138,6 +2156,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         )
 
         @self._make_retry_decorator()
+        @record_async_attempt
         @self._async_hard_timeout_decorator()
         async def _one_attempt(**retry_kwargs: Any) -> ModelResponse:
             session.telemetry.on_request(telemetry_ctx=telemetry_ctx)
@@ -2215,6 +2234,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # =========================================================================
     # Responses API (v1)
     # =========================================================================
+    @record_request
     def responses(
         self,
         messages: list[Message],
@@ -2284,15 +2304,18 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         )
 
         @self._make_retry_decorator()
+        @record_attempt
         def _one_attempt(**retry_kwargs: Any) -> ResponsesAPIResponse:
             session.telemetry.on_request(telemetry_ctx=telemetry_ctx)
             final_kwargs = {**call_kwargs, **retry_kwargs}
             litellm_kwargs = self._build_responses_call_kwargs(
                 input_items, instructions, resp_tools, final_kwargs
             )
+            transport_request("responses", litellm_kwargs)
             ret = litellm_responses(**litellm_kwargs)
 
             if isinstance(ret, ResponsesAPIResponse):
+                transport_response(ret)
                 if user_enable_streaming:
                     logger.warning(
                         "Responses streaming was requested, but the "
@@ -2321,7 +2344,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 completed_response = get_completed_response(ret)
                 if not isinstance(ret, Iterable):
                     raise TypeError(f"Expected a response stream, got {type(ret)}")
-                for event in response_events(ret):
+                for event in response_events(self._capture_fragments(ret)):
                     if isinstance(event, ResponseCompletedEvent):
                         completed_response = event
                     output_item, delta_chunk = self._process_stream_event(
@@ -2333,9 +2356,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         stream_callback(delta_chunk)
 
                 completed_response = get_completed_response(ret, completed_response)
-                return self._finalize_stream_response(
+                response = self._finalize_stream_response(
                     completed_response, collected_output_items, session
                 )
+                transport_response(response)
+                return response
 
             raise AssertionError(f"Expected ResponsesAPIResponse, got {type(ret)}")
 
@@ -2396,6 +2421,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # =========================================================================
     # Async Responses API
     # =========================================================================
+    @record_async_request
     async def aresponses(
         self,
         messages: list[Message],
@@ -2451,6 +2477,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         )
 
         @self._make_retry_decorator()
+        @record_async_attempt
         @self._async_hard_timeout_decorator()
         async def _one_attempt(
             **retry_kwargs: Any,
@@ -2465,9 +2492,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 final_kwargs,
                 auth_values=auth_values,
             )
+            transport_request("responses", litellm_kwargs)
             ret = await litellm_aresponses(**litellm_kwargs)
 
             if isinstance(ret, ResponsesAPIResponse):
+                transport_response(ret)
                 if user_enable_streaming:
                     logger.warning(
                         "Responses streaming was requested, but the "
@@ -2497,7 +2526,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 completed_response = get_completed_response(ret)
                 if isinstance(ret, AsyncIterable):
                     async for event in async_response_events(
-                        self._aiter_with_idle_timeout(ret)
+                        self._acapture_fragments(self._aiter_with_idle_timeout(ret))
                     ):
                         if isinstance(event, ResponseCompletedEvent):
                             completed_response = event
@@ -2511,9 +2540,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 else:
                     if not isinstance(ret, Iterable):
                         raise TypeError(f"Expected a response stream, got {type(ret)}")
-                    loop = asyncio.get_running_loop()
-                    events = await loop.run_in_executor(
-                        None, list, response_events(ret)
+                    events = await asyncio.to_thread(
+                        list, response_events(self._capture_fragments(ret))
                     )
                     for event in events:
                         if isinstance(event, ResponseCompletedEvent):
@@ -2527,9 +2555,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                             await _invoke_token_callback(stream_cb, delta_chunk)
 
                 completed_response = get_completed_response(ret, completed_response)
-                return self._finalize_stream_response(
+                response = self._finalize_stream_response(
                     completed_response, collected_output_items, session
                 )
+                transport_response(response)
+                return response
 
             raise AssertionError(f"Expected ResponsesAPIResponse, got {type(ret)}")
 
@@ -2730,6 +2760,18 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         }
 
     @staticmethod
+    def _capture_fragments(events: Iterable[_T]) -> Iterator[_T]:
+        for event in events:
+            transport_fragment(event)
+            yield event
+
+    @staticmethod
+    async def _acapture_fragments(events: AsyncIterable[_T]) -> AsyncIterator[_T]:
+        async for event in events:
+            transport_fragment(event)
+            yield event
+
+    @staticmethod
     def _combine_chat_stream(
         chunks: list[ModelResponseStream], messages: list[dict[str, Any]]
     ) -> ModelResponse:
@@ -2759,17 +2801,17 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             self.timeout,
             asynchronous=False,
         ) as guarded:
-            ret = litellm_completion(
-                **self._prepare_transport_kwargs(
-                    messages=messages,
-                    enable_streaming=enable_streaming,
-                    **{**kwargs, **guarded},
-                )
+            transport_kwargs = self._prepare_transport_kwargs(
+                messages=messages,
+                enable_streaming=enable_streaming,
+                **{**kwargs, **guarded},
             )
+            transport_request("chat", transport_kwargs)
+            ret = litellm_completion(**transport_kwargs)
             if enable_streaming and on_token is not None:
                 chunks: list[ModelResponseStream] = []
                 stream = cast(Iterable[ModelResponseStream], ret)
-                for chunk in stream:
+                for chunk in self._capture_fragments(stream):
                     on_token(chunk)
                     chunks.append(chunk)
                 ret = self._combine_chat_stream(chunks, messages)
@@ -2777,6 +2819,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             assert isinstance(ret, ModelResponse), (
                 f"Expected ModelResponse, got {type(ret)}"
             )
+            transport_response(ret)
             return ret
 
     async def _atransport_call(
@@ -2797,14 +2840,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             asynchronous=True,
         ) as guarded:
             try:
-                ret = await litellm_acompletion(
-                    **self._prepare_transport_kwargs(
-                        messages=messages,
-                        enable_streaming=enable_streaming,
-                        auth_values=auth_values,
-                        **{**kwargs, **guarded},
-                    )
+                transport_kwargs = self._prepare_transport_kwargs(
+                    messages=messages,
+                    enable_streaming=enable_streaming,
+                    auth_values=auth_values,
+                    **{**kwargs, **guarded},
                 )
+                transport_request("chat", transport_kwargs)
+                ret = await litellm_acompletion(**transport_kwargs)
 
                 if enable_streaming and on_token is not None:
                     chunks: list[ModelResponseStream] = []
@@ -2812,15 +2855,17 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     # back a plain sync generator from ``litellm_acompletion``
                     if isinstance(ret, AsyncIterable):
                         stream = cast(AsyncIterable[ModelResponseStream], ret)
-                        async for chunk in self._aiter_with_idle_timeout(stream):
+                        async for chunk in self._acapture_fragments(
+                            self._aiter_with_idle_timeout(stream)
+                        ):
                             await _invoke_token_callback(on_token, chunk)
                             chunks.append(chunk)
                     else:
-                        loop = asyncio.get_running_loop()
-                        synced_chunks: list[
-                            ModelResponseStream
-                        ] = await loop.run_in_executor(
-                            None, list, cast(Iterable[ModelResponseStream], ret)
+                        synced_chunks = await asyncio.to_thread(
+                            list,
+                            self._capture_fragments(
+                                cast(Iterable[ModelResponseStream], ret)
+                            ),
                         )
                         for chunk in synced_chunks:
                             await _invoke_token_callback(on_token, chunk)
@@ -2830,6 +2875,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 assert isinstance(ret, ModelResponse), (
                     f"Expected ModelResponse, got {type(ret)}"
                 )
+                transport_response(ret)
                 return ret
 
             finally:

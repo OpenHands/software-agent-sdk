@@ -23,6 +23,7 @@ import contextvars
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
+from uuid import uuid4
 
 from openhands.sdk.conversation.cancellation import CancellationToken
 from openhands.sdk.conversation.resource_lock_manager import ResourceLockManager
@@ -31,10 +32,11 @@ from openhands.sdk.event.error_classification import (
     ErrorClassification,
     FailureKind,
 )
-from openhands.sdk.event.llm_convertible import AgentErrorEvent
+from openhands.sdk.event.llm_convertible import AgentErrorEvent, ObservationEvent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import record_tool_result
 from openhands.sdk.observability.utils import extract_action_name
+from openhands.sdk.trajectory.capture import active_capture
 
 
 if TYPE_CHECKING:
@@ -303,13 +305,42 @@ class ParallelToolExecutor:
         - ``declared=True``, empty keys → no locking.
         - ``declared=True``, keys present → lock those resources.
         """
-        if cancel_token is not None and cancel_token.is_cancelled:
-            logger.info(
-                "Skipping tool '%s' -- cancelled before execution",
-                action.tool_name,
-            )
-            return self._cancelled_error(action, span_owner)
+        capture = active_capture()
+        execution_id = None
+        cancelled = cancel_token is not None and cancel_token.is_cancelled
+        if cancelled:
+            results = self._cancelled_error(action, span_owner)
+        else:
+            if capture is not None:
+                execution_id = uuid4().hex
+                capture.append(
+                    "tool_start", {"action_id": action.id, "execution_id": execution_id}
+                )
+            results = self._run_locked(action, tool_runner, tool)
+        if capture is not None:
+            for result in results:
+                if isinstance(result, (AgentErrorEvent, ObservationEvent)):
+                    status = (
+                        "cancelled"
+                        if cancelled
+                        else (
+                            "success"
+                            if isinstance(result, ObservationEvent)
+                            and not result.observation.is_error
+                            else "error"
+                        )
+                    )
+                    capture.append_tool_result(
+                        action.id, status, result, execution_id=execution_id
+                    )
+        return results
 
+    def _run_locked(
+        self,
+        action: ActionEvent,
+        tool_runner: Callable[[ActionEvent], list[Event]],
+        tool: ToolDefinition | None,
+    ) -> list[Event]:
         try:
             if tool is None:
                 return tool_runner(action)
