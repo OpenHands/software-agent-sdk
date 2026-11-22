@@ -78,7 +78,7 @@ workers on `POST .../children` (F04), and the server-owned tags on a start
 - `F36.auto-resolve`: the resolution judge, on the `resolution_judge` LLM profile the first judged turn creates from the conversation's LLM, resolves a member's plain answer (`resolved=auto`, `resolvenote` like `1.00 nothing`, shown as `resolve_note`) and makes a hand-off `turn=asking` with the reply's last paragraph as `ask`; over that question the member's `{"by": "agent"}` resolve is 409 and a coordinator's message leaves it asking.
 - `F36.needs-you`: a turn that leaves part of the task undone, with no question, is `finished` and not resolved; once the rest is done the judge resolves it.
 - `F36.judge-failed`: when the resolution judge fails (its `resolution_judge` profile cannot reach a model), a member's finished turn is `turn=asking` with the reply's last paragraph as `ask`, listed as `asking`, and is not resolved.
-- `F36.pull-requests`: when a member's agent runs `gh pr create` and the command prints a GitHub pull request URL, the server adds `owner/repo#number` to its `prs` tag, oldest first, kept across turns; `GET .../conversations` reports it as `pull_requests` (`{owner, repo, number}`). A URL printed by another command is not recorded, and a client's tag `PATCH` cannot change `prs`.
+- `F36.pull-requests`: when a member's agent runs `gh pr create` (or a tool named `create_pull_request`) and the result prints a GitHub pull request URL, the server adds `owner/repo#number` to its `prs` tag, oldest first, kept across turns; `GET .../conversations` reports it as `pull_requests` (`{owner, repo, number}`). A URL printed by another command is not recorded, and a client's tag `PATCH` cannot change `prs`.
 - `F36.self-resolve`: a member with `resolve_conversation` resolves its own conversation when nothing is left, such as after the user's "merged": `POST .../resolve` with `{"by": "agent"}` answers 202 at once (the agent is inside its own tool call, which holds the state lock) and sets `resolved=auto` and `resolvenote=agent`, never over the user's `resolved=user`, and the resolution judge does not run on that turn.
 - `F36.artifacts-rest`: a project's artifacts can be uploaded (multipart), listed with `source: user`, downloaded byte for byte and deleted; unsafe names are 400. `POST .../artifacts/from-conversation` copies a member's workspace file as `source: agent` with that conversation's id; a path outside its workspace is 400 and a conversation outside the project 404.
 - `F36.artifacts-tool`: a member with `write_artifact` saves a file from its workspace; the list shows it with `source: agent` and the conversation's id, and a path outside the workspace is refused. With `list_artifacts` and `read_artifact` it sees the project's files and reads one: small UTF-8 text inline, anything else copied into its workspace (`.agent_tmp/artifacts/<name>` unless it names a path inside the workspace).
@@ -109,8 +109,9 @@ workers on `POST .../children` (F04), and the server-owned tags on a start
 - REST: `GET /api/projects/{project_id}/conversations` returns
   `{"project_id", "coordinator": ProjectConversation | null, "conversations": [ProjectConversation]}`
   where a conversation is `{conversation_id, title, execution_status, attention,
-  resolved, turn, automation_id, parent_conversation_id, created_at,
-  updated_at}`. `attention` is `needs_you`, `asking`, `working`,
+  resolved, turn, automation_id, parent_conversation_id, pull_requests,
+  created_at, updated_at}`. `pull_requests` lists `{owner, repo, number}`
+  from the server-owned `prs` tag. `attention` is `needs_you`, `asking`, `working`,
   `idle` (finished or never run, not resolved) or `resolved`.
 - Tags the server sets on project members (`openhands.agent_server.project_board`):
   `turn=asking|finished` when a run finishes, and `resolved=auto` plus
