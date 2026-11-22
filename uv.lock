@@ -2824,7 +2824,7 @@ requires-dist = [
     { name = "openai", specifier = ">=2.33.0,<3" },
     { name = "openhands-sdk", editable = "openhands-sdk" },
     { name = "openhands-tools", editable = "openhands-tools" },
-    { name = "posthog", marker = "extra == 'posthog'", specifier = ">=7.87.1,<8" },
+    { name = "posthog", marker = "extra == 'posthog'", specifier = ">=7.91.1,<8" },
     { name = "pydantic", specifier = ">=2.14.3" },
     { name = "sqlalchemy", specifier = ">=2.1.8" },
     { name = "uvicorn", specifier = ">=0.54.0" },
@@ -3338,7 +3338,7 @@ wheels = [
 
 [[package]]
 name = "posthog"
-version = "7.87.1"
+version = "7.91.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "backoff" },
@@ -3346,9 +3346,9 @@ dependencies = [
     { name = "requests" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ad/67/f07a25f7aa8d1a517dbfea23bd02ed37076d0efb743231bb2351a8887c14/posthog-7.87.1.tar.gz", hash = "sha256:613c4dcd3410f862c9d4d52d10a8d6d305cfa9ade560ab494503175e67b5dd81", size = 936593, upload-time = "2026-11-11T18:11:31.535Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d0/50/1acd1a03d0fb49b5b9c7617ec1eec7df86edf475538dec4e18d906166cab/posthog-7.91.1.tar.gz", hash = "sha256:e4b3d34854860d814c04b276057c52282bab8fa0d1636d01e44868b32037649c", size = 1000112, upload-time = "2026-11-13T14:22:48.829Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ca/93/8d1757751b842aa0981843d22eca36cad0e15898cb7415c681fb3f6c60e3/posthog-7.87.1-py3-none-any.whl", hash = "sha256:9e7cd5d0635a14ee1d947cb7b6ffbd0c52451a6c1d79ea0a65b2bc9839b5c321", size = 1081630, upload-time = "2026-11-11T18:11:29.494Z" },
+    { url = "https://files.pythonhosted.org/packages/89/1f/90c26e72e23cfae827dcff7a76ecad623f1a447d613079fbd0bc1c345c06/posthog-7.91.1-py3-none-any.whl", hash = "sha256:22ce67d6ea2adb523920edb00033a8c49377704c523513f6afe168eded5e0b98", size = 1150356, upload-time = "2026-11-13T14:22:46.537Z" },
 ]
 
 [[package]]
