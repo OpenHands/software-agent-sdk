@@ -12,6 +12,7 @@ Usage: switching.py MODE
   tool           the switch_llm tool (sync run, or `tool-async` for arun)
   route          route_task_to_model with structured classes and errors
   route-direct   route_task_to_model with a direct prompt template
+  route-router   route_task_to_model on a RouterLLM agent: pins a route
 """
 
 import asyncio
@@ -444,6 +445,83 @@ elif mode in ("route", "route-direct"):
                 observations(conversation)[0] if observations(conversation) else None
             )
             conversation.close()
+
+elif mode == "route-router":
+    # The agent LLM is a RouterLLM: the classifier picks one of the router's
+    # route names (or a unique underlying model) and the tool pins that route,
+    # keeping the router as the conversation LLM.
+    from openhands.sdk.llm import RouterLLM
+    from openhands.sdk.llm.meta_profile_store import MetaProfile, MetaProfileClass
+
+    route = {"tool": "route_task_to_model", "args": {}}
+
+    def router_run(reply: str) -> dict:
+        with (
+            FakeProvider([route, {"finish": "gave up"}]) as planner,
+            FakeProvider([{"text": reply}]) as classifier,
+            FakeProvider([{"finish": "done on strong"}]) as strong,
+        ):
+            store.save(
+                "classifier",
+                fake_llm(classifier, "classifier", "openai/gpt-4o-mini"),
+                include_secrets=True,
+            )
+            router = RouterLLM(
+                usage_id="router",
+                llms_for_routing={
+                    "planner": fake_llm(planner, "route-planner", "openai/gpt-4o-mini"),
+                    "strong": fake_llm(strong, "route-strong", "openai/gpt-4.1"),
+                },
+            )
+            meta = MetaProfile(
+                classifier_model="classifier",
+                classes=[
+                    MetaProfileClass(description="hard debugging", model="strong")
+                ],
+            )
+            agent = Agent(
+                llm=router,
+                tools=[
+                    Tool(
+                        name="ClassifyAndSwitchLLMTool",
+                        params={
+                            "active_meta_profile": "router",
+                            "meta_profile": meta.model_dump(mode="json"),
+                        },
+                    )
+                ],
+            )
+            conversation = Conversation(
+                agent=agent, workspace=WORKSPACE, visualizer=None
+            )
+            conversation.send_message("Debug this hard failure on the right route.")
+            conversation.run()
+            prompt = (
+                json.dumps(classifier.requests[0]["body"])
+                if classifier.requests
+                else ""
+            )
+            llm = conversation.agent.llm
+            row = {
+                "status": conversation.state.execution_status.value,
+                "agent_llm": type(llm).__name__,
+                "selection": llm.status().selection.model_dump(mode="json")
+                if isinstance(llm, RouterLLM)
+                else None,
+                "requests": {
+                    "planner": len(planner.requests),
+                    "classifier": len(classifier.requests),
+                    "strong": len(strong.requests),
+                },
+                "classifier_saw_routes": "- planner" in prompt and "- strong" in prompt,
+                "observation": (observations(conversation) or [None])[0],
+            }
+            conversation.close()
+            return row
+
+    out["by_route"] = router_run('{"route": "strong", "reason": "hard"}')
+    out["by_model"] = router_run('{"model": "openai/gpt-4.1"}')
+    out["unknown"] = router_run('{"route": "nonexistent"}')
 
 else:
     raise SystemExit(f"unknown mode {mode}")
