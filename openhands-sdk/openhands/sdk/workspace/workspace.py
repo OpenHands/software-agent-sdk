@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Self, overload
 
 from openhands.sdk.logger import get_logger
@@ -21,7 +22,7 @@ class Workspace:
     def __new__(
         cls: type[Self],
         *,
-        working_dir: str = "workspace/project",
+        working_dir: str | Path = "workspace/project",
     ) -> LocalWorkspace: ...
 
     @overload
@@ -29,7 +30,7 @@ class Workspace:
         cls: type[Self],
         *,
         host: str,
-        working_dir: str = "workspace/project",
+        working_dir: str | Path = "workspace/project",
         api_key: str | None = None,
     ) -> RemoteWorkspace: ...
 
@@ -37,7 +38,7 @@ class Workspace:
         cls: type[Self],
         *,
         host: str | None = None,
-        working_dir: str = "workspace/project",
+        working_dir: str | Path = "workspace/project",
         api_key: str | None = None,
     ) -> BaseWorkspace:
         if host:
