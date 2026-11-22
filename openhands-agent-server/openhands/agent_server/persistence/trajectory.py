@@ -4,7 +4,8 @@ from pathlib import Path
 
 from pydantic import TypeAdapter
 
-from openhands.sdk.trajectory.archive import (
+from openhands.agent_server.persistence.trajectory_archive import (
+    DirectoryStore,
     ObjectRef,
     ObjectStore,
     coverage,
@@ -12,9 +13,7 @@ from openhands.sdk.trajectory.archive import (
     read_segments,
     seal_journal,
 )
-from openhands.sdk.trajectory.journal import Journal
-from openhands.sdk.trajectory.stores import DirectoryStore, GCSStore
-from openhands.sdk.trajectory.validation import (
+from openhands.agent_server.persistence.trajectory_validation import (
     Admission,
     CandidateSource,
     compare,
@@ -22,14 +21,16 @@ from openhands.sdk.trajectory.validation import (
     select,
     verify_candidate,
 )
+from openhands.sdk.observability.trajectory_journal import Journal
 
 
 def _store(location: str) -> ObjectStore:
-    return (
-        GCSStore(location)
-        if location.startswith("gs://")
-        else DirectoryStore(Path(location))
-    )
+    if not location.startswith("gs://"):
+        return DirectoryStore(Path(location))
+
+    from openhands.agent_server.persistence.trajectory_gcs import GCSStore
+
+    return GCSStore(location)
 
 
 def main() -> None:

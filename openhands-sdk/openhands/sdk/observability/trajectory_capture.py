@@ -7,14 +7,18 @@ from dataclasses import dataclass, field
 from functools import wraps
 from pathlib import Path
 from threading import Lock
-from typing import Any, Literal
+from typing import Any
 from uuid import uuid4
 
 from pydantic import BaseModel
 
 from openhands.sdk.logger import get_logger
-from openhands.sdk.trajectory.evidence import boundary_evidence
-from openhands.sdk.trajectory.journal import Journal, encode
+from openhands.sdk.observability.trajectory_journal import (
+    Journal,
+    Origin,
+    boundary_evidence,
+    encode,
+)
 
 
 logger = get_logger(__name__)
@@ -88,7 +92,6 @@ _EXTRA_BODY_FIELDS = {
     "thinking",
     "reasoning",
 }
-Origin = Literal["interactive", "automation", "evaluation", "unknown"]
 
 
 class ShadowCapture:

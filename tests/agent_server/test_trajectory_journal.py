@@ -1,17 +1,42 @@
 import asyncio
+import gzip
 import os
 import signal
 import subprocess
 import sys
 import threading
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 from uuid import uuid4
 
 import pytest
+from google.api_core.exceptions import NotFound, ServiceUnavailable
+from google.cloud import storage
 from litellm import ModelResponse
 from litellm.exceptions import RateLimitError
 from pydantic import SecretStr
 
+from openhands.agent_server.persistence.trajectory_archive import (
+    ArchiveGap,
+    DirectoryStore,
+    ObjectRef,
+    coverage,
+    read_seal,
+    read_segments,
+    seal_journal,
+)
+from openhands.agent_server.persistence.trajectory_gcs import GCSStore
+from openhands.agent_server.persistence.trajectory_validation import (
+    Admission,
+    Candidate,
+    CandidateSource,
+    LegacyInventory,
+    compare,
+    read_witness,
+    select,
+    verify_candidate,
+)
 from openhands.sdk import Agent, LocalConversation
 from openhands.sdk.agent.parallel_executor import ParallelToolExecutor
 from openhands.sdk.event import (
@@ -22,28 +47,13 @@ from openhands.sdk.event import (
     UserRejectObservation,
 )
 from openhands.sdk.llm import LLM, Message, MessageToolCall, TextContent
+from openhands.sdk.observability.trajectory_capture import (
+    ShadowCapture,
+    capture_run,
+    use_admission,
+)
+from openhands.sdk.observability.trajectory_journal import Journal, encode
 from openhands.sdk.tool.builtins.think import ThinkObservation
-from openhands.sdk.trajectory.archive import (
-    ArchiveGap,
-    ObjectRef,
-    coverage,
-    read_seal,
-    read_segments,
-    seal_journal,
-)
-from openhands.sdk.trajectory.capture import ShadowCapture, capture_run, use_admission
-from openhands.sdk.trajectory.journal import Journal, encode
-from openhands.sdk.trajectory.stores import DirectoryStore, GCSStore, _MissingObject
-from openhands.sdk.trajectory.validation import (
-    Admission,
-    Candidate,
-    CandidateSource,
-    LegacyInventory,
-    compare,
-    read_witness,
-    select,
-    verify_candidate,
-)
 
 
 def _records(journal: Journal, root: Path):
@@ -277,7 +287,9 @@ def test_sigkill_recovers_acknowledged_prefix(tmp_path):
             """
 import sys, time
 from pathlib import Path
-from openhands.sdk.trajectory.journal import Journal, encode
+from types import SimpleNamespace
+from unittest.mock import Mock
+from openhands.sdk.observability.trajectory_journal import Journal, encode
 journal = Journal(Path(sys.argv[1]), "conversation")
 journal.append("run_start", {}, run_id="run")
 journal.append("attempt_start", {
@@ -330,32 +342,46 @@ def test_archive_retries_and_missing_objects(tmp_path):
 def test_gcs_reuses_identical_object_after_lost_ack(tmp_path, monkeypatch):
     writes = {}
     missing = False
+    bucket = Mock()
 
-    def gcloud(command, *args, data=None):
-        if command == "cp":
-            assert args[0] == "--if-generation-match=0"
-            writes.setdefault(args[-1], data)
-            raise OSError("lost acknowledgement")
-        if command == "objects":
-            if args[1] not in writes:
-                raise _MissingObject("404")
-            return b"7"
-        assert command == "cat"
-        url, _, generation = args[0].rpartition("#")
-        assert generation == "7"
-        if missing:
-            raise OSError("404")
-        return writes[url]
+    def get_blob(name):
+        if name in writes:
+            return SimpleNamespace(generation=writes[name][0])
+        return None
 
-    monkeypatch.setattr(GCSStore, "_gcloud", staticmethod(gcloud))
+    def blob(name, *, generation=None):
+        def upload(data, *, if_generation_match):
+            assert if_generation_match == writes.get(name, (0, b""))[0]
+            writes[name] = (len(writes) + 1, data)
+            raise ServiceUnavailable("lost acknowledgment")
+
+        def download(*, raw_download, if_generation_match):
+            assert raw_download
+            assert generation == if_generation_match == writes[name][0]
+            if missing:
+                raise NotFound("generation missing")
+            return writes[name][1]
+
+        return SimpleNamespace(
+            upload_from_string=upload,
+            download_as_bytes=download,
+        )
+
+    bucket.get_blob.side_effect = get_blob
+    bucket.blob.side_effect = blob
+    monkeypatch.setattr(storage, "Client", lambda: Mock(bucket=lambda _: bucket))
     store = GCSStore("gs://private/test")
     journal = Journal(tmp_path, "conversation")
     journal.append("run_start", {}, run_id="one")
     ref = seal_journal(journal, store)
     snapshot = read_seal(store, ref)
-    assert snapshot.segments[0].object.generation == "7"
+    assert snapshot.segments[0].object.generation == "1"
+    journal.append("run_end", {"status": "finished"}, run_id="one")
+    current = read_seal(store, seal_journal(journal, store))
+    assert current.segments[0] == snapshot.segments[0]
+    assert current.runs == {"one": "finished"}
     missing = True
-    with pytest.raises(ArchiveGap, match="generation 7"):
+    with pytest.raises(ArchiveGap, match="generation 1"):
         list(read_segments(store, snapshot))
 
 
@@ -467,3 +493,47 @@ def test_candidate_requires_verified_native_bytes(tmp_path):
     missing = verify_candidate(store, source, "conversation")
     assert missing.gaps and not missing.evidence
     assert select(admission, [missing]) == (None, "missing_verified_evidence")
+
+
+def test_publish_recovers_interrupted_initialization_and_rejects_deleted_head(tmp_path):
+    journal = Journal(tmp_path / "spool", "conversation")
+    journal.append("run_start", {}, run_id="run")
+    root = tmp_path / "archive"
+
+    class InterruptedPublish(DirectoryStore):
+        def put(self, key, data):
+            if key.endswith("/published.json"):
+                raise OSError("publisher stopped before acknowledgment")
+            return super().put(key, data)
+
+    with pytest.raises(OSError, match="before acknowledgment"):
+        seal_journal(journal, InterruptedPublish(root))
+    store = DirectoryStore(root)
+    ref = seal_journal(journal, store)
+    (root / "shadow/v1/conversation/head.json").unlink()
+    with pytest.raises(ArchiveGap, match="acknowledged archive head is missing"):
+        seal_journal(journal, store)
+    assert read_seal(store, ref).through == 1
+
+
+def test_recover_deleted_segment_even_when_gzip_output_changes(tmp_path, monkeypatch):
+    journal = Journal(tmp_path / "spool", "conversation")
+    journal.append("run_start", {}, run_id="run")
+    root = tmp_path / "archive"
+    store = DirectoryStore(root)
+    original = read_seal(store, seal_journal(journal, store))
+    (segment,) = original.segments
+    expected = list(read_segments(store, original))
+
+    gzip_file = gzip.GzipFile
+
+    def recompress(*args, **kwargs):
+        return gzip_file(*args, **kwargs, compresslevel=1)
+
+    monkeypatch.setattr(gzip, "GzipFile", recompress)
+    (root / segment.object.key).unlink()
+    recovered = read_seal(store, seal_journal(journal, store))
+    (replacement,) = recovered.segments
+    assert replacement.content_sha256 == segment.content_sha256
+    assert replacement.object.sha256 != segment.object.sha256
+    assert list(read_segments(store, recovered)) == expected

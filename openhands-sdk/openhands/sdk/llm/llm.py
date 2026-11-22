@@ -67,8 +67,7 @@ from openhands.sdk.llm.utils.runtime_metadata import (
     resolve_provider_metadata_sync,
     store_result,
 )
-from openhands.sdk.settings.metadata import SettingProminence, field_meta
-from openhands.sdk.trajectory.capture import (
+from openhands.sdk.observability.trajectory_capture import (
     record_async_attempt,
     record_async_request,
     record_attempt,
@@ -78,6 +77,7 @@ from openhands.sdk.trajectory.capture import (
     transport_request,
     transport_response,
 )
+from openhands.sdk.settings.metadata import SettingProminence, field_meta
 from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.pydantic_secrets import SecretField
 

@@ -109,6 +109,11 @@ from openhands.sdk.observability.laminar import (
     observe,
     record_tool_result,
 )
+from openhands.sdk.observability.trajectory_capture import (
+    AdmissionTicket,
+    ShadowCapture,
+    capture_run,
+)
 from openhands.sdk.observability.utils import extract_action_name
 from openhands.sdk.plugin import (
     Plugin,
@@ -142,7 +147,6 @@ from openhands.sdk.tool import ToolDefinition
 from openhands.sdk.tool.builtins import InvokeSkillTool
 from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.tool.schema import Action, Observation
-from openhands.sdk.trajectory.capture import AdmissionTicket, ShadowCapture, capture_run
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.pydantic_secrets import client_context
 from openhands.sdk.utils.redact import (

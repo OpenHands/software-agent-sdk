@@ -92,13 +92,13 @@ if TYPE_CHECKING:
     from openhands.sdk.llm.llm import LLMCallContext
     from openhands.sdk.tool import ToolDefinition
 from openhands.sdk.mcp.tool import MCPToolDefinition
+from openhands.sdk.observability.trajectory_capture import active_capture
 from openhands.sdk.tool.builtins import (
     FinishAction,
     FinishTool,
     ThinkAction,
 )
 from openhands.sdk.tool.builtins.vision_inspect import VISION_INSPECT_TOOL_NAME
-from openhands.sdk.trajectory.capture import active_capture
 
 
 logger = get_logger(__name__)

@@ -39,16 +39,17 @@ data stay in the `shadow/v1` namespace.
 
 ```bash
 export OPENHANDS_SUPPRESS_BANNER=1
-python -m openhands.sdk.trajectory seal "$SPOOL" "$CONVERSATION" "$STORE" > seal.json
-python -m openhands.sdk.trajectory witness "$WITNESS" "$CONVERSATION" \
+python -m openhands.agent_server.persistence.trajectory seal "$SPOOL" "$CONVERSATION" "$STORE" > seal.json
+python -m openhands.agent_server.persistence.trajectory witness "$WITNESS" "$CONVERSATION" \
   --origin interactive --admitted-runs admitted-run-ids.json > admission.json
-python -m openhands.sdk.trajectory compare "$STORE" seal.json admission.json \
+python -m openhands.agent_server.persistence.trajectory compare "$STORE" seal.json admission.json \
   --legacy verified-legacy.json > comparison.json
 ```
 
-`STORE` is a local directory or a `gs://` prefix. The GCS path uses the
-Google Cloud CLI. The witness command can derive admitted runs from Agent
-Server when there is no external run list. The pilot also needs a Cloud
+`STORE` is a local directory or a `gs://` prefix. For GCS, install
+`openhands-agent-server[trajectory-gcs]` and configure Application Default
+Credentials for the worker. The witness command can derive admitted runs
+from Agent Server when there is no external run list. The pilot also needs a Cloud
 enrollment inventory to detect conversations missing from both stores and
 the witness. Only a comparison supplied with independent run IDs can report
 shadow eligibility. The SDK records provider options it cannot safely
@@ -62,7 +63,11 @@ The first line contains the seal and its reference. A consumer must require
 the full sequence through that watermark and a successful process exit.
 After losing a pinned generation, recover from the retained spool
 or another copy with matching bytes. A replacement object generation gets
-a new seal reference.
+a new seal reference. Seals also record a checksum of the uncompressed
+records so compression changes can be verified independently of object bytes.
+If the archive head disappears after publication, the uploader stops. Use the
+platform's retained acknowledgment to restore the latest verified head before
+resuming uploads.
 
 Archive each comparison with the admission inventory. Measure the admitted
 run denominator, explained and unexplained gaps by boundary, sequence

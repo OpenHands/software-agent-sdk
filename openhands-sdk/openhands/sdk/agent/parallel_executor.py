@@ -35,8 +35,8 @@ from openhands.sdk.event.error_classification import (
 from openhands.sdk.event.llm_convertible import AgentErrorEvent, ObservationEvent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import record_tool_result
+from openhands.sdk.observability.trajectory_capture import active_capture
 from openhands.sdk.observability.utils import extract_action_name
-from openhands.sdk.trajectory.capture import active_capture
 
 
 if TYPE_CHECKING:

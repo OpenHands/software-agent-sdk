@@ -110,9 +110,9 @@ from openhands.sdk.io import LocalFileStore
 from openhands.sdk.llm.streaming import LLMStreamChunk
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.mcp.utils import MCPToolProvider
+from openhands.sdk.observability.trajectory_capture import use_admission
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
-from openhands.sdk.trajectory.capture import use_admission
 from openhands.sdk.utils.async_utils import AsyncCallbackWrapper
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.files import atomic_write_text

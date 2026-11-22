@@ -1,21 +1,27 @@
 import gzip
+import hashlib
 import json
+import os
+import zlib
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from pathlib import Path
-from tempfile import TemporaryDirectory
+from pathlib import Path, PurePosixPath
+from tempfile import NamedTemporaryFile, TemporaryDirectory
 from typing import Annotated, Any, Literal, Protocol
 
+from filelock import FileLock
 from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt, PositiveInt
 
-from openhands.sdk.trajectory.evidence import boundary_evidence, model_input
-from openhands.sdk.trajectory.journal import (
+from openhands.sdk.observability.trajectory_journal import (
     SCHEMA_VERSION,
     Journal,
     Record,
+    boundary_evidence,
     digest,
     encode,
+    model_input,
 )
+from openhands.sdk.utils.files import atomic_write_text
 
 
 Hash = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
@@ -36,6 +42,7 @@ class Segment(BaseModel):
     first: PositiveInt
     last: PositiveInt
     object: ObjectRef
+    content_sha256: Hash | None = None
 
 
 class Seal(BaseModel):
@@ -94,7 +101,11 @@ def seal_journal(
 ) -> ObjectRef:
     prefix = f"shadow/v{SCHEMA_VERSION}/{journal.conversation_id}"
     head_key = f"{prefix}/head.json"
+    marker_key = f"{prefix}/published.json"
     current = store.head(head_key)
+    marker = store.head(marker_key)
+    if current is None and marker is not None:
+        raise ArchiveGap("Previously acknowledged archive head is missing")
     previous = (
         read_seal(store, ObjectRef.model_validate_json(current.data))
         if current
@@ -107,16 +118,20 @@ def seal_journal(
         seal, staged = _stage_segments(
             journal, Path(directory), records_per_segment, previous
         )
-        for first, last, path in staged:
+        for first, last, path, content_sha256 in staged:
             data = path.read_bytes()
+            name = f"{first:012d}-{last:012d}-{digest(data)}.jsonl.gz"
+            key = f"{prefix}/segments/{name}"
             if previous is not None and first <= previous.through:
                 old = previous.segments[len(segments)]
-                ref = _recover_segment(store, old.object, data)
+                ref = _recover_segment(store, old, key, data, content_sha256)
             else:
-                name = f"{first:012d}-{last:012d}-{digest(data)}.jsonl.gz"
-                key = f"{prefix}/segments/{name}"
                 ref = _persist(store, key, data)
-            segments.append(Segment(first=first, last=last, object=ref))
+            segments.append(
+                Segment(
+                    first=first, last=last, object=ref, content_sha256=content_sha256
+                )
+            )
     seal = seal.model_copy(update={"segments": segments})
     for _ in read_segments(store, seal):
         pass
@@ -124,24 +139,52 @@ def seal_journal(
     key = f"{prefix}/seals/{seal.through:012d}-{digest(data)}.json"
     ref = _persist(store, key, data)
     pointer = encode(ref.model_dump())
+    if current is None and store.head(marker_key) is not None:
+        raise ArchiveGap("Archive initialization raced with an acknowledged publish")
     if current is None or current.data != pointer:
         store.advance(head_key, current, pointer)
+    if marker is None:
+        _persist(
+            store, marker_key, encode({"conversation_id": journal.conversation_id})
+        )
     return ref
 
 
-def _recover_segment(store: ObjectStore, old: ObjectRef, data: bytes) -> ObjectRef:
-    if len(data) != old.size or digest(data) != old.sha256:
-        raise ArchiveGap(f"Spool disagrees with acknowledged segment {old.key}")
+def _recover_segment(
+    store: ObjectStore, old: Segment, key: str, data: bytes, content_sha256: str
+) -> ObjectRef:
+    if old.content_sha256 is not None and old.content_sha256 != content_sha256:
+        raise ArchiveGap(f"Spool disagrees with acknowledged segment {old.object.key}")
     try:
-        verified_bytes(store, old)
+        archived = verified_bytes(store, old.object)
     except ArchiveGap:
-        return _persist(store, old.key, data)
-    return old
+        identical = len(data) == old.object.size and digest(data) == old.object.sha256
+        if old.content_sha256 is None and not identical:
+            raise ArchiveGap(
+                f"Cannot verify unavailable segment {old.object.key}"
+            ) from None
+        return _persist(store, old.object.key if identical else key, data)
+    if digest(_decompress(archived, old)) != content_sha256:
+        raise ArchiveGap(f"Spool disagrees with acknowledged segment {old.object.key}")
+    return old.object
+
+
+def _decompress(data: bytes, segment: Segment) -> bytes:
+    try:
+        contents = gzip.decompress(data)
+    except (OSError, EOFError, zlib.error) as exc:
+        raise ArchiveGap(f"Unreadable segment {segment.object.key}") from exc
+    if (
+        segment.content_sha256 is not None
+        and digest(contents) != segment.content_sha256
+    ):
+        raise ArchiveGap(f"Uncompressed checksum differs for {segment.object.key}")
+    return contents
 
 
 def _stage_segments(
     journal: Journal, directory: Path, records_per_segment: int, previous: Seal | None
-) -> tuple[Seal, list[tuple[int, int, Path]]]:
+) -> tuple[Seal, list[tuple[int, int, Path, str]]]:
     staged = []
     runs: dict[str, str] = {}
     lines: list[bytes] = []
@@ -156,8 +199,11 @@ def _stage_segments(
             path.open("wb") as file,
             gzip.GzipFile(filename="", fileobj=file, mode="wb", mtime=0) as compressed,
         ):
-            compressed.writelines(lines)
-        staged.append((first, sequence - 1, path))
+            checksum = hashlib.sha256()
+            for line in lines:
+                checksum.update(line)
+                compressed.write(line)
+        staged.append((first, sequence - 1, path, checksum.hexdigest()))
         lines.clear()
 
     with journal.read() as (head, records):
@@ -206,8 +252,23 @@ def _check_record(record: Record, seal: Seal, sequence: int) -> None:
         raise ArchiveGap(f"Expected sequence {sequence}, found {record.sequence}")
 
 
+def _check_ranges(seal: Seal) -> None:
+    sequence = 1
+    for segment in seal.segments:
+        if (
+            segment.first != sequence
+            or not segment.first <= segment.last <= seal.through
+        ):
+            raise ArchiveGap(f"Invalid segment coverage at sequence {sequence}")
+        sequence = segment.last + 1
+    if sequence != seal.through + 1:
+        raise ArchiveGap(f"Missing segment at sequence {sequence}")
+
+
 def read_seal(store: ObjectStore, ref: ObjectRef) -> Seal:
-    return Seal.model_validate_json(verified_bytes(store, ref))
+    seal = Seal.model_validate_json(verified_bytes(store, ref))
+    _check_ranges(seal)
+    return seal
 
 
 @dataclass(frozen=True)
@@ -222,18 +283,14 @@ class DecodedRecord:
 
 
 def read_segments(store: ObjectStore, seal: Seal) -> Iterator[DecodedRecord]:
+    _check_ranges(seal)
     known_payloads: dict[str, Any] = {}
     runs: dict[str, str] = {}
     sequence = 1
     for segment in seal.segments:
-        if (
-            segment.first != sequence
-            or not segment.first <= segment.last <= seal.through
-        ):
-            raise ArchiveGap(f"Invalid segment coverage at sequence {sequence}")
         data = verified_bytes(store, segment.object)
         try:
-            for line in gzip.decompress(data).splitlines():
+            for line in _decompress(data, segment).splitlines():
                 if sequence > segment.last:
                     raise ArchiveGap(f"Unexpected record past sequence {segment.last}")
                 row = json.loads(line)
@@ -261,8 +318,6 @@ def read_segments(store: ObjectStore, seal: Seal) -> Iterator[DecodedRecord]:
             ) from exc
         if sequence != segment.last + 1:
             raise ArchiveGap(f"Missing records at sequence {sequence}")
-    if sequence != seal.through + 1:
-        raise ArchiveGap(f"Missing segment at sequence {sequence}")
     if runs != seal.runs:
         raise ArchiveGap("Seal run outcomes differ from archived records")
 
@@ -359,3 +414,68 @@ def coverage(records: Iterator[DecodedRecord]) -> Coverage:
                 if data["attempt_id"] not in result.model_responses:
                     result.missing_links.add(f"response:{data['attempt_id']}")
     return result
+
+
+def _check_key(key: str) -> None:
+    path = PurePosixPath(key)
+    if (
+        not path.parts
+        or path.is_absolute()
+        or ".." in path.parts
+        or any(char in key for char in "#*?[]\\")
+    ):
+        raise ValueError("Invalid archive object key")
+
+
+def _sync_directory(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+class DirectoryStore:
+    def __init__(self, root: Path) -> None:
+        self.root = root
+
+    def put(self, key: str, data: bytes) -> ObjectRef:
+        _check_key(key)
+        dest = self.root / key
+        dest.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with NamedTemporaryFile(dir=dest.parent) as file:
+            file.write(data)
+            file.flush()
+            os.fsync(file.fileno())
+            try:
+                os.link(file.name, dest)
+            except FileExistsError:
+                pass
+        _sync_directory(dest.parent)
+        return ObjectRef(key=key, sha256=digest(data), size=len(data))
+
+    def get(self, ref: ObjectRef) -> bytes:
+        _check_key(ref.key)
+        if ref.generation is not None:
+            raise ValueError("A directory archive has no object generations")
+        return (self.root / ref.key).read_bytes()
+
+    def head(self, key: str) -> Head | None:
+        _check_key(key)
+        try:
+            data = (self.root / key).read_bytes()
+        except FileNotFoundError:
+            return None
+        return Head(digest(data), data)
+
+    def advance(self, key: str, previous: Head | None, data: bytes) -> None:
+        _check_key(key)
+        dest = self.root / key
+        with FileLock(dest.with_suffix(".lock")):
+            current = self.head(key)
+            if current is not None and current.data == data:
+                return
+            if current != previous:
+                raise ArchiveGap(f"Concurrent archive head update for {key}")
+            atomic_write_text(dest, data.decode())
+            _sync_directory(dest.parent)

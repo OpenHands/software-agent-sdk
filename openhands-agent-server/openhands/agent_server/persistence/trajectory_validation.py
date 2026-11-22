@@ -5,7 +5,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from openhands.sdk.trajectory.archive import (
+from openhands.agent_server.persistence.trajectory_archive import (
     ArchiveGap,
     Coverage,
     Hash,
@@ -16,8 +16,12 @@ from openhands.sdk.trajectory.archive import (
     read_segments,
     verified_bytes,
 )
-from openhands.sdk.trajectory.capture import Origin
-from openhands.sdk.trajectory.journal import Journal, digest, encode
+from openhands.sdk.observability.trajectory_journal import (
+    Journal,
+    Origin,
+    digest,
+    encode,
+)
 
 
 class CandidateSource(BaseModel):
