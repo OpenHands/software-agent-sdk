@@ -1,9 +1,10 @@
 """Unit tests for LLM response classification and dispatch."""
 
 from collections.abc import Callable
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from litellm.types.llms.openai import ResponsesAPIResponse
 from litellm.types.utils import ModelResponse
 
 from openhands.sdk.agent import Agent
@@ -292,6 +293,58 @@ def test_content_response_sets_finished():
     assert convo.state.execution_status == ConversationExecutionStatus.FINISHED
     assert len(msg_events) == 1
     assert msg_events[0].source == "agent"
+
+
+@pytest.mark.parametrize("async_run", [False, True])
+@pytest.mark.parametrize("end_turn", [False, True, None])
+async def test_responses_content_follows_explicit_turn_boundary(
+    monkeypatch, async_run: bool, end_turn: bool | None
+):
+    def response(text: str, **metadata: bool) -> ResponsesAPIResponse:
+        return ResponsesAPIResponse.model_validate(
+            {
+                "id": "response",
+                "created_at": 0,
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "id": "message",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [{"type": "output_text", "text": text}],
+                    }
+                ],
+                **metadata,
+            }
+        )
+
+    metadata = {} if end_turn is None else {"end_turn": end_turn}
+    replies = [response("Checking the result.", **metadata), response("Verified.")]
+    transport = (AsyncMock if async_run else MagicMock)(side_effect=replies)
+    transport_name = "litellm_aresponses" if async_run else "litellm_responses"
+    monkeypatch.setattr(f"openhands.sdk.llm.llm.{transport_name}", transport)
+    agent = Agent(llm=LLM(model="openai/gpt-5.2", api_key="test"), tools=[])
+    conversation = Conversation(agent=agent)
+    try:
+        conversation.send_message("Check the result and report it.")
+        if async_run:
+            await conversation.arun()
+        else:
+            conversation.run()
+        messages = [
+            part.text
+            for event in conversation.state.events
+            if isinstance(event, MessageEvent) and event.source == "agent"
+            for part in event.llm_message.content
+            if isinstance(part, TextContent)
+        ]
+    finally:
+        conversation.close()
+    expected = ["Checking the result."]
+    if end_turn is False:
+        expected.append("Verified.")
+    assert messages == expected
 
 
 def test_empty_response_sends_nudge():

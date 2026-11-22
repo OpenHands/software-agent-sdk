@@ -46,6 +46,14 @@ class LLMResponse(BaseModel):
     model_config: ClassVar[ConfigDict] = ConfigDict(arbitrary_types_allowed=True)
 
     @property
+    def continues_turn(self) -> bool:
+        """Whether the Responses provider explicitly marked this reply nonfinal."""
+        return (
+            isinstance(self.raw_response, ResponsesAPIResponse)
+            and (self.raw_response.model_extra or {}).get("end_turn") is False
+        )
+
+    @property
     def id(self) -> str:
         """Get the response ID from the underlying LLM response.
 
