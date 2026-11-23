@@ -2,7 +2,7 @@
 
 Covers:
 - the agent-source rules of ``StartConversationRequest``
-- profile, agent_settings and raw-agent launches in the service
+- profile, inline-profile, agent_settings and raw-agent launches in the service
 - unknown-id 404 / dangling-ref 422 / store 5xx (router layer)
 - LaunchedAgentProfile provenance round-trip through StoredConversation
 """
@@ -19,6 +19,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import SecretStr, ValidationError
 
+from openhands.agent_server.api import add_domain_error_handler
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_router import conversation_router
 from openhands.agent_server.conversation_service import ConversationService
@@ -30,9 +31,10 @@ from openhands.agent_server.models import (
     StartConversationRequest,
     StoredConversation,
 )
-from openhands.agent_server.persistence import PersistedSettings
+from openhands.agent_server.persistence import PersistedSettings, ServerStores
 from openhands.sdk import LLM, Agent, AgentBase, AgentContext
 from openhands.sdk.agent.acp_agent import ACPAgent
+from openhands.sdk.conversation.request import AgentLaunchAdditions
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
@@ -54,6 +56,7 @@ from openhands.sdk.settings.model import ACPAgentSettings, OpenHandsAgentSetting
 from openhands.sdk.skills import Skill
 from openhands.sdk.tool import Tool
 from openhands.sdk.workspace import LocalWorkspace
+from tests.agent_server.conftest import install_test_context
 from tests.sdk.launch import fakes
 
 
@@ -66,9 +69,10 @@ from tests.sdk.launch import fakes
 def client():
     """TestClient with no auth — conversations router only."""
     app = FastAPI()
+    add_domain_error_handler(app)
     app.include_router(conversation_router, prefix="/api")
-    app.state.config = Config(
-        static_files_path=None, session_api_keys=[], secret_key=None
+    install_test_context(
+        app, Config(static_files_path=None, session_api_keys=[], secret_key=None)
     )
     return TestClient(app)
 
@@ -95,8 +99,14 @@ def _make_agent() -> Agent:
 
 
 _STORES_PATH = "openhands.agent_server.conversation_service.server_launch_stores"
-_SETTINGS_STORE_PATH = "openhands.agent_server.persistence.get_settings_store"
 _BROWSER_PATH = "openhands.agent_server.launch.is_tool_usable"
+
+
+def _server_stores(persisted: PersistedSettings | None = None) -> ServerStores:
+    """The service's stores, holding ``persisted`` as the saved settings."""
+    stores = ServerStores.from_config(Config())
+    stores.settings.save(persisted or PersistedSettings())
+    return stores
 
 
 def _event_service_for(stored: StoredConversation, agent: AgentBase) -> AsyncMock:
@@ -137,10 +147,11 @@ async def _start(
         captured["launched"] = kwargs["launched"]
         return _event_service_for(stored, kwargs["launched"].agent)
 
-    service = ConversationService(conversations_dir=tmp_path / "conversations")
+    service = ConversationService(
+        conversations_dir=tmp_path / "conversations", stores=_server_stores(persisted)
+    )
     service._event_services = {}
     with (
-        patch(_SETTINGS_STORE_PATH) as settings_store,
         patch(_STORES_PATH, return_value=stores or fakes.stores()),
         patch(_BROWSER_PATH, return_value=browser),
         patch.object(
@@ -150,7 +161,6 @@ async def _start(
             side_effect=capture_start,
         ),
     ):
-        settings_store.return_value.load.return_value = persisted or PersistedSettings()
         await service.start_conversation(request)
     return captured["stored"], captured["launched"]
 
@@ -251,9 +261,26 @@ class TestStartConversationRequestValidation:
         )
         assert req.agent is None
 
+    def test_an_inline_agent_profile_is_not_a_launch_source(self):
+        with pytest.raises(ValidationError, match="agent_profile_id"):
+            StartConversationRequest.model_validate(
+                {
+                    "agent_profile": {"name": "draft", "llm_profile_ref": "default"},
+                    "workspace": {"working_dir": "/tmp"},
+                }
+            )
+
     def test_no_agent_source_is_invalid(self):
         with pytest.raises(ValidationError, match="agent_profile_id"):
             StartConversationRequest(workspace=LocalWorkspace(working_dir="/tmp"))
+
+    def test_an_llm_override_needs_a_profile_source(self):
+        with pytest.raises(ValidationError, match="llm_profile_ref"):
+            StartConversationRequest(
+                agent=_make_agent(),
+                agent_launch_additions=AgentLaunchAdditions(llm_profile_ref="fast"),
+                workspace=LocalWorkspace(working_dir="/tmp"),
+            )
 
     def test_agent_profile_id_present_in_request_payload(self):
         """agent_profile_id must survive model_dump() for HTTP transport."""
@@ -408,20 +435,39 @@ class TestProfileLaunch:
             return _event_service_for(stored, kwargs["launched"].agent)
 
         service = ConversationService(
-            conversations_dir=tmp_path / "conversations", acp_skill_sourcing=sourcing
+            conversations_dir=tmp_path / "conversations",
+            acp_skill_sourcing=sourcing,
+            stores=_server_stores(),
         )
         service._event_services = {}
         with (
-            patch(_SETTINGS_STORE_PATH) as settings_store,
             patch(_STORES_PATH, return_value=stores),
             patch.object(service, "_start_event_service", side_effect=capture_start),
         ):
-            settings_store.return_value.load.return_value = PersistedSettings()
             await service.start_conversation(request)
 
         context = captured["agent"].agent_context
         assert context is not None
         assert [skill.name for skill in context.skills] == expected
+
+    @pytest.mark.asyncio
+    async def test_a_per_launch_llm_override_is_used_and_recorded(self, tmp_path):
+        profile = _make_openhands_profile()
+        stores = fakes.stores(
+            profile, llms={"default": fakes.llm("slow"), "fast": fakes.llm("fast")}
+        )
+        request = _profile_request(
+            tmp_path,
+            profile,
+            agent_launch_additions=AgentLaunchAdditions(llm_profile_ref="fast"),
+        )
+
+        stored, launched = await _start(tmp_path, request, stores=stores)
+
+        assert isinstance(launched.agent, Agent)
+        assert launched.agent.llm.model == "fast"
+        assert stored.launched_agent_profile is not None
+        assert stored.launched_agent_profile.llm_profile_ref == "fast"
 
     @pytest.mark.asyncio
     async def test_a_profile_launch_has_a_fresh_timestamp(self, tmp_path):

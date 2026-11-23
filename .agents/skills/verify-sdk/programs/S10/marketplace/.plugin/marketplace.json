@@ -1,0 +1,8 @@
+{
+  "name": "s10-local",
+  "owner": {"name": "verify-sdk"},
+  "plugins": [
+    {"name": "attached-hooks", "source": "./plugins/attached-hooks", "description": "PostToolUse hook attached with plugins=[...]"},
+    {"name": "runtime-hooks", "source": "./plugins/runtime-hooks", "description": "PostToolUse hook loaded with load_plugin()"}
+  ]
+}

@@ -48,3 +48,10 @@ def test_noop_condenser_with_llm() -> None:
     condensation_result = condenser.condense(view, agent_llm=mock_llm)
     assert isinstance(condensation_result, View)
     assert condensation_result.events == events
+
+
+def test_noop_condenser_get_llm() -> None:
+    """NoOpCondenser exposes get_llm()=None and excludes it from serialization."""
+    condenser = NoOpCondenser()
+    assert condenser.get_llm() is None
+    assert "llm" not in condenser.model_dump()

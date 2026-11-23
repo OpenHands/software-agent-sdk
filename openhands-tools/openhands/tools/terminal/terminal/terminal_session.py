@@ -1,5 +1,6 @@
 """Unified terminal session using TerminalInterface backends."""
 
+import math
 import re
 import time
 import uuid
@@ -10,6 +11,7 @@ from openhands.sdk.utils import maybe_truncate
 from openhands.tools.terminal.constants import (
     CMD_OUTPUT_PS1_END,
     MAX_CMD_OUTPUT_SIZE,
+    MIN_POLL_INTERVAL,
     NO_CHANGE_TIMEOUT_SECONDS,
     POLL_INTERVAL,
     TIMEOUT_MESSAGE_TEMPLATE,
@@ -55,6 +57,13 @@ def _normalize_echo_line(line: str) -> str:
     return re.sub(r"[\x00-\x1f\x7f]", "", line).strip()
 
 
+# The completion boundary writes ``__OH_COMMAND_FINISHED_<uuid hex>_<exit>__``
+# to the tty, and the boundary command itself is echoed with the same id. Match
+# the id shape (not a fixed prefix) so markers from a previous command, whose id
+# this session no longer tracks, are still recognized.
+_BOUNDARY_MARKER_ID_RE = re.compile(r"__OH_COMMAND_FINISHED_[0-9a-f]{32}_")
+
+
 def _remove_command_prefix(command_output: str, command: str) -> str:
     """Strip the terminal's echo of `command` from the front of the output.
 
@@ -92,14 +101,52 @@ def _remove_echoed_line(command_output: str, command: str) -> str:
     )
 
 
+def _strip_stale_boundary_artifacts(command_output: str) -> str:
+    """Drop completion-boundary echoes and markers left by a previous command.
+
+    The heredoc boundary command writes its echo and marker to the tty
+    asynchronously, so they can land in the buffer *after* the screen was
+    cleared for the next command. They then carry the previous command's marker
+    id, which the per-command stripping below does not recognize, so they leak
+    into the next observation.
+    """
+    return "".join(
+        line
+        for line in command_output.splitlines(keepends=True)
+        if _BOUNDARY_MARKER_ID_RE.search(line) is None
+    )
+
+
 def _remove_powershell_echo(command_output: str, command: str) -> str:
+    """Strip PowerShell's echo of the submitted command from its output.
+
+    When PowerShell reads commands from a pipe it echoes each input line; a
+    multiline command is echoed as its first line followed by one ``>> ``
+    continuation line per extra line (plus the blank line that submits it).
+    """
     command_output = command_output.lstrip()
     command = command.lstrip()
-    first_line = command_output.splitlines()[0] if command_output else ""
-    if command and command in first_line:
-        _, separator, rest = command_output.partition("\n")
-        command_output = rest if separator else ""
+    command_lines = command.splitlines() or [""]
+    lines = command_output.split("\n")
+    if command_lines[0] and command_lines[0] in lines[0]:
+        lines = lines[1:]
+        # Continuation echo: at most one ">> " line per extra command line,
+        # plus the blank line that terminates the multiline input.
+        budget = len(command_lines)
+        while budget and lines and lines[0].startswith(">> "):
+            lines = lines[1:]
+            budget -= 1
+        command_output = "\n".join(lines)
     return re.sub(r"(?:\r?\n)?PS [^\r\n]*>\s*$", "", command_output).lstrip()
+
+
+_UNRESPONSIVE_TERMINAL_SUFFIX = (
+    "\n[The terminal process exited or stopped responding while this command "
+    "was running, so its result is unknown. A new terminal session will be "
+    "created automatically for your next command; environment variables, "
+    "loaded modules and working-directory changes from the old session are "
+    "gone. Avoid top-level `exit` in terminal commands.]"
+)
 
 
 class TerminalSession(TerminalSessionBase):
@@ -117,18 +164,28 @@ class TerminalSession(TerminalSessionBase):
         self,
         terminal: TerminalInterface,
         no_change_timeout_seconds: int | None = None,
+        max_observation_wait_seconds: float | None = None,
     ):
         """Initialize the unified session with a terminal backend.
 
         Args:
             terminal: The terminal backend to use
             no_change_timeout_seconds: Timeout for no output change
+            max_observation_wait_seconds: Optional finite positive execution wait
+                cap per call, independent of output activity and action.timeout.
+                Excludes setup, pool queuing and blocking backend I/O.
         """
         super().__init__(
             terminal.work_dir,
             terminal.username,
             no_change_timeout_seconds,
         )
+        if max_observation_wait_seconds is not None and (
+            not math.isfinite(max_observation_wait_seconds)
+            or max_observation_wait_seconds <= 0
+        ):
+            raise ValueError("max_observation_wait_seconds must be finite and positive")
+        self.max_observation_wait_seconds = max_observation_wait_seconds
         self.terminal = terminal
         self.no_change_timeout_seconds: int = (
             no_change_timeout_seconds or NO_CHANGE_TIMEOUT_SECONDS
@@ -149,6 +206,7 @@ class TerminalSession(TerminalSessionBase):
         cls,
         terminal: TerminalInterface,
         no_change_timeout_seconds: int | None = None,
+        max_observation_wait_seconds: float | None = None,
     ) -> "TerminalSession":
         """Create a TerminalSession for an already-initialized terminal.
 
@@ -156,7 +214,7 @@ class TerminalSession(TerminalSessionBase):
         terminal has already been set up (e.g. by a pane pool) and
         calling ``initialize()`` again would create a duplicate session.
         """
-        session = cls(terminal, no_change_timeout_seconds)
+        session = cls(terminal, no_change_timeout_seconds, max_observation_wait_seconds)
         session._initialized = True
         return session
 
@@ -186,6 +244,10 @@ class TerminalSession(TerminalSessionBase):
             TerminalCommandStatus.NO_CHANGE_TIMEOUT,
             TerminalCommandStatus.HARD_TIMEOUT,
         }
+
+    def is_alive(self) -> bool:
+        """Check whether the underlying terminal can still accept commands."""
+        return self._initialized and not self._closed and self.terminal.is_alive()
 
     def _is_special_key(self, command: str) -> bool:
         """Check if the command is a special key."""
@@ -426,6 +488,49 @@ class TerminalSession(TerminalSessionBase):
             metadata=metadata,
         )
 
+    def _handle_unresponsive_terminal(
+        self,
+        command: str,
+        terminal_content: str,
+        ps1_matches: list[re.Match],
+    ) -> TerminalObservation:
+        """Handle the shell exiting or wedging while a command was running.
+
+        The session is closed so the executor recreates it on the next call;
+        the observation tells the model what happened and that nothing is
+        still running.
+        """
+        logger.warning(
+            "Terminal backend is no longer alive while running a command; "
+            "closing the session so it is recreated on the next command"
+        )
+        raw_command_output = self._combine_outputs_between_matches(
+            terminal_content, ps1_matches
+        )
+        metadata = CmdOutputMetadata(exit_code=-1, working_dir=self._cwd)
+        metadata.suffix = _UNRESPONSIVE_TERMINAL_SUFFIX
+        command_output = self._get_command_output(
+            command,
+            raw_command_output,
+            metadata,
+            continue_prefix="[Below is the output of the previous command.]\n",
+            is_final=True,
+        )
+        command_output = maybe_truncate(
+            command_output, truncate_after=MAX_CMD_OUTPUT_SIZE
+        )
+        self.prev_status = TerminalCommandStatus.COMPLETED
+        self.prev_output = ""
+        self._query_filter.reset()
+        self.close()
+        return TerminalObservation.from_text(
+            command=command,
+            text=command_output,
+            metadata=metadata,
+            exit_code=metadata.exit_code,
+            is_error=True,
+        )
+
     def _ready_for_next_command(self) -> None:
         """Reset the content buffer for a new command."""
         # Clear the current content
@@ -447,7 +552,7 @@ class TerminalSession(TerminalSessionBase):
             terminal_content = _remove_command_prefix(
                 terminal_content, self._wrapper_echo
             )
-        return terminal_content
+        return _strip_stale_boundary_artifacts(terminal_content)
 
     def _combine_outputs_between_matches(
         self,
@@ -479,6 +584,27 @@ class TerminalSession(TerminalSessionBase):
         )
         return combined_output
 
+    def _closed_observation(self, command: str) -> TerminalObservation:
+        self.prev_status = TerminalCommandStatus.INTERRUPTED
+        output = ""
+        if not self._closed:
+            try:
+                output = self._strip_boundary_wrapper(self.terminal.read_screen())
+            except Exception:
+                logger.debug(
+                    "Closed terminal screen is unreadable; omitting its output",
+                    exc_info=True,
+                )
+        return TerminalObservation.from_text(
+            text=maybe_truncate(output, truncate_after=MAX_CMD_OUTPUT_SIZE)
+            + "\n[The terminal was closed before command completion. "
+            "The result is unknown. "
+            "Use reset=True to start a new session; the command was not retried.]",
+            command=command,
+            exit_code=-1,
+            is_error=True,
+        )
+
     def execute(self, action: TerminalAction) -> TerminalObservation:
         """Execute a command using the terminal backend."""
         if not self._initialized:
@@ -503,6 +629,18 @@ class TerminalSession(TerminalSessionBase):
                 text=rejection,
                 command=command,
                 is_error=True,
+            )
+
+        if self._closed or self.terminal.closed:
+            return self._closed_observation(action.command)
+
+        if not self.terminal.is_alive():
+            return self._handle_unresponsive_terminal(
+                command,
+                terminal_content=self.terminal.read_screen(),
+                ps1_matches=CmdOutputMetadata.matches_ps1_metadata(
+                    self.terminal.read_screen()
+                ),
             )
 
         # If the previous command is not completed,
@@ -553,21 +691,49 @@ class TerminalSession(TerminalSessionBase):
             len(initial_terminal_output),
         )
 
+        observation_start = (
+            time.monotonic() if self.max_observation_wait_seconds is not None else None
+        )
         start_time = time.time()
         last_change_time = start_time
         last_terminal_output = initial_terminal_output
 
-        # When prev command is still running, and we are trying to send a new command
+        # After a timeout the previous command may still be running, or it may
+        # have finished on its own while nobody was polling.  Ask the backend
+        # rather than guessing from the tail of the screen: for the PowerShell
+        # backend the screen never ends with the marker while the shell is
+        # busy, but a trailing prompt or a scrolled-off marker must not make a
+        # finished command look busy either.
+        previous_command_running = (
+            self.prev_status
+            in {
+                TerminalCommandStatus.HARD_TIMEOUT,
+                TerminalCommandStatus.NO_CHANGE_TIMEOUT,
+            }
+            and self.terminal.is_running()
+        )
         if (
             self.prev_status
             in {
                 TerminalCommandStatus.HARD_TIMEOUT,
                 TerminalCommandStatus.NO_CHANGE_TIMEOUT,
             }
-            and not last_terminal_output.rstrip().endswith(CMD_OUTPUT_PS1_END.rstrip())
-            and not is_input
-            and command != ""
+            and not previous_command_running
+            and is_input
         ):
+            # There is no process left to receive keystrokes (a Ctrl+C for
+            # a command that already finished is the common case), so report
+            # the finished command's result instead of typing into the shell.
+            logger.debug(
+                "Previous command already finished; treating input %r as a "
+                "request for its output",
+                command,
+            )
+            command = ""
+            is_input = False
+
+        # When prev command is still running, and we are trying to send a new command
+        if previous_command_running and not is_input and command != "":
             last_terminal_output = self._strip_boundary_wrapper(last_terminal_output)
             _ps1_matches = CmdOutputMetadata.matches_ps1_metadata(last_terminal_output)
             # Use initial_ps1_matches if _ps1_matches is empty,
@@ -659,6 +825,10 @@ class TerminalSession(TerminalSessionBase):
 
         # Loop until the command completes or times out
         while True:
+            # A closed terminal never shows the command finishing, and a command with
+            # a timeout skips the no-change timeout, so stop waiting on it here.
+            if self._closed or self.terminal.closed:
+                return self._closed_observation(command)
             _start_time = time.time()
             logger.debug(f"GETTING TERMINAL CONTENT at {_start_time}")
             cur_terminal_output = self.terminal.read_screen()
@@ -717,6 +887,16 @@ class TerminalSession(TerminalSessionBase):
                 )
                 return obs
 
+            # 1b) The shell itself is gone (exited, killed, or declared
+            # unresponsive by a failed interrupt): report immediately instead
+            # of waiting out the timeout and then rejecting every command.
+            if not self.terminal.is_alive():
+                return self._handle_unresponsive_terminal(
+                    command,
+                    terminal_content=cur_terminal_output,
+                    ps1_matches=ps1_matches,
+                )
+
             # Timeout checks should only trigger if a new prompt hasn't appeared yet.
 
             # 2) Execution timed out since there's no change in output
@@ -769,5 +949,31 @@ class TerminalSession(TerminalSessionBase):
                     )
                     return obs
 
-            # Sleep before next check
-            time.sleep(POLL_INTERVAL)
+            observation_remaining = None
+            if self.max_observation_wait_seconds is not None:
+                assert observation_start is not None
+                observation_remaining = self.max_observation_wait_seconds - (
+                    time.monotonic() - observation_start
+                )
+                if observation_remaining <= 0:
+                    stripped_output = self._strip_boundary_wrapper(cur_terminal_output)
+                    return self._handle_hard_timeout_command(
+                        command,
+                        terminal_content=stripped_output,
+                        ps1_matches=CmdOutputMetadata.matches_ps1_metadata(
+                            stripped_output
+                        ),
+                        timeout=self.max_observation_wait_seconds,
+                        echoed_command=(
+                            command_to_send
+                            if command_boundary_marker is not None
+                            else None
+                        ),
+                    )
+
+            # Poll in proportion to the command's run time so a short command is
+            # noticed within milliseconds, not at the next POLL_INTERVAL tick.
+            sleep_seconds = min(POLL_INTERVAL, max(MIN_POLL_INTERVAL, elapsed_time / 4))
+            if observation_remaining is not None:
+                sleep_seconds = min(sleep_seconds, observation_remaining)
+            time.sleep(sleep_seconds)

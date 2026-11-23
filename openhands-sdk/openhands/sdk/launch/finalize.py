@@ -8,6 +8,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from openhands.sdk.agent.acp_agent import ACPAgent
+from openhands.sdk.agent.agent import Agent
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.conversation.request import AgentLaunchAdditions
@@ -15,6 +16,7 @@ from openhands.sdk.launch.errors import AgentLaunchError
 from openhands.sdk.launch.resolve import ResolvedLaunch
 from openhands.sdk.profiles.agent_profile import LaunchedAgentProfile
 from openhands.sdk.settings.model import ACPAgentSettings, OpenHandsAgentSettings
+from openhands.sdk.skills import Skill
 from openhands.sdk.tool.defaults import launch_tool_specs
 from openhands.sdk.tool.spec import Tool
 
@@ -33,7 +35,9 @@ class LaunchRuntime(BaseModel):
     acp_skill_sourcing: ACPSkillSourcing = Field(
         default="native",
         description=(
-            "'native': an ACP CLI reads its own skills, so none are injected. "
+            "'native': an ACP CLI reads its own skills, so no managed skills "
+            "are injected. Skills a client supplies at launch are kept either "
+            "way. "
             "'openhands_managed': inject the resolved skill catalog."
         ),
     )
@@ -65,6 +69,8 @@ def finalize(
     additions: AgentLaunchAdditions | None = None,
     extra_suffixes: Sequence[str] = (),
     client_tools: Sequence[Tool] = (),
+    experimental_feature_tools: Sequence[Tool] = (),
+    project_role: ProjectRole | None = None,
     load_memory: bool = False,
     managed_secrets: Collection[str] = (),
     launched_at: datetime | None = None,
@@ -73,8 +79,15 @@ def finalize(
 
     Owns every launch-time field: the tool set (with browser only when the
     runtime can run it), ``current_datetime``, ``load_memory``, ACP skill
-    sourcing, suffix additions, client tools and credentials the runtime
+    sourcing, launch additions, client tools and credentials the runtime
     manages itself.
+
+    ``experimental_feature_tools`` are tools the user turned on through a feature flag.
+    Only an OpenHands :class:`~openhands.sdk.agent.Agent` gets them: an ACP
+    agent runs its own tools, so it is left as it is.
+
+    ``project_role`` is set only by the agent server, for the coordinator and
+    workers of a project; no launch request carries it.
     """
     if isinstance(source, ResolvedLaunch):
         settings = _settings_for_runtime(source.settings, runtime)
@@ -90,15 +103,21 @@ def finalize(
     agent = _with_current_datetime(agent, launched_at)
     if load_memory:
         agent = _with_load_memory(agent)
-    agent = _apply_acp_skill_sourcing(agent, runtime.acp_skill_sourcing)
     appended = (additions.system_message_suffix_append or "") if additions else ""
     for suffix in (appended, *extra_suffixes):
         if suffix.strip():
             agent = _append_system_message_suffix(agent, suffix.strip())
+    if project_role is not None:
+        agent = _with_project_role(agent, project_role)
+    agent = _apply_acp_skill_sourcing(agent, runtime.acp_skill_sourcing)
+    if additions and additions.skills:
+        agent = _with_launch_skills(agent, additions.skills)
     if managed_secrets:
         agent = _without_context_secrets(agent, managed_secrets)
     if client_tools:
         agent = _with_client_tools(agent, client_tools)
+    if experimental_feature_tools and not isinstance(agent, ACPAgent):
+        agent = _with_client_tools(agent, experimental_feature_tools)
     return LaunchedAgent(agent=agent, profile=profile, _token=_FINALIZE_TOKEN)
 
 
@@ -189,6 +208,62 @@ def _append_system_message_suffix(agent: AgentBase, addition: str) -> AgentBase:
         update={
             "agent_context": context.model_copy(
                 update={"system_message_suffix": suffix}
+            )
+        }
+    )
+
+
+@dataclass(frozen=True)
+class ProjectRole:
+    """What the agent server gives a project's coordinator or worker: its
+    prompt, the ``<PROJECT>`` block it renders and the project tools."""
+
+    prompt_filename: str
+    context: str | None = None
+    tools: Sequence[Tool] = ()
+
+
+def _with_project_role(agent: AgentBase, role: ProjectRole) -> AgentBase:
+    """Give an OpenHands agent the role's prompt, project context and tools.
+
+    Projects do not run ACP agents, so any other agent is left as it is. An
+    agent with an inline ``system_prompt`` keeps it.
+    """
+    if not isinstance(agent, Agent):
+        return agent
+    if agent.system_prompt is None:
+        agent = agent.model_copy(
+            update={"system_prompt_filename": role.prompt_filename}
+        )
+    if role.context and role.context.strip():
+        context = _context_of(agent)
+        agent = agent.model_copy(
+            update={
+                "agent_context": context.model_copy(
+                    update={"project_context": role.context.strip()}
+                )
+            }
+        )
+    if role.tools:
+        agent = _with_client_tools(agent, role.tools)
+    return agent
+
+
+def _with_launch_skills(agent: AgentBase, skills: Sequence[Skill]) -> AgentBase:
+    """Add launch-supplied skills; the agent's own skills and deny-list win."""
+    context = _context_of(agent)
+    taken = {skill.name for skill in context.skills} | set(context.disabled_skills)
+    added: list[Skill] = []
+    for skill in skills:
+        if skill.name not in taken:
+            added.append(skill)
+            taken.add(skill.name)
+    if not added:
+        return agent
+    return agent.model_copy(
+        update={
+            "agent_context": context.model_copy(
+                update={"skills": [*context.skills, *added]}
             )
         }
     )

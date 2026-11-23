@@ -13,7 +13,11 @@ from openhands.sdk.launch import (
 from openhands.sdk.llm.meta_profile_store import MetaProfile, MetaProfileClass
 from openhands.sdk.llm.provider_connection_store import ProviderConnectionNotFound
 from openhands.sdk.mcp.config import MCPServer
-from openhands.sdk.profiles.agent_profile import ACPAgentProfile, OpenHandsAgentProfile
+from openhands.sdk.profiles.agent_profile import (
+    ACPAgentProfile,
+    OpenHandsAgentProfile,
+    ProfileSandboxSettings,
+)
 from openhands.sdk.profiles.resolver import ProfileNotFound
 from openhands.sdk.settings.model import ACPAgentSettings, OpenHandsAgentSettings
 from openhands.sdk.skills import Skill
@@ -47,9 +51,35 @@ def test_a_stored_profile_resolves_with_its_provenance():
     assert resolved.allowed_secrets == frozenset({"GITHUB_TOKEN"})
 
 
+def test_sandbox_metadata_does_not_change_the_resolved_settings():
+    plain = _profile(name="plain")
+    with_sandbox = _profile(
+        name="plain", sandbox=ProfileSandboxSettings(spec_id="image:custom")
+    )
+
+    def dump(profile: OpenHandsAgentProfile) -> dict:
+        settings = resolve(profile, fakes.stores()).settings.model_dump(mode="json")
+        settings["agent_context"].pop("current_datetime")
+        return settings
+
+    assert dump(with_sandbox) == dump(plain)
+
+
 def test_an_unknown_profile_id_is_not_found():
     with pytest.raises(ProfileNotFound):
         resolve(uuid4(), fakes.stores())
+
+
+def test_a_profile_object_resolves_without_being_stored():
+    draft = _profile(name="draft")
+    stores = fakes.stores()
+
+    resolved = resolve(draft, stores)
+
+    assert resolved.profile is not None
+    assert resolved.profile.agent_profile_id == draft.id
+    assert stores.agent_profiles is not None
+    assert stores.agent_profiles.name_for_id(draft.id) is None
 
 
 def test_every_dangling_reference_is_reported_together():
@@ -81,6 +111,21 @@ def test_the_profile_llm_streams_without_changing_the_stored_llm():
     assert stored_llm.stream is False
 
 
+def test_a_per_launch_llm_override_is_used_and_recorded():
+    llms = {"default": fakes.llm("default-model"), "fast": fakes.llm("fast-model")}
+
+    resolved = resolve(_profile(), fakes.stores(llms=llms), llm_profile_ref="fast")
+
+    assert _openhands(resolved).llm.model == "fast-model"
+    assert resolved.profile is not None
+    assert resolved.profile.llm_profile_ref == "fast"
+
+
+def test_an_llm_override_for_an_acp_profile_is_rejected():
+    with pytest.raises(AgentLaunchError, match="OpenHands"):
+        resolve(ACPAgentProfile(name="a"), fakes.stores(), llm_profile_ref="fast")
+
+
 @pytest.mark.parametrize(
     ("refs", "expected"),
     [(None, ["a", "b"]), ([], []), (["b"], ["b"])],
@@ -102,6 +147,43 @@ def test_an_openhands_profile_gets_the_catalog_minus_its_deny_list():
     assert [s.name for s in context.skills] == ["alpha"]
     assert context.disabled_skills == ["beta", "absent"]
     assert context.load_project_skills is True
+
+
+def _skill_names(resolved) -> list[str]:
+    return [s.name for s in _openhands(resolved).agent_context.skills]
+
+
+_TIERED_SKILLS = [
+    Skill(name="alpha", content="a"),
+    Skill(name="beta", content="b"),
+    Skill(name="mine", content="m"),
+]
+_PUBLIC_NAMES = ["alpha", "beta"]
+
+
+@pytest.mark.parametrize(
+    ("public_skills", "expected"),
+    [
+        (None, ["alpha", "beta", "mine"]),
+        ([], ["mine"]),
+        (["beta", "absent"], ["beta", "mine"]),
+    ],
+)
+def test_public_skills_select_from_the_public_tier_only(public_skills, expected):
+    resolved = resolve(
+        _profile(public_skills=public_skills),
+        fakes.stores(skills=_TIERED_SKILLS, public_skill_names=_PUBLIC_NAMES),
+    )
+
+    assert _skill_names(resolved) == expected
+
+
+def test_without_tier_names_every_catalog_skill_counts_as_public():
+    resolved = resolve(
+        _profile(public_skills=["alpha"]), fakes.stores(skills=_TIERED_SKILLS)
+    )
+
+    assert _skill_names(resolved) == ["alpha"]
 
 
 def test_an_acp_profile_gets_the_whole_catalog_whatever_the_runtime():

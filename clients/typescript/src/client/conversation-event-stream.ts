@@ -123,11 +123,31 @@ export class ConversationEventStream {
         ? this.options.createWebSocket(url.toString())
         : new WebSocket(url.toString());
       this.socket = socket;
+      let opened = false;
+      let failed = false;
+      // Every terminal outcome of an attempt ends here once. Node 22's undici
+      // WebSocket fires only `error` for a refused handshake, never `close`.
+      const settle = (error: Error | null): boolean => {
+        if (this.socket !== socket) return false;
+        clearTimeout(this.handshakeTimer);
+        this.socket = null;
+        this.update({ isConnected: false, ...(error ? { error } : {}) });
+        return true;
+      };
+      const failHandshake = (error: Error, event: Event): void => {
+        if (!settle(error)) return;
+        failed = true;
+        this.options.onError?.(event);
+        this.scheduleReconnect();
+      };
       this.handshakeTimer = setTimeout(() => {
-        if (this.socket === socket && socket.readyState === 0) socket.close();
+        if (opened || this.socket !== socket) return;
+        failHandshake(new Error('WebSocket handshake timed out'), new Event('error'));
+        socket.close();
       }, 10_000);
       socket.onopen = (event) => {
         if (this.socket !== socket || !this.active) return;
+        opened = true;
         clearTimeout(this.handshakeTimer);
         const key = this.options.sessionApiKey;
         if (key) socket.send(JSON.stringify({ type: 'auth', session_api_key: key }));
@@ -139,26 +159,26 @@ export class ConversationEventStream {
       };
       socket.onerror = (event) => {
         if (this.socket !== socket || !this.active) return;
+        if (!opened) {
+          failHandshake(new Error('WebSocket connection failed'), event);
+          return;
+        }
         this.update({ isConnected: false });
         this.options.onError?.(event);
       };
       socket.onclose = (event) => {
         if (this.socket !== socket) {
-          if (!this.active && this.socket === null) this.options.onClose?.(event);
+          // A failed attempt (or a stopped stream) still reports its own close.
+          if (failed || (!this.active && this.socket === null)) this.options.onClose?.(event);
           return;
         }
-        clearTimeout(this.handshakeTimer);
-        this.socket = null;
-        this.update({
-          isConnected: false,
-          ...(event.code !== 1000
-            ? {
-                error: new Error(
-                  `WebSocket closed with code ${event.code}: ${event.reason || 'Connection closed unexpectedly'}`
-                ),
-              }
-            : {}),
-        });
+        settle(
+          event.code !== 1000
+            ? new Error(
+                `WebSocket closed with code ${event.code}: ${event.reason || 'Connection closed unexpectedly'}`
+              )
+            : null
+        );
         if (event.code !== 1000) this.options.onError?.(event);
         this.options.onClose?.(event);
         this.scheduleReconnect();

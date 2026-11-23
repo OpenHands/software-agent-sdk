@@ -175,12 +175,29 @@ def resolve_tool(
     response_schema = params.pop("response_schema", None)
     tools = resolver(params, conv_state)
     if response_schema is not None:
-        if len(tools) != 1:
-            raise ValueError(
-                "response_schema requires a spec that resolves to exactly one tool"
-            )
-        tools = [tools[0].set_response_schema(response_schema)]
+        try:
+            if len(tools) != 1:
+                raise ValueError(
+                    "response_schema requires a spec that resolves to exactly one tool"
+                )
+            tools = [tools[0].set_response_schema(response_schema)]
+        except BaseException:
+            # The caller never sees these tools, so close what they started.
+            _close_tool_executors(tools)
+            raise
     return tools
+
+
+def _close_tool_executors(tools: Sequence[ToolDefinition]) -> None:
+    for tool in tools:
+        if tool.executor is None:
+            continue
+        try:
+            tool.executor.close()
+        except Exception:
+            logger.warning(
+                "Error closing executor for tool '%s'", tool.name, exc_info=True
+            )
 
 
 def list_registered_tools() -> list[str]:

@@ -29,7 +29,10 @@ def mock_browser_executor(mock_browser_server):
     ):
         executor = BrowserToolExecutor()
     executor._server = mock_browser_server
-    return executor
+    yield executor
+    # Close here, not from __del__: a close that garbage collection runs while
+    # another thread holds the mock lock deadlocks on the mocked server.
+    executor.close()
 
 
 def create_mock_browser_response(

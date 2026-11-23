@@ -22,6 +22,11 @@ from openhands.sdk.llm import LLM, ImageContent, Message, TextContent
         "moonshot/kimi-k3",
         "litellm_proxy/moonshot/kimi-k3",
         "openhands/kimi-k3",
+        # Vision-capable but absent from LiteLLM's live registry (#5523).
+        "deepseek-v4.1-flash",
+        "deepseek/deepseek-v4.1-flash",
+        "openhands/deepseek-v4.1-flash",
+        "litellm_proxy/deepseek/deepseek-v4.1-flash",
     ],
 )
 def test_vision_is_active_supported_models(model):
@@ -98,6 +103,41 @@ def test_chat_serializes_images_when_vision_supported(model):
     assert len(parts) >= 1
 
 
+@pytest.mark.parametrize(
+    "model",
+    [
+        "deepseek-v4.1-flash",
+        "deepseek/deepseek-v4.1-flash",
+        "openhands/deepseek-v4.1-flash",
+        "litellm_proxy/deepseek/deepseek-v4.1-flash",
+    ],
+)
+def test_deepseek_vision_models_keep_images_in_chat_payload(model):
+    """Image-bearing user messages survive serialization for DeepSeek vision ids.
+
+    Regression for #5523: the bare ``"deepseek"`` entry in
+    FORCE_STRING_SERIALIZER_MODELS forced the string serializer, which drops
+    ImageContent, so a vision request reached the model without its image.
+    """
+    llm = LLM(model=model, api_key=SecretStr("k"), usage_id="t")
+    assert llm.vision_is_active() is True
+    assert llm._model_features().force_string_serializer is False
+
+    msg = Message(
+        role="user",
+        content=[
+            TextContent(text="see image"),
+            ImageContent(image_urls=["https://example.com/image.png"]),
+        ],
+    )
+    formatted = llm.format_messages_for_llm([msg])
+
+    # ``openhands/*`` models gain a prepended proxy-identity system message.
+    user_block = next(item for item in formatted if item["role"] == "user")
+    assert isinstance(user_block["content"], list)
+    assert len(_collect_image_url_parts(user_block)) == 1
+
+
 @patch(
     "openhands.sdk.llm.llm.get_litellm_model_info",
     return_value={"supports_vision": True},
@@ -124,8 +164,9 @@ def test_deepseek_v4_vision_payload_keeps_image(_mock_sv, _mock_model_info):
     )
     formatted = llm.format_messages_for_llm([msg])
 
-    assert len(formatted) == 1
-    assert len(_collect_image_url_parts(formatted[0])) == 1
+    # ``openhands/*`` models gain a prepended proxy-identity system message.
+    user_block = next(item for item in formatted if item["role"] == "user")
+    assert len(_collect_image_url_parts(user_block)) == 1
 
 
 @patch(

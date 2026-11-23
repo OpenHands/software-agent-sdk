@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from openhands.sdk.conversation.goal.judge import GoalVerdict, judge_goal
 from openhands.sdk.conversation.goal.prompts import FOLLOWUP_PROMPT
 from openhands.sdk.event import Event
+from openhands.sdk.event.ask_user import find_pending_ask
 from openhands.sdk.llm import LLM
 from openhands.sdk.logger import get_logger
 
@@ -71,7 +72,20 @@ class GoalDone(BaseModel):
     outcome: GoalOutcome
 
 
-GoalStep = GoalContinue | GoalDone
+class GoalAsked(BaseModel):
+    """Decision to stop for now: the agent asked the user a question.
+
+    The run ended on an ``ask_user`` call that only the user can answer, so a
+    driver sends nothing more (a followup would land over the question) and
+    stops; the user answers, then the goal can be resumed. No round is
+    counted and the judge is not called.
+    """
+
+    ask_id: str = Field(description="The pending `ask_user` call.")
+    question: str
+
+
+GoalStep = GoalContinue | GoalDone | GoalAsked
 """One decision returned by :meth:`GoalController.on_run_finished`."""
 
 
@@ -103,12 +117,18 @@ class GoalController:
     def on_run_finished(self, events: Sequence[Event]) -> GoalStep:
         """Judge the objective after a run and decide whether to continue.
 
-        Increments the iteration count, audits ``events`` with the judge LLM,
-        and returns a :class:`GoalContinue` (with a followup) or a terminal
-        :class:`GoalDone` (with a :class:`GoalOutcome`).
+        Audits ``events`` with the judge LLM, counts the round once the judge
+        has returned a verdict, and returns a :class:`GoalContinue` (with a
+        followup) or a terminal :class:`GoalDone` (with a :class:`GoalOutcome`).
+        A judge call that raises leaves the count unchanged: a failed or
+        abandoned audit is not a completed round. A run that ended on a
+        question for the user returns :class:`GoalAsked` without judging.
         """
-        self.iteration += 1
+        pending = find_pending_ask(events)
+        if pending is not None:
+            return GoalAsked(ask_id=pending.ask_id, question=pending.question)
         verdict = judge_goal(self.judge_llm, self.objective, events)
+        self.iteration += 1
         logger.info(
             "Goal audit %d/%d: score=%.2f complete=%s",
             self.iteration,

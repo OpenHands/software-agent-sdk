@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 from unittest.mock import patch
 
@@ -21,23 +22,23 @@ from openhands.agent_server.launch import (
 )
 from openhands.agent_server.persistence import (
     PersistedSettings,
-    get_agent_profile_store,
-    get_llm_profile_store,
-    get_settings_store,
-    reset_stores,
+    ServerStores,
 )
 from openhands.sdk import LLM
 from openhands.sdk.conversation.request import StartConversationRequest
 from openhands.sdk.launch import finalize, preview_launch, resolve
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.profiles import OpenHandsAgentProfile
+from openhands.sdk.profiles.agent_profile import ProfileVerificationSettings
 from openhands.sdk.settings.model import (
     OpenHandsAgentSettings,
+    VerificationSettings,
     validate_agent_settings,
 )
 from openhands.sdk.skills import Skill
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
+from tests.agent_server.conftest import client_context
 
 
 CATALOG = [
@@ -49,7 +50,6 @@ CATALOG = [
 @pytest.fixture
 def server(tmp_path, monkeypatch) -> Iterator[TestClient]:
     monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "persistence"))
-    reset_stores()
     config = Config(
         static_files_path=None,
         session_api_keys=[],
@@ -58,7 +58,7 @@ def server(tmp_path, monkeypatch) -> Iterator[TestClient]:
         workspace_path=tmp_path / "workspace",
     )
     (tmp_path / "workspace").mkdir()
-    get_settings_store(config).save(
+    ServerStores.from_config(config).settings.save(
         PersistedSettings(
             agent_settings=OpenHandsAgentSettings(
                 mcp_config={
@@ -68,7 +68,7 @@ def server(tmp_path, monkeypatch) -> Iterator[TestClient]:
             )
         )
     )
-    get_llm_profile_store().save(
+    ServerStores.from_config(Config()).llm_profiles.save(
         "default",
         LLM(model="parity-model", api_key=SecretStr("sk-parity")),
         include_secrets=True,
@@ -79,11 +79,10 @@ def server(tmp_path, monkeypatch) -> Iterator[TestClient]:
         TestClient(create_app(config)) as client,
     ):
         yield client
-    reset_stores()
 
 
 def _save(profile: OpenHandsAgentProfile) -> OpenHandsAgentProfile:
-    get_agent_profile_store().save(profile)
+    ServerStores.from_config(Config()).agent_profiles.save(profile)
     return profile
 
 
@@ -172,13 +171,167 @@ def test_default_and_a_copy_of_it_launch_the_same_agent(server, tmp_path):
     assert _agent_view(from_default["agent"]) == _agent_view(from_copy["agent"])
 
 
-def test_stored_and_agent_settings_sources_launch_the_same_agent(server, tmp_path):
+def test_public_skills_select_the_public_tier_and_a_launch_can_add_one(
+    server, tmp_path
+):
+    catalog = [*CATALOG, Skill(name="mine", content="m", description="user skill")]
+    profile = _save(
+        OpenHandsAgentProfile(
+            name="named", llm_profile_ref="default", public_skills=["alpha"]
+        )
+    )
+    workspace = str(tmp_path / "workspace")
+    invoked = CATALOG[1].model_dump(mode="json")
+
+    with (
+        patch("openhands.agent_server.launch.discover_profile_skills", lambda: catalog),
+        patch(
+            "openhands.agent_server.launch.discover_public_skill_names",
+            lambda: {"alpha", "beta"},
+        ),
+        patch("openhands.agent_server.launch.is_tool_usable", return_value=True),
+    ):
+        preview = server.post(f"/api/agent-profiles/{profile.name}/materialize").json()
+        plain = _launch(server, workspace, agent_profile_id=str(profile.id))
+        invoking = _launch(
+            server,
+            workspace,
+            agent_profile_id=str(profile.id),
+            agent_launch_additions={"skills": [invoked]},
+        )
+
+    assert preview["resolved_skills"] == ["alpha", "mine"]
+    assert _agent_view(plain["agent"])["skills"] == ["alpha", "mine"]
+    assert sorted(_agent_view(invoking["agent"])["skills"]) == ["alpha", "beta", "mine"]
+
+
+@contextmanager
+def _skill_sources(skills: list[Skill], public: set[str]) -> Iterator[None]:
+    with (
+        patch("openhands.agent_server.launch.discover_profile_skills", lambda: skills),
+        patch(
+            "openhands.agent_server.skills_router.discover_profile_skills",
+            lambda: skills,
+        ),
+        patch(
+            "openhands.agent_server.launch.discover_public_skill_names", lambda: public
+        ),
+        patch(
+            "openhands.agent_server.skills_router.discover_public_skill_names",
+            lambda: public,
+        ),
+    ):
+        yield
+
+
+def test_a_selection_from_the_skill_catalog_launches_exactly_that_selection(
+    server, tmp_path
+):
+    catalog = [*CATALOG, Skill(name="mine", content="m", description="user skill")]
+    workspace = str(tmp_path / "workspace")
+
+    def launched_skills(profile: OpenHandsAgentProfile) -> list[str]:
+        launched = _launch(server, workspace, agent_profile_id=str(profile.id))
+        return sorted(_agent_view(launched["agent"])["skills"])
+
+    with patch("openhands.agent_server.launch.is_tool_usable", return_value=True):
+        with _skill_sources(catalog, public={"alpha", "beta"}):
+            listed = server.get("/api/skills/catalog").json()["skills"]
+            names = [skill["name"] for skill in listed]
+            everything = _save(
+                OpenHandsAgentProfile(name="everything", llm_profile_ref="default")
+            )
+            assert launched_skills(everything) == sorted(names)
+
+            selected = ["beta", "mine"]
+            chosen = _save(
+                OpenHandsAgentProfile(
+                    name="chosen",
+                    llm_profile_ref="default",
+                    public_skills=selected,
+                    disabled_skills=[n for n in names if n not in selected],
+                )
+            )
+            assert launched_skills(chosen) == selected
+
+        grown = [
+            *catalog,
+            Skill(name="gamma", content="g", description="later catalog skill"),
+            Skill(name="theirs", content="t", description="later user skill"),
+        ]
+        with _skill_sources(grown, public={"alpha", "beta", "gamma"}):
+            assert launched_skills(chosen) == ["beta", "mine", "theirs"]
+
+
+def test_the_global_critic_key_reaches_profile_launches_but_no_response(
+    server, tmp_path
+):
+    context = client_context(server)
+    config = context.config
+    store = context.stores.settings
+    stored = store.load()
+    assert stored is not None
+    store.save(
+        stored.model_copy(
+            update={
+                "agent_settings": stored.agent_settings.model_copy(
+                    update={
+                        "verification": VerificationSettings(
+                            critic_enabled=True, critic_api_key="sk-critic"
+                        )
+                    }
+                )
+            }
+        )
+    )
+    profile = _save(
+        OpenHandsAgentProfile(
+            name="named",
+            llm_profile_ref="default",
+            verification=ProfileVerificationSettings(critic_enabled=True),
+        )
+    )
+    settings = store.load()
+    assert settings is not None
+    stores = server_launch_stores(settings, context.stores, config.cipher)
+    request = StartConversationRequest(
+        agent_profile_id=profile.id, workspace=LocalWorkspace(working_dir="/workspace")
+    )
+    container_cipher = Cipher("container-key")
+
+    resolved = launch_source(request, lambda: stores, config.cipher)
+    payload = forward_to_runtime(
+        request, resolved, {}, container_cipher, load_memory=False
+    )
+    in_container = launch_source(
+        StartConversationRequest.model_validate(payload),
+        lambda: stores,
+        container_cipher,
+    )
+    preview = server.post(f"/api/agent-profiles/{profile.name}/materialize").json()
+
+    def critic_key(source) -> str | None:
+        key = source.settings.verification.critic_api_key
+        return key.get_secret_value() if key else None
+
+    assert critic_key(resolved) == "sk-critic"
+    assert critic_key(in_container) == "sk-critic"
+    assert "sk-critic" not in str(payload)
+    assert "sk-critic" not in str(preview)
+
+
+def test_inline_stored_and_agent_settings_sources_launch_the_same_agent(
+    server, tmp_path
+):
     stored = _save(_profile("named"))
     workspace = str(tmp_path / "workspace")
-    config = server.app.state.config
-    settings = get_settings_store(config).load()
+    context = client_context(server)
+    config = context.config
+    settings = context.stores.settings.load()
     assert settings is not None
-    resolved = resolve(stored, server_launch_stores(settings, config.cipher))
+    resolved = resolve(
+        stored, server_launch_stores(settings, context.stores, config.cipher)
+    )
     agent_settings = resolved.settings.model_dump(
         mode="json", context={"expose_secrets": True}
     )
@@ -196,15 +349,16 @@ def test_a_docker_host_preview_matches_what_the_container_launches(
     server, tmp_path, image_has_browser
 ):
     profile = _save(_profile("named"))
-    host = server.app.state.config.model_copy(
+    context = client_context(server)
+    host = context.config.model_copy(
         update={
             "conversation_runtime": "docker",
             "conversation_image_has_browser": image_has_browser,
         }
     )
-    settings = get_settings_store(host).load()
+    settings = context.stores.settings.load()
     assert settings is not None
-    stores = server_launch_stores(settings, host.cipher)
+    stores = server_launch_stores(settings, context.stores, host.cipher)
 
     preview = preview_launch(profile, stores, target_launch_runtime(host))
 

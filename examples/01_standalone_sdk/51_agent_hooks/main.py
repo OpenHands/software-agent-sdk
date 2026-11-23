@@ -71,8 +71,8 @@ QUALITY_REVIEWER_PROMPT = """You are a quality reviewer enforcing task completio
 You receive a Stop hook event when the main agent tries to finish.
 
 The task requires the file REPORT.md to exist in the workspace and contain at
-least one bullet point describing the repository. Use the file_editor tool to
-check whether the file exists and inspect its contents.
+least one bullet point describing the project in the workspace. Use the
+file_editor tool to check whether the file exists and inspect its contents.
 
 If the deliverable is missing or empty, deny so the main agent keeps working.
 Otherwise allow.
@@ -186,11 +186,23 @@ with tempfile.TemporaryDirectory() as tmpdir:
     print("Demo 2: Stop — deny until deliverable exists")
     print("=" * 60)
     print("Quality reviewer denies until REPORT.md exists with a bullet point.\n")
+    # Give the agent a small project to describe. With an empty workspace a
+    # model may go looking for "the repository" elsewhere on the machine.
+    (workspace / "README.md").write_text(
+        "# tempconv\n\nA tiny command-line tool that converts temperatures.\n"
+    )
+    (workspace / "tempconv.py").write_text(
+        "def c_to_f(c: float) -> float:\n"
+        "    return c * 9 / 5 + 32\n\n\n"
+        "def f_to_c(f: float) -> float:\n"
+        "    return (f - 32) * 5 / 9\n"
+    )
     total_cost += run_demo(
         workspace,
         quality_hook_config,
         "Write REPORT.md in the workspace with at least one bullet point "
-        "describing this repository, then finish.",
+        "describing the project in this workspace (README.md and tempconv.py), "
+        "then finish. Do not look outside the workspace.",
     )
 
     report = workspace / "REPORT.md"

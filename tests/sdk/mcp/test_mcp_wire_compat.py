@@ -126,7 +126,9 @@ def test_minimal_mcp_tool_with_nulls_loads():
 @pytest.mark.parametrize(
     "annotations",
     [
-        mcp.types.ToolAnnotations(readOnlyHint=True, openWorldHint=False),
+        mcp.types.ToolAnnotations.model_validate(
+            {"readOnlyHint": True, "openWorldHint": False}
+        ),
         _Mcp2StyleAnnotations(read_only_hint=True, open_world_hint=False),
     ],
     ids=["installed-mcp", "mcp2-shape"],

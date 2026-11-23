@@ -11,7 +11,6 @@ import re
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from fastapi import HTTPException, status
 from pydantic import TypeAdapter
 
 from openhands.agent_server.config import (
@@ -20,16 +19,22 @@ from openhands.agent_server.config import (
     Config,
 )
 from openhands.agent_server.docker_runtime.mediation import materialize_secrets
-from openhands.agent_server.persistence import (
-    PersistedSettings,
-    get_agent_profile_store,
-    get_llm_profile_store,
+from openhands.agent_server.persistence import PersistedSettings, ServerStores
+from openhands.agent_server.skills_service import (
+    discover_profile_skills,
+    discover_public_skill_names,
 )
-from openhands.agent_server.skills_service import discover_profile_skills
 from openhands.sdk.agent import ACPAgent
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.conversation.request import StartConversationRequest
+from openhands.sdk.errors import (
+    Busy,
+    DomainError,
+    NotFound,
+    OperationFailed,
+    Unprocessable,
+)
 from openhands.sdk.launch import (
     AgentLaunchError,
     LaunchRuntime,
@@ -51,6 +56,11 @@ from openhands.sdk.settings.model import (
 )
 from openhands.sdk.tool import BROWSER_TOOL_NAME, is_tool_usable
 from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.pydantic_secrets import (
+    SecretContext,
+    cipher_context,
+    client_context,
+)
 
 
 _SECRETS_ADAPTER: TypeAdapter[dict[str, SecretSource]] = TypeAdapter(
@@ -59,15 +69,18 @@ _SECRETS_ADAPTER: TypeAdapter[dict[str, SecretSource]] = TypeAdapter(
 
 
 def server_launch_stores(
-    settings: PersistedSettings, cipher: Cipher | None
+    settings: PersistedSettings, stores: ServerStores, cipher: Cipher | None
 ) -> LaunchStores:
-    llm_store = get_llm_profile_store()
+    llm_store = stores.llm_profiles
+    verification = getattr(settings.agent_settings, "verification", None)
     return LaunchStores(
         llm_profiles=llm_store,
         llm_profile_names=lambda: [n.removesuffix(".json") for n in llm_store.list()],
         mcp_config=settings.agent_settings.mcp_config,
         skills=discover_profile_skills,
-        agent_profiles=get_agent_profile_store(),
+        public_skill_names=discover_public_skill_names,
+        critic_api_key=verification.critic_api_key if verification else None,
+        agent_profiles=stores.agent_profiles,
         meta_profiles=MetaProfileStore(base_dir=default_meta_profile_dir()),
         cipher=cipher,
     )
@@ -135,14 +148,18 @@ def launch_source(
 ) -> LaunchSource:
     """Turn the request's agent source into a launch source (blocking)."""
     context = _decryption_context(request, cipher)
+    additions = request.agent_launch_additions
+    llm_profile_ref = additions.llm_profile_ref if additions else None
     if request.agent_profile_id is not None:
-        return resolve(request.agent_profile_id, stores())
+        return resolve(
+            request.agent_profile_id, stores(), llm_profile_ref=llm_profile_ref
+        )
     agent: AgentBase | None = request.agent
     if agent is not None:
         if context is None:
             return agent
         return type(agent).model_validate(
-            agent.model_dump(mode="json", context={"expose_secrets": True}),
+            agent.model_dump(mode="json", context=client_context("plaintext")),
             context=context,
         )
     if request.agent_settings is None:
@@ -163,7 +180,7 @@ def request_secrets(
         return dict(request.secrets)
     return _SECRETS_ADAPTER.validate_python(
         _SECRETS_ADAPTER.dump_python(
-            request.secrets, mode="json", context={"expose_secrets": True}
+            request.secrets, mode="json", context=client_context("plaintext")
         ),
         context=context,
     )
@@ -171,7 +188,7 @@ def request_secrets(
 
 def _decryption_context(
     request: StartConversationRequest, cipher: Cipher | None
-) -> dict[str, Any] | None:
+) -> SecretContext | None:
     if not request.secrets_encrypted:
         return None
     if cipher is None:
@@ -179,23 +196,21 @@ def _decryption_context(
             "Cannot decrypt secrets: cipher not configured. "
             "Set OH_SECRET_KEY environment variable."
         )
-    return {"cipher": cipher}
+    return cipher_context(cipher)
 
 
 LaunchFailure = ProfileNotFound | AgentLaunchError | LaunchStoreError
 
 
-def launch_http_exception(exc: LaunchFailure) -> HTTPException:
+def launch_error(exc: LaunchFailure) -> DomainError:
+    """The domain error a route raises for a failed launch."""
     if isinstance(exc, ProfileNotFound):
-        return HTTPException(status.HTTP_404_NOT_FOUND, str(exc))
+        return NotFound(str(exc))
     if isinstance(exc, AgentLaunchError):
-        return HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, exc.to_detail())
-    code = (
-        status.HTTP_503_SERVICE_UNAVAILABLE
-        if exc.retryable
-        else status.HTTP_500_INTERNAL_SERVER_ERROR
-    )
-    return HTTPException(code, str(exc))
+        return Unprocessable(exc.to_detail())
+    if exc.retryable:
+        return Busy(str(exc))
+    return OperationFailed(str(exc))
 
 
 def scoped_secrets(
@@ -237,7 +252,7 @@ def forward_to_runtime(
     sources = {"agent", "agent_settings", "agent_profile_id"}
     payload = forwarded.model_dump(
         mode="json",
-        context={"cipher": cipher},
+        context=cipher_context(cipher),
         exclude=sources if source is not None else {"agent", "agent_settings"},
     )
     if source is None:
@@ -246,7 +261,11 @@ def forward_to_runtime(
     field = "agent_settings" if isinstance(source, ResolvedLaunch) else "agent"
     payload[field] = model.model_copy(
         update=_forwarded_context(model.agent_context, load_memory=load_memory)
-    ).model_dump(mode="json", context={"cipher": cipher})
+    ).model_dump(mode="json", context=cipher_context(cipher))
+    additions = dict(payload.get("agent_launch_additions") or {})
+    # Already applied by resolve; without a profile source it is invalid.
+    additions.pop("llm_profile_ref", None)
+    payload["agent_launch_additions"] = additions or None
     return payload
 
 

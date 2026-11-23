@@ -244,8 +244,8 @@ class HookExecutor:
                 "timeout": hook.timeout,
             }
         )
-        # Isolate Metrics so hook spend doesn't accrue to the parent's bucket.
-        hook_llm.reset_metrics()
+        # Its own usage_id gives the copy its own session, so hook spend
+        # doesn't accrue to the parent's bucket.
 
         # Never hand the parent's already-initialized visualizer instance to the
         # sub-conversation: LocalConversation.__init__ calls initialize() on it,
@@ -328,7 +328,6 @@ class HookExecutor:
                 "stream": False,
             }
         )
-        hook_llm.reset_metrics()
 
         messages = [
             Message(
@@ -421,7 +420,9 @@ class HookExecutor:
             )
 
         decision_str = str(data.get("decision", "")).lower()
-        reason = str(data.get("reason", ""))
+        # A JSON null reason means the hook gave none; str(None) would turn it
+        # into the literal "None" and show that to the model.
+        reason = None if (raw_reason := data.get("reason")) is None else str(raw_reason)
         if decision_str == "deny":
             return HookResult(
                 success=True,
@@ -483,6 +484,10 @@ class HookExecutor:
         hook_env["OPENHANDS_EVENT_TYPE"] = event.event_type
         if event.tool_name:
             hook_env["OPENHANDS_TOOL_NAME"] = event.tool_name
+        if hook.plugin_root:
+            # Set after the inherited environment so a parent-process value
+            # cannot shadow the owning plugin's root.
+            hook_env["PLUGIN_ROOT"] = hook.plugin_root
 
         if env:
             hook_env.update(env)
@@ -548,16 +553,28 @@ class HookExecutor:
                 )
 
         try:
-            # Execute the hook command synchronously
-            result = subprocess.run(
+            # Execute the hook command synchronously, in its own session so a
+            # timeout stops the commands the shell started, not just the shell.
+            with subprocess.Popen(
                 command,
                 shell=True,
                 cwd=self.working_dir,
                 env=hook_env,
-                input=event_json,
-                capture_output=True,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=hook.timeout,
+                start_new_session=os.name != "nt",
+            ) as process:
+                try:
+                    stdout, stderr = process.communicate(
+                        event_json, timeout=hook.timeout
+                    )
+                except subprocess.TimeoutExpired:
+                    self.async_process_manager._terminate_process(process)
+                    raise
+            result = subprocess.CompletedProcess(
+                command, process.returncode, stdout, stderr
             )
 
             # Parse the result
@@ -586,7 +603,10 @@ class HookExecutor:
 
                         # Parse other fields
                         if "reason" in output_data:
-                            hook_result.reason = str(output_data["reason"])
+                            raw_reason = output_data["reason"]
+                            hook_result.reason = (
+                                None if raw_reason is None else str(raw_reason)
+                            )
                         if "additionalContext" in output_data:
                             hook_result.additional_context = str(
                                 output_data["additionalContext"]

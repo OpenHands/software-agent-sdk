@@ -185,20 +185,19 @@ async def test_websocket_disconnect_breaks_loop(
     """Test that WebSocketDisconnect exception breaks the loop."""
     mock_websocket.receive_json.side_effect = WebSocketDisconnect()
 
-    with (
-        patch(
-            "openhands.agent_server.sockets.conversation_service"
-        ) as mock_conv_service,
-        patch("openhands.agent_server.sockets.get_default_config") as mock_config,
-    ):
-        mock_config.return_value.session_api_keys = None
-        mock_conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
+    config = MagicMock(session_api_keys=None)
+    conv_service = MagicMock()
+    conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
 
-        from openhands.agent_server.sockets import events_socket
+    from openhands.agent_server.sockets import events_socket
 
-        await events_socket(
-            sample_conversation_id, mock_websocket, session_api_key=None
-        )
+    await events_socket(
+        sample_conversation_id,
+        mock_websocket,
+        session_api_key=None,
+        config=config,
+        conv_service=conv_service,
+    )
 
     mock_event_service.unsubscribe_from_events.assert_called()
 
@@ -212,20 +211,19 @@ async def test_websocket_no_double_unsubscription(
     mock_event_service.subscribe_to_events.return_value = subscriber_id
     mock_websocket.receive_json.side_effect = WebSocketDisconnect()
 
-    with (
-        patch(
-            "openhands.agent_server.sockets.conversation_service"
-        ) as mock_conv_service,
-        patch("openhands.agent_server.sockets.get_default_config") as mock_config,
-    ):
-        mock_config.return_value.session_api_keys = None
-        mock_conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
+    config = MagicMock(session_api_keys=None)
+    conv_service = MagicMock()
+    conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
 
-        from openhands.agent_server.sockets import events_socket
+    from openhands.agent_server.sockets import events_socket
 
-        await events_socket(
-            sample_conversation_id, mock_websocket, session_api_key=None
-        )
+    await events_socket(
+        sample_conversation_id,
+        mock_websocket,
+        session_api_key=None,
+        config=config,
+        conv_service=conv_service,
+    )
 
     assert mock_event_service.unsubscribe_from_events.call_count == 1
     mock_event_service.unsubscribe_from_events.assert_called_with(subscriber_id)
@@ -248,23 +246,21 @@ async def test_websocket_general_exception_continues_loop(
 
     mock_websocket.receive_json.side_effect = side_effect
 
-    with (
-        patch(
-            "openhands.agent_server.sockets.conversation_service"
-        ) as mock_conv_service,
-        patch("openhands.agent_server.sockets.get_default_config") as mock_config,
-        patch("openhands.agent_server.sockets.logger.exception") as log_exception,
-    ):
-        mock_config.return_value.session_api_keys = None
-        mock_conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
-
+    config = MagicMock(session_api_keys=None)
+    conv_service = MagicMock()
+    conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
+    with patch("openhands.agent_server.sockets.logger.exception") as log_exception:
         from openhands.agent_server.sockets import events_socket
 
         await events_socket(
-            sample_conversation_id, mock_websocket, session_api_key=None
+            sample_conversation_id,
+            mock_websocket,
+            session_api_key=None,
+            config=config,
+            conv_service=conv_service,
         )
 
-        log_exception.assert_called_once()
+        log_exception.assert_called_once_with("error_in_subscription")
 
     assert mock_websocket.receive_json.call_count == 2
     mock_event_service.unsubscribe_from_events.assert_called_once()
@@ -288,20 +284,19 @@ async def test_websocket_successful_message_processing(
 
     mock_websocket.receive_json.side_effect = side_effect
 
-    with (
-        patch(
-            "openhands.agent_server.sockets.conversation_service"
-        ) as mock_conv_service,
-        patch("openhands.agent_server.sockets.get_default_config") as mock_config,
-    ):
-        mock_config.return_value.session_api_keys = None
-        mock_conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
+    config = MagicMock(session_api_keys=None)
+    conv_service = MagicMock()
+    conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
 
-        from openhands.agent_server.sockets import events_socket
+    from openhands.agent_server.sockets import events_socket
 
-        await events_socket(
-            sample_conversation_id, mock_websocket, session_api_key=None
-        )
+    await events_socket(
+        sample_conversation_id,
+        mock_websocket,
+        session_api_key=None,
+        config=config,
+        conv_service=conv_service,
+    )
 
     mock_event_service.send_message.assert_called_once()
     assert mock_websocket.receive_json.call_count == 2
@@ -316,22 +311,20 @@ async def test_disconnect_and_unsubscribe_when_send_error_fails(
     mock_websocket.receive_json.side_effect = RuntimeError("Connection broken")
     mock_websocket.send_json.side_effect = RuntimeError("Connection broken")
 
-    with (
-        patch(
-            "openhands.agent_server.sockets.conversation_service"
-        ) as mock_conv_service,
-        patch("openhands.agent_server.sockets.get_default_config") as mock_config,
-        patch("openhands.agent_server.sockets.logger.debug") as log_debug,
-    ):
-        mock_config.return_value.session_api_keys = None
-        mock_conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
-
+    config = MagicMock(session_api_keys=None)
+    conv_service = MagicMock()
+    conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
+    with patch("openhands.agent_server.sockets.logger.debug") as log_debug:
         from openhands.agent_server.sockets import events_socket
 
         # RuntimeError is caught gracefully (like WebSocketDisconnect)
         # and the function returns normally
         await events_socket(
-            sample_conversation_id, mock_websocket, session_api_key=None
+            sample_conversation_id,
+            mock_websocket,
+            session_api_key=None,
+            config=config,
+            conv_service=conv_service,
         )
 
     log_debug.assert_called_once()
@@ -345,23 +338,20 @@ async def test_resend_mode_none_no_resend(
     """Test that resend_mode=None doesn't trigger event resend."""
     mock_websocket.receive_json.side_effect = WebSocketDisconnect()
 
-    with (
-        patch(
-            "openhands.agent_server.sockets.conversation_service"
-        ) as mock_conv_service,
-        patch("openhands.agent_server.sockets.get_default_config") as mock_config,
-    ):
-        mock_config.return_value.session_api_keys = None
-        mock_conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
+    config = MagicMock(session_api_keys=None)
+    conv_service = MagicMock()
+    conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
 
-        from openhands.agent_server.sockets import events_socket
+    from openhands.agent_server.sockets import events_socket
 
-        await events_socket(
-            sample_conversation_id,
-            mock_websocket,
-            session_api_key=None,
-            resend_mode=None,
-        )
+    await events_socket(
+        sample_conversation_id,
+        mock_websocket,
+        session_api_key=None,
+        resend_mode=None,
+        config=config,
+        conv_service=conv_service,
+    )
 
     mock_event_service.search_events.assert_not_called()
 
@@ -387,23 +377,20 @@ async def test_resend_mode_all_resends_events(
     mock_event_service.search_events = AsyncMock(return_value=mock_event_page)
     mock_websocket.receive_json.side_effect = WebSocketDisconnect()
 
-    with (
-        patch(
-            "openhands.agent_server.sockets.conversation_service"
-        ) as mock_conv_service,
-        patch("openhands.agent_server.sockets.get_default_config") as mock_config,
-    ):
-        mock_config.return_value.session_api_keys = None
-        mock_conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
+    config = MagicMock(session_api_keys=None)
+    conv_service = MagicMock()
+    conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
 
-        from openhands.agent_server.sockets import events_socket
+    from openhands.agent_server.sockets import events_socket
 
-        await events_socket(
-            sample_conversation_id,
-            mock_websocket,
-            session_api_key=None,
-            resend_mode="all",
-        )
+    await events_socket(
+        sample_conversation_id,
+        mock_websocket,
+        session_api_key=None,
+        resend_mode="all",
+        config=config,
+        conv_service=conv_service,
+    )
 
     mock_event_service.search_events.assert_called_once_with(page_id=None)
     assert mock_websocket.send_json.call_count == 2
@@ -431,24 +418,21 @@ async def test_resend_mode_since_with_timestamp(
     # Use a naive timestamp
     test_timestamp = datetime(2024, 1, 15, 10, 30, 0)
 
-    with (
-        patch(
-            "openhands.agent_server.sockets.conversation_service"
-        ) as mock_conv_service,
-        patch("openhands.agent_server.sockets.get_default_config") as mock_config,
-    ):
-        mock_config.return_value.session_api_keys = None
-        mock_conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
+    config = MagicMock(session_api_keys=None)
+    conv_service = MagicMock()
+    conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
 
-        from openhands.agent_server.sockets import events_socket
+    from openhands.agent_server.sockets import events_socket
 
-        await events_socket(
-            sample_conversation_id,
-            mock_websocket,
-            session_api_key=None,
-            resend_mode="since",
-            after_timestamp=test_timestamp,
-        )
+    await events_socket(
+        sample_conversation_id,
+        mock_websocket,
+        session_api_key=None,
+        resend_mode="since",
+        after_timestamp=test_timestamp,
+        config=config,
+        conv_service=conv_service,
+    )
 
     mock_event_service.search_events.assert_called_once_with(
         page_id=None, timestamp__gte=test_timestamp
@@ -462,16 +446,10 @@ async def test_resend_mode_since_without_timestamp_logs_warning(
     """Test that resend_mode='since' without after_timestamp logs warning."""
     mock_websocket.receive_json.side_effect = WebSocketDisconnect()
 
-    with (
-        patch(
-            "openhands.agent_server.sockets.conversation_service"
-        ) as mock_conv_service,
-        patch("openhands.agent_server.sockets.get_default_config") as mock_config,
-        patch("openhands.agent_server.sockets.logger") as mock_logger,
-    ):
-        mock_config.return_value.session_api_keys = None
-        mock_conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
-
+    config = MagicMock(session_api_keys=None)
+    conv_service = MagicMock()
+    conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
+    with patch("openhands.agent_server.sockets.logger") as mock_logger:
         from openhands.agent_server.sockets import events_socket
 
         await events_socket(
@@ -480,6 +458,8 @@ async def test_resend_mode_since_without_timestamp_logs_warning(
             session_api_key=None,
             resend_mode="since",
             after_timestamp=None,
+            config=config,
+            conv_service=conv_service,
         )
 
     # Should log a warning and not call search_events
@@ -508,24 +488,21 @@ async def test_resend_mode_since_timezone_aware_is_normalized(
     # Use a timezone-aware timestamp (UTC)
     test_timestamp = datetime(2024, 1, 15, 10, 30, 0, tzinfo=UTC)
 
-    with (
-        patch(
-            "openhands.agent_server.sockets.conversation_service"
-        ) as mock_conv_service,
-        patch("openhands.agent_server.sockets.get_default_config") as mock_config,
-    ):
-        mock_config.return_value.session_api_keys = None
-        mock_conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
+    config = MagicMock(session_api_keys=None)
+    conv_service = MagicMock()
+    conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
 
-        from openhands.agent_server.sockets import events_socket
+    from openhands.agent_server.sockets import events_socket
 
-        await events_socket(
-            sample_conversation_id,
-            mock_websocket,
-            session_api_key=None,
-            resend_mode="since",
-            after_timestamp=test_timestamp,
-        )
+    await events_socket(
+        sample_conversation_id,
+        mock_websocket,
+        session_api_key=None,
+        resend_mode="since",
+        after_timestamp=test_timestamp,
+        config=config,
+        conv_service=conv_service,
+    )
 
     # search_events should be called with the normalized timestamp
     mock_event_service.search_events.assert_called_once()
@@ -558,16 +535,10 @@ async def test_deprecated_resend_all_true_still_works(
     mock_event_service.search_events = AsyncMock(return_value=mock_event_page)
     mock_websocket.receive_json.side_effect = WebSocketDisconnect()
 
-    with (
-        patch(
-            "openhands.agent_server.sockets.conversation_service"
-        ) as mock_conv_service,
-        patch("openhands.agent_server.sockets.get_default_config") as mock_config,
-        patch("openhands.agent_server.sockets.logger") as mock_logger,
-    ):
-        mock_config.return_value.session_api_keys = None
-        mock_conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
-
+    config = MagicMock(session_api_keys=None)
+    conv_service = MagicMock()
+    conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
+    with patch("openhands.agent_server.sockets.logger") as mock_logger:
         from openhands.agent_server.sockets import events_socket
 
         await events_socket(
@@ -575,6 +546,8 @@ async def test_deprecated_resend_all_true_still_works(
             mock_websocket,
             session_api_key=None,
             resend_all=True,
+            config=config,
+            conv_service=conv_service,
         )
 
     # Should log deprecation warning
@@ -594,23 +567,20 @@ async def test_deprecated_resend_all_false_no_resend(
     """Test backward compatibility: resend_all=False doesn't trigger event resend."""
     mock_websocket.receive_json.side_effect = WebSocketDisconnect()
 
-    with (
-        patch(
-            "openhands.agent_server.sockets.conversation_service"
-        ) as mock_conv_service,
-        patch("openhands.agent_server.sockets.get_default_config") as mock_config,
-    ):
-        mock_config.return_value.session_api_keys = None
-        mock_conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
+    config = MagicMock(session_api_keys=None)
+    conv_service = MagicMock()
+    conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
 
-        from openhands.agent_server.sockets import events_socket
+    from openhands.agent_server.sockets import events_socket
 
-        await events_socket(
-            sample_conversation_id,
-            mock_websocket,
-            session_api_key=None,
-            resend_all=False,
-        )
+    await events_socket(
+        sample_conversation_id,
+        mock_websocket,
+        session_api_key=None,
+        resend_all=False,
+        config=config,
+        conv_service=conv_service,
+    )
 
     mock_event_service.search_events.assert_not_called()
 
@@ -622,16 +592,10 @@ async def test_resend_mode_takes_precedence_over_resend_all(
     """Test that resend_mode takes precedence over deprecated resend_all."""
     mock_websocket.receive_json.side_effect = WebSocketDisconnect()
 
-    with (
-        patch(
-            "openhands.agent_server.sockets.conversation_service"
-        ) as mock_conv_service,
-        patch("openhands.agent_server.sockets.get_default_config") as mock_config,
-        patch("openhands.agent_server.sockets.logger") as mock_logger,
-    ):
-        mock_config.return_value.session_api_keys = None
-        mock_conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
-
+    config = MagicMock(session_api_keys=None)
+    conv_service = MagicMock()
+    conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
+    with patch("openhands.agent_server.sockets.logger") as mock_logger:
         from openhands.agent_server.sockets import events_socket
 
         # If resend_mode is explicitly None and resend_all=True, it should
@@ -656,6 +620,8 @@ async def test_resend_mode_takes_precedence_over_resend_all(
             session_api_key=None,
             resend_mode="all",
             resend_all=False,  # This should be ignored since resend_mode is set
+            config=config,
+            conv_service=conv_service,
         )
 
     # resend_mode="all" should trigger resend, not the resend_all=False
@@ -663,3 +629,50 @@ async def test_resend_mode_takes_precedence_over_resend_all(
     # No deprecation warning since we're using the new API
     warning_calls = [str(c) for c in mock_logger.warning.call_args_list]
     assert not any("resend_all is deprecated" in w for w in warning_calls)
+
+
+@pytest.mark.asyncio
+async def test_websocket_subscriber_close_connection_closes_socket(mock_websocket):
+    """Delete and shutdown close the socket with their code, not leave it silent."""
+    subscriber = _WebSocketSubscriber(websocket=mock_websocket)
+
+    await subscriber.close_connection(4004, "Conversation deleted")
+
+    mock_websocket.close.assert_awaited_once_with(
+        code=4004, reason="Conversation deleted"
+    )
+
+
+@pytest.mark.asyncio
+async def test_websocket_subscriber_close_leaves_socket_open(mock_websocket):
+    """PubSub.close() alone (sandbox pause) does not close the socket."""
+    subscriber = _WebSocketSubscriber(websocket=mock_websocket)
+
+    await subscriber.close()
+
+    mock_websocket.close.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_websocket_subscriber_close_is_bounded_for_stalled_peer(
+    mock_websocket, monkeypatch
+):
+    """A peer that stopped reading cannot hold up the delete or the shutdown."""
+    import asyncio
+
+    monkeypatch.setattr(
+        "openhands.agent_server.sockets.SUBSCRIBER_CLOSE_TIMEOUT_SECONDS", 0.05
+    )
+
+    async def hang(**_):
+        await asyncio.Event().wait()
+
+    # An async side_effect is awaited; a lambda returning a coroutine is not.
+    mock_websocket.close.side_effect = hang
+    subscriber = _WebSocketSubscriber(websocket=mock_websocket)
+
+    await asyncio.wait_for(
+        subscriber.close_connection(4004, "Conversation deleted"), timeout=2
+    )
+
+    mock_websocket.close.assert_awaited_once()
