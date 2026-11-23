@@ -4675,6 +4675,73 @@ class TestConversationSearchScaling:
         return ids
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("filename", ["meta.json", "base_state.json"])
+    async def test_broken_conversation_can_be_listed_and_deleted(
+        self, tmp_path, filename
+    ):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        conversations_dir = tmp_path / "conversations"
+        healthy, damaged = self._seed(conversations_dir, 2, workspace)
+        broken_dir = conversations_dir / damaged.hex
+        if filename == "base_state.json":
+            metadata_path = broken_dir / "meta.json"
+            metadata = json.loads(metadata_path.read_text())
+            metadata["title"] = "Fork from earlier message"
+            metadata_path.write_text(json.dumps(metadata))
+        (broken_dir / filename).write_text('{"truncated":')
+
+        async with ConversationService(conversations_dir=conversations_dir) as svc:
+            page = await svc.search_conversations(limit=1)
+            broken = page.broken_items[0]
+            assert broken.id == damaged
+            assert broken.reason == ("metadata" if filename == "meta.json" else "state")
+            if filename == "base_state.json":
+                assert broken.title == "Fork from earlier message"
+            assert page.next_page_id == healthy.hex
+            assert [
+                item.id
+                for item in (
+                    await svc.search_conversations(page_id=page.next_page_id)
+                ).items
+            ] == [healthy]
+            assert await svc.batch_get_conversations([damaged, healthy]) == [
+                None,
+                await svc.get_conversation(healthy),
+            ]
+            assert await svc.delete_conversation(damaged)
+            assert not broken_dir.exists()
+            assert workspace.exists()
+            assert (conversations_dir / healthy.hex).exists()
+            remaining = await svc.search_conversations()
+            assert [item.id for item in remaining.items] == [healthy]
+            assert not remaining.broken_items
+
+    @pytest.mark.asyncio
+    async def test_search_rechecks_a_state_file_after_it_changes(self, tmp_path):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        conversations_dir = tmp_path / "conversations"
+        (conversation_id,) = self._seed(conversations_dir, 1, workspace)
+        state_path = conversations_dir / conversation_id.hex / "base_state.json"
+        original_state = state_path.read_text()
+
+        async with ConversationService(conversations_dir=conversations_dir) as svc:
+            assert [item.id for item in (await svc.search_conversations()).items] == [
+                conversation_id
+            ]
+
+            state_path.write_text('{"execution_status":"idle","agent":null}')
+            page = await svc.search_conversations()
+            assert [item.id for item in page.broken_items] == [conversation_id]
+            assert not page.items
+
+            state_path.write_text(original_state)
+            page = await svc.search_conversations()
+            assert [item.id for item in page.items] == [conversation_id]
+            assert not page.broken_items
+
+    @pytest.mark.asyncio
     async def test_filtered_search_loads_state_only_for_the_page(self, tmp_path):
         """A filtered page loads full state for page items, not the whole catalog."""
         workspace_dir = tmp_path / "workspace"

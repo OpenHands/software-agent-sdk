@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC
 from datetime import datetime
 from enum import Enum, StrEnum
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, field_validator
@@ -407,9 +407,19 @@ class ConversationInfo(_ConversationInfoBase):
     )
 
 
+class BrokenConversationInfo(BaseModel):
+    id: UUID
+    title: str | None = None
+    created_at: datetime
+    updated_at: datetime
+    tags: dict[str, str] = Field(default_factory=dict)
+    reason: Literal["metadata", "state"]
+
+
 class ConversationPage(BaseModel):
     items: list[ConversationInfo]
     next_page_id: str | None = None
+    broken_items: list[BrokenConversationInfo] = Field(default_factory=list)
 
 
 INCLUDE_SKILLS_PARAM_TITLE = (
