@@ -681,9 +681,11 @@ class ConversationService:
                 continue
             meta_file = conversation_dir / "meta.json"
             base_state_path = str(conversation_dir / BASE_STATE)
+            raw_metadata = b""
             try:
+                raw_metadata = meta_file.read_bytes()
                 stored = StoredConversation.model_validate_json(
-                    meta_file.read_bytes(),
+                    raw_metadata,
                     context=cipher_context(self._cipher_for(directory_id)),
                 )
                 if stored.id != directory_id:
@@ -695,8 +697,16 @@ class ConversationService:
                 if signature is None:
                     continue
                 timestamp = datetime.fromtimestamp(signature[0] / 1e9, UTC)
+                title = None
+                with suppress(ValueError):
+                    metadata = json.loads(raw_metadata)
+                    if isinstance(metadata, dict) and isinstance(
+                        metadata.get("title"), str
+                    ):
+                        title = metadata["title"]
                 broken[directory_id] = BrokenConversationInfo(
                     id=directory_id,
+                    title=title,
                     created_at=timestamp,
                     updated_at=timestamp,
                     reason="metadata",
@@ -2037,6 +2047,7 @@ class ConversationService:
                         self._delete_broken_conversation_dir, conversation_id
                     ):
                         return False
+                    event_services.pop(conversation_id, None)
                     self._broken_metadata.pop(conversation_id, None)
                     self._conversation_records.pop(conversation_id, None)
                     self._credential_bindings.pop(conversation_id, None)

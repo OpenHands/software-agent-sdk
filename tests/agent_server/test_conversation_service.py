@@ -4675,9 +4675,16 @@ class TestConversationSearchScaling:
         return ids
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("filename", ["meta.json", "base_state.json"])
+    @pytest.mark.parametrize(
+        ("filename", "payload", "expected_title"),
+        [
+            ("meta.json", '{"truncated":', None),
+            ("meta.json", '{"title":"Recoverable title"}', "Recoverable title"),
+            ("base_state.json", '{"truncated":', "Fork from earlier message"),
+        ],
+    )
     async def test_broken_conversation_can_be_listed_and_deleted(
-        self, tmp_path, filename
+        self, tmp_path, filename, payload, expected_title
     ):
         workspace = tmp_path / "workspace"
         workspace.mkdir()
@@ -4689,15 +4696,14 @@ class TestConversationSearchScaling:
             metadata = json.loads(metadata_path.read_text())
             metadata["title"] = "Fork from earlier message"
             metadata_path.write_text(json.dumps(metadata))
-        (broken_dir / filename).write_text('{"truncated":')
+        (broken_dir / filename).write_text(payload)
 
         async with ConversationService(conversations_dir=conversations_dir) as svc:
             page = await svc.search_conversations(limit=1)
             broken = page.broken_items[0]
             assert broken.id == damaged
             assert broken.reason == ("metadata" if filename == "meta.json" else "state")
-            if filename == "base_state.json":
-                assert broken.title == "Fork from earlier message"
+            assert broken.title == expected_title
             assert page.next_page_id == healthy.hex
             assert [
                 item.id

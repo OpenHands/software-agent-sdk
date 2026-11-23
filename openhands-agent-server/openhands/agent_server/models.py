@@ -419,7 +419,10 @@ class BrokenConversationInfo(BaseModel):
 class ConversationPage(BaseModel):
     items: list[ConversationInfo]
     next_page_id: str | None = None
-    broken_items: list[BrokenConversationInfo] = Field(default_factory=list)
+    broken_items: list[BrokenConversationInfo] = Field(
+        default_factory=list,
+        description="Unreadable conversations in this page of unfiltered results.",
+    )
 
 
 INCLUDE_SKILLS_PARAM_TITLE = (
