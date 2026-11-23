@@ -47,7 +47,6 @@ constraints = [
 [manifest.dependency-groups]
 dev = [
     { name = "griffe", extras = ["pypi"], specifier = ">=2.4.1" },
-    { name = "openhands-agent-server", extras = ["trajectory-gcs"], editable = "openhands-agent-server" },
     { name = "packaging", specifier = ">=26.3" },
     { name = "pillow", specifier = ">=13.0.0" },
     { name = "pre-commit", specifier = ">=4.7.0" },
@@ -2814,10 +2813,6 @@ dependencies = [
 posthog = [
     { name = "posthog" },
 ]
-trajectory-gcs = [
-    { name = "google-cloud-storage", version = "3.4.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
-    { name = "google-cloud-storage", version = "3.11.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.13'" },
-]
 
 [package.metadata]
 requires-dist = [
@@ -2826,7 +2821,6 @@ requires-dist = [
     { name = "certifi", specifier = ">=2026.10.19" },
     { name = "docker", specifier = ">=7.2.0,<8" },
     { name = "fastapi", specifier = ">=0.104" },
-    { name = "google-cloud-storage", marker = "extra == 'trajectory-gcs'", specifier = ">=3.4.1,<4" },
     { name = "openai", specifier = ">=2.33.0,<3" },
     { name = "openhands-sdk", editable = "openhands-sdk" },
     { name = "openhands-tools", editable = "openhands-tools" },
@@ -2837,7 +2831,7 @@ requires-dist = [
     { name = "websockets", specifier = ">=12" },
     { name = "wsproto", specifier = ">=1.3.2" },
 ]
-provides-extras = ["posthog", "trajectory-gcs"]
+provides-extras = ["posthog"]
 
 [[package]]
 name = "openhands-sdk"

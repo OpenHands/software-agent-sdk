@@ -1,5 +1,4 @@
-from google.api_core.exceptions import GoogleAPIError
-from google.cloud import storage
+import subprocess
 
 from openhands.agent_server.persistence.trajectory_archive import (
     Head,
@@ -9,34 +8,61 @@ from openhands.agent_server.persistence.trajectory_archive import (
 from openhands.sdk.observability.trajectory_journal import digest
 
 
-class GCSStore:
-    def __init__(self, location: str) -> None:
-        bucket, _, prefix = location.removeprefix("gs://").partition("/")
-        if not location.startswith("gs://") or not bucket:
-            raise ValueError("Expected a GCS bucket or prefix")
-        self._prefix = prefix.strip("/")
-        self._bucket = storage.Client().bucket(bucket)
+class _MissingObject(OSError):
+    pass
 
-    def _name(self, key: str) -> str:
+
+class GCSStore:
+    def __init__(self, prefix: str) -> None:
+        if not prefix.startswith("gs://") or prefix == "gs://":
+            raise ValueError("Expected a GCS bucket or prefix")
+        self.prefix = prefix.rstrip("/")
+
+    def _url(self, key: str) -> str:
         _check_key(key)
-        return f"{self._prefix}/{key}" if self._prefix else key
+        return f"{self.prefix}/{key}"
+
+    @staticmethod
+    def _gcloud(*args: str, data: bytes | None = None) -> bytes:
+        try:
+            completed = subprocess.run(
+                ("gcloud", "--quiet", "storage", *args),
+                input=data,
+                capture_output=True,
+                check=True,
+                timeout=120,
+            )
+        except subprocess.CalledProcessError as error:
+            if (
+                args[:2] == ("objects", "describe")
+                and b"not found: 404" in error.stderr
+            ):
+                raise _MissingObject("GCS object is missing") from error
+            raise OSError(f"GCS {args[0]} failed") from error
+        except subprocess.TimeoutExpired as error:
+            raise OSError(f"GCS {args[0]} timed out") from error
+        return completed.stdout
+
+    def _generation(self, url: str) -> str:
+        generation = (
+            self._gcloud("objects", "describe", url, "--format=value(generation)")
+            .decode()
+            .strip()
+        )
+        if not generation.isdecimal():
+            raise OSError("Missing GCS object generation")
+        return generation
 
     def put(self, key: str, data: bytes) -> ObjectRef:
-        name = self._name(key)
-        blob = self._bucket.blob(name)
+        url = self._url(key)
         try:
-            blob.upload_from_string(data, if_generation_match=0)
-        except (GoogleAPIError, OSError) as error:
-            # A create can commit before its acknowledgment reaches the client.
-            live = self._bucket.get_blob(name)
-            if live is None:
-                raise OSError(f"GCS create failed for {key}") from error
-            blob = live
-        if blob.generation is None:
-            raise OSError(f"Missing GCS generation for {key}")
+            self._gcloud("cp", "--if-generation-match=0", "-", url, data=data)
+        except OSError:
+            # The object can exist when the create succeeded but its reply was lost.
+            pass
         return ObjectRef(
             key=key,
-            generation=str(blob.generation),
+            generation=self._generation(url),
             sha256=digest(data),
             size=len(data),
         )
@@ -44,32 +70,27 @@ class GCSStore:
     def get(self, ref: ObjectRef) -> bytes:
         if ref.generation is None or not ref.generation.isdecimal():
             raise ValueError("Expected a pinned GCS generation")
-        return self._read(self._name(ref.key), int(ref.generation))
-
-    def _read(self, name: str, generation: int) -> bytes:
-        try:
-            return self._bucket.blob(name, generation=generation).download_as_bytes(
-                raw_download=True, if_generation_match=generation
-            )
-        except GoogleAPIError as error:
-            raise OSError(f"GCS read failed for generation {generation}") from error
+        return self._gcloud("cat", f"{self._url(ref.key)}#{ref.generation}")
 
     def head(self, key: str) -> Head | None:
-        name = self._name(key)
-        blob = self._bucket.get_blob(name)
-        if blob is None:
+        url = self._url(key)
+        try:
+            generation = self._generation(url)
+        except _MissingObject:
             return None
-        if blob.generation is None:
-            raise OSError(f"Missing GCS head generation for {key}")
-        return Head(str(blob.generation), self._read(name, blob.generation))
+        return Head(generation, self._gcloud("cat", f"{url}#{generation}"))
 
     def advance(self, key: str, previous: Head | None, data: bytes) -> None:
-        generation = int(previous.revision) if previous is not None else 0
+        generation = previous.revision if previous is not None else "0"
         try:
-            self._bucket.blob(self._name(key)).upload_from_string(
-                data, if_generation_match=generation
+            self._gcloud(
+                "cp",
+                f"--if-generation-match={generation}",
+                "-",
+                self._url(key),
+                data=data,
             )
-        except (GoogleAPIError, OSError) as error:
+        except OSError:
             current = self.head(key)
             if current is None or current.data != data:
-                raise OSError(f"GCS head update failed for {key}") from error
+                raise

@@ -2,17 +2,16 @@ import asyncio
 import gzip
 import os
 import signal
+import sqlite3
 import subprocess
 import sys
 import threading
+from contextlib import closing
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import Mock
+from select import select as wait_for_readable
 from uuid import uuid4
 
 import pytest
-from google.api_core.exceptions import NotFound, ServiceUnavailable
-from google.cloud import storage
 from litellm import ModelResponse
 from litellm.exceptions import RateLimitError
 from pydantic import SecretStr
@@ -26,7 +25,7 @@ from openhands.agent_server.persistence.trajectory_archive import (
     read_segments,
     seal_journal,
 )
-from openhands.agent_server.persistence.trajectory_gcs import GCSStore
+from openhands.agent_server.persistence.trajectory_gcs import GCSStore, _MissingObject
 from openhands.agent_server.persistence.trajectory_validation import (
     Admission,
     Candidate,
@@ -285,19 +284,57 @@ def test_sigkill_recovers_acknowledged_prefix(tmp_path):
             sys.executable,
             "-c",
             """
-import sys, time
+import sys
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import Mock
-from openhands.sdk.observability.trajectory_journal import Journal, encode
+from threading import Event
+
+from openhands.sdk.agent.parallel_executor import ParallelToolExecutor
+from openhands.sdk.event import ActionEvent, ObservationEvent
+from openhands.sdk.llm import MessageToolCall
+from openhands.sdk.observability.trajectory_capture import ShadowCapture, capture_run
+from openhands.sdk.observability.trajectory_journal import Journal
+from openhands.sdk.tool.builtins.think import ThinkObservation
+
+class SignalCapture(ShadowCapture):
+    def append_tool_result(self, action_id, status, result, **kwargs):
+        super().append_tool_result(action_id, status, result, **kwargs)
+        assert not self.shadow_failed
+        print("durable tool result", flush=True)
+
 journal = Journal(Path(sys.argv[1]), "conversation")
-journal.append("run_start", {}, run_id="run")
-journal.append("attempt_start", {
-    "adapter": "chat", "input_key": "messages", "input_count": 0,
-    "parameters": {}, "attempt_id": "attempt", "request_id": "request"
-}, run_id="run", payloads=(None,))
-print("durable", flush=True)
-time.sleep(60)
+capture = SignalCapture(journal)
+blocked = Event()
+never = Event()
+tool_call = MessageToolCall(
+    id="same-provider-id", name="example", arguments="{}", origin="completion"
+)
+
+def execute(action):
+    if action.id == "pending-action":
+        blocked.set()
+        never.wait()
+    else:
+        assert blocked.wait(timeout=5)
+    return [ObservationEvent(
+        action_id=action.id, tool_call_id=tool_call.id, tool_name="example",
+        observation=ThinkObservation.from_text(action.id)
+    )]
+
+with capture_run(capture, lambda: None, lambda: "finished"):
+    actions = [
+        ActionEvent(
+            id=action_id, thought=[], action=None, tool_call=tool_call,
+            tool_call_id=tool_call.id, llm_response_id="response", tool_name="example"
+        ) for action_id in ("pending-action", "completed-action")
+    ]
+    for action in actions:
+        capture.append_event(action, action_id=None)
+    capture.append("attempt_start", {
+        "adapter": "chat", "input_key": "messages", "input_count": 0,
+        "parameters": {}, "attempt_id": "attempt", "request_id": "request"
+    }, payloads=(None,))
+    ParallelToolExecutor(max_workers=2).execute_batch(actions, execute)
+
 """,
             str(spool),
         ],
@@ -306,14 +343,18 @@ time.sleep(60)
         text=True,
     )
     try:
-        assert child.stdout is not None and child.stdout.readline().strip() == "durable"
+        assert child.stdout is not None
+        assert wait_for_readable([child.stdout], [], [], 15)[0]
+        assert child.stdout.readline().strip() == "durable tool result"
     finally:
         child.kill()
         assert child.wait(timeout=5) == -signal.SIGKILL
     output = _records(Journal(spool, "conversation"), tmp_path / "archive")
     report = coverage(iter(output))
-    assert report.runs == {"run": "unfinished"}
+    assert list(report.runs.values()) == ["unfinished"]
     assert report.attempts == {"attempt": "unfinished"}
+    assert report.actions == {"pending-action": [], "completed-action": ["success"]}
+    assert sorted(report.executions.values()) == ["success", "unfinished"]
 
 
 def test_archive_retries_and_missing_objects(tmp_path):
@@ -341,35 +382,30 @@ def test_archive_retries_and_missing_objects(tmp_path):
 
 def test_gcs_reuses_identical_object_after_lost_ack(tmp_path, monkeypatch):
     writes = {}
+    generation = 0
     missing = False
-    bucket = Mock()
 
-    def get_blob(name):
-        if name in writes:
-            return SimpleNamespace(generation=writes[name][0])
-        return None
+    def gcloud(command, *args, data=None):
+        nonlocal generation
+        if command == "cp":
+            name = args[-1]
+            match = int(args[0].removeprefix("--if-generation-match="))
+            assert match == writes.get(name, (0, b""))[0]
+            generation += 1
+            writes[name] = (generation, data)
+            raise OSError("lost acknowledgement")
+        if command == "objects":
+            if args[1] not in writes:
+                raise _MissingObject("404")
+            return str(writes[args[1]][0]).encode()
+        assert command == "cat"
+        url, _, pinned = args[0].rpartition("#")
+        assert int(pinned) == writes[url][0]
+        if missing:
+            raise OSError("404")
+        return writes[url][1]
 
-    def blob(name, *, generation=None):
-        def upload(data, *, if_generation_match):
-            assert if_generation_match == writes.get(name, (0, b""))[0]
-            writes[name] = (len(writes) + 1, data)
-            raise ServiceUnavailable("lost acknowledgment")
-
-        def download(*, raw_download, if_generation_match):
-            assert raw_download
-            assert generation == if_generation_match == writes[name][0]
-            if missing:
-                raise NotFound("generation missing")
-            return writes[name][1]
-
-        return SimpleNamespace(
-            upload_from_string=upload,
-            download_as_bytes=download,
-        )
-
-    bucket.get_blob.side_effect = get_blob
-    bucket.blob.side_effect = blob
-    monkeypatch.setattr(storage, "Client", lambda: Mock(bucket=lambda _: bucket))
+    monkeypatch.setattr(GCSStore, "_gcloud", staticmethod(gcloud))
     store = GCSStore("gs://private/test")
     journal = Journal(tmp_path, "conversation")
     journal.append("run_start", {}, run_id="one")
@@ -537,3 +573,29 @@ def test_recover_deleted_segment_even_when_gzip_output_changes(tmp_path, monkeyp
     assert replacement.content_sha256 == segment.content_sha256
     assert replacement.object.sha256 != segment.object.sha256
     assert list(read_segments(store, recovered)) == expected
+
+
+def test_failed_payload_batch_leaves_no_record_or_partial_payloads(tmp_path):
+    journal = Journal(tmp_path / "spool", "conversation")
+    with closing(sqlite3.connect(journal.path)) as db:
+        db.executescript("""
+            CREATE TRIGGER fail_second_payload BEFORE INSERT ON payloads
+            WHEN EXISTS (
+                SELECT 1 FROM payloads WHERE first_sequence = NEW.first_sequence
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'test storage failure mid-append');
+            END;
+        """)
+        with pytest.raises(sqlite3.IntegrityError, match="storage failure"):
+            journal.append("record", {}, record_id="record", payloads=("one", "two"))
+        with journal.read() as (head, records):
+            assert head == 0
+            assert list(records) == []
+        db.execute("DROP TRIGGER fail_second_payload")
+
+    assert (
+        journal.append("record", {}, record_id="record", payloads=("one", "two")) == 1
+    )
+    (item,) = _records(journal, tmp_path / "archive")
+    assert item.payloads == ("one", "two")

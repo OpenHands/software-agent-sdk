@@ -13,6 +13,7 @@ from openhands.agent_server.persistence.trajectory_archive import (
     read_segments,
     seal_journal,
 )
+from openhands.agent_server.persistence.trajectory_gcs import GCSStore
 from openhands.agent_server.persistence.trajectory_validation import (
     Admission,
     CandidateSource,
@@ -27,8 +28,6 @@ from openhands.sdk.observability.trajectory_journal import Journal
 def _store(location: str) -> ObjectStore:
     if not location.startswith("gs://"):
         return DirectoryStore(Path(location))
-
-    from openhands.agent_server.persistence.trajectory_gcs import GCSStore
 
     return GCSStore(location)
 

@@ -46,9 +46,9 @@ python -m openhands.agent_server.persistence.trajectory compare "$STORE" seal.js
   --legacy verified-legacy.json > comparison.json
 ```
 
-`STORE` is a local directory or a `gs://` prefix. For GCS, install
-`openhands-agent-server[trajectory-gcs]` and configure Application Default
-Credentials for the worker. The witness command can derive admitted runs
+`STORE` is a local directory or a `gs://` prefix. The platform worker uses
+its existing `gcloud storage` installation and credentials for GCS. The
+witness command can derive admitted runs
 from Agent Server when there is no external run list. The pilot also needs a Cloud
 enrollment inventory to detect conversations missing from both stores and
 the witness. Only a comparison supplied with independent run IDs can report
