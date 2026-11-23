@@ -201,6 +201,62 @@ def test_masked_key_collision_drops_the_structured_field(
     assert masked.result_meta == {"token": "<secret-hidden>"}
 
 
+def test_registry_masks_non_object_structured_result(
+    executor: MCPToolExecutor,
+    mock_client: MagicMock,
+    secret_registry: SecretRegistry,
+    conversation: MagicMock,
+) -> None:
+    """A structured result may be any JSON value, not only an object."""
+    secret = secret_registry.get_secret_value("API_KEY")
+    assert secret is not None
+    result = mcp.types.CallToolResult(
+        structured_content=[{"token": secret}, f"Bearer {secret}", 3],
+        content=[mcp.types.TextContent(type="text", text="ok")],
+    )
+
+    _, observation = _call_and_capture(
+        executor,
+        mock_client,
+        MCPToolAction(data={"q": "x"}),
+        conversation,
+        result=result,
+    )
+
+    assert observation.is_error is False
+    assert observation.structured_content == [
+        {"token": "<secret-hidden>"},
+        "Bearer <secret-hidden>",
+        3,
+    ]
+
+
+@pytest.mark.parametrize(
+    ("secret_value", "echoed"),
+    [("true", True), ("false", False), ("True", True)],
+)
+def test_boolean_secret_in_structured_result_is_masked(
+    executor: MCPToolExecutor, secret_value: str, echoed: bool
+) -> None:
+    """A secret echoed as a JSON boolean is matched in its JSON spelling
+    (true/false) as well as Python's (True/False)."""
+    registry = SecretRegistry()
+    registry.update_secrets({"FLAG": secret_value})
+    conversation = MagicMock()
+    conversation.state.secret_registry = registry
+    observation = MCPToolObservation(
+        tool_name="test_tool",
+        structured_content={"flag": echoed, "other": not echoed},
+    )
+
+    masked = executor._mask_observation(observation, conversation)
+
+    assert masked.structured_content == {
+        "flag": "<secret-hidden>",
+        "other": not echoed,
+    }
+
+
 def test_numeric_secret_in_structured_result_is_masked(
     executor: MCPToolExecutor,
     conversation: MagicMock,

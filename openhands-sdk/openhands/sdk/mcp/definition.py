@@ -51,9 +51,12 @@ class MCPToolObservation(Observation):
     """Observation from MCP tool execution."""
 
     tool_name: str = Field(description="Name of the tool that was called")
-    structured_content: dict[str, Any] | None = Field(
+    structured_content: Any = Field(
         default=None,
-        description="Structured result data returned by the MCP tool",
+        description=(
+            "Structured result data returned by the MCP tool. Usually a JSON "
+            "object; the protocol allows any JSON value."
+        ),
     )
     result_meta: dict[str, Any] | None = Field(
         default=None,

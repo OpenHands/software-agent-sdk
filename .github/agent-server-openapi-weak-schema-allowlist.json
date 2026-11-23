@@ -210,12 +210,6 @@
     "owner": "OpenHands OSS"
   },
   {
-    "pointer": "/components/schemas/MCPToolObservation/properties/structured_content/anyOf/0/additionalProperties",
-    "kind": "unrestricted-additional-properties",
-    "reason": "MCP protocol structured result data is intentionally protocol-opaque.",
-    "owner": "OpenHands OSS"
-  },
-  {
     "pointer": "/components/schemas/ProfileDetailResponse/properties/config/additionalProperties",
     "kind": "unrestricted-additional-properties",
     "reason": "Existing extensible or opaque public payload tracked by the weak-type ratchet.",

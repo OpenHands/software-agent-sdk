@@ -263,10 +263,16 @@ class MCPToolExecutor(ToolExecutor):
                 return masked
             # A registered secret echoed back as a JSON scalar (number, bool)
             # is still a secret, even though masking it costs the scalar's type.
+            # A boolean is checked in both its JSON spelling (true/false) and
+            # Python's (True/False).
             if value is not None:
-                masked_scalar = secret_registry.mask_secrets_in_output(str(value))
-                if masked_scalar != str(value):
-                    return masked_scalar
+                spellings = [str(value)]
+                if isinstance(value, bool):
+                    spellings.append(json.dumps(value))
+                for spelling in spellings:
+                    masked_scalar = secret_registry.mask_secrets_in_output(spelling)
+                    if masked_scalar != spelling:
+                        return masked_scalar
             return value
 
         try:

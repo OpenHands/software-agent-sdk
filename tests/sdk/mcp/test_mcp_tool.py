@@ -1,9 +1,11 @@
 """Tests for MCP tool functionality with new simplified implementation."""
 
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import MagicMock, Mock
 
 import mcp.types
+import pytest
 
 from openhands.sdk.event import Event, ObservationEvent
 from openhands.sdk.llm import ImageContent, TextContent
@@ -116,6 +118,52 @@ class TestMCPToolObservation:
         assert isinstance(observation.content[2], ImageContent)
         assert hasattr(observation.content[2], "image_urls")
         assert observation.is_error is False
+
+    @pytest.mark.parametrize(
+        "structured",
+        [[{"id": 1}, {"id": 2}], "plain text", 42, 1.5, True],
+    )
+    def test_non_object_structured_result_round_trips(self, structured):
+        """The protocol allows any JSON value as a structured result."""
+        result = mcp.types.CallToolResult(
+            structured_content=structured,
+            content=[mcp.types.TextContent(type="text", text="model-visible")],
+        )
+
+        observation = MCPToolObservation.from_call_tool_result("test_tool", result)
+        event = ObservationEvent(
+            observation=observation,
+            action_id="action-1",
+            tool_name="test_tool",
+            tool_call_id="call-1",
+        )
+        restored_event = Event.model_validate_json(event.model_dump_json())
+        assert isinstance(restored_event, ObservationEvent)
+        restored = restored_event.observation
+        assert isinstance(restored, MCPToolObservation)
+
+        assert restored.is_error is False
+        assert restored.structured_content == structured
+        assert type(restored.structured_content) is type(structured)
+        assert str(structured) not in str(restored.to_llm_content)
+
+    def test_result_is_read_through_current_field_names(self):
+        """Only the MCP 2.x field names are read. The pre-2.x camelCase names
+        survive in the library as a deprecation shim, so a stand-in that has
+        the current names and nothing else must be enough."""
+        result = SimpleNamespace(
+            content=[mcp.types.TextContent(type="text", text="ok")],
+            is_error=False,
+            structured_content={"rows": []},
+            meta={"ui": {"resourceUri": "ui://app/index.html"}},
+        )
+
+        observation = MCPToolObservation.from_call_tool_result(
+            "test_tool", cast(mcp.types.CallToolResult, result)
+        )
+
+        assert observation.structured_content == {"rows": []}
+        assert observation.result_meta == {"ui": {"resourceUri": "ui://app/index.html"}}
 
     def test_structured_result_fields_are_additive_and_not_llm_content(self):
         result = mcp.types.CallToolResult(
