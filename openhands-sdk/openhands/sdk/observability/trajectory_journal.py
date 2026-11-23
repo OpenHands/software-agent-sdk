@@ -65,7 +65,17 @@ class Journal:
                     body BLOB NOT NULL,
                     first_sequence INTEGER NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS metadata (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
             """)
+            db.execute(
+                "INSERT OR IGNORE INTO metadata VALUES ('instance', ?)", (uuid4().hex,)
+            )
+            self.instance_id: str = db.execute(
+                "SELECT value FROM metadata WHERE key = 'instance'"
+            ).fetchone()[0]
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -124,17 +134,23 @@ class Journal:
         return sequence
 
     @contextmanager
-    def read(self) -> Iterator[tuple[int, Iterator[tuple[Record, dict[str, Any]]]]]:
+    def read(
+        self, *, after: int = 0
+    ) -> Iterator[tuple[int, Iterator[tuple[Record, dict[str, Any]]]]]:
         with self._connect() as db:
             db.execute("BEGIN")
             head = db.execute(
                 "SELECT COALESCE(MAX(sequence), 0) FROM records"
             ).fetchone()[0]
-            rows = db.execute("SELECT body FROM records ORDER BY sequence")
+            rows = db.execute(
+                "SELECT body FROM records WHERE sequence > ? ORDER BY sequence",
+                (after,),
+            )
             blobs = iter(
                 db.execute(
                     "SELECT hash, body, first_sequence FROM payloads"
-                    " ORDER BY first_sequence, hash"
+                    " WHERE first_sequence > ? ORDER BY first_sequence, hash",
+                    (after,),
                 )
             )
 

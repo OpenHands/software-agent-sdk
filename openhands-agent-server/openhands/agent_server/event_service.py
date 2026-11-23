@@ -36,6 +36,7 @@ from openhands.agent_server.models import (
     EventSortOrder,
     StoredConversation,
 )
+from openhands.agent_server.persistence import trajectory_webhook
 from openhands.agent_server.pub_sub import PubSub, Subscriber
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.sdk import LLM, AgentBase, Event, Message, TextContent, get_logger
@@ -280,6 +281,9 @@ class EventService:
     bash_event_service: BashEventService | None = field(default=None, init=False)
     owner_instance_id: str = field(default_factory=lambda: uuid4().hex)
     lease_ttl_seconds: float = DEFAULT_LEASE_TTL_SECONDS
+    trajectory_webhook: tuple[str, dict[str, str]] | None = field(
+        default=None, kw_only=True
+    )
     _conversation: LocalConversation | None = field(default=None, init=False)
     _persisted_events: EventLog | None = field(default=None, init=False)
     _pub_sub: PubSub[Event] = field(
@@ -1783,6 +1787,8 @@ class EventService:
 
             async def _run_and_publish():
                 nonlocal worker
+                upload_done = asyncio.Event()
+                upload = None
                 try:
                     # Prefer the native async path when available so the event
                     # loop is free during LLM I/O.  Fall back to thread-pool
@@ -1808,6 +1814,16 @@ class EventService:
                     )
                     if self._explicit_interrupt_generation != run_generation:
                         return
+                    if admission is not None and self.trajectory_webhook is not None:
+                        base_url, headers = self.trajectory_webhook
+                        await trajectory_webhook.admission(admission, base_url, headers)
+                        if self._explicit_interrupt_generation != run_generation:
+                            return
+                        upload = asyncio.create_task(
+                            trajectory_webhook.publish(
+                                admission, base_url, headers, upload_done
+                            )
+                        )
                     if has_native_arun:
                         with use_admission(admission):
                             await conversation.arun()
@@ -1839,6 +1855,17 @@ class EventService:
                     await self.run_state_op(self._mark_error_status_sync)
                 finally:
                     settle()
+                    if upload is not None:
+                        upload_done.set()
+                        try:
+                            await asyncio.wait_for(upload, 5)
+                        except TimeoutError:
+                            upload.cancel()
+                        except Exception as exc:
+                            logger.warning(
+                                "Cloud trajectory upload failed (%s)",
+                                type(exc).__name__,
+                            )
                     # Wait for all pending events to be published via
                     # AsyncCallbackWrapper before publishing the final state update.
                     # This prevents a race condition where the conversation status

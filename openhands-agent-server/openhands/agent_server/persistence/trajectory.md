@@ -17,15 +17,44 @@ adds boundary checksums to the witness before writing the shadow records. Set
 `evaluation` when the enrolled cohort shares a known origin. Otherwise the
 journal records `unknown`.
 
-Use local POSIX storage that survives sandbox loss. The platform owns the
-spool and its SQLite WAL files through teardown. Protect both volumes from
-tool processes. Keep each database and its WAL together and use a platform
-worker with access on the same host while capture is active. Drain it as part
-of teardown or recover it after hard termination. Cloud Storage FUSE and
-network filesystems lack the required SQLite WAL guarantees. A sandbox whose
-only disk is deleted at teardown needs a platform handoff before enrollment.
+## Cloud shadow upload
 
-## Seal and compare
+Set `OPENHANDS_TRAJECTORY_CLOUD_URL` to the configured Cloud webhook base URL.
+Agent Server uses that webhook's session authentication. Cloud independently
+enables the conversation IDs with `OPENHANDS_TRAJECTORY_CLOUD_IDS`. Set both
+spool paths to private POSIX directories on the sandbox's local disk, such as
+directories under `/tmp`. SQLite WAL needs a local filesystem.
+
+Cloud records run admission before SDK capture begins and acknowledges ordered
+batches after their GCS objects and archive head are committed. Agent Server
+drains during the run and tries a final bounded drain at completion. A lost
+reply is recovered by reading the Cloud watermark. If the runtime dies before
+Cloud accepts a batch, the missing tail can be lost. Use the independent
+admissions and the archived witness to identify absent or unfinished runs.
+A replacement local database has a new capture ID and its own archive head.
+
+## Verify Cloud shadow data
+
+For a capture ID, use the stored `journal` and `witness` prefixes as the two
+stores. Their respective archive heads contain the seal references. Collect
+run IDs from the sibling `admissions` prefix into a JSON array.
+Cloud places these prefixes under
+`users/<owner>/trajectory-pilot/<conversation_hex>/<capture_hex>/` in its
+configured session bucket.
+
+```bash
+python -m openhands.agent_server.persistence.trajectory witness-archive \
+  "$WITNESS_STORE" witness-seal.json --admitted-runs admitted-run-ids.json \
+  --origin interactive > admission.json
+python -m openhands.agent_server.persistence.trajectory compare \
+  "$JOURNAL_STORE" journal-seal.json admission.json --legacy verified-legacy.json
+```
+
+Compare each store with the independent evidence. Include a sandbox kill and
+replacement, a lost reply after GCS accepts the data, and a GCS write failure in
+the production canary.
+
+## Seal and compare a retained local spool
 
 Run the worker with platform credentials. Configure the bucket for private access,
 version retention, and an IAM identity that can create and read objects. The
