@@ -2090,6 +2090,48 @@ def _stub_litellm_error(error: Exception) -> tuple[Any, list[dict[str, Any]]]:
     return fake_litellm_acompletion, calls
 
 
+def test_validate_profile_empty_completion_does_not_block(client):
+    """An empty HTTP-200 completion is transient, so it must not block the save.
+
+    The pre-flight runs with ``num_retries=0``; since #6085 an empty
+    ``finish_reason="stop"`` completion raises ``LLMNoResponseError`` there.
+    """
+    from litellm.types.utils import Choices, Message as LiteLLMMessage, ModelResponse
+
+    calls: list[dict[str, Any]] = []
+
+    async def fake_litellm_acompletion(*args: Any, **kwargs: Any) -> Any:
+        calls.append(kwargs)
+        return ModelResponse(
+            id="empty",
+            model="gpt-4o",
+            choices=[
+                Choices(
+                    index=0,
+                    finish_reason="stop",
+                    message=LiteLLMMessage(role="assistant", content=""),
+                )
+            ],
+        )
+
+    with (
+        patch("openhands.sdk.llm.llm.LLM.uses_responses_api", return_value=False),
+        patch(
+            "openhands.sdk.llm.llm.litellm_acompletion", new=fake_litellm_acompletion
+        ),
+    ):
+        response = client.post(
+            "/api/profiles/empty-reply/validate",
+            json={"llm": {"model": "openai/gpt-4o", "api_key": "sk-test"}},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is True
+    assert body["error"] is None
+    assert len(calls) == 1
+
+
 def test_validate_profile_does_not_retry_unreachable_endpoint(client):
     """Pre-flight answers after one attempt, whatever the profile's retry policy.
 

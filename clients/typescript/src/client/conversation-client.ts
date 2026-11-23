@@ -1,6 +1,12 @@
 import { HttpClient, HttpError } from './http-client';
 import { getCachedAgentServerInfo } from './agent-server-compatibility';
-import { ConversationExecutionStatus, LLM, Success } from '../types/base';
+import {
+  ConversationExecutionStatus,
+  LLM,
+  ModelRouterSelection,
+  ModelRouterStatus,
+  Success,
+} from '../types/base';
 import type {
   AgentResponseResult,
   AskAgentResponse,
@@ -22,7 +28,11 @@ import type {
   UpdateSecretsRequest,
 } from '../models/conversation';
 import type { ConfirmationPolicyBase } from '../types/base';
-import type { ReactionEmoji, ReactionEvent } from '../events/types';
+import type { AskUserAnswerEvent, ReactionEmoji, ReactionEvent } from '../events/types';
+import type {
+  AgentServerBatchEventsResponse,
+  AgentServerLoadPluginResponse,
+} from '../models/agent-server-api';
 
 export interface ConversationClientOptions {
   host: string;
@@ -206,6 +216,36 @@ export class ConversationClient {
     );
   }
 
+  /**
+   * Batch-fetch events in one request, preserving input order with `null`
+   * for missing ids. Uses the browser-safe `POST .../events/batch` route;
+   * the canonical `GET .../events` batch endpoint requires a GET body, which
+   * `fetch`/browsers reject, so it is not used here. Servers predating the
+   * POST route answer 404/405, which surfaces as an HttpError.
+   */
+  async batchGetEvents(
+    conversationId: string,
+    eventIds: string[]
+  ): Promise<AgentServerBatchEventsResponse> {
+    const response = await this.client.post<AgentServerBatchEventsResponse>(
+      `/api/conversations/${encodeURIComponent(conversationId)}/events/batch`,
+      eventIds
+    );
+    return response.data;
+  }
+
+  /** Load a plugin from the conversation's registered marketplaces. */
+  async loadPlugin(
+    conversationId: string,
+    pluginRef: string
+  ): Promise<AgentServerLoadPluginResponse> {
+    const response = await this.client.post<AgentServerLoadPluginResponse>(
+      `/api/conversations/${encodeURIComponent(conversationId)}/load_plugin`,
+      { plugin_ref: pluginRef }
+    );
+    return response.data;
+  }
+
   async sendEvent(
     conversationId: string,
     event: object,
@@ -234,6 +274,28 @@ export class ConversationClient {
         emoji,
         ...(options.targetEventId === undefined ? {} : { target_event_id: options.targetEventId }),
         ...(options.removed === undefined ? {} : { removed: options.removed }),
+      }
+    );
+    return response.data;
+  }
+
+  /**
+   * Answer the agent's pending `ask_user` question and run the agent: pick an
+   * option (`optionIndex`, from 0), give words (`text`), or both. The server
+   * answers 400 when `askId` is not the pending question (already answered by
+   * a tap or a chat reply) and 409 while the `ask_user` feature is off.
+   */
+  async answerAskUser(
+    conversationId: string,
+    askId: string,
+    answer: { optionIndex?: number; text?: string }
+  ): Promise<AskUserAnswerEvent> {
+    const response = await this.client.post<AskUserAnswerEvent>(
+      `/api/conversations/${conversationId}/ask_user/answer`,
+      {
+        ask_id: askId,
+        ...(answer.optionIndex === undefined ? {} : { option_index: answer.optionIndex }),
+        ...(answer.text === undefined ? {} : { text: answer.text }),
       }
     );
     return response.data;
@@ -439,6 +501,48 @@ export class ConversationClient {
 
   async switchLLM(conversationId: string, llm: LLM): Promise<void> {
     await this.client.post<Success>(`/api/conversations/${conversationId}/switch_llm`, { llm });
+  }
+
+  async getModelRouter(conversationId: string): Promise<ModelRouterStatus> {
+    const response = await this.client.get<ModelRouterStatus>(
+      `/api/conversations/${conversationId}/model_router`
+    );
+    return response.data;
+  }
+
+  async addModelRouterRoute(
+    conversationId: string,
+    profileName: string,
+    routeName?: string,
+    baseRouteName = 'default'
+  ): Promise<ModelRouterStatus> {
+    const response = await this.client.post<ModelRouterStatus>(
+      `/api/conversations/${conversationId}/model_router/routes`,
+      { profile_name: profileName, route_name: routeName, base_route_name: baseRouteName }
+    );
+    return response.data;
+  }
+
+  async updateModelRouter(
+    conversationId: string,
+    selection: ModelRouterSelection
+  ): Promise<ModelRouterStatus> {
+    const response = await this.client.patch<ModelRouterStatus>(
+      `/api/conversations/${conversationId}/model_router`,
+      { selection }
+    );
+    return response.data;
+  }
+
+  async switchModelRouter(conversationId: string, routeName: string): Promise<ModelRouterStatus> {
+    return this.updateModelRouter(conversationId, {
+      mode: 'manual',
+      manual_route_name: routeName,
+    });
+  }
+
+  async resumeAutoModelRouting(conversationId: string): Promise<ModelRouterStatus> {
+    return this.updateModelRouter(conversationId, { mode: 'auto' });
   }
 
   /**

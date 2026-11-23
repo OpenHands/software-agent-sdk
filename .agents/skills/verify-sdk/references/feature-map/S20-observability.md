@@ -1,6 +1,6 @@
 # Observability, tracing and logging
 
-A Python program gets OpenTelemetry traces of its conversations by setting environment variables before it imports the SDK: `LMNR_PROJECT_API_KEY` sends them to Laminar, and `OTEL_ENDPOINT`, `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` or `OTEL_EXPORTER_OTLP_ENDPOINT` send them to any OTLP collector through Laminar's exporter. With none of these set (and no user-side `Laminar.initialize()`), every `@observe` decorator is a pass-through and `lmnr` is not even imported. When enabled, each `Conversation` owns a long-lived root span named `conversation` whose trace session id is the conversation id, with `user_id`, `observability_metadata` (also as span attributes), `observability_tags`, `conversation.tags.*` attributes and an optional named child span; `conversation.send_message` / `run` / `arun`, `agent.step`, tool calls (one TOOL span per call with `tool_call_id` metadata), MCP calls, condenser and hook calls, and LLM calls (an `LLM` span carrying the request and response messages, token totals, cost and cache buckets) nest under it, across threads and parallel tool workers. Sub-agent conversations start their own trace linked back to the parent. The `openhands.sdk.automation` helpers turn the generic `OPENHANDS_OBSERVABILITY_*` env vars an automation runner sets into `Conversation(...)` kwargs and HTTP headers. Separately, `get_logger(__name__)` returns standard loggers under a root configured on import from `LOG_*` env vars (Rich console, or JSON in CI or with `LOG_JSON`, optional rotating file), with LiteLLM, OpenAI, httpx and libtmux loggers quieted.
+A Python program gets OpenTelemetry traces of its conversations by setting environment variables before it imports the SDK: `LMNR_PROJECT_API_KEY` sends them to Laminar, and `OTEL_ENDPOINT`, `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` or `OTEL_EXPORTER_OTLP_ENDPOINT` send them to any OTLP collector through Laminar's exporter. With none of these set (and no user-side `Laminar.initialize()`), every `@observe` decorator is a pass-through and `lmnr` is not even imported. When enabled, each `Conversation` owns a long-lived root span named `conversation` whose trace session id is the conversation id, with `user_id`, `observability_metadata` (also as span attributes), `observability_tags`, `conversation.tags.*` attributes and an optional named child span; `conversation.send_message` / `run` / `arun`, `agent.step`, tool calls (one TOOL span per call with `tool_call_id` metadata), MCP calls, condenser and hook calls, and LLM calls (an `LLM` span carrying the request and response messages, token totals, cost and cache buckets) nest under it, across threads and parallel tool workers. Sub-agent conversations start their own trace linked back to the parent. The `openhands.sdk.automation` helpers turn the generic `OPENHANDS_OBSERVABILITY_*` env vars an automation runner sets into `Conversation(...)` kwargs and HTTP headers. Separately, `get_logger(__name__)` returns standard loggers under a root configured on import from `LOG_*` env vars (Rich console, or JSON in CI or with `LOG_JSON`, optional rotating file), with LiteLLM, OpenAI, httpx and libtmux loggers quieted. Every failed attempt of an LLM call logs one `LLM request failed:` warning that says what failed and what the retry policy decided, without the provider's message.
 
 Source: `openhands-sdk/openhands/sdk/observability/`, `openhands-sdk/openhands/sdk/automation/`, `openhands-sdk/openhands/sdk/logger/`, `openhands-sdk/openhands/sdk/conversation/base.py`, `openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py`, `openhands-sdk/openhands/sdk/agent/agent.py`, `openhands-sdk/openhands/sdk/agent/parallel_executor.py`, `openhands-sdk/openhands/sdk/llm/`
 
@@ -30,6 +30,7 @@ Examples: `examples/01_standalone_sdk/27_observability_laminar.py`
 - `S20.get-env`: observability reads env vars straight from `os.environ`, never through python-dotenv's `find_dotenv()`. Unit: `tests/sdk/observability/test_utils.py`. Example: none. Real-LLM: none.
 - `S20.logger-quiet-thirdparty`: importing the SDK sets LiteLLM and OpenAI loggers to ERROR (DEBUG only after a confirmed `DEBUG_LLM`), and httpx, httpcore and libtmux to WARNING, so LiteLLM INFO lines do not show. Unit: `tests/sdk/logger/test_litellm_log_suppression.py`. Example: none. Real-LLM: none.
 - `S20.logger-config`: `get_logger(name)` returns a propagating stdlib logger; `setup_logging(...)` (auto-run on import unless `LOG_AUTO_CONFIG=false`) honors `LOG_LEVEL`, `DEBUG`, `LOG_JSON`, `CI`/`GITHUB_ACTIONS` (JSON console), `LOG_RICH_TRACEBACKS`, and `LOG_TO_FILE` with `LOG_DIR`, `LOG_ROTATE_WHEN`, `LOG_BACKUP_COUNT` (`<LOG_DIR>/app.log`), and does not add a second stream handler. Unit: **none (untested)**. Example: none. Real-LLM: none.
+- `S20.llm-retry-log`: each failed LLM attempt logs one WARNING `LLM request failed: exception_type=<module.Class> status_code=<int or None> attempt=N max_attempts=M retry_eligible=<bool> will_retry=<bool>`, for retried, exhausted and non-retryable failures alike; the line never carries the exception message, so a provider error body (and any credential in it) stays out of the logs. Unit: `tests/sdk/llm/test_retry_diagnostics.py` (`test_failure_logging_explains_retry_decision`, `test_failure_logging_handles_optional_status_safely`, `test_async_retry_logs_failure_and_preserves_success`, `test_long_retry_after_logs_no_retry`). Example: none. Real-LLM: none.
 - `S20.rolling-log-view`: `rolling_log_view(logger, max_lines=...)` shows a live last-N-lines panel on a TTY, plain lines in CI, and one buffered JSON record on exit in JSON mode. Unit: **none (untested)**. Example: none. Real-LLM: none.
 
 ## How to get to it (agent POV)
@@ -39,6 +40,7 @@ Examples: `examples/01_standalone_sdk/27_observability_laminar.py`
 - `openhands.sdk.observability`: `observe(name=..., span_type="TOOL", ...)` to trace a user function, `maybe_init_laminar()`, `init_laminar_for_external()`, `OPERATION_METADATA_KEY`.
 - `OPENHANDS_OBSERVABILITY_METADATA` (JSON object), `OPENHANDS_OBSERVABILITY_TAGS`, `OPENHANDS_OBSERVABILITY_SPAN_NAME`, `OPENHANDS_OBSERVABILITY_PARENT_SPAN_CONTEXT`, and `openhands.sdk.automation`: `automation_observability_context`, `automation_conversation_kwargs`, `automation_conversation_tags`, `automation_observability_headers` (`S20.automation-*`, `S20.env-conversation-defaults`).
 - `openhands.sdk.logger` (also `openhands.sdk.get_logger`): `get_logger`, `setup_logging`, `rolling_log_view`; env `LOG_LEVEL`, `DEBUG`, `LOG_JSON`, `LOG_TO_FILE`, `LOG_DIR`, `LOG_ROTATE_WHEN`, `LOG_BACKUP_COUNT`, `LOG_RICH_TRACEBACKS`, `LOG_AUTO_CONFIG`, `DEBUG_LLM` (`S20.logger-*`, `S20.rolling-log-view`).
+- A `logging.Handler` on the root logger (or `openhands.sdk.llm.utils.retry_mixin`) receives the retry lines (`S20.llm-retry-log`).
 
 ## Driving it
 
@@ -162,6 +164,24 @@ Preconditions:
     --check warning_level.console_has_info eq false --check no_auto_config.handlers len-eq 0
   ```
   Default: a Rich console handler; `LOG_JSON=1` a JSON stream handler and, with `LOG_TO_FILE`, a JSON `<LOG_DIR>/app.log`; `CI=true` JSON on the console; `DEBUG=true` lowers the root to DEBUG; `LOG_AUTO_CONFIG=false` adds no handler. In JSON mode `rolling_log_view` emits one record with the header and the last N lines on exit.
+- **Retry log lines (`S20.llm-retry-log`).** A real `LLM` against `programs/S02/fake_provider.py`, with a handler on the root logger; every error body carries the fake secret `sk-leak-RETRYLOG-7731`. A 503 then a reply (`num_retries=3`); a 400; a 429 that never clears (`num_retries=2`); and, on `hosted_vllm/`, an HTTP 200 whose body is not JSON, then a reply.
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  control-sdk program S20/retry_log \
+    --check transient.lines eq 1 --check transient.levels.0 eq WARNING \
+    --check transient.fields.0.exception_type eq litellm.exceptions.ServiceUnavailableError \
+    --check transient.fields.0.status_code eq 503 --check transient.fields.0.attempt eq 1 \
+    --check transient.fields.0.max_attempts eq 3 --check transient.fields.0.retry_eligible eq True \
+    --check transient.fields.0.will_retry eq True \
+    --check non_retryable.lines eq 1 --check non_retryable.fields.0.exception_type eq litellm.exceptions.BadRequestError \
+    --check non_retryable.fields.0.retry_eligible eq False --check non_retryable.fields.0.will_retry eq False \
+    --check exhausted.lines eq 2 --check exhausted.fields.0.will_retry eq True \
+    --check exhausted.fields.1.attempt eq 2 --check exhausted.fields.1.retry_eligible eq True --check exhausted.fields.1.will_retry eq False \
+    --check malformed_2xx.error missing --check malformed_2xx.fields.0.exception_type eq litellm.exceptions.APIError \
+    --check malformed_2xx.fields.0.status_code eq 200 --check malformed_2xx.fields.0.will_retry eq True \
+    --check marker_in_any_log eq false
+  ```
+  One line per failed attempt, naming the LiteLLM exception class with its module and the HTTP status; the last attempt of the exhausted call says it is eligible but will not retry. The fake secret is in no log record, exception text included.
 - **Live: a real model traced to the local collector (`S20.root-span`, `S20.llm-span`, `S20.llm-span-content`, `S20.step-and-tool-spans`).**
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --llm deepseek-flash --field run)

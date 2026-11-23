@@ -104,10 +104,7 @@ Preconditions:
     --check ask_prompt_tokens_delta eq 100 \
     --check ask_cost_delta eq 0.05 --check ask_warnings len-eq 0 --check ask_seconds lt 1.5
   ```
-  Known failure (reproduced 2026-11-12, [#6646](https://github.com/OpenHands/software-agent-sdk/issues/6646)): the fork's cost is lost and every `ask_agent` call stalls. The client bridge (`_OpenHandsACPBridge.session_update`) routes every update for the fork session to the fork branch, which keeps only message chunks and `return`s before the `UsageUpdate` branch. As a result:
-  - `ask_agent` waits the full `ACP_USAGE_UPDATE_TIMEOUT` and logs `UsageUpdate not received within 2.0s for fork session ...`.
-  - It records no cost: `ask_cost_delta` is 0.0, `ask_seconds` is 2.01, and `ask_warnings` holds that line.
-  - Token usage from the prompt response is still recorded.
+  Expected: the fork's cost (0.05) is billed, no warning, and `ask_agent` returns as soon as the fork answers: the client bridge records the fork session's `usage_update` as well as its message chunks, so the call does not wait out the 2 s usage timeout.
 - **Resume a persisted session (`S21.session-resume`, `S21.model-selection`).** A conversation with `persistence_dir` runs a turn and closes. The program then reopens it by id with a new `ACPAgent` (a new subprocess). A third agent carries `acp_resume_session_id` with no saved state, and a fourth an id the server has forgotten.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
@@ -148,7 +145,7 @@ Preconditions:
     --check raised_names_every_package eq true --check raised not-contains "Connection closed" \
     --check told contains ECONNREFUSED
   ```
-  Expected: the run fails within seconds with an install error that names the pinned package (`raised_names_every_package`), and what the program is told (the exception, the `ConversationErrorEvent` and the SDK's warnings, joined in `told`) includes npm's own error, here `ECONNREFUSED` for the registry. Known failure (reproduced 2026-11-14, [#6809](https://github.com/OpenHands/software-agent-sdk/issues/6809)): the warm-up discards npm's output, so its only trace is the warning `ACP provider npx cache warm failed: provider=claude-code; continuing with normal startup: ACP provider cache warm failed for claude-code (exit code 1)`; startup then launches the same `npx` command, which fails the same way, and the run raises `ConnectionError: Connection closed` with an `ACPInitError` event whose detail is `Connection closed`. Neither names npm, the package or the cache directory. The other half of the issue, a cache whose saved version list predates the pinned version (`--prefer-offline` then reports `ETARGET` for a version that exists), needs the real registry and an aged cache and is not driven here.
+  Expected: the run fails within seconds with an install error that names the pinned package (`raised_names_every_package`), and what the program is told (the exception, the `ConversationErrorEvent` and the SDK's warnings, joined in `told`) includes npm's own error, here `ECONNREFUSED` for the registry. Known failure (reproduced 2026-11-17, [#6809](https://github.com/OpenHands/software-agent-sdk/issues/6809)): the warm-up discards npm's output, so its only trace is the warning `ACP provider npx cache warm failed: provider=claude-code; continuing with normal startup: ACP provider cache warm failed for claude-code (exit code 1)`; startup then launches the same `npx` command, which fails the same way, and the run raises `ConnectionError: Connection closed` with an `ACPInitError` event whose detail is `Connection closed`. Neither names npm, the package or the cache directory. The other half of the issue, a cache whose saved version list predates the pinned version (`--prefer-offline` then reports `ETARGET` for a version that exists), needs the real registry and an aged cache and is not driven here.
 - **Idle timeout and retries (`S21.timeouts-retry`).** `acp_prompt_timeout=2`:
   - A `[slow]` turn lasts 4 s but sends a thought every 0.5 s.
   - A `[flaky]` turn fails once with `-32603`.
@@ -170,7 +167,7 @@ Preconditions:
     --check cases.hang.prompts_sent eq 1 --check cases.hang.cancel_sent eq 1 --check cases.hang.status eq error \
     --check cases.hang.seconds lt 5
   ```
-  Known failure (reproduced 2026-11-12, [#6645](https://github.com/OpenHands/software-agent-sdk/issues/6645)): a timed-out turn is sent again. `ACPAgent._step` handles the idle timeout by emitting the timeout message and setting `execution_status = ERROR` without raising. `LocalConversation.run()` stops only on `PAUSED`, `STUCK`, `FINISHED` or an exception, so the loop calls `step()` again, which re-sends the same user message. Here the server received 3 prompts (and 2–3 `session/cancel`s) over 6 s, until the stuck detector set `stuck`: `prompts_sent` 3, `status` `stuck`. With the default `acp_prompt_timeout` of 1800 s that is 90 minutes. With stuck detection off, the loop runs until `max_iteration_per_run`.
+  Known failure (reproduced 2026-11-17, [#6645](https://github.com/OpenHands/software-agent-sdk/issues/6645)): a timed-out turn is sent again. `ACPAgent._step` handles the idle timeout by emitting the timeout message and setting `execution_status = ERROR` without raising. `LocalConversation.run()` stops only on `PAUSED`, `STUCK`, `FINISHED` or an exception, so the loop calls `step()` again, which re-sends the same user message. Here the server received 3 prompts (and 2–3 `session/cancel`s) over 6 s, until the stuck detector set `stuck`: `prompts_sent` 3, `status` `stuck`. With the default `acp_prompt_timeout` of 1800 s that is 90 minutes. With stuck detection off, the loop runs until `max_iteration_per_run`.
 - **Cancel a running turn (`S21.cancel-pause`).** `arun()` runs as a task. The server starts a long tool call and waits, and the program cancels the task. Then it runs another turn.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)

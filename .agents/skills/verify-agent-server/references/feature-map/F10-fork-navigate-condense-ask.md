@@ -255,30 +255,28 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   stored separately. `ConversationService.fork_conversation` and
   `LocalConversation.fork` both use the requested tags, defaulting to an
   empty set when none were supplied (#4814).
-- **The fork keeps the model keys (`F10.fork-keeps-credentials`), known bug.**
+- **The fork keeps the model keys (`F10.fork-keeps-credentials`).**
   Fork `S`, whose placeholder agent has a model key, and compare the stored
   agents.
   ```sh
   KF=$(control-agent-server api POST "/api/conversations/$S/fork" --expect 201 --field id)
   control-agent-server state cat base_state.json --conversation "$S" --max-chars 200 --check agent.llm.api_key exists --check agent.condenser.llm.api_key exists
-  control-agent-server state cat base_state.json --conversation "$KF" --max-chars 200 --check agent.llm.api_key exists --check agent.condenser.llm.api_key exists  # bug: content.agent.llm.model exists && checks.0.actual eq null && checks.1.actual eq null
+  control-agent-server state cat base_state.json --conversation "$KF" --max-chars 200 --check agent.llm.api_key exists --check agent.condenser.llm.api_key exists
   ```
   Expected: both files hold the keys (encrypted with the server's cipher;
-  `state cat` shows `<redacted:encrypted>`). Today the source's do and the
-  fork's have no `api_key` at all (the check reports `null`):
-  `LocalConversation.fork` builds the fork's
-  `LocalConversation` without the source's `cipher`, so its state is
-  serialized with secrets dropped, and the server then loads the fork's
-  agent from that file (`ConversationService.fork_conversation` starts the
-  fork's `EventService` with no agent of its own).
-- **A fork runs with the source's memory (`F10.fork-run-memory`), known bug.**
+  `state cat` shows `<redacted:encrypted>`). `LocalConversation.fork` builds
+  the fork with the source's `cipher`, and the server loads the fork's agent
+  from that file (`ConversationService.fork_conversation` starts the fork's
+  `EventService` with no agent of its own), so a fork written without the
+  cipher would lose the keys and fail its first model call.
+- **A fork runs with the source's memory (`F10.fork-run-memory`).**
   Fork the finished DeepSeek conversation `A` and ask the fork what only the
   source was told.
   ```sh
   N_A_MSG=$(control-agent-server api GET "/api/conversations/$A/events/count" --query kind=$MSG --field .)
   AF=$(control-agent-server api POST "/api/conversations/$A/fork" --json '{"title": "QA F10 memory fork"}' --expect 201 --field id)
   control-agent-server conversation send "$AF" --text 'What is the project codename I told you? Answer with the codename only.' --wait --until finished,error --timeout 180
-  control-agent-server conversation events "$AF" --kinds ConversationErrorEvent --contains Authentication --expect-count 0 --save F10.fork-run-memory/auth-errors  # bug: matching ge 1
+  control-agent-server conversation events "$AF" --kinds ConversationErrorEvent --contains Authentication --expect-count 0 --save F10.fork-run-memory/auth-errors
   control-agent-server api GET "/api/conversations/$AF" --quiet --check execution_status eq finished --save F10.fork-run-memory/status
   control-agent-server api GET "/api/conversations/$AF/agent_final_response" --check response matches '(?i)pelican' --save F10.fork-run-memory/final
   control-agent-server api GET "/api/conversations/$A/events/count" --query kind=$MSG --check . eq "$N_A_MSG"
@@ -288,17 +286,14 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   to `finished`, its answer names the codename from the copied history (a
   fact only the source was told, not wording; `agent_final_response` reads a
   reply given as a message or through `finish`), and `A` gains no message
-  from the fork's run. Today the fork's run ends in `error` within seconds
-  with a `ConversationErrorEvent` for the provider's authentication failure,
-  because the fork lost the model key (`F10.fork-keeps-credentials`); the
-  marked check fails on that event. DeepSeek answers the keyless request
-  with `Authentication Fails (governor)` (`"type":"authentication_error"`),
-  which the SDK classifies as `LLMBadRequestError` rather than
-  `LLMAuthenticationError` (the classification is `F20.validate-bad-key-type`),
-  so the check matches `Authentication`, which both forms carry.
-  Any other failure (a provider outage, a wrong answer) fails a later,
-  unmarked check and reports `fail`, not `xfail`. Any fork of a conversation
-  whose model needs a key cannot run.
+  from the fork's run. A fork that lost the model key
+  (`F10.fork-keeps-credentials`) instead ends in `error` within seconds with
+  a `ConversationErrorEvent` for the provider's authentication failure.
+  DeepSeek answers the keyless request with `Authentication Fails (governor)`
+  (`"type":"authentication_error"`), which the SDK classifies as
+  `LLMBadRequestError` rather than `LLMAuthenticationError` (the
+  classification is `F20.validate-bad-key-type`), so the check matches
+  `Authentication`, which both forms carry.
 - **Navigate to an earlier event (`F10.navigate-event`).** Move `S`'s HEAD
   back to its first message.
   ```sh
@@ -561,7 +556,7 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   A second `Condensation` is recorded and ask_agent still names the codename
   from the reloaded history (the condenser keeps the first two events, the
   system prompt and the user's message); `A` stays `finished`.
-- **Ask usage on GET and after a restart (`F10.ask-agent-usage-saved`), known bug #6844.**
+- **Ask usage on GET and after a restart (`F10.ask-agent-usage-saved`).**
   A conversation of its own on an `llm-stub` with fixed usage numbers: the
   run's reply reports 11 prompt and 7 completion tokens, the ask's reply 5
   and 3. The bullet restarts the run, so it comes last.
@@ -580,7 +575,7 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   control-agent-server api GET "/api/conversations/$U" --max-chars 300 \
     --check stats.usage_to_metrics.default.accumulated_token_usage.completion_tokens eq 7 \
     --check stats.usage_to_metrics.ask-agent-llm.accumulated_token_usage.completion_tokens eq 3 \
-    --save F10.ask-agent-usage-saved/get  # bug: status eq 200 && checks.0.ok eq true && checks.1.actual eq null
+    --save F10.ask-agent-usage-saved/get
   control-agent-server restart
   control-agent-server api GET "/api/conversations/$U" --max-chars 300 \
     --check stats.usage_to_metrics.default.accumulated_token_usage.completion_tokens eq 7 \
@@ -589,12 +584,9 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   ```
   The run's usage is on GET (7 completion tokens under `default`), the ask
   answers, and the `stats` event the ask recorded reports 5 and 3 tokens
-  under `ask-agent-llm`. Expected: GET shows the same `ask-agent-llm` entry
-  right away and after a restart
-  ([#6844](https://github.com/OpenHands/software-agent-sdk/issues/6844), fix in [#6845](https://github.com/OpenHands/software-agent-sdk/pull/6845)).
-  Today GET still lists only `default`: the ask updates the live stats
-  without saving the conversation's state, GET reads the saved state, and a
-  restart right after the ask loses the entry.
+  under `ask-agent-llm`. GET shows the same `ask-agent-llm` entry right
+  away, next to `default`, and still after a restart: the ask saves its
+  usage with the conversation's state.
 
 ## Gotchas
 
@@ -608,9 +600,10 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   and adds no tag (#4814). Other stored configuration (secrets, plugins,
   `parent_conversation_id`, client tools) is copied from the source. The
   fork's `last_user_message_id` starts `null`.
-- The fork's `base_state.json` is written without the server's cipher, so
-  the model keys in the fork's agent are dropped from it
-  (`F10.fork-keeps-credentials`) and a fork cannot call its model
+- The fork's `base_state.json` is written with the source's cipher (the
+  server's), so the fork's agent keeps its model keys
+  (`F10.fork-keeps-credentials`) and its conversation secrets; the fork is
+  resumed from that file, so without them it could not call its model
   (`F10.fork-run-memory`).
 - `navigate` with `{}` silently selects the empty tree (the agent loses all
   context on its next run), because `event_id` defaults to `null`; a request
@@ -633,11 +626,9 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   Each call records and pushes one `stats` `ConversationStateUpdateEvent`
   whose `usage_to_metrics` includes an `ask-agent-llm` entry
   (`F10.ask-agent` checks the total count), so a client that counts events
-  around an ask sees one more. GET's `stats` does not show the
-  `ask-agent-llm` entry until the conversation's state is next saved (a
-  message, a run), and a restart before that loses it
-  (`F10.ask-agent-usage-saved`,
-  [#6844](https://github.com/OpenHands/software-agent-sdk/issues/6844)). It passes the agent's tools to
+  around an ask sees one more. The same entry is saved with the
+  conversation's state, so GET and a restarted server show it
+  (`F10.ask-agent-usage-saved`). It passes the agent's tools to
   the model and returns the first text block, so on a conversation with no
   messages yet DeepSeek's answer came back as an empty `response` (200).
 - `fork` and `navigate` return `ConversationInfo` with

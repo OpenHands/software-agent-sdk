@@ -165,22 +165,45 @@ def test_settings_saved_before_experimental_features_load_with_none_on():
 
 
 @pytest.mark.asyncio
-async def test_conversation_reactions_is_listed_and_off(client):
+async def test_every_feature_is_listed_and_off(client):
     response = await client.get("/api/settings/experimental")
 
     assert [(f["key"], f["enabled"]) for f in response.json()] == [
-        ("conversation_reactions", False)
+        ("conversation_reactions", False),
+        ("ask_user", False),
+        ("conversation_mentions", False),
+        ("message_edits", False),
+        ("factories", False),
+        ("projects", False),
     ]
 
 
 def test_feature_tools_follow_the_flags():
     assert experimental_feature_tools({}) == []
+    assert [t.name for t in experimental_feature_tools({"ask_user": True})] == [
+        "ask_user"
+    ]
     assert [
         t.name for t in experimental_feature_tools({"conversation_reactions": True})
     ] == [
         "react",
         "unreact",
     ]
+    assert [
+        t.name for t in experimental_feature_tools({"conversation_mentions": True})
+    ] == ["find_conversations", "read_conversation"]
+    # Each flag adds only its own tools.
+    assert [
+        t.name
+        for t in experimental_feature_tools(
+            {"conversation_reactions": True, "conversation_mentions": True}
+        )
+    ] == ["react", "unreact", "find_conversations", "read_conversation"]
+    assert [t.name for t in experimental_feature_tools({"message_edits": True})] == [
+        "edit_message"
+    ]
+    # A client-only feature gives the agent nothing.
+    assert experimental_feature_tools({"factories": True}) == []
 
 
 def _runtime() -> LaunchRuntime:
@@ -200,7 +223,7 @@ def test_finalize_adds_feature_tools_to_openhands_agents_only():
 
 
 @pytest.mark.asyncio
-async def test_new_conversations_get_reaction_tools_only_while_on(
+async def test_new_conversations_get_feature_tools_only_while_on(
     tmp_path, server_stores
 ):
     workspace = tmp_path / "workspace"
@@ -224,8 +247,15 @@ async def test_new_conversations_get_reaction_tools_only_while_on(
         server_stores.settings.update(turn_on)
         on, _ = await service.start_conversation(request())
 
+        def turn_on_mentions(settings: PersistedSettings) -> PersistedSettings:
+            settings.experimental_features = {"conversation_mentions": True}
+            return settings
+
+        server_stores.settings.update(turn_on_mentions)
+        mentions, _ = await service.start_conversation(request())
+
         tool_names = {}
-        for info in (off, on):
+        for info in (off, on, mentions):
             event_service = await service.get_event_service(info.id)
             assert event_service is not None
             agent = event_service.get_conversation().agent
@@ -233,6 +263,7 @@ async def test_new_conversations_get_reaction_tools_only_while_on(
 
     assert tool_names[off.id] == []
     assert tool_names[on.id] == ["react", "unreact"]
+    assert tool_names[mentions.id] == ["find_conversations", "read_conversation"]
 
 
 def test_host_switches_are_read_only_inside_a_runtime(monkeypatch):
@@ -273,3 +304,37 @@ async def test_a_runtime_takes_its_tools_from_the_host_switches(tmp_path, monkey
         agent = event_service.get_conversation().agent
 
     assert [t.name for t in agent.tools] == ["react", "unreact"]
+
+
+def test_a_flag_check_reads_the_settings_file_only_when_it_changed(tmp_path):
+    """Item 5 of the Projects design review: a flag check is one stat."""
+    from unittest.mock import patch
+
+    from openhands.agent_server.persistence import FileSettingsStore
+
+    store = FileSettingsStore(tmp_path)
+    assert store.experimental_features() == {}
+    store.update(
+        lambda s: s.model_copy(update={"experimental_features": {"projects": True}})
+    )
+
+    with patch.object(
+        FileSettingsStore, "load", autospec=True, side_effect=FileSettingsStore.load
+    ) as load:
+        assert store.experimental_features() == {"projects": True}
+        assert store.experimental_features() == {"projects": True}
+        assert load.call_count == 1
+
+        # A change, here or by another process, shows on the next check.
+        store.update(
+            lambda s: s.model_copy(
+                update={"experimental_features": {"projects": False}}
+            )
+        )
+        load.reset_mock()
+        assert store.experimental_features() == {"projects": False}
+        assert load.call_count == 1
+
+    # Callers get a copy: changing it does not change the cache.
+    store.experimental_features()["projects"] = True
+    assert store.experimental_features() == {"projects": False}
