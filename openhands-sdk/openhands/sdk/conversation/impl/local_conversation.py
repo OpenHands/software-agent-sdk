@@ -3525,6 +3525,12 @@ class LocalConversation(BaseConversation):
         effect until the current LLM call completes.
         """
 
+        self._pause(server_shutdown=False)
+
+    def _pause_for_server_shutdown(self) -> None:
+        self._pause(server_shutdown=True)
+
+    def _pause(self, *, server_shutdown: bool) -> None:
         if self._state.execution_status == ConversationExecutionStatus.PAUSED:
             return
 
@@ -3537,8 +3543,9 @@ class LocalConversation(BaseConversation):
                 self._state.transition(
                     ConversationExecutionStatus.PAUSED, "pause requested"
                 )
-                pause_event = PauseEvent()
-                self._on_event(pause_event)
+                self._on_event(
+                    PauseEvent(source="environment" if server_shutdown else "user")
+                )
                 logger.info("Agent execution pause requested")
 
     def interrupt(self) -> None:
