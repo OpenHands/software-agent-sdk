@@ -1,0 +1,97 @@
+[11/23/26 13:28:26] WARNING  Default prompt text changed; cannot   project.py:63
+                             find "\n* When you run into any major              
+                             issue while executing a plan from the              
+                             user, please don't try to directly                 
+                             work around it. Instead, propose a                 
+                             new plan and confirm with the user                 
+                             before proceeding."                                
++----------------------------------------------------------------------+
+|  OpenHands SDK v1.63.1                                               |
+|                                                                      |
+|  Report a bug: github.com/OpenHands/software-agent-sdk/issues        |
+|  Get help: openhands.dev/joinslack                                   |
+|  Scale up: openhands.dev/product/sdk                                 |
+|                                                                      |
+|  Set OPENHANDS_SUPPRESS_BANNER=1 to hide this message                |
++----------------------------------------------------------------------+
+
+[11/23/26 13:28:27] INFO     [Profile Store] Saved      llm_profile_store.py:296
+                             profile `worker-air` at                            
+                             /home/gerg/tmp/e2e4510.Esi                         
+                             f/oh/profiles/worker-air.j                         
+                             son                                                
+[11/23/26 13:28:27] WARNING  No persistence_dir provided; falling   state.py:688
+                             back to InMemoryFileStore. EventLog                
+                             data will not persist across requests.             
+[11/23/26 13:28:27] INFO     Created new conversation               state.py:773
+                             f2b1b371-ce45-4738-9c82-af00c8720417               
+[11/23/26 13:28:27] INFO     Loaded 1 tools from spec                base.py:599
+[11/23/26 13:28:27] INFO     [Profile Store] Loaded     llm_profile_store.py:356
+                             profile `worker-air` from                          
+                             /home/gerg/tmp/e2e4510.Esi                         
+                             f/oh/profiles/worker-air.j                         
+                             son                                                
+/home/gerg/repos/software-agent-sdk-feat-task-tool-llm-profile/openhands-sdk/openhands/sdk/llm/utils/telemetry.py:555: UserWarning: Cost calculation failed: This model isn't mapped yet. model=glm-4.7, custom_llm_provider=openai. Add it here - https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json.
+  warnings.warn(f"Cost calculation failed: {e}")
+[11/23/26 13:28:35] INFO     [Profile Store] Loaded     llm_profile_store.py:356
+                             profile `worker-air` from                          
+                             /home/gerg/tmp/e2e4510.Esi                         
+                             f/oh/profiles/worker-air.j                         
+                             son                                                
+[11/23/26 13:28:35] INFO     Created new conversation               state.py:773
+                             61872ab5-a9b9-445a-8826-231080bdb862               
+[11/23/26 13:28:35] INFO     Confirmation policy set  local_conversation.py:3444
+                             to: kind='NeverConfirm'                            
+[11/23/26 13:28:35] INFO     Loaded 0 tools from spec                base.py:599
+[11/23/26 13:28:35] INFO     [Profile Store] Loaded     llm_profile_store.py:356
+                             profile `worker-air` from                          
+                             /home/gerg/tmp/e2e4510.Esi                         
+                             f/oh/profiles/worker-air.j                         
+                             son                                                
+/home/gerg/repos/software-agent-sdk-feat-task-tool-llm-profile/openhands-sdk/openhands/sdk/llm/utils/telemetry.py:555: UserWarning: Cost calculation failed: This model isn't mapped yet. model=glm-4.5-air, custom_llm_provider=openai. Add it here - https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json.
+  warnings.warn(f"Cost calculation failed: {e}")
+[11/23/26 13:28:40] INFO     Task 'task_00000001' completed.      manager.py:486
+[11/23/26 13:28:47] INFO     [Profile Store] Loaded     llm_profile_store.py:356
+                             profile `worker-air` from                          
+                             /home/gerg/tmp/e2e4510.Esi                         
+                             f/oh/profiles/worker-air.j                         
+                             son                                                
+[11/23/26 13:28:47] INFO     Resumed conversation                   state.py:745
+                             61872ab5-a9b9-445a-8826-231080bdb862               
+                             from persistent storage                            
+[11/23/26 13:28:47] INFO     Confirmation policy set  local_conversation.py:3444
+                             to: kind='NeverConfirm'                            
+[11/23/26 13:28:47] INFO     Loaded 0 tools from spec                base.py:599
+[11/23/26 13:28:47] INFO     [Profile Store] Loaded     llm_profile_store.py:356
+                             profile `worker-air` from                          
+                             /home/gerg/tmp/e2e4510.Esi                         
+                             f/oh/profiles/worker-air.j                         
+                             son                                                
+profile file holds plaintext key: False
+--- after first delegation
+task calls: [{"subagent_type": "echo_worker", "llm_profile": "worker-air", "resume": null}]
+parent model: openai/glm-4.7
+parent registry usage ids: ['default']
+metrics[default]: models=['openai/glm-4.7'] calls=2
+metrics[task:task_00000001]: models=['openai/glm-4.5-air'] calls=1
+Message from User ──────────────────────────────────────────────────────────────
+
+Reply with the single word PONG2.
+
+Tokens: ↑ input (total 3.63K) • cache hit (total 0.00%) •  reasoning (total 24) 
+• ↓ output (total 28) • $ (total 0.00)
+
+Message from Agent ─────────────────────────────────────────────────────────────
+
+PONG2
+
+Tokens: ↑ input 3.64K (total 7.27K) • cache hit 0.00% (total 0.00%) •  reasoning
+15 (total 39) • ↓ output 20 (total 48) • $ (total 0.00)
+
+[11/23/26 13:28:52] INFO     Task 'task_00000001' completed.      manager.py:486
+--- after resume without llm_profile
+task calls: [{"subagent_type": "echo_worker", "llm_profile": "worker-air", "resume": null}, {"subagent_type": "echo_worker", "llm_profile": null, "resume": "task_00000001"}]
+parent model: openai/glm-4.7
+parent registry usage ids: ['default']
+metrics[default]: models=['openai/glm-4.7'] calls=4
+metrics[task:task_00000001]: models=['openai/glm-4.5-air'] calls=2
