@@ -166,6 +166,29 @@ def test_a_sub_agent_is_checked_as_built_not_as_described(tmp_path: Path) -> Non
         manager._get_sub_agent("understated")
 
 
+def test_a_scope_still_applies_when_a_task_picks_an_llm_profile(
+    tmp_path: Path,
+) -> None:
+    _register("shell", ["terminal"])
+    _register("searcher", ["grep"])
+    LLMProfileStore().save(
+        "fast",
+        LLM(model="fast-model", api_key=SecretStr("fast-key"), usage_id="fast"),
+        include_secrets=True,
+    )
+    parent = LocalConversation(
+        agent=_parent(Tool(name="grep")), workspace=str(tmp_path), visualizer=None
+    )
+    manager = TaskManager(sub_agent_scope=SubAgentScope(tools=True))
+    manager.attach_parent(parent)
+
+    with pytest.raises(ValueError, match="'shell' uses terminal"):
+        manager._get_sub_agent("shell", llm_profile="fast")
+    assert manager._get_sub_agent("searcher", llm_profile="fast").llm.model == (
+        "fast-model"
+    )
+
+
 def test_a_scope_refuses_a_sub_agent_whose_tools_it_cannot_see(
     tmp_path: Path,
 ) -> None:
