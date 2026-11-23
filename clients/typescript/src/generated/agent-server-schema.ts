@@ -1303,36 +1303,36 @@ export type AddWorkspacesRequest = {
  * is provided by CriticMixin.
  *
  * Attributes:
- * llm: The language model instance used for reasoning.
- * tools: List of tools available to the agent.
- * system_prompt: Inline system prompt string. When provided the agent
- * uses this text verbatim instead of rendering from a template.
- * Mutually exclusive with a non-default ``system_prompt_filename``.
- * **Not recommended** unless you know what you are doing (e.g.
- * customising agent behaviour for a completely different task) —
- * this will override OpenHands' built-in system instructions.
- * system_prompt_filename: Jinja2 template filename resolved relative to
- * the agent's prompts directory, or an absolute path. Defaults to
- * ``"system_prompt.j2"``.
- * system_prompt_kwargs: Extra kwargs forwarded to the Jinja2 template.
+ *     llm: The language model instance used for reasoning.
+ *     tools: List of tools available to the agent.
+ *     system_prompt: Inline system prompt string. When provided the agent
+ *         uses this text verbatim instead of rendering from a template.
+ *         Mutually exclusive with a non-default ``system_prompt_filename``.
+ *         **Not recommended** unless you know what you are doing (e.g.
+ *         customising agent behaviour for a completely different task) —
+ *         this will override OpenHands' built-in system instructions.
+ *     system_prompt_filename: Jinja2 template filename resolved relative to
+ *         the agent's prompts directory, or an absolute path. Defaults to
+ *         ``"system_prompt.j2"``.
+ *     system_prompt_kwargs: Extra kwargs forwarded to the Jinja2 template.
  *
  * Example:
- * ```python
- * from openhands.sdk import LLM, Agent, Tool
- * from pydantic import SecretStr
+ *     ```python
+ *     from openhands.sdk import LLM, Agent, Tool
+ *     from pydantic import SecretStr
  *
- * llm = LLM(model="gpt-5.6", api_key=SecretStr("key"))
- * tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
- * agent = Agent(llm=llm, tools=tools)
- * ```
+ *     llm = LLM(model="gpt-5.6", api_key=SecretStr("key"))
+ *     tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
+ *     agent = Agent(llm=llm, tools=tools)
+ *     ```
  *
- * To override the system prompt entirely::
+ *     To override the system prompt entirely::
  *
- * agent = Agent(
- * llm=llm,
- * tools=tools,
- * system_prompt="You are a helpful coding assistant.",
- * )
+ *         agent = Agent(
+ *             llm=llm,
+ *             tools=tools,
+ *             system_prompt="You are a helpful coding assistant.",
+ *         )
  */
 export type AgentInput = {
   /**
@@ -1439,36 +1439,36 @@ export type AgentInput = {
  * is provided by CriticMixin.
  *
  * Attributes:
- * llm: The language model instance used for reasoning.
- * tools: List of tools available to the agent.
- * system_prompt: Inline system prompt string. When provided the agent
- * uses this text verbatim instead of rendering from a template.
- * Mutually exclusive with a non-default ``system_prompt_filename``.
- * **Not recommended** unless you know what you are doing (e.g.
- * customising agent behaviour for a completely different task) —
- * this will override OpenHands' built-in system instructions.
- * system_prompt_filename: Jinja2 template filename resolved relative to
- * the agent's prompts directory, or an absolute path. Defaults to
- * ``"system_prompt.j2"``.
- * system_prompt_kwargs: Extra kwargs forwarded to the Jinja2 template.
+ *     llm: The language model instance used for reasoning.
+ *     tools: List of tools available to the agent.
+ *     system_prompt: Inline system prompt string. When provided the agent
+ *         uses this text verbatim instead of rendering from a template.
+ *         Mutually exclusive with a non-default ``system_prompt_filename``.
+ *         **Not recommended** unless you know what you are doing (e.g.
+ *         customising agent behaviour for a completely different task) —
+ *         this will override OpenHands' built-in system instructions.
+ *     system_prompt_filename: Jinja2 template filename resolved relative to
+ *         the agent's prompts directory, or an absolute path. Defaults to
+ *         ``"system_prompt.j2"``.
+ *     system_prompt_kwargs: Extra kwargs forwarded to the Jinja2 template.
  *
  * Example:
- * ```python
- * from openhands.sdk import LLM, Agent, Tool
- * from pydantic import SecretStr
+ *     ```python
+ *     from openhands.sdk import LLM, Agent, Tool
+ *     from pydantic import SecretStr
  *
- * llm = LLM(model="gpt-5.6", api_key=SecretStr("key"))
- * tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
- * agent = Agent(llm=llm, tools=tools)
- * ```
+ *     llm = LLM(model="gpt-5.6", api_key=SecretStr("key"))
+ *     tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
+ *     agent = Agent(llm=llm, tools=tools)
+ *     ```
  *
- * To override the system prompt entirely::
+ *     To override the system prompt entirely::
  *
- * agent = Agent(
- * llm=llm,
- * tools=tools,
- * system_prompt="You are a helpful coding assistant.",
- * )
+ *         agent = Agent(
+ *             llm=llm,
+ *             tools=tools,
+ *             system_prompt="You are a helpful coding assistant.",
+ *         )
  */
 export type AgentOutput = {
   /**
@@ -1591,13 +1591,13 @@ export type AgentBaseOutput =
  *
  * Specifically, it provides:
  * - **Repository context / Repo Skills**: Information about the active codebase,
- * branches, and repo-specific instructions contributed by repo skills.
+ *   branches, and repo-specific instructions contributed by repo skills.
  * - **Runtime context**: Current execution environment (hosts, working
- * directory, secrets, date, etc.).
+ *   directory, secrets, date, etc.).
  * - **Conversation instructions**: Optional task- or channel-specific rules
- * that constrain or guide the agent’s behavior across the session.
+ *   that constrain or guide the agent’s behavior across the session.
  * - **Knowledge Skills**: Extensible components that can be triggered by user input
- * to inject knowledge or domain-specific guidance.
+ *   to inject knowledge or domain-specific guidance.
  *
  * Together, these elements make AgentContext the primary container responsible
  * for assembling, formatting, and injecting all prompt-relevant context into
@@ -1697,13 +1697,13 @@ export type AgentContextInput = {
  *
  * Specifically, it provides:
  * - **Repository context / Repo Skills**: Information about the active codebase,
- * branches, and repo-specific instructions contributed by repo skills.
+ *   branches, and repo-specific instructions contributed by repo skills.
  * - **Runtime context**: Current execution environment (hosts, working
- * directory, secrets, date, etc.).
+ *   directory, secrets, date, etc.).
  * - **Conversation instructions**: Optional task- or channel-specific rules
- * that constrain or guide the agent’s behavior across the session.
+ *   that constrain or guide the agent’s behavior across the session.
  * - **Knowledge Skills**: Extensible components that can be triggered by user input
- * to inject knowledge or domain-specific guidance.
+ *   to inject knowledge or domain-specific guidance.
  *
  * Together, these elements make AgentContext the primary container responsible
  * for assembling, formatting, and injecting all prompt-relevant context into
@@ -3455,7 +3455,7 @@ export type BrowserSwitchTabTool = {
  * A set of all browser tools.
  *
  * This tool set includes all available browser-related tools
- * for interacting with web pages.
+ *   for interacting with web pages.
  *
  * The toolset automatically checks for Chromium availability
  * when created and automatically installs it if missing.
@@ -4091,7 +4091,7 @@ export type Condensation = {
  * This action is used to request a condensation of the conversation history.
  *
  * Attributes:
- * action (str): The action type, namely ActionType.CONDENSATION_REQUEST.
+ *     action (str): The action type, namely ActionType.CONDENSATION_REQUEST.
  */
 export type CondensationRequest = {
   /**
@@ -4293,10 +4293,10 @@ export type ConversationContainerOptions = {
  *
  * Differences from AgentErrorEvent:
  * - Not tied to any tool_name/tool_call_id (AgentErrorEvent is a tool
- * observation).
+ *   observation).
  * - Typically source='environment' and the run loop moves to an ERROR state,
- * while AgentErrorEvent has source='agent' and the conversation can
- * continue.
+ *   while AgentErrorEvent has source='agent' and the conversation can
+ *   continue.
  */
 export type ConversationErrorEvent = {
   /**
@@ -5067,21 +5067,21 @@ export type EmptyPatchCriticOutput = {
  *
  * Example::
  *
- * from openhands.sdk.security import (
- * EnsembleSecurityAnalyzer,
- * PatternSecurityAnalyzer,
- * PolicyRailSecurityAnalyzer,
- * ConfirmRisky,
- * SecurityRisk,
- * )
+ *     from openhands.sdk.security import (
+ *         EnsembleSecurityAnalyzer,
+ *         PatternSecurityAnalyzer,
+ *         PolicyRailSecurityAnalyzer,
+ *         ConfirmRisky,
+ *         SecurityRisk,
+ *     )
  *
- * analyzer = EnsembleSecurityAnalyzer(
- * analyzers=[
- * PolicyRailSecurityAnalyzer(),
- * PatternSecurityAnalyzer(),
- * ]
- * )
- * policy = ConfirmRisky(threshold=SecurityRisk.MEDIUM)
+ *     analyzer = EnsembleSecurityAnalyzer(
+ *         analyzers=[
+ *             PolicyRailSecurityAnalyzer(),
+ *             PatternSecurityAnalyzer(),
+ *         ]
+ *     )
+ *     policy = ConfirmRisky(threshold=SecurityRisk.MEDIUM)
  */
 export type EnsembleSecurityAnalyzerInput = {
   /**
@@ -5129,21 +5129,21 @@ export type EnsembleSecurityAnalyzerInput = {
  *
  * Example::
  *
- * from openhands.sdk.security import (
- * EnsembleSecurityAnalyzer,
- * PatternSecurityAnalyzer,
- * PolicyRailSecurityAnalyzer,
- * ConfirmRisky,
- * SecurityRisk,
- * )
+ *     from openhands.sdk.security import (
+ *         EnsembleSecurityAnalyzer,
+ *         PatternSecurityAnalyzer,
+ *         PolicyRailSecurityAnalyzer,
+ *         ConfirmRisky,
+ *         SecurityRisk,
+ *     )
  *
- * analyzer = EnsembleSecurityAnalyzer(
- * analyzers=[
- * PolicyRailSecurityAnalyzer(),
- * PatternSecurityAnalyzer(),
- * ]
- * )
- * policy = ConfirmRisky(threshold=SecurityRisk.MEDIUM)
+ *     analyzer = EnsembleSecurityAnalyzer(
+ *         analyzers=[
+ *             PolicyRailSecurityAnalyzer(),
+ *             PatternSecurityAnalyzer(),
+ *         ]
+ *     )
+ *     policy = ConfirmRisky(threshold=SecurityRisk.MEDIUM)
  */
 export type EnsembleSecurityAnalyzerOutput = {
   /**
@@ -6042,13 +6042,13 @@ export type GlobTool = {
  * mapped to SecurityRisk levels.
  *
  * Environment Variables:
- * GRAYSWAN_API_KEY: Required API key for GraySwan authentication
- * GRAYSWAN_POLICY_ID: Optional policy ID for custom GraySwan policy
+ *     GRAYSWAN_API_KEY: Required API key for GraySwan authentication
+ *     GRAYSWAN_POLICY_ID: Optional policy ID for custom GraySwan policy
  *
  * Example:
- * >>> from openhands.sdk.security.grayswan import GraySwanAnalyzer
- * >>> analyzer = GraySwanAnalyzer()
- * >>> risk = analyzer.security_risk(action_event)
+ *     >>> from openhands.sdk.security.grayswan import GraySwanAnalyzer
+ *     >>> analyzer = GraySwanAnalyzer()
+ *     >>> risk = analyzer.security_risk(action_event)
  */
 export type GraySwanAnalyzerInput = {
   /**
@@ -6115,13 +6115,13 @@ export type GraySwanAnalyzerInput = {
  * mapped to SecurityRisk levels.
  *
  * Environment Variables:
- * GRAYSWAN_API_KEY: Required API key for GraySwan authentication
- * GRAYSWAN_POLICY_ID: Optional policy ID for custom GraySwan policy
+ *     GRAYSWAN_API_KEY: Required API key for GraySwan authentication
+ *     GRAYSWAN_POLICY_ID: Optional policy ID for custom GraySwan policy
  *
  * Example:
- * >>> from openhands.sdk.security.grayswan import GraySwanAnalyzer
- * >>> analyzer = GraySwanAnalyzer()
- * >>> risk = analyzer.security_risk(action_event)
+ *     >>> from openhands.sdk.security.grayswan import GraySwanAnalyzer
+ *     >>> analyzer = GraySwanAnalyzer()
+ *     >>> risk = analyzer.security_risk(action_event)
  */
 export type GraySwanAnalyzerOutput = {
   /**
@@ -6333,18 +6333,18 @@ export type HomeResponse = {
  * Hooks can be configured either by loading from `.openhands/hooks.json` or
  * by directly instantiating with typed fields:
  *
- * # Direct instantiation with typed fields (recommended):
- * config = HookConfig(
- * pre_tool_use=[
- * HookMatcher(
- * matcher="terminal",
- * hooks=[HookDefinition(command="block_dangerous.sh")]
- * )
- * ]
- * )
+ *     # Direct instantiation with typed fields (recommended):
+ *     config = HookConfig(
+ *         pre_tool_use=[
+ *             HookMatcher(
+ *                 matcher="terminal",
+ *                 hooks=[HookDefinition(command="block_dangerous.sh")]
+ *             )
+ *         ]
+ *     )
  *
- * # Load from JSON file:
- * config = HookConfig.load(".openhands/hooks.json")
+ *     # Load from JSON file:
+ *     config = HookConfig.load(".openhands/hooks.json")
  */
 export type HookConfig = {
   /**
@@ -7260,19 +7260,19 @@ export type InvokeSkillTool = {
  * automatically retry the task if the critic score is below the threshold.
  *
  * Example:
- * critic = APIBasedCritic(
- * server_url="...",
- * api_key="...",
- * model_name="critic",
- * iterative_refinement=IterativeRefinementConfig(
- * success_threshold=0.7,
- * max_iterations=3,
- * ),
- * )
- * agent = Agent(llm=llm, tools=tools, critic=critic)
- * conversation = Conversation(agent=agent, workspace=workspace)
- * conversation.send_message("Create a calculator module...")
- * conversation.run()  # Will automatically retry if critic score < 0.7
+ *     critic = APIBasedCritic(
+ *         server_url="...",
+ *         api_key="...",
+ *         model_name="critic",
+ *         iterative_refinement=IterativeRefinementConfig(
+ *             success_threshold=0.7,
+ *             max_iterations=3,
+ *         ),
+ *     )
+ *     agent = Agent(llm=llm, tools=tools, critic=critic)
+ *     conversation = Conversation(agent=agent, workspace=workspace)
+ *     conversation.send_message("Create a calculator module...")
+ *     conversation.run()  # Will automatically retry if critic score < 0.7
  */
 export type IterativeRefinementConfig = {
   /**
@@ -7328,24 +7328,24 @@ export type KeywordTrigger = {
  * API authentication, retry logic, and tool calling capabilities.
  *
  * Attributes:
- * model: Model name (e.g., "gpt-5.6").
- * api_key: API key for authentication.
- * base_url: Custom API base URL.
- * num_retries: Number of retry attempts for failed requests.
- * timeout: Request timeout in seconds.
+ *     model: Model name (e.g., "gpt-5.6").
+ *     api_key: API key for authentication.
+ *     base_url: Custom API base URL.
+ *     num_retries: Number of retry attempts for failed requests.
+ *     timeout: Request timeout in seconds.
  *
  * Example:
- * ```python
- * from openhands.sdk import LLM
- * from pydantic import SecretStr
+ *     ```python
+ *     from openhands.sdk import LLM
+ *     from pydantic import SecretStr
  *
- * llm = LLM(
- * model="gpt-5.6",
- * api_key=SecretStr("your-api-key"),
- * usage_id="my-agent"
- * )
- * # Use with agent or conversation
- * ```
+ *     llm = LLM(
+ *         model="gpt-5.6",
+ *         api_key=SecretStr("your-api-key"),
+ *         usage_id="my-agent"
+ *     )
+ *     # Use with agent or conversation
+ *     ```
  */
 export type LlmInput = {
   /**
@@ -7668,24 +7668,24 @@ export type LlmInput = {
  * API authentication, retry logic, and tool calling capabilities.
  *
  * Attributes:
- * model: Model name (e.g., "gpt-5.6").
- * api_key: API key for authentication.
- * base_url: Custom API base URL.
- * num_retries: Number of retry attempts for failed requests.
- * timeout: Request timeout in seconds.
+ *     model: Model name (e.g., "gpt-5.6").
+ *     api_key: API key for authentication.
+ *     base_url: Custom API base URL.
+ *     num_retries: Number of retry attempts for failed requests.
+ *     timeout: Request timeout in seconds.
  *
  * Example:
- * ```python
- * from openhands.sdk import LLM
- * from pydantic import SecretStr
+ *     ```python
+ *     from openhands.sdk import LLM
+ *     from pydantic import SecretStr
  *
- * llm = LLM(
- * model="gpt-5.6",
- * api_key=SecretStr("your-api-key"),
- * usage_id="my-agent"
- * )
- * # Use with agent or conversation
- * ```
+ *     llm = LLM(
+ *         model="gpt-5.6",
+ *         api_key=SecretStr("your-api-key"),
+ *         usage_id="my-agent"
+ *     )
+ *     # Use with agent or conversation
+ *     ```
  */
 export type LlmOutput = {
   /**
@@ -8397,10 +8397,10 @@ export type ListDirectoryTool = {
  * should operate directly on the host system.
  *
  * Example:
- * >>> workspace = LocalWorkspace(working_dir="/path/to/project")
- * >>> with workspace:
- * ...     result = workspace.execute_command("ls -la")
- * ...     content = workspace.read_file("README.md")
+ *     >>> workspace = LocalWorkspace(working_dir="/path/to/project")
+ *     >>> with workspace:
+ *     ...     result = workspace.execute_command("ls -la")
+ *     ...     content = workspace.read_file("README.md")
  */
 export type LocalWorkspaceInput = {
   /**
@@ -8425,10 +8425,10 @@ export type LocalWorkspaceInput = {
  * should operate directly on the host system.
  *
  * Example:
- * >>> workspace = LocalWorkspace(working_dir="/path/to/project")
- * >>> with workspace:
- * ...     result = workspace.execute_command("ls -la")
- * ...     content = workspace.read_file("README.md")
+ *     >>> workspace = LocalWorkspace(working_dir="/path/to/project")
+ *     >>> with workspace:
+ *     ...     result = workspace.execute_command("ls -la")
+ *     ...     content = workspace.read_file("README.md")
  */
 export type LocalWorkspaceOutput = {
   /**
@@ -10508,10 +10508,10 @@ export type PathTrigger = {
  *
  * Example::
  *
- * from openhands.sdk.security import PatternSecurityAnalyzer, ConfirmRisky
+ *     from openhands.sdk.security import PatternSecurityAnalyzer, ConfirmRisky
  *
- * analyzer = PatternSecurityAnalyzer()
- * policy = ConfirmRisky(threshold=SecurityRisk.MEDIUM)
+ *     analyzer = PatternSecurityAnalyzer()
+ *     policy = ConfirmRisky(threshold=SecurityRisk.MEDIUM)
  */
 export type PatternSecurityAnalyzerInput = {
   /**
@@ -10565,10 +10565,10 @@ export type PatternSecurityAnalyzerInput = {
  *
  * Example::
  *
- * from openhands.sdk.security import PatternSecurityAnalyzer, ConfirmRisky
+ *     from openhands.sdk.security import PatternSecurityAnalyzer, ConfirmRisky
  *
- * analyzer = PatternSecurityAnalyzer()
- * policy = ConfirmRisky(threshold=SecurityRisk.MEDIUM)
+ *     analyzer = PatternSecurityAnalyzer()
+ *     policy = ConfirmRisky(threshold=SecurityRisk.MEDIUM)
  */
 export type PatternSecurityAnalyzerOutput = {
   /**
@@ -10647,29 +10647,29 @@ export type PauseEvent = {
  *
  * For example:
  *
- * # Use the pipeline condenser to chain multiple other condensers together
- * condenser = PipelineCondenser(condensers=[
- * CondenserA(...),
- * CondenserB(...),
- * CondenserC(...),
- * ])
+ *     # Use the pipeline condenser to chain multiple other condensers together
+ *     condenser = PipelineCondenser(condensers=[
+ *         CondenserA(...),
+ *         CondenserB(...),
+ *         CondenserC(...),
+ *     ])
  *
- * result = condenser.condense(view, agent_llm=agent_llm)
+ *     result = condenser.condense(view, agent_llm=agent_llm)
  *
- * # Doing the same thing without the pipeline condenser requires more boilerplate
- * # for the monadic chaining
- * other_result = view
+ *     # Doing the same thing without the pipeline condenser requires more boilerplate
+ *     # for the monadic chaining
+ *     other_result = view
  *
- * if isinstance(other_result, View):
- * other_result = CondenserA(...).condense(other_result, agent_llm=agent_llm)
+ *     if isinstance(other_result, View):
+ *         other_result = CondenserA(...).condense(other_result, agent_llm=agent_llm)
  *
- * if isinstance(other_result, View):
- * other_result = CondenserB(...).condense(other_result, agent_llm=agent_llm)
+ *     if isinstance(other_result, View):
+ *         other_result = CondenserB(...).condense(other_result, agent_llm=agent_llm)
  *
- * if isinstance(other_result, View):
- * other_result = CondenserC(...).condense(other_result, agent_llm=agent_llm)
+ *     if isinstance(other_result, View):
+ *         other_result = CondenserC(...).condense(other_result, agent_llm=agent_llm)
  *
- * assert result == other_result
+ *     assert result == other_result
  */
 export type PipelineCondenserInput = {
   /**
@@ -10694,29 +10694,29 @@ export type PipelineCondenserInput = {
  *
  * For example:
  *
- * # Use the pipeline condenser to chain multiple other condensers together
- * condenser = PipelineCondenser(condensers=[
- * CondenserA(...),
- * CondenserB(...),
- * CondenserC(...),
- * ])
+ *     # Use the pipeline condenser to chain multiple other condensers together
+ *     condenser = PipelineCondenser(condensers=[
+ *         CondenserA(...),
+ *         CondenserB(...),
+ *         CondenserC(...),
+ *     ])
  *
- * result = condenser.condense(view, agent_llm=agent_llm)
+ *     result = condenser.condense(view, agent_llm=agent_llm)
  *
- * # Doing the same thing without the pipeline condenser requires more boilerplate
- * # for the monadic chaining
- * other_result = view
+ *     # Doing the same thing without the pipeline condenser requires more boilerplate
+ *     # for the monadic chaining
+ *     other_result = view
  *
- * if isinstance(other_result, View):
- * other_result = CondenserA(...).condense(other_result, agent_llm=agent_llm)
+ *     if isinstance(other_result, View):
+ *         other_result = CondenserA(...).condense(other_result, agent_llm=agent_llm)
  *
- * if isinstance(other_result, View):
- * other_result = CondenserB(...).condense(other_result, agent_llm=agent_llm)
+ *     if isinstance(other_result, View):
+ *         other_result = CondenserB(...).condense(other_result, agent_llm=agent_llm)
  *
- * if isinstance(other_result, View):
- * other_result = CondenserC(...).condense(other_result, agent_llm=agent_llm)
+ *     if isinstance(other_result, View):
+ *         other_result = CondenserC(...).condense(other_result, agent_llm=agent_llm)
  *
- * assert result == other_result
+ *     assert result == other_result
  */
 export type PipelineCondenserOutput = {
   /**
@@ -10940,17 +10940,17 @@ export type PluginSkillSummary = {
  * to fetch and load plugins from various sources.
  *
  * Examples:
- * >>> # GitHub repository
- * >>> PluginSource(source="github:owner/repo", ref="v1.0.0")
+ *     >>> # GitHub repository
+ *     >>> PluginSource(source="github:owner/repo", ref="v1.0.0")
  *
- * >>> # Plugin from monorepo subdirectory
- * >>> PluginSource(
- * ...     source="github:owner/monorepo",
- * ...     repo_path="plugins/my-plugin"
- * ... )
+ *     >>> # Plugin from monorepo subdirectory
+ *     >>> PluginSource(
+ *     ...     source="github:owner/monorepo",
+ *     ...     repo_path="plugins/my-plugin"
+ *     ... )
  *
- * >>> # Local path
- * >>> PluginSource(source="/path/to/plugin")
+ *     >>> # Local path
+ *     >>> PluginSource(source="/path/to/plugin")
  */
 export type PluginSource = {
   /**
@@ -11034,10 +11034,10 @@ export type PluginsResponse = {
  *
  * Example::
  *
- * from openhands.sdk.security import PolicyRailSecurityAnalyzer
+ *     from openhands.sdk.security import PolicyRailSecurityAnalyzer
  *
- * analyzer = PolicyRailSecurityAnalyzer()
- * # risk = analyzer.security_risk(action)
+ *     analyzer = PolicyRailSecurityAnalyzer()
+ *     # risk = analyzer.security_risk(action)
  */
 export type PolicyRailSecurityAnalyzerInput = {
   /**
@@ -11069,10 +11069,10 @@ export type PolicyRailSecurityAnalyzerInput = {
  *
  * Example::
  *
- * from openhands.sdk.security import PolicyRailSecurityAnalyzer
+ *     from openhands.sdk.security import PolicyRailSecurityAnalyzer
  *
- * analyzer = PolicyRailSecurityAnalyzer()
- * # risk = analyzer.security_risk(action)
+ *     analyzer = PolicyRailSecurityAnalyzer()
+ *     # risk = analyzer.security_risk(action)
  */
 export type PolicyRailSecurityAnalyzerOutput = {
   /**
@@ -11525,18 +11525,18 @@ export type RemoteMcpServer = {
  * as it provides better isolation and security.
  *
  * Supports optional completion callbacks on exit via environment variables:
- * - ``AUTOMATION_CALLBACK_URL`` — URL to POST completion status to
- * - ``AUTOMATION_CALLBACK_API_KEY`` — Bearer token for callback auth (optional)
- * - ``AUTOMATION_RUN_ID`` — Run ID to include in callback payload (optional)
+ *   - ``AUTOMATION_CALLBACK_URL`` — URL to POST completion status to
+ *   - ``AUTOMATION_CALLBACK_API_KEY`` — Bearer token for callback auth (optional)
+ *   - ``AUTOMATION_RUN_ID`` — Run ID to include in callback payload (optional)
  *
  * Example:
- * >>> workspace = RemoteWorkspace(
- * ...     host="https://agent-server.example.com",
- * ...     working_dir="/workspace"
- * ... )
- * >>> with workspace:
- * ...     result = workspace.execute_command("ls -la")
- * ...     content = workspace.read_file("README.md")
+ *     >>> workspace = RemoteWorkspace(
+ *     ...     host="https://agent-server.example.com",
+ *     ...     working_dir="/workspace"
+ *     ... )
+ *     >>> with workspace:
+ *     ...     result = workspace.execute_command("ls -la")
+ *     ...     content = workspace.read_file("README.md")
  */
 export type RemoteWorkspace = {
   /**
@@ -12039,9 +12039,9 @@ export type SettingsFieldSchema = {
  *
  * Example::
  *
- * response = SettingsResponse.model_validate(api_response.json())
- * agent = response.get_agent_settings()  # Returns AgentSettingsConfig
- * conv = response.get_conversation_settings()  # Returns ConversationSettings
+ *     response = SettingsResponse.model_validate(api_response.json())
+ *     agent = response.get_agent_settings()  # Returns AgentSettingsConfig
+ *     conv = response.get_conversation_settings()  # Returns ConversationSettings
  *
  * ``misc_settings`` is an opaque container for frontend-owned data that the
  * agent-server persists but does not interpret — see the docstring of
@@ -13620,10 +13620,10 @@ export type SyncResponse = {
  * when appropriate.
  *
  * Attributes:
- * system_prompt: The static system prompt text (cacheable across conversations)
- * tools: List of available tools
- * dynamic_context: Optional per-conversation context (hosts, repo info, etc.)
- * Sent as a second TextContent block inside the system message.
+ *     system_prompt: The static system prompt text (cacheable across conversations)
+ *     tools: List of available tools
+ *     dynamic_context: Optional per-conversation context (hosts, repo info, etc.)
+ *         Sent as a second TextContent block inside the system message.
  */
 export type SystemPromptEvent = {
   /**
@@ -13813,16 +13813,16 @@ export type TaskTool = {
  * Creates the Task tool backed by a shared TaskManager.
  *
  * Usage:
- * from openhands.tools.task import TaskToolSet
+ *     from openhands.tools.task import TaskToolSet
  *
- * agent = Agent(
- * llm=llm,
- * tools=[
- * Tool(name=TerminalTool.name),
- * Tool(name=FileEditorTool.name),
- * Tool(name=TaskToolSet.name),
- * ],
- * )
+ *     agent = Agent(
+ *         llm=llm,
+ *         tools=[
+ *             Tool(name=TerminalTool.name),
+ *             Tool(name=FileEditorTool.name),
+ *             Tool(name=TaskToolSet.name),
+ *         ],
+ *     )
  */
 export type TaskToolSet = {
   /**
@@ -16558,36 +16558,36 @@ export type ApiBasedCriticOutputWritable = {
  * is provided by CriticMixin.
  *
  * Attributes:
- * llm: The language model instance used for reasoning.
- * tools: List of tools available to the agent.
- * system_prompt: Inline system prompt string. When provided the agent
- * uses this text verbatim instead of rendering from a template.
- * Mutually exclusive with a non-default ``system_prompt_filename``.
- * **Not recommended** unless you know what you are doing (e.g.
- * customising agent behaviour for a completely different task) —
- * this will override OpenHands' built-in system instructions.
- * system_prompt_filename: Jinja2 template filename resolved relative to
- * the agent's prompts directory, or an absolute path. Defaults to
- * ``"system_prompt.j2"``.
- * system_prompt_kwargs: Extra kwargs forwarded to the Jinja2 template.
+ *     llm: The language model instance used for reasoning.
+ *     tools: List of tools available to the agent.
+ *     system_prompt: Inline system prompt string. When provided the agent
+ *         uses this text verbatim instead of rendering from a template.
+ *         Mutually exclusive with a non-default ``system_prompt_filename``.
+ *         **Not recommended** unless you know what you are doing (e.g.
+ *         customising agent behaviour for a completely different task) —
+ *         this will override OpenHands' built-in system instructions.
+ *     system_prompt_filename: Jinja2 template filename resolved relative to
+ *         the agent's prompts directory, or an absolute path. Defaults to
+ *         ``"system_prompt.j2"``.
+ *     system_prompt_kwargs: Extra kwargs forwarded to the Jinja2 template.
  *
  * Example:
- * ```python
- * from openhands.sdk import LLM, Agent, Tool
- * from pydantic import SecretStr
+ *     ```python
+ *     from openhands.sdk import LLM, Agent, Tool
+ *     from pydantic import SecretStr
  *
- * llm = LLM(model="gpt-5.6", api_key=SecretStr("key"))
- * tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
- * agent = Agent(llm=llm, tools=tools)
- * ```
+ *     llm = LLM(model="gpt-5.6", api_key=SecretStr("key"))
+ *     tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
+ *     agent = Agent(llm=llm, tools=tools)
+ *     ```
  *
- * To override the system prompt entirely::
+ *     To override the system prompt entirely::
  *
- * agent = Agent(
- * llm=llm,
- * tools=tools,
- * system_prompt="You are a helpful coding assistant.",
- * )
+ *         agent = Agent(
+ *             llm=llm,
+ *             tools=tools,
+ *             system_prompt="You are a helpful coding assistant.",
+ *         )
  */
 export type AgentInputWritable = {
   /**
@@ -16694,36 +16694,36 @@ export type AgentInputWritable = {
  * is provided by CriticMixin.
  *
  * Attributes:
- * llm: The language model instance used for reasoning.
- * tools: List of tools available to the agent.
- * system_prompt: Inline system prompt string. When provided the agent
- * uses this text verbatim instead of rendering from a template.
- * Mutually exclusive with a non-default ``system_prompt_filename``.
- * **Not recommended** unless you know what you are doing (e.g.
- * customising agent behaviour for a completely different task) —
- * this will override OpenHands' built-in system instructions.
- * system_prompt_filename: Jinja2 template filename resolved relative to
- * the agent's prompts directory, or an absolute path. Defaults to
- * ``"system_prompt.j2"``.
- * system_prompt_kwargs: Extra kwargs forwarded to the Jinja2 template.
+ *     llm: The language model instance used for reasoning.
+ *     tools: List of tools available to the agent.
+ *     system_prompt: Inline system prompt string. When provided the agent
+ *         uses this text verbatim instead of rendering from a template.
+ *         Mutually exclusive with a non-default ``system_prompt_filename``.
+ *         **Not recommended** unless you know what you are doing (e.g.
+ *         customising agent behaviour for a completely different task) —
+ *         this will override OpenHands' built-in system instructions.
+ *     system_prompt_filename: Jinja2 template filename resolved relative to
+ *         the agent's prompts directory, or an absolute path. Defaults to
+ *         ``"system_prompt.j2"``.
+ *     system_prompt_kwargs: Extra kwargs forwarded to the Jinja2 template.
  *
  * Example:
- * ```python
- * from openhands.sdk import LLM, Agent, Tool
- * from pydantic import SecretStr
+ *     ```python
+ *     from openhands.sdk import LLM, Agent, Tool
+ *     from pydantic import SecretStr
  *
- * llm = LLM(model="gpt-5.6", api_key=SecretStr("key"))
- * tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
- * agent = Agent(llm=llm, tools=tools)
- * ```
+ *     llm = LLM(model="gpt-5.6", api_key=SecretStr("key"))
+ *     tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
+ *     agent = Agent(llm=llm, tools=tools)
+ *     ```
  *
- * To override the system prompt entirely::
+ *     To override the system prompt entirely::
  *
- * agent = Agent(
- * llm=llm,
- * tools=tools,
- * system_prompt="You are a helpful coding assistant.",
- * )
+ *         agent = Agent(
+ *             llm=llm,
+ *             tools=tools,
+ *             system_prompt="You are a helpful coding assistant.",
+ *         )
  */
 export type AgentOutputWritable = {
   /**
@@ -16846,13 +16846,13 @@ export type AgentBaseOutputWritable =
  *
  * Specifically, it provides:
  * - **Repository context / Repo Skills**: Information about the active codebase,
- * branches, and repo-specific instructions contributed by repo skills.
+ *   branches, and repo-specific instructions contributed by repo skills.
  * - **Runtime context**: Current execution environment (hosts, working
- * directory, secrets, date, etc.).
+ *   directory, secrets, date, etc.).
  * - **Conversation instructions**: Optional task- or channel-specific rules
- * that constrain or guide the agent’s behavior across the session.
+ *   that constrain or guide the agent’s behavior across the session.
  * - **Knowledge Skills**: Extensible components that can be triggered by user input
- * to inject knowledge or domain-specific guidance.
+ *   to inject knowledge or domain-specific guidance.
  *
  * Together, these elements make AgentContext the primary container responsible
  * for assembling, formatting, and injecting all prompt-relevant context into
@@ -17541,7 +17541,7 @@ export type BrowserSwitchTabToolWritable = {
  * A set of all browser tools.
  *
  * This tool set includes all available browser-related tools
- * for interacting with web pages.
+ *   for interacting with web pages.
  *
  * The toolset automatically checks for Chromium availability
  * when created and automatically installs it if missing.
@@ -18016,21 +18016,21 @@ export type EditToolWritable = {
  *
  * Example::
  *
- * from openhands.sdk.security import (
- * EnsembleSecurityAnalyzer,
- * PatternSecurityAnalyzer,
- * PolicyRailSecurityAnalyzer,
- * ConfirmRisky,
- * SecurityRisk,
- * )
+ *     from openhands.sdk.security import (
+ *         EnsembleSecurityAnalyzer,
+ *         PatternSecurityAnalyzer,
+ *         PolicyRailSecurityAnalyzer,
+ *         ConfirmRisky,
+ *         SecurityRisk,
+ *     )
  *
- * analyzer = EnsembleSecurityAnalyzer(
- * analyzers=[
- * PolicyRailSecurityAnalyzer(),
- * PatternSecurityAnalyzer(),
- * ]
- * )
- * policy = ConfirmRisky(threshold=SecurityRisk.MEDIUM)
+ *     analyzer = EnsembleSecurityAnalyzer(
+ *         analyzers=[
+ *             PolicyRailSecurityAnalyzer(),
+ *             PatternSecurityAnalyzer(),
+ *         ]
+ *     )
+ *     policy = ConfirmRisky(threshold=SecurityRisk.MEDIUM)
  */
 export type EnsembleSecurityAnalyzerInputWritable = {
   /**
@@ -18078,21 +18078,21 @@ export type EnsembleSecurityAnalyzerInputWritable = {
  *
  * Example::
  *
- * from openhands.sdk.security import (
- * EnsembleSecurityAnalyzer,
- * PatternSecurityAnalyzer,
- * PolicyRailSecurityAnalyzer,
- * ConfirmRisky,
- * SecurityRisk,
- * )
+ *     from openhands.sdk.security import (
+ *         EnsembleSecurityAnalyzer,
+ *         PatternSecurityAnalyzer,
+ *         PolicyRailSecurityAnalyzer,
+ *         ConfirmRisky,
+ *         SecurityRisk,
+ *     )
  *
- * analyzer = EnsembleSecurityAnalyzer(
- * analyzers=[
- * PolicyRailSecurityAnalyzer(),
- * PatternSecurityAnalyzer(),
- * ]
- * )
- * policy = ConfirmRisky(threshold=SecurityRisk.MEDIUM)
+ *     analyzer = EnsembleSecurityAnalyzer(
+ *         analyzers=[
+ *             PolicyRailSecurityAnalyzer(),
+ *             PatternSecurityAnalyzer(),
+ *         ]
+ *     )
+ *     policy = ConfirmRisky(threshold=SecurityRisk.MEDIUM)
  */
 export type EnsembleSecurityAnalyzerOutputWritable = {
   /**
@@ -18318,13 +18318,13 @@ export type GlobToolWritable = {
  * mapped to SecurityRisk levels.
  *
  * Environment Variables:
- * GRAYSWAN_API_KEY: Required API key for GraySwan authentication
- * GRAYSWAN_POLICY_ID: Optional policy ID for custom GraySwan policy
+ *     GRAYSWAN_API_KEY: Required API key for GraySwan authentication
+ *     GRAYSWAN_POLICY_ID: Optional policy ID for custom GraySwan policy
  *
  * Example:
- * >>> from openhands.sdk.security.grayswan import GraySwanAnalyzer
- * >>> analyzer = GraySwanAnalyzer()
- * >>> risk = analyzer.security_risk(action_event)
+ *     >>> from openhands.sdk.security.grayswan import GraySwanAnalyzer
+ *     >>> analyzer = GraySwanAnalyzer()
+ *     >>> risk = analyzer.security_risk(action_event)
  */
 export type GraySwanAnalyzerInputWritable = {
   /**
@@ -18391,13 +18391,13 @@ export type GraySwanAnalyzerInputWritable = {
  * mapped to SecurityRisk levels.
  *
  * Environment Variables:
- * GRAYSWAN_API_KEY: Required API key for GraySwan authentication
- * GRAYSWAN_POLICY_ID: Optional policy ID for custom GraySwan policy
+ *     GRAYSWAN_API_KEY: Required API key for GraySwan authentication
+ *     GRAYSWAN_POLICY_ID: Optional policy ID for custom GraySwan policy
  *
  * Example:
- * >>> from openhands.sdk.security.grayswan import GraySwanAnalyzer
- * >>> analyzer = GraySwanAnalyzer()
- * >>> risk = analyzer.security_risk(action_event)
+ *     >>> from openhands.sdk.security.grayswan import GraySwanAnalyzer
+ *     >>> analyzer = GraySwanAnalyzer()
+ *     >>> risk = analyzer.security_risk(action_event)
  */
 export type GraySwanAnalyzerOutputWritable = {
   /**
@@ -18625,24 +18625,24 @@ export type JsonValueWritable =
  * API authentication, retry logic, and tool calling capabilities.
  *
  * Attributes:
- * model: Model name (e.g., "gpt-5.6").
- * api_key: API key for authentication.
- * base_url: Custom API base URL.
- * num_retries: Number of retry attempts for failed requests.
- * timeout: Request timeout in seconds.
+ *     model: Model name (e.g., "gpt-5.6").
+ *     api_key: API key for authentication.
+ *     base_url: Custom API base URL.
+ *     num_retries: Number of retry attempts for failed requests.
+ *     timeout: Request timeout in seconds.
  *
  * Example:
- * ```python
- * from openhands.sdk import LLM
- * from pydantic import SecretStr
+ *     ```python
+ *     from openhands.sdk import LLM
+ *     from pydantic import SecretStr
  *
- * llm = LLM(
- * model="gpt-5.6",
- * api_key=SecretStr("your-api-key"),
- * usage_id="my-agent"
- * )
- * # Use with agent or conversation
- * ```
+ *     llm = LLM(
+ *         model="gpt-5.6",
+ *         api_key=SecretStr("your-api-key"),
+ *         usage_id="my-agent"
+ *     )
+ *     # Use with agent or conversation
+ *     ```
  */
 export type LlmInputWritable = {
   /**
@@ -18965,24 +18965,24 @@ export type LlmInputWritable = {
  * API authentication, retry logic, and tool calling capabilities.
  *
  * Attributes:
- * model: Model name (e.g., "gpt-5.6").
- * api_key: API key for authentication.
- * base_url: Custom API base URL.
- * num_retries: Number of retry attempts for failed requests.
- * timeout: Request timeout in seconds.
+ *     model: Model name (e.g., "gpt-5.6").
+ *     api_key: API key for authentication.
+ *     base_url: Custom API base URL.
+ *     num_retries: Number of retry attempts for failed requests.
+ *     timeout: Request timeout in seconds.
  *
  * Example:
- * ```python
- * from openhands.sdk import LLM
- * from pydantic import SecretStr
+ *     ```python
+ *     from openhands.sdk import LLM
+ *     from pydantic import SecretStr
  *
- * llm = LLM(
- * model="gpt-5.6",
- * api_key=SecretStr("your-api-key"),
- * usage_id="my-agent"
- * )
- * # Use with agent or conversation
- * ```
+ *     llm = LLM(
+ *         model="gpt-5.6",
+ *         api_key=SecretStr("your-api-key"),
+ *         usage_id="my-agent"
+ *     )
+ *     # Use with agent or conversation
+ *     ```
  */
 export type LlmOutputWritable = {
   /**
@@ -19833,29 +19833,29 @@ export type McpToolDefinitionWritable = {
  *
  * For example:
  *
- * # Use the pipeline condenser to chain multiple other condensers together
- * condenser = PipelineCondenser(condensers=[
- * CondenserA(...),
- * CondenserB(...),
- * CondenserC(...),
- * ])
+ *     # Use the pipeline condenser to chain multiple other condensers together
+ *     condenser = PipelineCondenser(condensers=[
+ *         CondenserA(...),
+ *         CondenserB(...),
+ *         CondenserC(...),
+ *     ])
  *
- * result = condenser.condense(view, agent_llm=agent_llm)
+ *     result = condenser.condense(view, agent_llm=agent_llm)
  *
- * # Doing the same thing without the pipeline condenser requires more boilerplate
- * # for the monadic chaining
- * other_result = view
+ *     # Doing the same thing without the pipeline condenser requires more boilerplate
+ *     # for the monadic chaining
+ *     other_result = view
  *
- * if isinstance(other_result, View):
- * other_result = CondenserA(...).condense(other_result, agent_llm=agent_llm)
+ *     if isinstance(other_result, View):
+ *         other_result = CondenserA(...).condense(other_result, agent_llm=agent_llm)
  *
- * if isinstance(other_result, View):
- * other_result = CondenserB(...).condense(other_result, agent_llm=agent_llm)
+ *     if isinstance(other_result, View):
+ *         other_result = CondenserB(...).condense(other_result, agent_llm=agent_llm)
  *
- * if isinstance(other_result, View):
- * other_result = CondenserC(...).condense(other_result, agent_llm=agent_llm)
+ *     if isinstance(other_result, View):
+ *         other_result = CondenserC(...).condense(other_result, agent_llm=agent_llm)
  *
- * assert result == other_result
+ *     assert result == other_result
  */
 export type PipelineCondenserInputWritable = {
   /**
@@ -19880,29 +19880,29 @@ export type PipelineCondenserInputWritable = {
  *
  * For example:
  *
- * # Use the pipeline condenser to chain multiple other condensers together
- * condenser = PipelineCondenser(condensers=[
- * CondenserA(...),
- * CondenserB(...),
- * CondenserC(...),
- * ])
+ *     # Use the pipeline condenser to chain multiple other condensers together
+ *     condenser = PipelineCondenser(condensers=[
+ *         CondenserA(...),
+ *         CondenserB(...),
+ *         CondenserC(...),
+ *     ])
  *
- * result = condenser.condense(view, agent_llm=agent_llm)
+ *     result = condenser.condense(view, agent_llm=agent_llm)
  *
- * # Doing the same thing without the pipeline condenser requires more boilerplate
- * # for the monadic chaining
- * other_result = view
+ *     # Doing the same thing without the pipeline condenser requires more boilerplate
+ *     # for the monadic chaining
+ *     other_result = view
  *
- * if isinstance(other_result, View):
- * other_result = CondenserA(...).condense(other_result, agent_llm=agent_llm)
+ *     if isinstance(other_result, View):
+ *         other_result = CondenserA(...).condense(other_result, agent_llm=agent_llm)
  *
- * if isinstance(other_result, View):
- * other_result = CondenserB(...).condense(other_result, agent_llm=agent_llm)
+ *     if isinstance(other_result, View):
+ *         other_result = CondenserB(...).condense(other_result, agent_llm=agent_llm)
  *
- * if isinstance(other_result, View):
- * other_result = CondenserC(...).condense(other_result, agent_llm=agent_llm)
+ *     if isinstance(other_result, View):
+ *         other_result = CondenserC(...).condense(other_result, agent_llm=agent_llm)
  *
- * assert result == other_result
+ *     assert result == other_result
  */
 export type PipelineCondenserOutputWritable = {
   /**
@@ -20841,10 +20841,10 @@ export type SwitchLlmToolWritable = {
  * when appropriate.
  *
  * Attributes:
- * system_prompt: The static system prompt text (cacheable across conversations)
- * tools: List of available tools
- * dynamic_context: Optional per-conversation context (hosts, repo info, etc.)
- * Sent as a second TextContent block inside the system message.
+ *     system_prompt: The static system prompt text (cacheable across conversations)
+ *     tools: List of available tools
+ *     dynamic_context: Optional per-conversation context (hosts, repo info, etc.)
+ *         Sent as a second TextContent block inside the system message.
  */
 export type SystemPromptEventWritable = {
   /**
@@ -20928,16 +20928,16 @@ export type TaskToolWritable = {
  * Creates the Task tool backed by a shared TaskManager.
  *
  * Usage:
- * from openhands.tools.task import TaskToolSet
+ *     from openhands.tools.task import TaskToolSet
  *
- * agent = Agent(
- * llm=llm,
- * tools=[
- * Tool(name=TerminalTool.name),
- * Tool(name=FileEditorTool.name),
- * Tool(name=TaskToolSet.name),
- * ],
- * )
+ *     agent = Agent(
+ *         llm=llm,
+ *         tools=[
+ *             Tool(name=TerminalTool.name),
+ *             Tool(name=FileEditorTool.name),
+ *             Tool(name=TaskToolSet.name),
+ *         ],
+ *     )
  */
 export type TaskToolSetWritable = {
   /**

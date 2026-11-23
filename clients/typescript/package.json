@@ -38,14 +38,6 @@
       "default": "./dist/workspace/remote-workspace.js"
     }
   },
-  "overrides": {
-    "eslint": {
-      "minimatch": {
-        ".": "^10.2.1",
-        "brace-expansion": "^5.0.6"
-      }
-    }
-  },
   "config": {
     "agentServerImage": "ghcr.io/openhands/agent-server:1.62.0-python"
   },
@@ -58,8 +50,8 @@
     "test:endpoint-audit-tooling": "node ./scripts/test-endpoint-audit.mjs",
     "check:public-type-budget": "npm run build --silent && node ./scripts/check-public-type-budget.mjs",
     "test:public-type-budget": "node ./scripts/check-public-type-budget.mjs --self-test",
-    "lint": "eslint src/**/*.ts",
-    "lint:fix": "eslint src/**/*.ts --fix",
+    "lint": "oxlint src",
+    "lint:fix": "oxlint --fix src",
     "format": "prettier --write \"src/**/*.ts\" \"examples/**/*.ts\" \"scripts/**/*.mjs\"",
     "format:check": "prettier --check \"src/**/*.ts\" \"examples/**/*.ts\" \"scripts/**/*.mjs\"",
     "test": "vitest run --config vitest.config.ts",
@@ -90,20 +82,15 @@
     "ws": "^8.20.0"
   },
   "devDependencies": {
-    "@eslint/js": "^10.0.1",
-    "@hey-api/openapi-ts": "0.99.0",
+    "@hey-api/openapi-ts": "0.0.0-next-20260930190945",
     "@types/node": "^26.1.0",
     "@types/ws": "^8.5.8",
-    "@typescript-eslint/eslint-plugin": "^8.59.2",
-    "@typescript-eslint/parser": "^8.59.2",
-    "@typescript/native": "npm:typescript@^7.0.2",
     "@vitest/coverage-v8": "^5.0.0",
-    "eslint": "^10.4.0",
-    "globals": "^17.6.0",
+    "oxc-parser": "0.158.0",
+    "oxlint": "1.93.0",
     "prettier": "^3.8.3",
     "rimraf": "^6.1.3",
-    "typescript": "npm:@typescript/typescript6@^6.0.2",
-    "typescript-eslint": "^8.59.3",
+    "typescript": "7.0.2",
     "vitest": "^5.0.0"
   },
   "files": [

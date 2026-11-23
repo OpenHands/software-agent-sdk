@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import ts from 'typescript';
+import { parseTypeScript, visitChildren } from './parse-typescript.mjs';
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const distRoot = resolve(repositoryRoot, 'dist');
@@ -22,68 +22,51 @@ const publicEntryPoints = [
 const normalizePath = (value) => value.replaceAll('\\', '/');
 const normalizeTypeText = (value) => value.replace(/\s+/g, ' ').trim();
 
-function declarationName(node) {
-  if (!node.name) return null;
-  if (ts.isIdentifier(node.name) || ts.isPrivateIdentifier(node.name)) {
-    return node.name.text;
-  }
-  if (ts.isStringLiteral(node.name) || ts.isNumericLiteral(node.name)) {
-    return node.name.text;
-  }
-  return node.name.getText();
+function declarationName(node, text) {
+  const key = node.id ?? node.key;
+  if (!key) return null;
+  if (key.type === 'Identifier' || key.type === 'PrivateIdentifier') return key.name;
+  if (key.type === 'Literal') return String(key.value);
+  return text.slice(key.start, key.end);
 }
 
-function pathLabel(node) {
-  const name = declarationName(node);
-  if (ts.isInterfaceDeclaration(node)) return `interface:${name}`;
-  if (ts.isTypeAliasDeclaration(node)) return `type:${name}`;
-  if (ts.isClassDeclaration(node)) return `class:${name ?? '<anonymous>'}`;
-  if (ts.isFunctionDeclaration(node)) return `function:${name ?? '<anonymous>'}`;
-  if (ts.isPropertySignature(node) || ts.isPropertyDeclaration(node)) {
-    return `property:${name ?? '<computed>'}`;
-  }
-  if (ts.isMethodSignature(node) || ts.isMethodDeclaration(node)) {
-    return `method:${name ?? '<computed>'}`;
-  }
-  if (ts.isGetAccessorDeclaration(node)) return `getter:${name ?? '<computed>'}`;
-  if (ts.isSetAccessorDeclaration(node)) return `setter:${name ?? '<computed>'}`;
-  if (ts.isParameter(node)) return `parameter:${name ?? '<destructured>'}`;
-  if (ts.isTypeParameterDeclaration(node)) return `type-parameter:${name}`;
-  if (ts.isIndexSignatureDeclaration(node)) return 'index-signature';
-  if (ts.isCallSignatureDeclaration(node)) return 'call-signature';
-  if (ts.isConstructSignatureDeclaration(node)) return 'construct-signature';
-  if (ts.isConstructorDeclaration(node)) return 'constructor';
-  return null;
-}
+const declarationLabels = {
+  TSInterfaceDeclaration: 'interface',
+  TSTypeAliasDeclaration: 'type',
+  ClassDeclaration: 'class',
+  TSDeclareFunction: 'function',
+  FunctionDeclaration: 'function',
+  TSPropertySignature: 'property',
+  PropertyDefinition: 'property',
+  TSAbstractPropertyDefinition: 'property',
+  TSCallSignatureDeclaration: 'call-signature',
+  TSConstructSignatureDeclaration: 'construct-signature',
+  TSIndexSignature: 'index-signature',
+};
 
-function isPrivateDeclaration(node) {
-  return Boolean(
-    node.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.PrivateKeyword)
-  );
-}
-
-function containingTypeNode(node) {
-  let current = node;
-  while (current.parent) {
-    const parent = current.parent;
-    if (
-      ((ts.isPropertySignature(parent) ||
-        ts.isPropertyDeclaration(parent) ||
-        ts.isParameter(parent) ||
-        ts.isIndexSignatureDeclaration(parent) ||
-        ts.isMethodSignature(parent) ||
-        ts.isMethodDeclaration(parent) ||
-        ts.isFunctionDeclaration(parent) ||
-        ts.isGetAccessorDeclaration(parent) ||
-        ts.isSetAccessorDeclaration(parent)) &&
-        parent.type === current) ||
-      (ts.isTypeAliasDeclaration(parent) && parent.type === current)
-    ) {
-      return current;
-    }
-    current = parent;
+function pathLabel(node, parent, text) {
+  if (node.type === 'TSTypeParameter') return `type-parameter:${node.name.name ?? node.name}`;
+  if (
+    parent?.params?.includes(node) &&
+    parent.type !== 'TSTypeParameterDeclaration' &&
+    parent.type !== 'TSTypeParameterInstantiation'
+  ) {
+    return `parameter:${(node.type === 'Identifier' ? node.name : node.type === 'RestElement' && node.argument.type === 'Identifier' ? node.argument.name : null) ?? '<destructured>'}`;
   }
-  return node;
+  const name = declarationName(node, text);
+  if (
+    node.type === 'MethodDefinition' ||
+    node.type === 'TSAbstractMethodDefinition' ||
+    node.type === 'TSMethodSignature'
+  ) {
+    return node.kind === 'constructor'
+      ? 'constructor'
+      : `${node.kind === 'init' ? 'method' : node.kind}:${name ?? '<computed>'}`;
+  }
+  const label = declarationLabels[node.type];
+  if (!label) return null;
+  if (['index-signature', 'call-signature', 'construct-signature'].includes(label)) return label;
+  return `${label}:${name ?? (label === 'class' ? '<anonymous>' : '<computed>')}`;
 }
 
 function resolveDeclarationModule(fromFile, moduleSpecifier) {
@@ -108,36 +91,32 @@ function collectReachableDeclarationFiles() {
     }
     visited.add(declarationFile);
 
-    const source = ts.createSourceFile(
-      declarationFile,
-      readFileSync(declarationFile, 'utf8'),
-      ts.ScriptTarget.Latest,
-      true,
-      ts.ScriptKind.TS
-    );
+    const source = parseTypeScript(declarationFile, readFileSync(declarationFile, 'utf8'));
 
     const followSpecifier = (specifier) => {
       const resolved = resolveDeclarationModule(declarationFile, specifier);
-      if (resolved && !normalizePath(relative(distRoot, resolved)).startsWith('generated/')) {
+      if (
+        resolved &&
+        !resolved.endsWith('.json') &&
+        !normalizePath(relative(distRoot, resolved)).startsWith('generated/')
+      ) {
         pending.push(resolved);
       }
     };
 
     const visit = (node) => {
       if (
-        (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
-        node.moduleSpecifier &&
-        ts.isStringLiteral(node.moduleSpecifier)
+        [
+          'ImportDeclaration',
+          'ExportNamedDeclaration',
+          'ExportAllDeclaration',
+          'TSImportType',
+        ].includes(node.type) &&
+        typeof node.source?.value === 'string'
       ) {
-        followSpecifier(node.moduleSpecifier.text);
-      } else if (
-        ts.isImportTypeNode(node) &&
-        ts.isLiteralTypeNode(node.argument) &&
-        ts.isStringLiteral(node.argument.literal)
-      ) {
-        followSpecifier(node.argument.literal.text);
+        followSpecifier(node.source.value);
       }
-      ts.forEachChild(node, visit);
+      visitChildren(node, visit);
     };
     visit(source);
   }
@@ -147,43 +126,36 @@ function collectReachableDeclarationFiles() {
 
 function collectWeakSites() {
   const sites = [];
-  const printer = ts.createPrinter({ removeComments: true });
 
   for (const declarationFile of collectReachableDeclarationFiles()) {
-    const source = ts.createSourceFile(
-      declarationFile,
-      readFileSync(declarationFile, 'utf8'),
-      ts.ScriptTarget.Latest,
-      true,
-      ts.ScriptKind.TS
-    );
+    const text = readFileSync(declarationFile, 'utf8');
+    const source = parseTypeScript(declarationFile, text);
     const modulePath = normalizePath(relative(distRoot, declarationFile));
 
-    const visit = (node, semanticPath) => {
-      if (isPrivateDeclaration(node)) return;
-      const label = pathLabel(node);
+    const visit = (node, semanticPath, enclosingType, parent) => {
+      if (node.accessibility === 'private') return;
+      const label = pathLabel(node, parent, text);
       const nextPath = label ? [...semanticPath, label] : semanticPath;
-
+      const typeNode =
+        node.type === 'TSTypeAnnotation' ||
+        (parent?.type === 'TSTypeAliasDeclaration' && parent.typeAnnotation === node)
+          ? node.type === 'TSTypeAnnotation'
+            ? node.typeAnnotation
+            : node
+          : enclosingType;
       const kind =
-        node.kind === ts.SyntaxKind.AnyKeyword
-          ? 'any'
-          : node.kind === ts.SyntaxKind.UnknownKeyword
-            ? 'unknown'
-            : null;
+        node.type === 'TSAnyKeyword' ? 'any' : node.type === 'TSUnknownKeyword' ? 'unknown' : null;
       if (kind) {
-        const typeNode = containingTypeNode(node);
+        const type = typeNode ?? node;
         sites.push({
           baseId: `${modulePath}::${nextPath.join('/')}::${kind}`,
           kind,
-          fingerprint: normalizeTypeText(
-            printer.printNode(ts.EmitHint.Unspecified, typeNode, source)
-          ),
+          fingerprint: normalizeTypeText(text.slice(type.start, type.end)),
           module: modulePath,
-          position: node.pos,
+          position: node.start,
         });
       }
-
-      ts.forEachChild(node, (child) => visit(child, nextPath));
+      visitChildren(node, (child) => visit(child, nextPath, typeNode, node));
     };
     visit(source, []);
   }

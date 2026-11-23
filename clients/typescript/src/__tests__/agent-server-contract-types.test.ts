@@ -1,5 +1,5 @@
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import ts from 'typescript';
 import type { MCPClient } from '../client/mcp-client';
 import type { ConversationClient } from '../client/conversation-client';
 import type { FileClient } from '../client/file-client';
@@ -96,25 +96,14 @@ function assertType<Type extends true>(_value: Type): void {
 describe('Agent Server generated contract aliases', () => {
   it('typechecks the contract assertions with TypeScript', () => {
     const root = fileURLToPath(new URL('../../', import.meta.url));
-    const configPath = fileURLToPath(new URL('../../tsconfig.json', import.meta.url));
-    const config = ts.readConfigFile(configPath, ts.sys.readFile);
-    const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, root);
-    const program = ts.createProgram([fileURLToPath(import.meta.url)], {
-      ...parsed.options,
-      noEmit: true,
-    });
-    const diagnostics = [
-      ...(config.error ? [config.error] : []),
-      ...parsed.errors,
-      ...ts.getPreEmitDiagnostics(program),
-    ];
-    expect(
-      ts.formatDiagnostics(diagnostics, {
-        getCanonicalFileName: (fileName) => fileName,
-        getCurrentDirectory: ts.sys.getCurrentDirectory,
-        getNewLine: () => ts.sys.newLine,
-      })
-    ).toBe('');
+    execFileSync(
+      process.execPath,
+      ['node_modules/typescript/bin/tsc', '-p', 'tsconfig.contract.json'],
+      {
+        cwd: root,
+        stdio: 'pipe',
+      }
+    );
   }, 30_000);
 
   it('exposes typed conversation effort fields', () => {

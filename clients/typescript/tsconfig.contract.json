@@ -1,0 +1,6 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "noEmit": true },
+  "include": [],
+  "files": ["src/__tests__/agent-server-contract-types.test.ts"]
+}

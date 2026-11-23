@@ -14,7 +14,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import ts from 'typescript';
+import { parseTypeScript, visitChildren } from './parse-typescript.mjs';
 
 import { loadPinnedAgentServerOpenApi } from './agent-server-openapi.mjs';
 
@@ -97,39 +97,40 @@ const excludedClientFiles = new Set(
 );
 
 function pathFromExpression(expression) {
-  if (ts.isStringLiteral(expression) || ts.isNoSubstitutionTemplateLiteral(expression)) {
-    return expression.text;
+  if (expression.type === 'Literal' && typeof expression.value === 'string') {
+    return expression.value;
   }
-  if (ts.isTemplateExpression(expression)) {
-    return (
-      expression.head.text +
-      expression.templateSpans.map((span) => `{}` + span.literal.text).join('')
-    );
+  if (expression.type === 'TemplateLiteral') {
+    const parts = expression.quasis.map(({ value }) => value.cooked);
+    if (parts.every((part) => part !== null)) return parts.join('{}');
   }
 }
 
 function objectProperty(object, name) {
   return object.properties.find(
     (property) =>
-      ts.isPropertyAssignment(property) &&
-      ((ts.isIdentifier(property.name) && property.name.text === name) ||
-        (ts.isStringLiteral(property.name) && property.name.text === name))
+      property.type === 'Property' &&
+      property.kind === 'init' &&
+      !property.method &&
+      !property.shorthand &&
+      !property.computed &&
+      ((property.key.type === 'Identifier' && property.key.name === name) ||
+        (property.key.type === 'Literal' && property.key.value === name))
   );
 }
 
 function extractEndpoints(file) {
-  const source = ts.createSourceFile(
-    file,
-    fs.readFileSync(file, 'utf8'),
-    ts.ScriptTarget.Latest,
-    true,
-    ts.ScriptKind.TS
-  );
+  const source = parseTypeScript(file, fs.readFileSync(file, 'utf8'));
   const endpoints = [];
 
   function visit(node) {
-    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
-      const method = node.expression.name.text.toLowerCase();
+    if (
+      node.type === 'CallExpression' &&
+      node.callee.type === 'MemberExpression' &&
+      !node.callee.computed &&
+      node.callee.property.type === 'Identifier'
+    ) {
+      const method = node.callee.property.name.toLowerCase();
       let verb;
       let endpointPath;
 
@@ -139,14 +140,14 @@ function extractEndpoints(file) {
       } else if (
         method === 'request' &&
         node.arguments[0] &&
-        ts.isObjectLiteralExpression(node.arguments[0])
+        node.arguments[0].type === 'ObjectExpression'
       ) {
         const options = node.arguments[0];
         const methodProperty = objectProperty(options, 'method');
         const urlProperty = objectProperty(options, 'url');
         if (methodProperty && urlProperty) {
-          verb = pathFromExpression(methodProperty.initializer)?.toLowerCase();
-          endpointPath = pathFromExpression(urlProperty.initializer);
+          verb = pathFromExpression(methodProperty.value)?.toLowerCase();
+          endpointPath = pathFromExpression(urlProperty.value);
         }
       }
 
@@ -159,7 +160,7 @@ function extractEndpoints(file) {
         endpoints.push(norm(verb, endpointPath));
       }
     }
-    ts.forEachChild(node, visit);
+    visitChildren(node, visit);
   }
 
   visit(source);
