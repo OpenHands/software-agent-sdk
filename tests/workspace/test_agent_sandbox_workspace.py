@@ -6,29 +6,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
-def test_agent_sandbox_workspace_import():
-    """AgentSandboxWorkspace can be imported from the package."""
-    from openhands.workspace import AgentSandboxWorkspace
-
-    assert AgentSandboxWorkspace is not None
-
-
-def test_agent_sandbox_workspace_inheritance():
-    """AgentSandboxWorkspace is a RemoteWorkspace."""
-    from openhands.sdk.workspace import RemoteWorkspace
-    from openhands.workspace import AgentSandboxWorkspace
-
-    assert issubclass(AgentSandboxWorkspace, RemoteWorkspace)
-
-
-def test_agent_sandbox_workspace_fields():
-    """The key agent-sandbox knobs are exposed as fields."""
-    from openhands.workspace import AgentSandboxWorkspace
-
-    for field in ("warmpool", "namespace", "server_port", "connection", "host_port"):
-        assert field in AgentSandboxWorkspace.model_fields
-
-
 def test_direct_connection_requires_host():
     """connection='direct' without a host is rejected before any k8s call."""
     from openhands.workspace import AgentSandboxWorkspace

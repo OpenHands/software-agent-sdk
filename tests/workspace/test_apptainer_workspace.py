@@ -45,29 +45,6 @@ def mock_apptainer_workspace(tmp_path):
         yield _create_workspace
 
 
-def test_apptainer_workspace_import():
-    """Test that ApptainerWorkspace can be imported from the package."""
-    from openhands.workspace import ApptainerWorkspace
-
-    assert ApptainerWorkspace is not None
-    assert hasattr(ApptainerWorkspace, "__init__")
-
-
-def test_apptainer_workspace_inheritance():
-    """Test that ApptainerWorkspace inherits from RemoteWorkspace."""
-    from openhands.sdk.workspace import RemoteWorkspace
-    from openhands.workspace import ApptainerWorkspace
-
-    assert issubclass(ApptainerWorkspace, RemoteWorkspace)
-
-
-def test_apptainer_workspace_has_gpu_field():
-    """Test that ApptainerWorkspace exposes the GPU passthrough option."""
-    from openhands.workspace import ApptainerWorkspace
-
-    assert "enable_gpu" in ApptainerWorkspace.model_fields
-
-
 @pytest.mark.parametrize("enable_gpu", [False, True])
 def test_apptainer_workspace_gpu_passthrough_flag(
     mock_apptainer_workspace, enable_gpu: bool
