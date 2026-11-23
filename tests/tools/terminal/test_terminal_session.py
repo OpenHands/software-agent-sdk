@@ -1047,8 +1047,10 @@ def test_input_to_a_running_process_may_contain_heredoc_syntax(terminal_type):
 
 
 @parametrize_terminal_types
+@pytest.mark.parametrize("prompt_delay", [0, 0.2])
 def test_heredoc_completion_preserves_aliases_and_ignores_stdout_redirect(
     terminal_type,
+    prompt_delay,
 ):
     with tempfile.TemporaryDirectory() as temp_dir:
         session = create_terminal_session(
@@ -1056,12 +1058,21 @@ def test_heredoc_completion_preserves_aliases_and_ignores_stdout_redirect(
         )
         session.initialize()
         try:
+            # Force completion-marker reads to precede the final prompt as well
+            # as exercising the usual prompt timing.
+            setup = session.execute(
+                TerminalAction(
+                    command=f'PROMPT_COMMAND="$PROMPT_COMMAND; sleep {prompt_delay}"'
+                )
+            )
+            assert setup.metadata.exit_code == 0
             obs = _run_bash_action(
                 session,
                 "alias oh_test='echo alias-expanded'; cat <<EOF\nbody\nEOF\noh_test",
             )
             assert obs.metadata.exit_code == 0
             assert "alias-expanded" in obs.text
+            assert "__OH_COMMAND_FINISHED_" not in obs.text
 
             obs = _run_bash_action(
                 session,

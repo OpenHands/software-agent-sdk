@@ -8,6 +8,7 @@ from openhands.agent_server.project_profiles import (
     PROJECT_PROFILE_NAMES,
     ensure_project_profile,
 )
+from openhands.sdk.llm import LLM
 from openhands.sdk.profiles import OpenHandsAgentProfile
 from openhands.sdk.tool import Tool
 
@@ -80,6 +81,33 @@ def test_an_existing_profile_is_kept_as_the_user_edited_it(stores):
     kept = store.load(PROJECT_PROFILE_NAMES["worker"])
     assert isinstance(kept, OpenHandsAgentProfile)
     assert kept.llm_profile_ref == "cheap-model"
+
+
+@pytest.mark.parametrize(
+    ("base_ref", "expected"),
+    [
+        # Seeded `default` agent profile naming an LLM profile never saved.
+        ("default", "deepseek"),
+        ("strong-model", "strong-model"),
+    ],
+)
+def test_the_profiles_run_the_active_llm_when_the_users_names_none(
+    stores, base_ref, expected
+):
+    for name in ("strong-model", "deepseek"):
+        stores.llm_profiles.save(name, LLM(model=f"openai/{name}"))
+    _activate(stores, _user_profile().model_copy(update={"llm_profile_ref": base_ref}))
+    settings = stores.settings.load()
+    assert settings is not None
+    stores.settings.save(settings.model_copy(update={"active_profile": "deepseek"}))
+
+    ensure_project_profile("coordinator", stores)
+    ensure_project_profile("worker", stores)
+
+    for role in ("coordinator", "worker"):
+        profile = stores.agent_profiles.load(PROJECT_PROFILE_NAMES[role])
+        assert isinstance(profile, OpenHandsAgentProfile)
+        assert profile.llm_profile_ref == expected
 
 
 def test_a_user_on_the_standard_tool_set_keeps_it_for_workers(stores):

@@ -49,7 +49,9 @@ WORKER_WITHHELD_TOOLS = ("start_child_conversation",)
 report to no one yet."""
 
 
-def _profile(role: ProjectRole, base: OpenHandsAgentProfile) -> OpenHandsAgentProfile:
+def _profile(
+    role: ProjectRole, base: OpenHandsAgentProfile, llm_profile_ref: str
+) -> OpenHandsAgentProfile:
     if role == "coordinator":
         tools: list[Tool] | None = [
             Tool(name=name) for name in COORDINATOR_PROFILE_TOOLS
@@ -64,11 +66,33 @@ def _profile(role: ProjectRole, base: OpenHandsAgentProfile) -> OpenHandsAgentPr
             "name": PROJECT_PROFILE_NAMES[role],
             "revision": 0,
             "tools": tools,
+            "llm_profile_ref": llm_profile_ref,
             # The role's prompt carries the job; a persona the user wrote for
             # their everyday agent would replace parts of it.
             "persona": None,
         }
     )
+
+
+def _llm_profile_ref(
+    base: OpenHandsAgentProfile, settings: PersistedSettings, stores: ServerStores
+) -> str:
+    """The LLM profile the base profile runs.
+
+    A seeded profile can name an LLM profile that was never saved, and a
+    client then launches it with the active LLM profile instead. A project
+    profile has no client to do that for its launches, so it takes the active
+    LLM profile when the base's names none.
+    """
+    saved = stores.llm_profiles.list()
+    active = settings.active_profile
+    if (
+        active is None
+        or f"{active}.json" not in saved
+        or f"{base.llm_profile_ref}.json" in saved
+    ):
+        return base.llm_profile_ref
+    return active
 
 
 def ensure_project_profile(role: ProjectRole, stores: ServerStores) -> UUID | None:
@@ -94,7 +118,7 @@ def ensure_project_profile(role: ProjectRole, stores: ServerStores) -> UUID | No
         base = store.load(active_name)
         if not isinstance(base, OpenHandsAgentProfile):
             return None
-        profile = _profile(role, base)
+        profile = _profile(role, base, _llm_profile_ref(base, settings, stores))
         try:
             store.save(profile, max_profiles=MAX_AGENT_PROFILES)
         except ProfileLimitExceeded:

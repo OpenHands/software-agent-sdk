@@ -67,6 +67,13 @@ def _normalize_echo_line(line: str) -> str:
     return re.sub(r"[\x00-\x1f\x7f]", "", line).strip()
 
 
+# The completion boundary writes ``__OH_COMMAND_FINISHED_<uuid hex>_<exit>__``
+# to the tty, and the boundary command itself is echoed with the same id. Match
+# the id shape (not a fixed prefix) so markers from a previous command, whose id
+# this session no longer tracks, are still recognized.
+_BOUNDARY_MARKER_ID_RE = re.compile(r"__OH_COMMAND_FINISHED_[0-9a-f]{32}_")
+
+
 def _remove_command_prefix(command_output: str, command: str) -> str:
     """Strip the terminal's echo of `command` from the front of the output.
 
@@ -101,6 +108,22 @@ def _remove_echoed_line(command_output: str, command: str) -> str:
         line
         for line in command_output.splitlines(keepends=True)
         if _normalize_echo_line(line) != target
+    )
+
+
+def _strip_stale_boundary_artifacts(command_output: str) -> str:
+    """Drop completion-boundary echoes and markers left by a previous command.
+
+    The heredoc boundary command writes its echo and marker to the tty
+    asynchronously, so they can land in the buffer *after* the screen was
+    cleared for the next command. They then carry the previous command's marker
+    id, which the per-command stripping below does not recognize, so they leak
+    into the next observation.
+    """
+    return "".join(
+        line
+        for line in command_output.splitlines(keepends=True)
+        if _BOUNDARY_MARKER_ID_RE.search(line) is None
     )
 
 
@@ -539,7 +562,7 @@ class TerminalSession(TerminalSessionBase):
             terminal_content = _remove_command_prefix(
                 terminal_content, self._wrapper_echo
             )
-        return terminal_content
+        return _strip_stale_boundary_artifacts(terminal_content)
 
     def _combine_outputs_between_matches(
         self,

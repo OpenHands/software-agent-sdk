@@ -4,6 +4,9 @@ import subprocess
 
 import pytest
 
+from openhands.tools.terminal.terminal.terminal_session import (
+    _strip_stale_boundary_artifacts,
+)
 from openhands.tools.terminal.utils.command import (
     escape_bash_special_chars,
     find_unterminated_heredoc,
@@ -163,6 +166,32 @@ def test_completion_boundary_is_platform_independent():
     assert not needs_heredoc_completion_boundary("cat <<EOF\nbody")
     assert not needs_heredoc_completion_boundary("cat <<EOF\nbody\nEOF\n")
     assert not needs_heredoc_completion_boundary("cat <<'EOF'\nbody\nEOF\n")
+
+
+def test_stale_boundary_marker_is_stripped():
+    """A boundary marker left by a previous command must not leak.
+
+    The boundary command writes its echo and marker to the tty asynchronously,
+    so they can arrive after the screen was cleared for the next command. The
+    id then belongs to the earlier command and per-command stripping misses it.
+    """
+    marker_id = "0123456789abcdef0123456789abcdef"
+    stale = (
+        f"(__openhands_status=$?; printf '\\n%s%s%s\\n' "
+        f"'__OH_COMMAND_FINISHED_{marker_id}_' \"$__openhands_status\" '__' "
+        f'> /dev/tty; exit "$__openhands_status")\n'
+        f"__OH_COMMAND_FINISHED_{marker_id}_1__\n"
+    )
+    cleaned = _strip_stale_boundary_artifacts(stale + "body\ndone\n")
+
+    assert "__OH_COMMAND_FINISHED_" not in cleaned
+    assert "body\ndone" in cleaned
+
+
+def test_stale_boundary_stripping_keeps_unrelated_output():
+    output = "the user printed __OH_COMMAND_FINISHED_ on purpose\n"
+
+    assert _strip_stale_boundary_artifacts(output) == output
 
 
 @pytest.mark.parametrize(
