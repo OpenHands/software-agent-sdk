@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 from openhands.agent_server.exceptions import (
+    ConversationAlreadyRunning,
     ConversationRunLimitExceeded,
     ServiceInactive,
 )
@@ -69,6 +70,7 @@ from openhands.sdk.conversation.types import (
 )
 from openhands.sdk.event import ActionEvent, Event, MessageEvent
 from openhands.sdk.event.ask_user import ANSWER_HEADER_PREFIX, PendingAsk
+from openhands.sdk.event.user_action import PauseEvent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool.builtins.finish import FinishAction
 
@@ -575,6 +577,44 @@ def _final_text(event: Event) -> str | None:
     return None
 
 
+async def _resume_shutdown_update(
+    coordinator: "EventService", message_id: str, generation: int
+) -> None:
+    """Recover a saved update through the normal run admission path."""
+    try:
+        await coordinator.run_shutdown_paused_update(message_id, generation)
+    except (ConversationAlreadyRunning, ServiceInactive):
+        # A run that started meanwhile can already consume the message.
+        pass
+    except Exception:
+        logger.exception("Could not resume shutdown-paused update %s", message_id)
+
+
+def _shutdown_update(
+    events: Iterator[Event], member_id: UUID, since: datetime
+) -> str | None:
+    """Find the newest unanswered, run-worthy update at a shutdown pause."""
+    shutdown_paused = False
+    for event in events:
+        if event.timestamp < since:
+            break
+        if isinstance(event, PauseEvent) and not shutdown_paused:
+            if event.source != "environment":
+                return None
+            shutdown_paused = True
+        if isinstance(event, (ActionEvent, MessageEvent)) and event.source == "agent":
+            return None
+        if isinstance(event, MessageEvent) and event.source == "user":
+            if (
+                shutdown_paused
+                and event.sender == conversation_sender(member_id)
+                and starts_turn(event)
+            ):
+                return event.id
+            return None
+    return None
+
+
 async def _reconcile_member(
     service: "ConversationService",
     project_hex: str,
@@ -625,7 +665,16 @@ async def _reconcile_member(
                 return True
         return False
 
+    generation = coordinator._explicit_interrupt_generation
     if await coordinator.scan_events(delivered):
+        if message_id := await coordinator.scan_events(
+            lambda events: _shutdown_update(events, member_id, last.timestamp)
+        ):
+            task = asyncio.create_task(
+                _resume_shutdown_update(coordinator, message_id, generation)
+            )
+            _waiting_runs.add(task)
+            task.add_done_callback(_waiting_runs.discard)
         return False
     logger.info(
         "Delivering a missed update from %s to coordinator %s",
