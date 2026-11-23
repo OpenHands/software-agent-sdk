@@ -26,9 +26,11 @@ spool paths to private POSIX directories on the sandbox's local disk, such as
 directories under `/tmp`. SQLite WAL needs a local filesystem.
 
 Cloud records run admission before SDK capture begins and acknowledges ordered
-batches after their GCS objects and archive head are committed. Agent Server
-drains during the run and tries a final bounded drain at completion. A lost
-reply is recovered by reading the Cloud watermark. If the runtime dies before
+batches after their GCS objects and archive head are committed. Storage outages
+and Cloud backpressure return HTTP 503 with `Retry-After`. Agent Server retries
+temporary failures with jittered exponential backoff and continues draining
+after a run finishes while the conversation service is alive. A lost reply
+is recovered by reading the Cloud watermark. If the runtime dies before
 Cloud accepts a batch, the missing tail can be lost. Use the independent
 admissions and the archived witness to identify absent or unfinished runs.
 A replacement local database has a new capture ID and its own archive head.

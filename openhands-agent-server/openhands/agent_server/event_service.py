@@ -111,7 +111,10 @@ from openhands.sdk.io import LocalFileStore
 from openhands.sdk.llm.streaming import LLMStreamChunk
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.mcp.utils import MCPToolProvider
-from openhands.sdk.observability.trajectory_capture import use_admission
+from openhands.sdk.observability.trajectory_capture import (
+    AdmissionTicket,
+    use_admission,
+)
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
 from openhands.sdk.utils.async_utils import AsyncCallbackWrapper
@@ -284,6 +287,8 @@ class EventService:
     trajectory_webhook: tuple[str, dict[str, str]] | None = field(
         default=None, kw_only=True
     )
+    _trajectory_upload: asyncio.Task | None = field(default=None, init=False)
+    _trajectory_idle: asyncio.Event = field(default_factory=asyncio.Event, init=False)
     _conversation: LocalConversation | None = field(default=None, init=False)
     _persisted_events: EventLog | None = field(default=None, init=False)
     _pub_sub: PubSub[Event] = field(
@@ -1669,6 +1674,18 @@ class EventService:
         self._run_session_slot = None
         owner.release()
 
+    async def _publish_trajectory(
+        self, admission: AdmissionTicket, base_url: str, headers: dict[str, str]
+    ) -> None:
+        try:
+            await trajectory_webhook.publish(
+                admission, base_url, headers, self._trajectory_idle
+            )
+        except Exception as error:
+            logger.warning(
+                "Cloud trajectory uploader stopped (%s)", type(error).__name__
+            )
+
     async def run(
         self,
         acp_internal_rerun_generation: int | None = None,
@@ -1787,8 +1804,6 @@ class EventService:
 
             async def _run_and_publish():
                 nonlocal worker
-                upload_done = asyncio.Event()
-                upload = None
                 try:
                     # Prefer the native async path when available so the event
                     # loop is free during LLM I/O.  Fall back to thread-pool
@@ -1816,14 +1831,25 @@ class EventService:
                         return
                     if admission is not None and self.trajectory_webhook is not None:
                         base_url, headers = self.trajectory_webhook
-                        await trajectory_webhook.admission(admission, base_url, headers)
+                        try:
+                            await trajectory_webhook.admission(
+                                admission, base_url, headers
+                            )
+                        except Exception as error:
+                            logger.warning(
+                                "Cloud trajectory admission failed (%s)",
+                                type(error).__name__,
+                            )
                         if self._explicit_interrupt_generation != run_generation:
                             return
-                        upload = asyncio.create_task(
-                            trajectory_webhook.publish(
-                                admission, base_url, headers, upload_done
+                        self._trajectory_idle.clear()
+                        if (
+                            self._trajectory_upload is None
+                            or self._trajectory_upload.done()
+                        ):
+                            self._trajectory_upload = asyncio.create_task(
+                                self._publish_trajectory(admission, base_url, headers)
                             )
-                        )
                     if has_native_arun:
                         with use_admission(admission):
                             await conversation.arun()
@@ -1855,17 +1881,7 @@ class EventService:
                     await self.run_state_op(self._mark_error_status_sync)
                 finally:
                     settle()
-                    if upload is not None:
-                        upload_done.set()
-                        try:
-                            await asyncio.wait_for(upload, 5)
-                        except TimeoutError:
-                            upload.cancel()
-                        except Exception as exc:
-                            logger.warning(
-                                "Cloud trajectory upload failed (%s)",
-                                type(exc).__name__,
-                            )
+                    self._trajectory_idle.set()
                     # Wait for all pending events to be published via
                     # AsyncCallbackWrapper before publishing the final state update.
                     # This prevents a race condition where the conversation status
@@ -2578,6 +2594,12 @@ class EventService:
         # The run(s) above have yielded their chain handles; return the session
         # permit now that teardown has dropped any pin.
         self._maybe_end_run_session()
+
+        if self._trajectory_upload is not None:
+            self._trajectory_idle.set()
+            with suppress(TimeoutError):
+                await asyncio.wait_for(self._trajectory_upload, 5)
+            self._trajectory_upload = None
 
         await self._pub_sub.close()
         await self._stream_pub_sub.close()
