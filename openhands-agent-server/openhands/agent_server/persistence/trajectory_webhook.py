@@ -7,7 +7,10 @@ from random import uniform
 import httpx
 
 from openhands.agent_server.persistence.trajectory_batches import batch_after
-from openhands.sdk.observability.trajectory_capture import AdmissionTicket
+from openhands.sdk.observability.trajectory_capture import (
+    AdmissionTicket,
+    ShadowCapture,
+)
 from openhands.sdk.observability.trajectory_journal import Journal
 
 
@@ -130,9 +133,8 @@ async def admission(
 
 
 async def publish(
-    ticket: AdmissionTicket, base_url: str, headers: dict[str, str], idle: asyncio.Event
+    capture: ShadowCapture, base_url: str, headers: dict[str, str], idle: asyncio.Event
 ) -> None:
-    capture = ticket.capture
     if capture.journal is None:
         return
     journal = capture.journal

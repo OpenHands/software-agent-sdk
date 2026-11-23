@@ -112,7 +112,7 @@ from openhands.sdk.llm.streaming import LLMStreamChunk
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.observability.trajectory_capture import (
-    AdmissionTicket,
+    ShadowCapture,
     use_admission,
 )
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
@@ -1539,6 +1539,9 @@ class EventService:
             if not streaming_enabled:
                 conversation.set_token_callbacks(None)
         self._conversation = conversation
+        if base_state_exists and conversation._trajectory is not None:
+            self._trajectory_idle.set()
+            self._start_trajectory_upload(conversation._trajectory)
         if isinstance(conversation.agent, ACPAgent):
             for secret_name, binding in self.credential_bindings.items():
                 conversation.agent.activate_file_credential_binding(
@@ -1674,12 +1677,22 @@ class EventService:
         self._run_session_slot = None
         owner.release()
 
+    def _start_trajectory_upload(self, capture: ShadowCapture) -> None:
+        if self.trajectory_webhook is None or (
+            self._trajectory_upload is not None and not self._trajectory_upload.done()
+        ):
+            return
+        base_url, headers = self.trajectory_webhook
+        self._trajectory_upload = asyncio.create_task(
+            self._publish_trajectory(capture, base_url, headers)
+        )
+
     async def _publish_trajectory(
-        self, admission: AdmissionTicket, base_url: str, headers: dict[str, str]
+        self, capture: ShadowCapture, base_url: str, headers: dict[str, str]
     ) -> None:
         try:
             await trajectory_webhook.publish(
-                admission, base_url, headers, self._trajectory_idle
+                capture, base_url, headers, self._trajectory_idle
             )
         except Exception as error:
             logger.warning(
@@ -1843,13 +1856,7 @@ class EventService:
                         if self._explicit_interrupt_generation != run_generation:
                             return
                         self._trajectory_idle.clear()
-                        if (
-                            self._trajectory_upload is None
-                            or self._trajectory_upload.done()
-                        ):
-                            self._trajectory_upload = asyncio.create_task(
-                                self._publish_trajectory(admission, base_url, headers)
-                            )
+                        self._start_trajectory_upload(admission.capture)
                     if has_native_arun:
                         with use_admission(admission):
                             await conversation.arun()
@@ -2595,17 +2602,18 @@ class EventService:
         # permit now that teardown has dropped any pin.
         self._maybe_end_run_session()
 
-        if self._trajectory_upload is not None:
-            self._trajectory_idle.set()
-            with suppress(TimeoutError):
-                await asyncio.wait_for(self._trajectory_upload, 5)
-            self._trajectory_upload = None
-
         await self._pub_sub.close()
         await self._stream_pub_sub.close()
-        if self._conversation:
-            await self.run_state_op(self._conversation.close)
-            self._conversation = None
+        try:
+            if self._conversation:
+                await self.run_state_op(self._conversation.close)
+                self._conversation = None
+        finally:
+            if self._trajectory_upload is not None:
+                self._trajectory_idle.set()
+                with suppress(TimeoutError):
+                    await asyncio.wait_for(self._trajectory_upload, 5)
+                self._trajectory_upload = None
         if self._state_executor is not None:
             self._state_executor.shutdown(wait=False)
             self._state_executor = None

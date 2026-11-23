@@ -1,12 +1,14 @@
 import hashlib
 import json
 import os
+import shutil
 import sqlite3
+import tempfile
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import IO, Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict
@@ -43,7 +45,9 @@ class Record(BaseModel):
 
 
 class Journal:
-    def __init__(self, root: Path, conversation_id: str) -> None:
+    def __init__(
+        self, root: Path, conversation_id: str, *, checkpoint: IO[bytes] | None = None
+    ) -> None:
         self.conversation_id = conversation_id
         if not conversation_id or Path(conversation_id).name != conversation_id:
             raise ValueError("Invalid journal conversation ID")
@@ -51,6 +55,13 @@ class Journal:
             raise ValueError("Invalid journal conversation ID")
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.path = root / f"{conversation_id}.sqlite3"
+        if checkpoint is not None and not self.path.exists():
+            with tempfile.TemporaryDirectory(dir=root) as directory:
+                restored = Path(directory) / self.path.name
+                with restored.open("wb") as file:
+                    shutil.copyfileobj(checkpoint, file)
+                restored.chmod(0o600)
+                os.replace(restored, self.path)
         os.close(os.open(self.path, os.O_CREAT | os.O_RDWR, 0o600))
         with self._connect() as db:
             db.execute("PRAGMA journal_mode = WAL")
@@ -76,6 +87,11 @@ class Journal:
             self.instance_id: str = db.execute(
                 "SELECT value FROM metadata WHERE key = 'instance'"
             ).fetchone()[0]
+
+    def backup(self, path: Path) -> None:
+        with self._connect() as source, closing(sqlite3.connect(path)) as target:
+            source.backup(target)
+            target.execute("PRAGMA journal_mode = DELETE")
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:

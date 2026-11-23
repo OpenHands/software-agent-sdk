@@ -4,7 +4,8 @@ Agent Server and local SDK conversations support opt-in shadow capture for the
 standard LiteLLM Chat Completions and Responses adapters. The journal records
 requests at the LiteLLM boundary, before LiteLLM's provider-specific
 transformation. It keeps ordered model inputs and tool definitions, including
-duplicate entries. Transport credentials and headers are excluded. Model and
+duplicate entries. Transport credentials, headers, and proxy tracing metadata
+are excluded. Model and
 tool content can contain private data. Keep the spool, witness, archive, and
 decoded journal private.
 
@@ -21,19 +22,26 @@ journal records `unknown`.
 
 Set `OPENHANDS_TRAJECTORY_CLOUD_URL` to the configured Cloud webhook base URL.
 Agent Server uses that webhook's session authentication. Cloud independently
-enables the conversation IDs with `OPENHANDS_TRAJECTORY_CLOUD_IDS`. Set both
-spool paths to private POSIX directories on the sandbox's local disk, such as
+enables the conversation IDs with `OPENHANDS_TRAJECTORY_CLOUD_IDS`. The receiver
+uses Enterprise's configured GCS or S3-compatible event store. Set both spool
+paths to private POSIX directories on the sandbox's local disk, such as
 directories under `/tmp`. SQLite WAL needs a local filesystem.
 
+On orderly shutdown, Agent Server checkpoints both SQLite spools into the
+persistent conversation directory. Resume restores their capture identity and
+starts uploading from the acknowledged sequences when the conversation is
+loaded. Fusey runtimes must finish shutting down and flushing the workspace
+before another pod mounts it.
+
 Cloud records run admission before SDK capture begins and acknowledges ordered
-batches after their GCS objects and archive head are committed. Storage outages
+batches after their objects and archive head are committed. Storage outages
 and Cloud backpressure return HTTP 503 with `Retry-After`. Agent Server retries
 temporary failures with jittered exponential backoff and continues draining
 after a run finishes while the conversation service is alive. A lost reply
-is recovered by reading the Cloud watermark. If the runtime dies before
-Cloud accepts a batch, the missing tail can be lost. Use the independent
+is recovered by reading the Cloud watermark. A hard kill can still lose
+unacknowledged records that were never checkpointed. Use the independent
 admissions and the archived witness to identify absent or unfinished runs.
-A replacement local database has a new capture ID and its own archive head.
+A fresh spool has a new capture ID and its own archive head.
 
 ## Verify Cloud shadow data
 

@@ -1,7 +1,8 @@
 import asyncio
 import os
+import tempfile
 from collections.abc import Awaitable, Callable, Coroutine, Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from functools import wraps
@@ -9,6 +10,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 from uuid import uuid4
+from zipfile import ZipFile
 
 from pydantic import BaseModel
 
@@ -92,6 +94,7 @@ _EXTRA_BODY_FIELDS = {
     "thinking",
     "reasoning",
 }
+_EXTRA_BODY_TRANSPORT_FIELDS = {"metadata"}
 
 
 class ShadowCapture:
@@ -100,18 +103,23 @@ class ShadowCapture:
         journal: Journal | None,
         witness: Journal | None = None,
         origin: Origin = "unknown",
+        checkpoint_path: Path | None = None,
     ) -> None:
         self.journal = journal
         self.witness = witness
         self.origin = origin
         self.shadow_failed = journal is None
+        self._checkpoint_path = checkpoint_path
+        self._checkpoint_witness = witness
 
     @property
     def enabled(self) -> bool:
         return not self.shadow_failed or self.witness is not None
 
     @classmethod
-    def from_environment(cls, conversation_id: str) -> "ShadowCapture | None":
+    def from_environment(
+        cls, conversation_id: str, persistence_dir: str | None = None
+    ) -> "ShadowCapture | None":
         root = os.environ.get("OPENHANDS_TRAJECTORY_SHADOW_SPOOL")
         # TODO: Remove the pilot allowlist once permanent enrollment is in place.
         # https://github.com/OpenHands/software-agent-sdk/issues/7036
@@ -120,19 +128,62 @@ class ShadowCapture:
             return None
         origin = os.environ.get("OPENHANDS_TRAJECTORY_SHADOW_ORIGIN")
         witness_root = os.environ.get("OPENHANDS_TRAJECTORY_WITNESS_SPOOL")
-        witness = None
-        if witness_root:
-            if Path(witness_root).resolve() == Path(root).resolve():
-                logger.error("Trajectory witness and shadow require distinct spools")
-            else:
-                witness = _open_spool(witness_root, conversation_id, "witness")
+        if witness_root and Path(witness_root).resolve() == Path(root).resolve():
+            logger.error("Trajectory witness and shadow require distinct spools")
+            witness_root = None
+        checkpoint = (
+            Path(persistence_dir) / f".trajectory-{conversation_id}.zip"
+            if persistence_dir
+            else None
+        )
+        shadow, witness = _open_spools(root, witness_root, conversation_id, checkpoint)
         return cls(
-            _open_spool(root, conversation_id, "shadow"),
+            shadow,
             witness,
             origin
             if origin in ("interactive", "automation", "evaluation")
             else "unknown",
+            checkpoint,
         )
+
+    def checkpoint(
+        self, write_guard: Callable[[], AbstractContextManager[None]] | None
+    ) -> None:
+        path, journal = self._checkpoint_path, self.journal
+        if path is None or journal is None:
+            return
+        try:
+            with tempfile.NamedTemporaryFile(
+                dir=path.parent, prefix=f"{path.name}.", suffix=".tmp", delete=False
+            ) as file:
+                temporary = Path(file.name)
+                try:
+                    with (
+                        ZipFile(file, "w") as archive,
+                        tempfile.TemporaryDirectory(dir=journal.path.parent) as spool,
+                    ):
+                        for name, stream in (
+                            ("shadow", journal),
+                            ("witness", self._checkpoint_witness),
+                        ):
+                            if stream is not None:
+                                backup = Path(spool) / name
+                                stream.backup(backup)
+                                archive.write(backup, name)
+                                backup.unlink()
+                    file.flush()
+                    os.fsync(file.fileno())
+                    file.close()
+                    with write_guard() if write_guard else nullcontext():
+                        os.replace(temporary, path)
+                finally:
+                    temporary.unlink(missing_ok=True)
+        except Exception as exc:
+            logger.error(
+                "Trajectory checkpoint failed for %s (%s)",
+                journal.conversation_id,
+                type(exc).__name__,
+            )
 
     def append_event(self, event: BaseModel, *, action_id: str | None) -> None:
         if not self.enabled:
@@ -256,7 +307,14 @@ class ShadowCapture:
                 )
 
 
-def _open_spool(root: str, conversation_id: str, name: str) -> Journal | None:
+def _open_spool(
+    root: str | None, conversation_id: str, name: str, archive: ZipFile | None = None
+) -> Journal | None:
+    if root is None:
+        return None
+    if archive is not None and name in archive.namelist():
+        with archive.open(name) as backup:
+            return Journal(Path(root), conversation_id, checkpoint=backup)
     try:
         return Journal(Path(root), conversation_id)
     except Exception as exc:
@@ -267,6 +325,32 @@ def _open_spool(root: str, conversation_id: str, name: str) -> Journal | None:
             type(exc).__name__,
         )
         return None
+
+
+def _open_spools(
+    root: str, witness_root: str | None, conversation_id: str, checkpoint: Path | None
+) -> tuple[Journal | None, Journal | None]:
+    try:
+        if checkpoint is not None and checkpoint.exists():
+            with ZipFile(checkpoint) as archive:
+                with archive.open("shadow") as backup:
+                    shadow = Journal(Path(root), conversation_id, checkpoint=backup)
+                witness = _open_spool(witness_root, conversation_id, "witness", archive)
+            # A later hard kill must not resurrect a checkpoint from an older run.
+            checkpoint.unlink()
+            logger.info("Restored trajectory checkpoint for %s", conversation_id)
+            return shadow, witness
+    except Exception as exc:
+        logger.error(
+            "Trajectory checkpoint restore failed for %s (%s)",
+            conversation_id,
+            type(exc).__name__,
+        )
+        return None, None
+    return (
+        _open_spool(root, conversation_id, "shadow"),
+        _open_spool(witness_root, conversation_id, "witness"),
+    )
 
 
 @dataclass(frozen=True)
@@ -465,7 +549,8 @@ def transport_request(adapter: str, kwargs: dict[str, Any]) -> None:
             k: v for k, v in extras.items() if k in _EXTRA_BODY_FIELDS
         }
         unsupported.update(
-            f"extra_body.{k}" for k in extras if k not in _EXTRA_BODY_FIELDS
+            f"extra_body.{k}"
+            for k in extras.keys() - _EXTRA_BODY_FIELDS - _EXTRA_BODY_TRANSPORT_FIELDS
         )
     elif extras is not None:
         unsupported.add("extra_body")

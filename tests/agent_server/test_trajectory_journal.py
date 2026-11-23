@@ -11,6 +11,7 @@ from pathlib import Path
 from select import select as wait_for_readable
 from uuid import uuid4
 
+import httpx
 import pytest
 from litellm import ModelResponse
 from litellm.exceptions import RateLimitError
@@ -106,7 +107,8 @@ def test_conversation_shadow_preserves_legacy_and_model_input(tmp_path, monkeypa
     assert not report.missing_links
 
 
-def test_retry_preserves_attempts_and_repeated_input(tmp_path, monkeypatch):
+@pytest.mark.parametrize("options", [{}, {"unexpected_provider_option": True}])
+def test_retry_preserves_attempts_and_repeated_input(tmp_path, monkeypatch, options):
     journal = Journal(tmp_path / "spool", "conversation")
     attempts = []
 
@@ -131,10 +133,20 @@ def test_retry_preserves_attempts_and_repeated_input(tmp_path, monkeypatch):
         )
 
     monkeypatch.setattr("openhands.sdk.llm.llm.litellm_completion", provider)
+    monkeypatch.setattr(
+        "openhands.sdk.llm.utils.model_info.httpx.get",
+        lambda *_args, **_kwargs: httpx.Response(200, json={"data": []}),
+    )
     question = Message(role="user", content=[TextContent(text="repeated")])
+    metadata = {"trace_user_id": "private-tracing-id", "tags": ["app:openhands"]}
     llm = LLM(
-        model="gpt-4o",
+        model="openhands/gpt-4o",
         api_key=SecretStr("private-key"),
+        litellm_extra_body={
+            "metadata": metadata,
+            "thinking": {"type": "enabled"},
+            **options,
+        },
         num_retries=2,
         retry_min_wait=0,
         retry_max_wait=0,
@@ -151,14 +163,28 @@ def test_retry_preserves_attempts_and_repeated_input(tmp_path, monkeypatch):
     assert first.record.data["request_id"] == second.record.data["request_id"]
     assert first.record.data["attempt_id"] != second.record.data["attempt_id"]
     assert second.model_input()["messages"] == attempts[1]["messages"]
-    assert len(second.model_input()["messages"]) == 2
+    assert len(second.model_input()["messages"]) == 3
+    assert second.model_input()["messages"][-2] == second.model_input()["messages"][-1]
     assert first.record.data["payload_refs"] == second.record.data["payload_refs"]
-    assert first.record.data["payload_refs"][1] == first.record.data["payload_refs"][2]
+    assert (
+        first.record.data["payload_refs"][-2] == first.record.data["payload_refs"][-1]
+    )
+    assert attempts[1]["extra_body"]["metadata"] == metadata
+    assert second.model_input()["extra_body"] == {"thinking": {"type": "enabled"}}
+    assert second.record.data["unsupported_options"] == [
+        f"extra_body.{key}" for key in options
+    ]
+    assert "private-tracing-id" not in str(records)
     assert "private-header" not in str(records)
     assert "private-key" not in str(records)
     report = coverage(iter(records))
     assert list(report.attempts.values()) == ["failed", "completed"]
     assert list(report.model_responses.values()) == ["available"]
+    assert report.observed_gaps == (
+        [f"unsupported_options:{item.record.data['attempt_id']}" for item in starts]
+        if options
+        else []
+    )
 
 
 @pytest.mark.asyncio
