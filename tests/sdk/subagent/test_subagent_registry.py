@@ -14,8 +14,10 @@ from openhands.sdk.mcp.config import MCPServer, dump_mcp_config
 from openhands.sdk.subagent.registry import (
     _reset_registry_for_tests,
     agent_definition_to_factory,
+    canonical_agent_name,
     get_agent_factory,
     get_factory_info,
+    is_agent_disabled,
     register_agent,
     register_agent_if_absent,
     register_file_agents,
@@ -1092,3 +1094,61 @@ def test_factory_explicit_condenser_preserves_distinct_usage_id() -> None:
     agent = factory(_make_test_llm())
     assert isinstance(agent.condenser, LLMSummarizingCondenser)
     assert agent.condenser.llm.usage_id == "my-condenser"
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("default", "general-purpose"),
+        ("default cli mode", "general-purpose"),
+        ("explore", "code-explorer"),
+        ("bash", "bash-runner"),
+        ("", "general-purpose"),
+        (None, "general-purpose"),
+        ("general-purpose", "general-purpose"),
+        ("code-explorer", "code-explorer"),
+        ("my-custom-agent", "my-custom-agent"),
+    ],
+)
+def test_canonical_agent_name(name: str | None, expected: str) -> None:
+    """Deprecated aliases and the empty name map to the name the registry holds;
+    every other name passes through untouched."""
+    assert canonical_agent_name(name) == expected
+
+
+@pytest.mark.parametrize(
+    "name", ["default", "default cli mode", "explore", "bash", "", None]
+)
+def test_canonical_agent_name_matches_factory_lookup(name: str | None) -> None:
+    """The canonical name is the registry key ``get_agent_factory`` resolves to."""
+    canonical = canonical_agent_name(name)
+    factory = MagicMock()
+    register_agent(name=canonical, factory_func=factory, description="canonical")
+
+    assert get_agent_factory(name) is get_agent_factory(canonical)
+
+
+@pytest.mark.parametrize(
+    ("name", "disabled", "expected"),
+    [
+        ("general-purpose", ["general-purpose"], True),
+        ("default", ["general-purpose"], True),
+        ("", ["general-purpose"], True),
+        (None, ["general-purpose"], True),
+        ("explore", ["code-explorer"], True),
+        ("code-explorer", ["explore"], True),
+        ("bash-runner", ["web-researcher", "bash"], True),
+        ("code-explorer", ["general-purpose"], False),
+        ("general-purpose", [], False),
+        # A blank entry is not the default agent.
+        ("general-purpose", [""], False),
+        (None, [""], False),
+        # Names are exact: no prefix or substring matching.
+        ("general-purpose-2", ["general-purpose"], False),
+        ("general", ["general-purpose"], False),
+    ],
+)
+def test_is_agent_disabled(
+    name: str | None, disabled: list[str], expected: bool
+) -> None:
+    assert is_agent_disabled(name, disabled) is expected

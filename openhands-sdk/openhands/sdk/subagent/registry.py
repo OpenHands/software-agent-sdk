@@ -23,11 +23,11 @@ Example usage:
     )
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from functools import lru_cache
 from pathlib import Path
 from threading import RLock
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Final, NamedTuple
 
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.logger import get_logger
@@ -396,6 +396,42 @@ def register_plugin_agents(
     return registered
 
 
+# Old agent names that still resolve, mapped to the name the registry holds.
+_DEPRECATED_NAMES: Final[dict[str, str]] = {
+    "default": "general-purpose",
+    "default cli mode": "general-purpose",
+    "explore": "code-explorer",
+    "bash": "bash-runner",
+}
+_DEFAULT_AGENT_NAME: Final[str] = "general-purpose"
+
+
+def canonical_agent_name(name: str | None) -> str:
+    """Return the registry name that `get_agent_factory` looks up for `name`.
+
+    Deprecated aliases map to their current name, and None or an empty name
+    maps to the default agent. Any other name is returned unchanged, whether
+    or not it is registered. No warning is emitted and the registry is not
+    consulted, so code that compares agent names (a deny-list, for one) can
+    use this to see the same identity the lookup resolves to.
+    """
+    if not name:
+        return _DEFAULT_AGENT_NAME
+    return _DEPRECATED_NAMES.get(name, name)
+
+
+def is_agent_disabled(name: str | None, disabled_agents: Iterable[str]) -> bool:
+    """Whether `name` resolves to an agent on the `disabled_agents` deny-list.
+
+    Both sides are compared by canonical name, so a deprecated alias (or no
+    name at all, which means the default agent) cannot reach a listed agent,
+    and a deny-list written with an alias still covers the current name.
+    Blank deny-list entries are ignored rather than read as the default agent.
+    """
+    disabled = {canonical_agent_name(entry) for entry in disabled_agents if entry}
+    return canonical_agent_name(name) in disabled
+
+
 def get_agent_factory(name: str | None) -> AgentFactory:
     """
     Get a registered agent factory by name.
@@ -410,25 +446,14 @@ def get_agent_factory(name: str | None) -> AgentFactory:
     Raises:
         ValueError: If no agent factory with the given name is found
     """
-    # Map old names to new names for backward compatibility
-    _DEPRECATED_NAMES = {
-        "default": "general-purpose",
-        "default cli mode": "general-purpose",
-        "explore": "code-explorer",
-        "bash": "bash-runner",
-    }
-
+    factory_name = canonical_agent_name(name)
     if name in _DEPRECATED_NAMES:
-        new_name = _DEPRECATED_NAMES[name]
         warn_deprecated(
             f"Agent name '{name}'",
             deprecated_in="1.12.0",
             removed_in="2.0.0",
-            details=f"Use '{new_name}' instead.",
+            details=f"Use '{factory_name}' instead.",
         )
-        factory_name = new_name
-    else:
-        factory_name = "general-purpose" if not name else name
 
     with _registry_lock:
         factory = _agent_factories.get(factory_name)

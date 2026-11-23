@@ -34,7 +34,12 @@ from openhands.sdk.hooks.config import HookConfig
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import detached_delegate_context
 from openhands.sdk.security import ConfirmationPolicyBase
-from openhands.sdk.subagent.registry import AgentFactory, get_agent_factory
+from openhands.sdk.subagent.registry import (
+    AgentFactory,
+    canonical_agent_name,
+    get_agent_factory,
+    is_agent_disabled,
+)
 from openhands.sdk.subagent.scope import (
     SubAgentScope,
     inherit_mcp_config,
@@ -376,9 +381,10 @@ class TaskManager:
         """Refuse sub-agent types the parent conversation disabled."""
         agent_context = self.parent_conversation.agent.agent_context
         disabled = agent_context.disabled_agents if agent_context else []
-        if subagent_type in disabled:
+        if is_agent_disabled(subagent_type, disabled):
             raise DisabledAgentError(
-                f"Sub-agent '{subagent_type}' is disabled for this conversation "
+                f"Sub-agent '{canonical_agent_name(subagent_type)}' is disabled "
+                f"for this conversation "
                 f"(agent_context.disabled_agents). Choose another sub-agent type."
             )
 

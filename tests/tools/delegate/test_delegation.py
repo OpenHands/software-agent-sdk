@@ -230,6 +230,38 @@ def test_spawn_rejects_disabled_agent_type():
     assert executor._sub_agents == {}
 
 
+@pytest.mark.parametrize(
+    ("disabled", "agent_types"),
+    [
+        # No type given: the delegate tool falls back to the default agent.
+        ("general-purpose", None),
+        ("general-purpose", [""]),
+        ("general-purpose", ["default"]),
+        ("code-explorer", ["explore"]),
+        ("bash-runner", ["bash"]),
+        # The deny-list itself may be written with an alias.
+        ("default", ["general-purpose"]),
+        ("explore", ["code-explorer"]),
+    ],
+)
+def test_spawn_rejects_disabled_agent_type_by_any_name(disabled, agent_types):
+    """The deny-list refuses an agent under every name that resolves to it,
+    including the default the tool picks when no type is given."""
+    register_builtins_agents()
+    executor, parent_conversation = create_test_executor_and_parent()
+    parent_conversation._visualizer = None
+    parent_conversation.agent.agent_context = AgentContext(disabled_agents=[disabled])
+
+    action = DelegateAction(command="spawn", ids=["sub1"])
+    if agent_types is not None:
+        action = DelegateAction(command="spawn", ids=["sub1"], agent_types=agent_types)
+    observation = executor(action, parent_conversation)
+
+    assert observation.is_error is True
+    assert "disabled" in observation.text
+    assert executor._sub_agents == {}
+
+
 def test_spawn_closes_replaced_sub_agent():
     """Re-spawning an ID closes the conversation it replaces."""
     register_builtins_agents()

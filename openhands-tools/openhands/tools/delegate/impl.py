@@ -12,7 +12,11 @@ from openhands.sdk.conversation.state import (
     ConversationState,
 )
 from openhands.sdk.logger import get_logger
-from openhands.sdk.subagent import get_agent_factory
+from openhands.sdk.subagent import (
+    canonical_agent_name,
+    get_agent_factory,
+    is_agent_disabled,
+)
 from openhands.sdk.subagent.scope import inherit_mcp_config
 from openhands.sdk.tool.tool import ToolExecutor
 from openhands.sdk.utils.deprecation import warn_deprecated
@@ -184,8 +188,14 @@ class DelegateExecutor(ToolExecutor):
                 self._resolve_agent_type(action, i) for i in range(len(action.ids))
             ]
             agent_context = parent_conversation.agent.agent_context
-            disabled = set(agent_context.disabled_agents if agent_context else [])
-            blocked = sorted({t for t in resolved_agent_types if t in disabled})
+            disabled = agent_context.disabled_agents if agent_context else []
+            blocked = sorted(
+                {
+                    canonical_agent_name(t)
+                    for t in resolved_agent_types
+                    if is_agent_disabled(t, disabled)
+                }
+            )
             if blocked:
                 return DelegateObservation.from_text(
                     text=(

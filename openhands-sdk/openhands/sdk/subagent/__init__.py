@@ -6,9 +6,11 @@ from openhands.sdk.subagent.load import (
 )
 from openhands.sdk.subagent.registry import (
     agent_definition_to_factory,
+    canonical_agent_name,
     get_agent_factory,
     get_factory_info,
     get_registered_agent_definitions,
+    is_agent_disabled,
     register_agent,
     register_agent_if_absent,
     register_file_agents,
@@ -31,6 +33,8 @@ __all__ = [
     "register_agent_if_absent",
     "get_factory_info",
     "get_agent_factory",
+    "canonical_agent_name",
+    "is_agent_disabled",
     "get_registered_agent_definitions",
     # Agent def and factory
     "AgentDefinition",

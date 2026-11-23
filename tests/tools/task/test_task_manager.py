@@ -17,6 +17,7 @@ from openhands.sdk.subagent.registry import (
 from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.tools.preset import register_builtins_agents
 from openhands.tools.task.manager import (
+    DisabledAgentError,
     Task,
     TaskManager,
     TaskStatus,
@@ -290,22 +291,66 @@ class TestTaskManager:
         with pytest.raises(ValueError, match="general-purpose"):
             manager._create_task(subagent_type="general-purpose", description=None)
 
-        task = manager._create_task(subagent_type="default", description=None)
+        task = manager._create_task(subagent_type="code-explorer", description=None)
+        assert task.status == TaskStatus.RUNNING
+
+    @pytest.mark.parametrize(
+        ("disabled", "requested"),
+        [
+            # A deprecated alias, or no name at all, reaches the listed agent.
+            ("general-purpose", "default"),
+            ("general-purpose", "default cli mode"),
+            ("general-purpose", ""),
+            ("code-explorer", "explore"),
+            ("bash-runner", "bash"),
+            # The deny-list itself may be written with an alias.
+            ("default", "general-purpose"),
+            ("explore", "code-explorer"),
+            ("explore", "explore"),
+            ("bash", "bash-runner"),
+        ],
+    )
+    def test_create_task_rejects_disabled_agent_by_any_name(
+        self, tmp_path, disabled, requested
+    ):
+        """The deny-list refuses an agent under every name that resolves to it."""
+        manager, _ = _manager_with_parent(
+            tmp_path,
+            agent_context=AgentContext(disabled_agents=[disabled]),
+        )
+        register_builtins_agents()
+
+        with pytest.raises(DisabledAgentError):
+            manager._create_task(subagent_type=requested, description=None)
+        assert manager._tasks == {}
+
+    def test_blank_deny_list_entry_disables_nothing(self, tmp_path):
+        """An empty string on the deny-list is not the default agent."""
+        manager, _ = _manager_with_parent(
+            tmp_path,
+            agent_context=AgentContext(disabled_agents=[""]),
+        )
+        register_builtins_agents()
+
+        task = manager._create_task(subagent_type="general-purpose", description=None)
         assert task.status == TaskStatus.RUNNING
 
     def test_resume_task_rejects_disabled_agent(self, tmp_path):
-        """Resuming with a since-disabled sub-agent type is refused."""
+        """Resuming with a since-disabled sub-agent type is refused, under
+        its own name or an alias."""
         manager, _ = _manager_with_parent(
             tmp_path,
             agent_context=AgentContext(disabled_agents=["general-purpose"]),
         )
         register_builtins_agents()
 
-        task = manager._create_task(subagent_type="default", description=None)
+        task = manager._create_task(subagent_type="code-explorer", description=None)
         manager._evict_task(task)
 
-        with pytest.raises(ValueError, match="general-purpose"):
+        with pytest.raises(DisabledAgentError):
             manager._resume_task(resume=task.id, subagent_type="general-purpose")
+        with pytest.raises(DisabledAgentError):
+            manager._resume_task(resume=task.id, subagent_type="default")
 
     def test_default_agent_type(self, tmp_path):
         """'default' should return an agent without raising."""
