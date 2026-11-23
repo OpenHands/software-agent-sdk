@@ -1,12 +1,14 @@
 import hashlib
 import json
 import os
+import shutil
 import sqlite3
+import tempfile
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import IO, Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict
@@ -43,7 +45,9 @@ class Record(BaseModel):
 
 
 class Journal:
-    def __init__(self, root: Path, conversation_id: str) -> None:
+    def __init__(
+        self, root: Path, conversation_id: str, *, checkpoint: IO[bytes] | None = None
+    ) -> None:
         self.conversation_id = conversation_id
         if not conversation_id or Path(conversation_id).name != conversation_id:
             raise ValueError("Invalid journal conversation ID")
@@ -51,6 +55,13 @@ class Journal:
             raise ValueError("Invalid journal conversation ID")
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.path = root / f"{conversation_id}.sqlite3"
+        if checkpoint is not None and not self.path.exists():
+            with tempfile.TemporaryDirectory(dir=root) as directory:
+                restored = Path(directory) / self.path.name
+                with restored.open("wb") as file:
+                    shutil.copyfileobj(checkpoint, file)
+                restored.chmod(0o600)
+                os.replace(restored, self.path)
         os.close(os.open(self.path, os.O_CREAT | os.O_RDWR, 0o600))
         with self._connect() as db:
             db.execute("PRAGMA journal_mode = WAL")
@@ -65,7 +76,22 @@ class Journal:
                     body BLOB NOT NULL,
                     first_sequence INTEGER NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS metadata (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
             """)
+            db.execute(
+                "INSERT OR IGNORE INTO metadata VALUES ('instance', ?)", (uuid4().hex,)
+            )
+            self.instance_id: str = db.execute(
+                "SELECT value FROM metadata WHERE key = 'instance'"
+            ).fetchone()[0]
+
+    def backup(self, path: Path) -> None:
+        with self._connect() as source, closing(sqlite3.connect(path)) as target:
+            source.backup(target)
+            target.execute("PRAGMA journal_mode = DELETE")
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -124,17 +150,23 @@ class Journal:
         return sequence
 
     @contextmanager
-    def read(self) -> Iterator[tuple[int, Iterator[tuple[Record, dict[str, Any]]]]]:
+    def read(
+        self, *, after: int = 0
+    ) -> Iterator[tuple[int, Iterator[tuple[Record, dict[str, Any]]]]]:
         with self._connect() as db:
             db.execute("BEGIN")
             head = db.execute(
                 "SELECT COALESCE(MAX(sequence), 0) FROM records"
             ).fetchone()[0]
-            rows = db.execute("SELECT body FROM records ORDER BY sequence")
+            rows = db.execute(
+                "SELECT body FROM records WHERE sequence > ? ORDER BY sequence",
+                (after,),
+            )
             blobs = iter(
                 db.execute(
                     "SELECT hash, body, first_sequence FROM payloads"
-                    " ORDER BY first_sequence, hash"
+                    " WHERE first_sequence > ? ORDER BY first_sequence, hash",
+                    (after,),
                 )
             )
 

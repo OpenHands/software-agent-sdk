@@ -4,7 +4,8 @@ Agent Server and local SDK conversations support opt-in shadow capture for the
 standard LiteLLM Chat Completions and Responses adapters. The journal records
 requests at the LiteLLM boundary, before LiteLLM's provider-specific
 transformation. It keeps ordered model inputs and tool definitions, including
-duplicate entries. Transport credentials and headers are excluded. Model and
+duplicate entries. Transport credentials, headers, and proxy tracing metadata
+are excluded. Model and
 tool content can contain private data. Keep the spool, witness, archive, and
 decoded journal private.
 
@@ -17,15 +18,53 @@ adds boundary checksums to the witness before writing the shadow records. Set
 `evaluation` when the enrolled cohort shares a known origin. Otherwise the
 journal records `unknown`.
 
-Use local POSIX storage that survives sandbox loss. The platform owns the
-spool and its SQLite WAL files through teardown. Protect both volumes from
-tool processes. Keep each database and its WAL together and use a platform
-worker with access on the same host while capture is active. Drain it as part
-of teardown or recover it after hard termination. Cloud Storage FUSE and
-network filesystems lack the required SQLite WAL guarantees. A sandbox whose
-only disk is deleted at teardown needs a platform handoff before enrollment.
+## Cloud shadow upload
 
-## Seal and compare
+Set `OPENHANDS_TRAJECTORY_CLOUD_URL` to the configured Cloud webhook base URL.
+Agent Server uses that webhook's session authentication. Cloud independently
+enables the conversation IDs with `OPENHANDS_TRAJECTORY_CLOUD_IDS`. The receiver
+uses Enterprise's configured GCS or S3-compatible event store. Set both spool
+paths to private POSIX directories on the sandbox's local disk, such as
+directories under `/tmp`. SQLite WAL needs a local filesystem.
+
+On orderly shutdown, Agent Server checkpoints both SQLite spools into the
+persistent conversation directory. Resume restores their capture identity and
+starts uploading from the acknowledged sequences when the conversation is
+loaded. Fusey runtimes must finish shutting down and flushing the workspace
+before another pod mounts it.
+
+Cloud records run admission before SDK capture begins and acknowledges ordered
+batches after their objects and archive head are committed. Storage outages
+and Cloud backpressure return HTTP 503 with `Retry-After`. Agent Server retries
+temporary failures with jittered exponential backoff and continues draining
+after a run finishes while the conversation service is alive. A lost reply
+is recovered by reading the Cloud watermark. A hard kill can still lose
+unacknowledged records that were never checkpointed. Use the independent
+admissions and the archived witness to identify absent or unfinished runs.
+A fresh spool has a new capture ID and its own archive head.
+
+## Verify Cloud shadow data
+
+For a capture ID, use the stored `journal` and `witness` prefixes as the two
+stores. Their respective archive heads contain the seal references. Collect
+run IDs from the sibling `admissions` prefix into a JSON array.
+Cloud places these prefixes under
+`users/<owner>/trajectory-pilot/<conversation_hex>/<capture_hex>/` in its
+configured session bucket.
+
+```bash
+python -m openhands.agent_server.persistence.trajectory witness-archive \
+  "$WITNESS_STORE" witness-seal.json --admitted-runs admitted-run-ids.json \
+  --origin interactive > admission.json
+python -m openhands.agent_server.persistence.trajectory compare \
+  "$JOURNAL_STORE" journal-seal.json admission.json --legacy verified-legacy.json
+```
+
+Compare each store with the independent evidence. Include a sandbox kill and
+replacement, a lost reply after GCS accepts the data, and a GCS write failure in
+the production canary.
+
+## Seal and compare a retained local spool
 
 Run the worker with platform credentials. Configure the bucket for private access,
 version retention, and an IAM identity that can create and read objects. The

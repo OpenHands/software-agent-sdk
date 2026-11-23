@@ -2688,6 +2688,16 @@ class ConversationService:
             event_service._active_gateway_runs += 1
         event_service._run_executor = self._run_executor
         event_service._run_semaphore = self._run_semaphore
+        trajectory_url = os.environ.get("OPENHANDS_TRAJECTORY_CLOUD_URL", "").rstrip(
+            "/"
+        )
+        for spec in self.webhook_specs:
+            if trajectory_url and spec.base_url.rstrip("/") == trajectory_url:
+                headers = spec.headers.copy()
+                if self.session_api_key:
+                    headers["X-Session-API-Key"] = self.session_api_key
+                event_service.trajectory_webhook = (trajectory_url, headers)
+                break
 
         try:
             await event_service.start()

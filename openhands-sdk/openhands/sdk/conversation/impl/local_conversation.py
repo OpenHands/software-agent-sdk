@@ -528,7 +528,7 @@ class LocalConversation(BaseConversation):
                 self._state.ambient_plugin_mcp_servers = []
         self.agent = agent
         self._trajectory = (
-            ShadowCapture.from_environment(str(desired_id))
+            ShadowCapture.from_environment(str(desired_id), self._state.persistence_dir)
             if not isinstance(agent, ACPAgent)
             else None
         )
@@ -3682,6 +3682,8 @@ class LocalConversation(BaseConversation):
                 self._end_observability_span()
             except AttributeError:
                 pass
+            if self._trajectory is not None:
+                self._trajectory.checkpoint(self._state._write_guard)
         # Clean up agent resources (e.g., ACPAgent subprocess)
         agent_error: Exception | None = None
         try:

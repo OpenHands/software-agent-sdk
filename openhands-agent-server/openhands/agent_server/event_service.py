@@ -36,6 +36,7 @@ from openhands.agent_server.models import (
     EventSortOrder,
     StoredConversation,
 )
+from openhands.agent_server.persistence import trajectory_webhook
 from openhands.agent_server.pub_sub import PubSub, Subscriber
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.sdk import LLM, AgentBase, Event, Message, TextContent, get_logger
@@ -110,7 +111,10 @@ from openhands.sdk.io import LocalFileStore
 from openhands.sdk.llm.streaming import LLMStreamChunk
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.mcp.utils import MCPToolProvider
-from openhands.sdk.observability.trajectory_capture import use_admission
+from openhands.sdk.observability.trajectory_capture import (
+    ShadowCapture,
+    use_admission,
+)
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
 from openhands.sdk.utils.async_utils import AsyncCallbackWrapper
@@ -280,6 +284,11 @@ class EventService:
     bash_event_service: BashEventService | None = field(default=None, init=False)
     owner_instance_id: str = field(default_factory=lambda: uuid4().hex)
     lease_ttl_seconds: float = DEFAULT_LEASE_TTL_SECONDS
+    trajectory_webhook: tuple[str, dict[str, str]] | None = field(
+        default=None, kw_only=True
+    )
+    _trajectory_upload: asyncio.Task | None = field(default=None, init=False)
+    _trajectory_idle: asyncio.Event = field(default_factory=asyncio.Event, init=False)
     _conversation: LocalConversation | None = field(default=None, init=False)
     _persisted_events: EventLog | None = field(default=None, init=False)
     _pub_sub: PubSub[Event] = field(
@@ -1530,6 +1539,9 @@ class EventService:
             if not streaming_enabled:
                 conversation.set_token_callbacks(None)
         self._conversation = conversation
+        if base_state_exists and conversation._trajectory is not None:
+            self._trajectory_idle.set()
+            self._start_trajectory_upload(conversation._trajectory)
         if isinstance(conversation.agent, ACPAgent):
             for secret_name, binding in self.credential_bindings.items():
                 conversation.agent.activate_file_credential_binding(
@@ -1664,6 +1676,28 @@ class EventService:
                 return
         self._run_session_slot = None
         owner.release()
+
+    def _start_trajectory_upload(self, capture: ShadowCapture) -> None:
+        if self.trajectory_webhook is None or (
+            self._trajectory_upload is not None and not self._trajectory_upload.done()
+        ):
+            return
+        base_url, headers = self.trajectory_webhook
+        self._trajectory_upload = asyncio.create_task(
+            self._publish_trajectory(capture, base_url, headers)
+        )
+
+    async def _publish_trajectory(
+        self, capture: ShadowCapture, base_url: str, headers: dict[str, str]
+    ) -> None:
+        try:
+            await trajectory_webhook.publish(
+                capture, base_url, headers, self._trajectory_idle
+            )
+        except Exception as error:
+            logger.warning(
+                "Cloud trajectory uploader stopped (%s)", type(error).__name__
+            )
 
     async def run(
         self,
@@ -1808,6 +1842,21 @@ class EventService:
                     )
                     if self._explicit_interrupt_generation != run_generation:
                         return
+                    if admission is not None and self.trajectory_webhook is not None:
+                        base_url, headers = self.trajectory_webhook
+                        try:
+                            await trajectory_webhook.admission(
+                                admission, base_url, headers
+                            )
+                        except Exception as error:
+                            logger.warning(
+                                "Cloud trajectory admission failed (%s)",
+                                type(error).__name__,
+                            )
+                        if self._explicit_interrupt_generation != run_generation:
+                            return
+                        self._trajectory_idle.clear()
+                        self._start_trajectory_upload(admission.capture)
                     if has_native_arun:
                         with use_admission(admission):
                             await conversation.arun()
@@ -1839,6 +1888,7 @@ class EventService:
                     await self.run_state_op(self._mark_error_status_sync)
                 finally:
                     settle()
+                    self._trajectory_idle.set()
                     # Wait for all pending events to be published via
                     # AsyncCallbackWrapper before publishing the final state update.
                     # This prevents a race condition where the conversation status
@@ -2554,9 +2604,16 @@ class EventService:
 
         await self._pub_sub.close()
         await self._stream_pub_sub.close()
-        if self._conversation:
-            await self.run_state_op(self._conversation.close)
-            self._conversation = None
+        try:
+            if self._conversation:
+                await self.run_state_op(self._conversation.close)
+                self._conversation = None
+        finally:
+            if self._trajectory_upload is not None:
+                self._trajectory_idle.set()
+                with suppress(TimeoutError):
+                    await asyncio.wait_for(self._trajectory_upload, 5)
+                self._trajectory_upload = None
         if self._state_executor is not None:
             self._state_executor.shutdown(wait=False)
             self._state_executor = None

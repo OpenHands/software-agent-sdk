@@ -1,4 +1,5 @@
 import json
+from collections.abc import Iterable
 from dataclasses import asdict
 from pathlib import PurePosixPath
 from typing import Any, Literal
@@ -19,6 +20,7 @@ from openhands.agent_server.persistence.trajectory_archive import (
 from openhands.sdk.observability.trajectory_journal import (
     Journal,
     Origin,
+    Record,
     digest,
     encode,
 )
@@ -66,22 +68,36 @@ def read_witness(
     origin: Origin,
     admitted_runs: set[str] | None,
 ) -> Admission:
+    with journal.read() as (_, records):
+        return read_witness_records(
+            journal.conversation_id,
+            (record for record, _ in records),
+            origin,
+            admitted_runs,
+        )
+
+
+def read_witness_records(
+    conversation_id: str,
+    records: Iterable[Record],
+    origin: Origin,
+    admitted_runs: set[str] | None,
+) -> Admission:
     evidence = {}
     witnessed_runs = set()
     admitted = set()
-    with journal.read() as (_, records):
-        for record, _ in records:
-            if record.kind == "admitted" and record.run_id is not None:
-                admitted.add(record.run_id)
-                continue
-            if record.kind != "receipt":
-                raise ValueError("Expected a witness spool")
-            key = record.data["key"]
-            evidence[key] = record.data["sha256"]
-            if record.run_id is not None and key == f"run_start:{record.run_id}":
-                witnessed_runs.add(record.run_id)
+    for record in records:
+        if record.kind == "admitted" and record.run_id is not None:
+            admitted.add(record.run_id)
+            continue
+        if record.kind != "receipt":
+            raise ValueError("Expected a witness spool")
+        key = record.data["key"]
+        evidence[key] = record.data["sha256"]
+        if record.run_id is not None and key == f"run_start:{record.run_id}":
+            witnessed_runs.add(record.run_id)
     return Admission(
-        conversation_id=journal.conversation_id,
+        conversation_id=conversation_id,
         origin=origin,
         run_ids=(admitted or witnessed_runs)
         if admitted_runs is None

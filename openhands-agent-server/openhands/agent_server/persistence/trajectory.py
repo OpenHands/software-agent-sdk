@@ -19,6 +19,7 @@ from openhands.agent_server.persistence.trajectory_validation import (
     CandidateSource,
     compare,
     read_witness,
+    read_witness_records,
     select,
     verify_candidate,
 )
@@ -42,12 +43,14 @@ def main() -> None:
     witness = commands.add_parser("witness")
     witness.add_argument("spool", type=Path)
     witness.add_argument("conversation")
-    witness.add_argument(
-        "--origin",
-        choices=["interactive", "automation", "evaluation", "unknown"],
-        default="unknown",
-    )
+    origins = ["interactive", "automation", "evaluation", "unknown"]
+    witness.add_argument("--origin", choices=origins, default="unknown")
     witness.add_argument("--admitted-runs", type=Path)
+    archived_witness = commands.add_parser("witness-archive")
+    archived_witness.add_argument("store")
+    archived_witness.add_argument("seal", type=Path)
+    archived_witness.add_argument("--origin", choices=origins, default="unknown")
+    archived_witness.add_argument("--admitted-runs", type=Path, required=True)
     read = commands.add_parser("read")
     read.add_argument("store")
     read.add_argument("seal", type=Path)
@@ -111,6 +114,15 @@ def main() -> None:
     ref = ObjectRef.model_validate_json(args.seal.read_bytes())
     snapshot = read_seal(store, ref)
     records = read_segments(store, snapshot)
+    if args.command == "witness-archive":
+        admission = read_witness_records(
+            snapshot.conversation_id,
+            (item.record for item in records),
+            args.origin,
+            TypeAdapter(set[str]).validate_json(args.admitted_runs.read_bytes()),
+        )
+        print(admission.model_dump_json())
+        return
     if args.command == "read":
         print(json.dumps({"seal": snapshot.model_dump(), "seal_ref": ref.model_dump()}))
         for item in records:
