@@ -113,6 +113,8 @@ class ShadowCapture:
     @classmethod
     def from_environment(cls, conversation_id: str) -> "ShadowCapture | None":
         root = os.environ.get("OPENHANDS_TRAJECTORY_SHADOW_SPOOL")
+        # TODO: Remove the pilot allowlist once permanent enrollment is in place.
+        # https://github.com/OpenHands/software-agent-sdk/issues/7036
         cohort = os.environ.get("OPENHANDS_TRAJECTORY_SHADOW_IDS", "").split(",")
         if not root or conversation_id not in cohort:
             return None

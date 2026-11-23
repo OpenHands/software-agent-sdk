@@ -55,6 +55,8 @@ def main() -> None:
     verify.add_argument("store")
     verify.add_argument("seal", type=Path)
     verify.add_argument("admission", type=Path)
+    # TODO: Remove dual-write comparison after the rollback window and migration.
+    # https://github.com/OpenHands/software-agent-sdk/issues/7036
     verify.add_argument("--legacy", type=Path)
     migrate = commands.add_parser("select")
     migrate.add_argument("admission", type=Path)
