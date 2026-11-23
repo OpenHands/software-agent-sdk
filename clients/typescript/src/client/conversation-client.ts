@@ -1,0 +1,596 @@
+import { HttpClient, HttpError } from './http-client';
+import { getCachedAgentServerInfo } from './agent-server-compatibility';
+import {
+  ConversationExecutionStatus,
+  LLM,
+  ModelRouterSelection,
+  ModelRouterStatus,
+  Success,
+} from '../types/base';
+import type {
+  AgentResponseResult,
+  AskAgentResponse,
+  ConfirmationResponseRequest,
+  ConversationEvent,
+  ConversationEventCountOptions,
+  ConversationEventPage,
+  ConversationEventSearchOptions,
+  ConversationInfo,
+  ConversationRuntimeInfo,
+  ConversationSearchRequest,
+  ConversationSearchResponse,
+  ForkConversationRequest,
+  NavigateConversationRequest,
+  SetConfirmationPolicyRequest,
+  SetSecurityAnalyzerRequest,
+  StartGoalRequest,
+  UpdateConversationRequest,
+  UpdateSecretsRequest,
+} from '../models/conversation';
+import type { ConfirmationPolicyBase } from '../types/base';
+import type { AskUserAnswerEvent, ReactionEmoji, ReactionEvent } from '../events/types';
+import type {
+  AgentServerBatchEventsResponse,
+  AgentServerLoadPluginResponse,
+} from '../models/agent-server-api';
+
+export interface ConversationClientOptions {
+  host: string;
+  apiKey?: string;
+  timeout?: number;
+}
+
+/**
+ * Payload for creating a new conversation.
+ *
+ * Mutually exclusive sources for the agent:
+ * - `agent_profile_id` — stable UUID; server resolves the profile server-side.
+ * - `agent` / `agent_settings` — direct agent spec (legacy path).
+ *
+ * Additional fields (e.g. `initial_message`, `max_iterations`) are forwarded
+ * as-is. `agent_profile_id` support lands with SDK PR #3784.
+ */
+export interface CreateConversationPayload {
+  /** Stable UUID of an agent profile to resolve server-side. */
+  agent_profile_id?: string;
+  agent?: unknown;
+  agent_settings?: unknown;
+  /** Positive USD limit on accumulated conversation cost; a step may overshoot. */
+  max_budget_per_run?: number | null;
+  [key: string]: unknown;
+}
+
+export interface SendConversationEventOptions {
+  run?: boolean;
+}
+
+export class ConversationClient {
+  public readonly host: string;
+  public readonly apiKey?: string;
+  private readonly client: HttpClient;
+
+  constructor(options: ConversationClientOptions) {
+    this.host = options.host.replace(/\/$/, '');
+    this.apiKey = options.apiKey;
+    this.client = new HttpClient({
+      baseUrl: this.host,
+      apiKey: this.apiKey,
+      timeout: options.timeout || 60000,
+    });
+  }
+
+  async createConversation<TConversation = ConversationInfo>(
+    payload: CreateConversationPayload
+  ): Promise<TConversation> {
+    try {
+      const response = await this.client.post<TConversation>('/api/conversations', payload);
+      return response.data;
+    } catch (error) {
+      // A lost response does not mean the create was not applied: the server
+      // may have committed it and the initial message may already be running.
+      // Re-sending is only safe where the server deduplicates concurrent
+      // creates for one id, which it advertises as a capability. There is no
+      // caller-supplied id to reconcile against otherwise, and even with one, a
+      // server without the capability would double-create on a re-send, so
+      // surface the original transport error instead.
+      if (
+        error instanceof HttpError ||
+        typeof payload.conversation_id !== 'string' ||
+        !(await this.supportsCreateRetry())
+      ) {
+        throw error;
+      }
+
+      const response = await this.client.post<TConversation>('/api/conversations', payload);
+      return response.data;
+    }
+  }
+
+  /**
+   * Whether the server deduplicates concurrent creates for one conversation id.
+   *
+   * A server that cannot be probed is treated as unsupported, so an older or
+   * unreachable backend keeps the previous behavior rather than risking a
+   * duplicate conversation.
+   */
+  private async supportsCreateRetry(): Promise<boolean> {
+    try {
+      const serverInfo = await getCachedAgentServerInfo(this.client);
+      return serverInfo.capabilities?.includes('idempotent_conversation_create_v1') === true;
+    } catch {
+      return false;
+    }
+  }
+
+  async searchConversations(
+    options: ConversationSearchRequest = {}
+  ): Promise<ConversationSearchResponse> {
+    const response = await this.client.get<ConversationSearchResponse>(
+      '/api/conversations/search',
+      {
+        params: options as Record<string, unknown>,
+      }
+    );
+    return response.data;
+  }
+
+  async countConversations(
+    options: { status?: ConversationExecutionStatus } = {}
+  ): Promise<number> {
+    const response = await this.client.get<number>('/api/conversations/count', {
+      params: options as Record<string, unknown>,
+    });
+    return response.data;
+  }
+
+  async getConversations<TConversation = ConversationInfo>(
+    conversationIds: string[]
+  ): Promise<Array<TConversation | null>> {
+    const conversations: Array<TConversation | null> = [];
+    // The Agent Server validates a maximum of 99 IDs per request.
+    const batchSize = 99;
+    for (let offset = 0; offset < conversationIds.length; offset += batchSize) {
+      const response = await this.client.get<Array<TConversation | null>>('/api/conversations', {
+        params: { ids: conversationIds.slice(offset, offset + batchSize) },
+      });
+      conversations.push(...response.data);
+    }
+    return conversations;
+  }
+
+  async getConversation<TConversation = ConversationInfo>(
+    conversationId: string
+  ): Promise<TConversation> {
+    const response = await this.client.get<TConversation>(`/api/conversations/${conversationId}`);
+    return response.data;
+  }
+
+  async getRuntime(conversationId: string): Promise<ConversationRuntimeInfo> {
+    const response = await this.client.get<ConversationRuntimeInfo>(
+      `/api/conversations/${conversationId}/runtime`
+    );
+    return response.data;
+  }
+
+  async reprovisionRuntime(conversationId: string): Promise<ConversationRuntimeInfo> {
+    const response = await this.client.post<ConversationRuntimeInfo>(
+      `/api/conversations/${conversationId}/runtime/reprovision`,
+      {}
+    );
+    return response.data;
+  }
+
+  async searchEvents(
+    conversationId: string,
+    options: ConversationEventSearchOptions = {}
+  ): Promise<ConversationEventPage> {
+    const response = await this.client.get<ConversationEventPage>(
+      `/api/conversations/${conversationId}/events/search`,
+      { params: options as Record<string, unknown> }
+    );
+    return response.data;
+  }
+
+  async getEvent(conversationId: string, eventId: string): Promise<ConversationEvent> {
+    const response = await this.client.get<ConversationEvent>(
+      `/api/conversations/${conversationId}/events/${eventId}`
+    );
+    return response.data;
+  }
+
+  async getEvents(
+    conversationId: string,
+    eventIds: string[]
+  ): Promise<Array<ConversationEvent | null>> {
+    return Promise.all(
+      eventIds.map(async (eventId) => {
+        try {
+          return await this.getEvent(conversationId, eventId);
+        } catch (error) {
+          if (error instanceof HttpError && error.status === 404) {
+            return null;
+          }
+          throw error;
+        }
+      })
+    );
+  }
+
+  /**
+   * Batch-fetch events in one request, preserving input order with `null`
+   * for missing ids. Uses the browser-safe `POST .../events/batch` route;
+   * the canonical `GET .../events` batch endpoint requires a GET body, which
+   * `fetch`/browsers reject, so it is not used here. Servers predating the
+   * POST route answer 404/405, which surfaces as an HttpError.
+   */
+  async batchGetEvents(
+    conversationId: string,
+    eventIds: string[]
+  ): Promise<AgentServerBatchEventsResponse> {
+    const response = await this.client.post<AgentServerBatchEventsResponse>(
+      `/api/conversations/${encodeURIComponent(conversationId)}/events/batch`,
+      eventIds
+    );
+    return response.data;
+  }
+
+  /** Load a plugin from the conversation's registered marketplaces. */
+  async loadPlugin(
+    conversationId: string,
+    pluginRef: string
+  ): Promise<AgentServerLoadPluginResponse> {
+    const response = await this.client.post<AgentServerLoadPluginResponse>(
+      `/api/conversations/${encodeURIComponent(conversationId)}/load_plugin`,
+      { plugin_ref: pluginRef }
+    );
+    return response.data;
+  }
+
+  async sendEvent(
+    conversationId: string,
+    event: object,
+    options: SendConversationEventOptions = {}
+  ): Promise<void> {
+    await this.client.post(`/api/conversations/${conversationId}/events`, {
+      ...event,
+      ...(options.run === undefined ? {} : { run: options.run }),
+    });
+  }
+
+  /**
+   * Put the user's emoji reaction on a message, or take it off with
+   * `removed: true`. Without `targetEventId` it goes on the agent's latest
+   * message. Does not run the agent. The server answers 409 while the
+   * `conversation_reactions` feature is off.
+   */
+  async react(
+    conversationId: string,
+    emoji: ReactionEmoji,
+    options: { targetEventId?: string; removed?: boolean } = {}
+  ): Promise<ReactionEvent> {
+    const response = await this.client.post<ReactionEvent>(
+      `/api/conversations/${conversationId}/reactions`,
+      {
+        emoji,
+        ...(options.targetEventId === undefined ? {} : { target_event_id: options.targetEventId }),
+        ...(options.removed === undefined ? {} : { removed: options.removed }),
+      }
+    );
+    return response.data;
+  }
+
+  /**
+   * Answer the agent's pending `ask_user` question and run the agent: pick an
+   * option (`optionIndex`, from 0), give words (`text`), or both. The server
+   * answers 400 when `askId` is not the pending question (already answered by
+   * a tap or a chat reply) and 409 while the `ask_user` feature is off.
+   */
+  async answerAskUser(
+    conversationId: string,
+    askId: string,
+    answer: { optionIndex?: number; text?: string }
+  ): Promise<AskUserAnswerEvent> {
+    const response = await this.client.post<AskUserAnswerEvent>(
+      `/api/conversations/${conversationId}/ask_user/answer`,
+      {
+        ask_id: askId,
+        ...(answer.optionIndex === undefined ? {} : { option_index: answer.optionIndex }),
+        ...(answer.text === undefined ? {} : { text: answer.text }),
+      }
+    );
+    return response.data;
+  }
+
+  async pauseConversation(conversationId: string): Promise<Success> {
+    const response = await this.client.post<Success>(
+      `/api/conversations/${conversationId}/pause`,
+      {}
+    );
+    return response.data;
+  }
+
+  async interruptConversation(conversationId: string): Promise<Success> {
+    const response = await this.client.post<Success>(
+      `/api/conversations/${conversationId}/interrupt`,
+      {}
+    );
+    return response.data;
+  }
+
+  async runConversation(conversationId: string): Promise<Success> {
+    const response = await this.client.post<Success>(
+      `/api/conversations/${conversationId}/run`,
+      {}
+    );
+    return response.data;
+  }
+
+  /**
+   * Start a `/goal` loop inside an existing conversation. The loop runs in the
+   * conversation's own history and event stream (it does not fork). The server
+   * returns 409 if a run or goal loop is already active and 400 for an invalid
+   * objective (e.g. empty); a missing conversation yields 404.
+   */
+  async startGoal(conversationId: string, request: StartGoalRequest): Promise<Success> {
+    const response = await this.client.post<Success>(
+      `/api/conversations/${conversationId}/goal`,
+      request
+    );
+    return response.data;
+  }
+
+  /**
+   * Stop the active `/goal` loop in this conversation. Cancels only the
+   * background goal loop (not the conversation) and records an `interrupted`
+   * status so {@link resumeGoal} can continue it. Succeeds even when no loop is
+   * running; a missing conversation yields 404.
+   */
+  async stopGoal(conversationId: string): Promise<Success> {
+    const response = await this.client.post<Success>(
+      `/api/conversations/${conversationId}/goal/stop`,
+      {}
+    );
+    return response.data;
+  }
+
+  /**
+   * Resume the last interrupted `/goal` loop in this conversation. The server
+   * returns 409 if a run or goal loop is already active and 400 when there is
+   * no resumable goal (none started, or it already completed); a missing
+   * conversation yields 404.
+   */
+  async resumeGoal(conversationId: string): Promise<Success> {
+    const response = await this.client.post<Success>(
+      `/api/conversations/${conversationId}/goal/resume`,
+      {}
+    );
+    return response.data;
+  }
+
+  async askAgent(conversationId: string, question: string): Promise<AskAgentResponse> {
+    const response = await this.client.post<AskAgentResponse>(
+      `/api/conversations/${conversationId}/ask_agent`,
+      { question }
+    );
+    return response.data;
+  }
+
+  async getEventCount(
+    conversationId: string,
+    options: ConversationEventCountOptions = {}
+  ): Promise<number> {
+    const response = await this.client.get<number>(
+      `/api/conversations/${conversationId}/events/count`,
+      { params: options as Record<string, unknown> }
+    );
+    return response.data;
+  }
+
+  async respondToConfirmation<TResponse = unknown>(
+    conversationId: string,
+    request: ConfirmationResponseRequest
+  ): Promise<TResponse> {
+    const response = await this.client.post<TResponse>(
+      `/api/conversations/${conversationId}/events/respond_to_confirmation`,
+      request
+    );
+    return response.data;
+  }
+
+  async getAgentFinalResponse(conversationId: string): Promise<AgentResponseResult> {
+    const response = await this.client.get<AgentResponseResult>(
+      `/api/conversations/${conversationId}/agent_final_response`
+    );
+    return response.data;
+  }
+
+  async setConfirmationPolicy(
+    conversationId: string,
+    policyOrRequest: ConfirmationPolicyBase | SetConfirmationPolicyRequest
+  ): Promise<Success> {
+    const request =
+      'policy' in policyOrRequest ? policyOrRequest : ({ policy: policyOrRequest } as const);
+    const response = await this.client.post<Success>(
+      `/api/conversations/${conversationId}/confirmation_policy`,
+      request
+    );
+    return response.data;
+  }
+
+  async condenseConversation(conversationId: string): Promise<Success> {
+    const response = await this.client.post<Success>(
+      `/api/conversations/${conversationId}/condense`,
+      {}
+    );
+    return response.data;
+  }
+
+  async setSecurityAnalyzer(
+    conversationId: string,
+    securityAnalyzerOrRequest: unknown | SetSecurityAnalyzerRequest | null
+  ): Promise<Success> {
+    const request = isSetSecurityAnalyzerRequest(securityAnalyzerOrRequest)
+      ? securityAnalyzerOrRequest
+      : { security_analyzer: securityAnalyzerOrRequest };
+    const response = await this.client.post<Success>(
+      `/api/conversations/${conversationId}/security_analyzer`,
+      request
+    );
+    return response.data;
+  }
+
+  async updateSecrets(conversationId: string, request: UpdateSecretsRequest): Promise<Success> {
+    const response = await this.client.post<Success>(
+      `/api/conversations/${conversationId}/secrets`,
+      request
+    );
+    return response.data;
+  }
+
+  async forkConversation<TConversation = ConversationInfo>(
+    conversationId: string,
+    request: ForkConversationRequest = {},
+    options: { includeSkills?: boolean } = {}
+  ): Promise<TConversation> {
+    const response = await this.client.post<TConversation>(
+      `/api/conversations/${conversationId}/fork`,
+      request,
+      {
+        params:
+          options.includeSkills === undefined
+            ? undefined
+            : { include_skills: options.includeSkills },
+      }
+    );
+    return response.data;
+  }
+
+  /**
+   * Move a conversation's HEAD to an existing event, re-rooting the active
+   * branch the agent runs on next. Unlike {@link forkConversation}, this
+   * creates no new conversation — all branches stay on disk. Pass
+   * `{ event_id: null }` (or an empty request) to select the empty tree.
+   *
+   * Returns the updated {@link ConversationInfo}, carrying the new
+   * `leaf_event_id`. The server answers 404 for an unknown conversation or an
+   * unknown `event_id`.
+   */
+  async navigateConversation<TConversation = ConversationInfo>(
+    conversationId: string,
+    request: NavigateConversationRequest = {},
+    options: { includeSkills?: boolean } = {}
+  ): Promise<TConversation> {
+    const response = await this.client.post<TConversation>(
+      `/api/conversations/${conversationId}/navigate`,
+      request,
+      {
+        params:
+          options.includeSkills === undefined
+            ? undefined
+            : { include_skills: options.includeSkills },
+      }
+    );
+    return response.data;
+  }
+
+  async switchProfile(conversationId: string, profileName: string): Promise<void> {
+    await this.client.post<Success>(`/api/conversations/${conversationId}/switch_profile`, {
+      profile_name: profileName,
+    });
+  }
+
+  async switchLLM(conversationId: string, llm: LLM): Promise<void> {
+    await this.client.post<Success>(`/api/conversations/${conversationId}/switch_llm`, { llm });
+  }
+
+  async getModelRouter(conversationId: string): Promise<ModelRouterStatus> {
+    const response = await this.client.get<ModelRouterStatus>(
+      `/api/conversations/${conversationId}/model_router`
+    );
+    return response.data;
+  }
+
+  async addModelRouterRoute(
+    conversationId: string,
+    profileName: string,
+    routeName?: string,
+    baseRouteName = 'default'
+  ): Promise<ModelRouterStatus> {
+    const response = await this.client.post<ModelRouterStatus>(
+      `/api/conversations/${conversationId}/model_router/routes`,
+      { profile_name: profileName, route_name: routeName, base_route_name: baseRouteName }
+    );
+    return response.data;
+  }
+
+  async updateModelRouter(
+    conversationId: string,
+    selection: ModelRouterSelection
+  ): Promise<ModelRouterStatus> {
+    const response = await this.client.patch<ModelRouterStatus>(
+      `/api/conversations/${conversationId}/model_router`,
+      { selection }
+    );
+    return response.data;
+  }
+
+  async switchModelRouter(conversationId: string, routeName: string): Promise<ModelRouterStatus> {
+    return this.updateModelRouter(conversationId, {
+      mode: 'manual',
+      manual_route_name: routeName,
+    });
+  }
+
+  async resumeAutoModelRouting(conversationId: string): Promise<ModelRouterStatus> {
+    return this.updateModelRouter(conversationId, { mode: 'auto' });
+  }
+
+  /**
+   * Switch the model of an ACP conversation (the ACP analog of
+   * {@link switchLLM}). On a live session the server calls the wrapper's
+   * `session/set_model` in place; context is preserved. Before the first run
+   * there is no session yet, so the server answers 200 and stores the model for
+   * the first session. Non-ACP conversations get 400.
+   */
+  async switchAcpModel(conversationId: string, model: string): Promise<void> {
+    await this.client.post<Success>(`/api/conversations/${conversationId}/switch_acp_model`, {
+      model,
+    });
+  }
+
+  /**
+   * Switch the reasoning effort of an ACP conversation. Live for a started
+   * conversation; persisted and applied at session start otherwise. 400 when
+   * the current model doesn't offer `effort`.
+   */
+  async switchAcpEffort(conversationId: string, effort: string): Promise<void> {
+    await this.client.post<Success>(`/api/conversations/${conversationId}/switch_acp_effort`, {
+      effort,
+    });
+  }
+
+  async deleteConversation(conversationId: string): Promise<void> {
+    await this.client.delete<Success>(`/api/conversations/${conversationId}`);
+  }
+
+  /**
+   * Update conversation metadata (e.g. title) and resolve with the updated
+   * conversation. The PATCH endpoint answers only `Success`, so the
+   * conversation is read back after the update.
+   */
+  async updateConversation<TConversation = ConversationInfo>(
+    conversationId: string,
+    update: UpdateConversationRequest
+  ): Promise<TConversation> {
+    await this.client.patch<Success>(`/api/conversations/${conversationId}`, update);
+    return this.getConversation<TConversation>(conversationId);
+  }
+
+  close(): void {
+    this.client.close();
+  }
+}
+
+function isSetSecurityAnalyzerRequest(value: unknown): value is SetSecurityAnalyzerRequest {
+  return typeof value === 'object' && value !== null && 'security_analyzer' in value;
+}

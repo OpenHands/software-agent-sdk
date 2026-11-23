@@ -55,12 +55,12 @@ jobs:
             todo-count: ${{ steps.scan.outputs.todo-count }}
         steps:
             - name: Checkout repository
-              uses: actions/checkout@v7
+              uses: actions/checkout@v7.0.1
               with:
                   fetch-depth: 0 # Full history for better context
 
             - name: Set up Python
-              uses: actions/setup-python@v6
+              uses: actions/setup-python@v7
               with:
                   python-version: '3.13'
 
@@ -130,7 +130,7 @@ jobs:
             max-parallel: 1 # Process one TODO at a time to avoid conflicts
         steps:
             - name: Checkout repository
-              uses: actions/checkout@v7
+              uses: actions/checkout@v7.0.1
               with:
                   fetch-depth: 0
                   token: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
@@ -141,7 +141,7 @@ jobs:
                   git pull origin openhands/todo-management-example
 
             - name: Set up Python
-              uses: actions/setup-python@v6
+              uses: actions/setup-python@v7
               with:
                   python-version: '3.13'
 

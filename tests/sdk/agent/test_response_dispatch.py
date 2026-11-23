@@ -1,9 +1,17 @@
 """Unit tests for LLM response classification and dispatch."""
 
-from unittest.mock import MagicMock
+from collections.abc import AsyncIterator, Callable, Iterator
+from typing import Literal
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from litellm.types.utils import ModelResponse
+from litellm.types.llms.openai import ResponsesAPIResponse
+from litellm.types.utils import (
+    Delta,
+    ModelResponse,
+    ModelResponseStream,
+    StreamingChoices,
+)
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.agent.response_dispatch import LLMResponseType, classify_response
@@ -200,6 +208,8 @@ def _run_single_step(
     *,
     seed_events: list[Event] | None = None,
     record_emitted_events_in_state: bool = False,
+    secrets: dict[str, str] | None = None,
+    prepare: Callable[[LocalConversation], None] | None = None,
 ) -> tuple[list[Event], LocalConversation]:
     """Run one agent step with a canned LLM response."""
     from pydantic import PrivateAttr
@@ -220,9 +230,13 @@ def _run_single_step(
     agent = Agent(llm=llm, tools=[])
     conversation = Conversation(agent=agent)
     conversation._ensure_agent_ready()
+    if secrets is not None:
+        conversation.update_secrets(secrets)
     if seed_events is not None:
         for event in seed_events:
             conversation.state.append_event(event)
+    if prepare is not None:
+        prepare(conversation)
 
     events: list[Event] = []
 
@@ -285,6 +299,113 @@ def test_content_response_sets_finished():
     assert convo.state.execution_status == ConversationExecutionStatus.FINISHED
     assert len(msg_events) == 1
     assert msg_events[0].source == "agent"
+
+
+@pytest.mark.parametrize(
+    ("api_mode", "stream"), [("chat", False), ("chat", True), ("responses", False)]
+)
+@pytest.mark.parametrize("async_run", [False, True])
+@pytest.mark.parametrize("end_turn", [False, True, None])
+async def test_content_follows_explicit_turn_boundary(
+    monkeypatch,
+    api_mode: Literal["chat", "responses"],
+    stream: bool,
+    async_run: bool,
+    end_turn: bool | None,
+):
+    def response(text: str, **metadata: bool) -> ModelResponse | ResponsesAPIResponse:
+        if api_mode == "chat":
+            return ModelResponse.model_validate(
+                {
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": text},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    **metadata,
+                }
+            )
+        return ResponsesAPIResponse.model_validate(
+            {
+                "id": "response",
+                "created_at": 0,
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "id": "message",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [{"type": "output_text", "text": text}],
+                    }
+                ],
+                **metadata,
+            }
+        )
+
+    metadata = {} if end_turn is None else {"end_turn": end_turn}
+
+    def chunks(
+        text: str, **metadata: bool
+    ) -> Iterator[ModelResponseStream] | AsyncIterator[ModelResponseStream]:
+        items = [
+            ModelResponseStream(
+                choices=[
+                    StreamingChoices(
+                        index=0, delta=Delta(role="assistant", content=text)
+                    )
+                ],
+            ),
+            ModelResponseStream(
+                choices=[
+                    StreamingChoices(index=0, finish_reason="stop", delta=Delta())
+                ],
+            ).model_copy(update=metadata),
+            ModelResponseStream(choices=[]),
+        ]
+        if not async_run:
+            return iter(items)
+
+        async def iterate() -> AsyncIterator[ModelResponseStream]:
+            for item in items:
+                yield item
+
+        return iterate()
+
+    make_reply = chunks if stream else response
+    replies = [make_reply("Checking the result.", **metadata), make_reply("Verified.")]
+    transport = (AsyncMock if async_run else MagicMock)(side_effect=replies)
+    endpoint = "completion" if api_mode == "chat" else "responses"
+    transport_name = f"litellm_{'a' if async_run else ''}{endpoint}"
+    monkeypatch.setattr(f"openhands.sdk.llm.llm.{transport_name}", transport)
+    agent = Agent(
+        llm=LLM(
+            model="openai/gpt-5.2", api_key="test", api_mode=api_mode, stream=stream
+        ),
+        tools=[],
+    )
+    conversation = Conversation(agent=agent, token_callbacks=[lambda _: None])
+    try:
+        conversation.send_message("Check the result and report it.")
+        if async_run:
+            await conversation.arun()
+        else:
+            conversation.run()
+        messages = [
+            part.text
+            for event in conversation.state.events
+            if isinstance(event, MessageEvent) and event.source == "agent"
+            for part in event.llm_message.content
+            if isinstance(part, TextContent)
+        ]
+    finally:
+        conversation.close()
+    expected = ["Checking the result."]
+    if end_turn is False:
+        expected.append("Verified.")
+    assert messages == expected
 
 
 def test_empty_response_sends_nudge():
@@ -397,3 +518,192 @@ def test_batch_action_events_are_emitted_consecutively():
     assert [a.tool_call_id for a in action_events] == ["tc-1", "tc-2"]
     # Only the first event of the batch carries the turn's thought.
     assert action_events[0].thought and not action_events[1].thought
+
+
+def _agent_message_text(events: list[Event]) -> str:
+    """Text of the single agent MessageEvent emitted by a step."""
+    msg_event = next(
+        e for e in events if isinstance(e, MessageEvent) and e.source == "agent"
+    )
+    part = msg_event.llm_message.content[0]
+    assert isinstance(part, TextContent)
+    return part.text
+
+
+def test_content_response_masks_registered_secret():
+    """The model's own words are masked in the durable MessageEvent.
+
+    Only tool output was masked before, so a secret the model echoed back was
+    persisted verbatim into the copy that is stored, replayed to the LLM,
+    rendered, exported and POSTed to webhooks.
+    """
+    msg = Message(
+        role="assistant", content=[TextContent(text="the value is supersecret now")]
+    )
+    events, _ = _run_single_step(
+        _make_llm_response(msg), secrets={"TOKEN": "supersecret"}
+    )
+
+    text = _agent_message_text(events)
+    assert "supersecret" not in text
+    assert text == "the value is <secret-hidden> now"
+
+
+def test_content_response_masks_secret_joined_from_stream_chunks():
+    """A secret straddling two deltas is masked in the durable message.
+
+    The ``Agent`` path accumulates deltas before it builds the ``Message``, so
+    neither chunk matches on its own — only the reassembled text does, and that
+    is what the durable copy is built from.
+    """
+    chunks = ["the value is super", "secret now"]
+    msg = Message(role="assistant", content=[TextContent(text="".join(chunks))])
+    events, _ = _run_single_step(
+        _make_llm_response(msg), secrets={"TOKEN": "supersecret"}
+    )
+
+    assert _agent_message_text(events) == "the value is <secret-hidden> now"
+
+
+def test_content_response_without_secrets_is_left_alone():
+    """With nothing registered, the message text is passed through unchanged."""
+    msg = Message(role="assistant", content=[TextContent(text="nothing to hide")])
+    events, _ = _run_single_step(_make_llm_response(msg))
+
+    assert _agent_message_text(events) == "nothing to hide"
+
+
+def test_reasoning_only_response_masks_registered_secret():
+    """The nudge path routes through the same chokepoint.
+
+    A reasoning-only message carries no ``content``, so masking that alone
+    would be a no-op here — ``reasoning_content`` is the text that leaks.
+    """
+    msg = Message(role="assistant", reasoning_content="the value is supersecret now")
+    events, _ = _run_single_step(
+        _make_llm_response(msg), secrets={"TOKEN": "supersecret"}
+    )
+
+    msg_event = next(
+        e for e in events if isinstance(e, MessageEvent) and e.source == "agent"
+    )
+    assert msg_event.llm_message.reasoning_content == "the value is <secret-hidden> now"
+
+
+def test_content_response_masks_value_dropped_from_secret_sources():
+    """Masking follows the tracked values, not the registry's source list.
+
+    ``EventService.activate_credential_binding`` pops a name from
+    ``secret_sources`` while the resolved value stays tracked for masking, so
+    keying off ``secret_sources`` would leak a live credential here.
+    """
+
+    def drop_source(convo: LocalConversation) -> None:
+        registry = convo.state.secret_registry
+        registry.get_secret_value("TOKEN")  # resolve -> tracked for masking
+        with convo.state:
+            convo.state.secret_registry = registry.model_copy(
+                update={"secret_sources": {}}
+            )
+
+    msg = Message(
+        role="assistant", content=[TextContent(text="the value is supersecret now")]
+    )
+    events, convo = _run_single_step(
+        _make_llm_response(msg),
+        secrets={"TOKEN": "supersecret"},
+        prepare=drop_source,
+    )
+
+    assert not convo.state.secret_registry.secret_sources
+    assert _agent_message_text(events) == "the value is <secret-hidden> now"
+
+
+def test_thinking_blocks_mask_registered_secret():
+    """Secrets in ``thinking_blocks[].thinking`` are masked in the durable copy.
+
+    ``content`` and ``reasoning_content`` were masked by the original PR, but
+    ``thinking_blocks`` were explicitly left alone.  Anthropic extended-thinking
+    traces can echo back secret values (e.g. tokens the model reasoned about),
+    and those traces are persisted, rendered, exported and POSTed to webhooks
+    via the same ``MessageEvent.llm_message`` — so the secret leaked verbatim.
+
+    The signature is nulled because the masked thinking text no longer matches
+    the provider's signed payload.
+    """
+    msg = Message(
+        role="assistant",
+        content=[TextContent(text="done")],
+        thinking_blocks=[
+            ThinkingBlock(
+                thinking="I need to use the token supersecret to authenticate",
+                signature="abc123sig",
+            ),
+        ],
+    )
+    events, _ = _run_single_step(
+        _make_llm_response(msg), secrets={"TOKEN": "supersecret"}
+    )
+
+    msg_event = next(
+        e for e in events if isinstance(e, MessageEvent) and e.source == "agent"
+    )
+    tb = msg_event.llm_message.thinking_blocks[0]
+    assert isinstance(tb, ThinkingBlock)
+    assert "supersecret" not in tb.thinking
+    assert tb.signature is None
+    assert "supersecret" not in msg_event.llm_message.model_dump_json()
+
+
+@pytest.mark.parametrize(
+    "secrets",
+    [
+        pytest.param(None, id="no-secret-registered"),
+        pytest.param({"TOKEN": "supersecret"}, id="secret-not-in-thinking"),
+    ],
+)
+def test_thinking_block_untouched_by_masking_keeps_signature(secrets):
+    """A thinking block whose text holds no secret is stored as the provider sent it.
+
+    The signature is what lets the block be replayed on the next request, so
+    it may only be dropped when masking rewrote the signed text.
+    """
+    block = ThinkingBlock(thinking="The user greets me.", signature="sig-1")
+    msg = Message(
+        role="assistant",
+        content=[TextContent(text="hello")],
+        thinking_blocks=[block],
+    )
+    events, _ = _run_single_step(_make_llm_response(msg), secrets=secrets)
+
+    msg_event = next(
+        e for e in events if isinstance(e, MessageEvent) and e.source == "agent"
+    )
+    assert list(msg_event.llm_message.thinking_blocks) == [block]
+
+
+def test_only_the_thinking_block_holding_a_secret_loses_its_signature():
+    """Masking is decided per block; redacted blocks are never rewritten."""
+    clean = ThinkingBlock(thinking="Plan the request.", signature="sig-clean")
+    redacted = RedactedThinkingBlock(data="encrypted")
+    msg = Message(
+        role="assistant",
+        content=[TextContent(text="done")],
+        thinking_blocks=[
+            clean,
+            ThinkingBlock(thinking="Send supersecret.", signature="sig-leaky"),
+            redacted,
+        ],
+    )
+    events, _ = _run_single_step(
+        _make_llm_response(msg), secrets={"TOKEN": "supersecret"}
+    )
+
+    msg_event = next(
+        e for e in events if isinstance(e, MessageEvent) and e.source == "agent"
+    )
+    assert list(msg_event.llm_message.thinking_blocks) == [
+        clean,
+        ThinkingBlock(thinking="Send <secret-hidden>.", signature=None),
+        redacted,
+    ]

@@ -30,11 +30,25 @@ TIMEOUT_MESSAGE_TEMPLATE: Final[str] = (
 # How long to wait with no new output before considering it a no-change timeout
 NO_CHANGE_TIMEOUT_SECONDS: Final[int] = 30
 
-# How often to poll for new output in seconds
+# How often to poll for new output in seconds, once a command has run for a while
 POLL_INTERVAL: Final[float] = 0.5
+# Shortest poll interval, used right after a command is sent
+MIN_POLL_INTERVAL: Final[float] = 0.02
 HISTORY_LIMIT: Final[int] = 10_000
 
 TMUX_SOCKET_NAME: Final[str] = "openhands"
+
+# tmux user option recording the PID of the process that created a socket.
+# Startup cleanup reads it so it does not kill the live sessions of a sibling
+# agent-server that shares one externally supplied TMUX_TMPDIR.
+TMUX_SOCKET_OWNER_OPTION: Final[str] = "@openhands_socket_owner_pid"
+
+# Cross-process lock file, inside the tmux socket directory, that serializes
+# socket creation with the agent-server's startup cleanup. A socket only exists
+# between creation and the recording of its owner, so both operations take this
+# lock to keep cleanup from reclaiming a socket that a live process is still
+# setting up.
+TMUX_SOCKET_CREATION_LOCK: Final[str] = ".openhands-socket-creation.lock"
 
 # Tmux session dimensions (columns x rows). Keep the viewport wide enough for
 # common command output while leaving scrollback retention to HISTORY_LIMIT.

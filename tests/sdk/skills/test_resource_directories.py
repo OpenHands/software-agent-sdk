@@ -48,6 +48,7 @@ def test_discover_skill_resources(tmp_path: Path) -> None:
     (refs_dir / "guide.md").write_text("# Guide")
 
     resources = discover_skill_resources(skill_dir)
+    assert isinstance(resources, SkillResources)
     assert "run.sh" in resources.scripts
     assert "utils/helper.py" in resources.scripts  # Nested files
     assert "guide.md" in resources.references

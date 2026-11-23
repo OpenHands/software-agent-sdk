@@ -5,11 +5,13 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
 
-def _load_prod_module():
-    repo_root = Path(__file__).resolve().parents[2]
-    script_path = repo_root / ".github" / "scripts" / "check_pr_description.py"
-    name = "check_pr_description"
+
+def _load(name: str, script_name: str):
+    script_path = (
+        Path(__file__).resolve().parents[2] / ".github" / "scripts" / script_name
+    )
     spec = importlib.util.spec_from_file_location(name, script_path)
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
@@ -18,9 +20,13 @@ def _load_prod_module():
     return mod
 
 
-_prod = _load_prod_module()
+# Import markdown_sections first so check_pr_description can resolve its
+# `from markdown_sections import ...` against the module we loaded above.
+_load("markdown_sections", "markdown_sections.py")
+_prod = _load("check_pr_description", "check_pr_description.py")
 validate_pr_body = _prod.validate_pr_body
 body_from_event = _prod.body_from_event
+extract_human_note = _prod.extract_human_note
 extract_linked_issue_numbers = _prod.extract_linked_issue_numbers
 validate_linked_issue_ready = _prod.validate_linked_issue_ready
 fetch_issue_details = _prod.fetch_issue_details
@@ -105,6 +111,44 @@ def test_optional_template_sections_may_be_removed():
     assert validate_pr_body(body) == []
 
 
+FENCED_TEMPLATE_BODY = """HUMAN:
+
+Quoting the template I was asked to fill in:
+
+```
+HUMAN:
+I really did test this thoroughly by hand, twice, on my own machine.
+AGENT:
+```
+"""
+
+
+def test_fenced_human_marker_does_not_supply_the_note():
+    assert extract_human_note(FENCED_TEMPLATE_BODY) == ""
+
+
+def test_fenced_agent_marker_does_not_satisfy_validation():
+    errors = validate_pr_body(FENCED_TEMPLATE_BODY)
+    assert "Add a short human-written note between `HUMAN:` and `AGENT:`." in errors
+    assert "Keep the `AGENT:` marker from the PR template." in errors
+
+
+def test_real_markers_still_supply_the_note():
+    body = """HUMAN:
+
+I ran the checker suite and reproduced the fenced-heading case by hand.
+
+AGENT:
+
+## Why
+x
+"""
+    assert "reproduced the fenced-heading case" in extract_human_note(body)
+    errors = validate_pr_body(body)
+    assert "Keep the `AGENT:` marker from the PR template." not in errors
+    assert "Add a short human-written note between `HUMAN:` and `AGENT:`." not in errors
+
+
 def test_body_from_event_reads_pull_request_body(tmp_path: Path):
     event_path = tmp_path / "event.json"
     event_path.write_text(
@@ -137,19 +181,23 @@ def test_extract_linked_issue_numbers_only_bare_ref_in_issue_section():
     assert extract_linked_issue_numbers(body) == [7]
 
 
-def test_extract_linked_issue_numbers_no_bare_ref_outside_issue_section():
-    # A bare `#42` in the Summary must not be treated as a linked issue.
-    body = "## Summary\n\nSee #42 for background.\n\n## Issue Number\n\nN/A\n"
-    assert extract_linked_issue_numbers(body) == []
-
-
-def test_extract_linked_issue_numbers_keyword_inside_word_is_ignored():
-    # "fix"/"clos"/"resolv" must not match inside larger words (e.g. "crucifixes").
-    body = (
-        "## Summary\n\n"
-        "crucifixes #12, encloses #34, transfixes #56.\n\n"
-        "## Issue Number\n\nN/A\n"
-    )
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param(
+            "## Summary\n\nSee #42 for background.\n\n## Issue Number\n\nN/A\n",
+            id="no_bare_ref_outside_issue_section",
+        ),
+        # "fix"/"clos"/"resolv" must not match inside larger words.
+        pytest.param(
+            "## Summary\n\n"
+            "crucifixes #12, encloses #34, transfixes #56.\n\n"
+            "## Issue Number\n\nN/A\n",
+            id="keyword_inside_word_is_ignored",
+        ),
+    ],
+)
+def test_extract_linked_issue_numbers_finds_none(body):
     assert extract_linked_issue_numbers(body) == []
 
 
@@ -168,33 +216,29 @@ def test_validate_linked_issue_ready_no_token_skips_network(monkeypatch):
     assert validate_linked_issue_ready("Fixes #12\n", None, None) == []
 
 
-def test_validate_linked_issue_ready_passes_with_ready_label(monkeypatch):
+@pytest.mark.parametrize(
+    ("labels", "created_at"),
+    [
+        pytest.param(
+            ["ready-for-dev"], "2026-08-13T00:00:00Z", id="passes_with_ready_label"
+        ),
+        pytest.param(
+            ["bug"], "2026-01-15T00:00:00Z", id="grandfathers_pre_rollout_issue"
+        ),
+        # Same issue as #4468/#4469: opened on the rollout day (2026-08-12) before
+        # the workflow was deployed, so it was never labeled. It must be exempt.
+        pytest.param(
+            ["bug"],
+            "2026-08-12T06:46:00Z",
+            id="grandfathers_rollout_day_before_deployment",
+        ),
+    ],
+)
+def test_validate_linked_issue_ready_accepts(monkeypatch, labels, created_at):
     monkeypatch.setattr(
         _prod,
         "fetch_issue_details",
-        lambda repo, num, token: (["ready-for-dev"], "2026-08-13T00:00:00Z"),
-    )
-    assert validate_linked_issue_ready("Fixes #12\n", "org/repo", "token") == []
-
-
-def test_validate_linked_issue_ready_grandfathers_pre_rollout_issue(monkeypatch):
-    monkeypatch.setattr(
-        _prod,
-        "fetch_issue_details",
-        lambda repo, num, token: (["bug"], "2026-01-15T00:00:00Z"),
-    )
-    assert validate_linked_issue_ready("Fixes #12\n", "org/repo", "token") == []
-
-
-def test_validate_linked_issue_ready_grandfathers_rollout_day_before_deployment(
-    monkeypatch,
-):
-    # Same issue as #4468/#4469: opened on the rollout day (2026-08-12) before
-    # the workflow was deployed, so it was never labeled. It must be exempt.
-    monkeypatch.setattr(
-        _prod,
-        "fetch_issue_details",
-        lambda repo, num, token: (["bug"], "2026-08-12T06:46:00Z"),
+        lambda repo, num, token: (labels, created_at),
     )
     assert validate_linked_issue_ready("Fixes #12\n", "org/repo", "token") == []
 

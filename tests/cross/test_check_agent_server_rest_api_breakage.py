@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -1185,6 +1186,152 @@ def test_main_passes_for_mcp_contract_schema_repairs(monkeypatch, capsys):
 
     captured = capsys.readouterr()
     assert "Typed historically opaque MCP/settings schemas" in captured.out
+
+
+def _search_limit_repair_case(
+    path: str = "/api/conversations/search",
+    operation_id: str = "search_conversations_api_conversations_search_get",
+) -> tuple[dict, dict, dict]:
+    previous = _schema_with_operation(
+        path,
+        "get",
+        {
+            "operationId": operation_id,
+            "parameters": [
+                {
+                    "name": "limit",
+                    "in": "query",
+                    "schema": {"type": "integer", "lte": 100, "exclusiveMinimum": 0},
+                }
+            ],
+            "responses": {"200": {"description": "Page"}},
+        },
+    )
+    current = deepcopy(previous)
+    current["paths"][path]["get"]["parameters"][0]["schema"] = {
+        "type": "integer",
+        "maximum": 100,
+        "exclusiveMinimum": 0,
+    }
+    change = {
+        "id": "request-parameter-max-set",
+        "text": (
+            "for the `query` request parameter `limit`, the max was set to `100.00`"
+        ),
+        "operation": "GET",
+        "operationId": operation_id,
+        "path": path,
+    }
+    return previous, current, change
+
+
+@pytest.mark.parametrize(
+    "path, operation_id",
+    [
+        (
+            "/api/conversations/search",
+            "search_conversations_api_conversations_search_get",
+        ),
+        (
+            "/api/conversations/{conversation_id}/events/search",
+            "search_conversation_events_api_conversations__conversation_id__events_search_get",
+        ),
+        (
+            "/api/bash/bash_events/search",
+            "search_bash_events_api_bash_bash_events_search_get",
+        ),
+        ("/api/file/search_subdirs", "search_subdirs_api_file_search_subdirs_get"),
+    ],
+)
+def test_main_accepts_search_limit_schema_repair(
+    run_rest_api_breakage_check, capsys, path, operation_id
+):
+    previous, current, change = _search_limit_repair_case(path, operation_id)
+
+    assert run_rest_api_breakage_check(_prod, previous, current, [change]) == 0
+    output = capsys.readouterr().out
+    assert "Published the existing search limit of 100" in output
+    assert f"GET {path}" in output
+
+
+@pytest.mark.parametrize(
+    "change_updates, baseline_limit_schema",
+    [
+        pytest.param({"path": "/api/other/search"}, None, id="other-endpoint"),
+        pytest.param({"operation": "POST"}, None, id="other-method"),
+        pytest.param({"operationId": "another_search"}, None, id="other-operation"),
+        pytest.param(
+            {
+                "text": (
+                    "for the `query` request parameter `offset`, "
+                    "the max was set to `100.00`"
+                )
+            },
+            None,
+            id="other-parameter",
+        ),
+        pytest.param(
+            {
+                "text": (
+                    "for the `header` request parameter `limit`, "
+                    "the max was set to `100.00`"
+                )
+            },
+            None,
+            id="other-location",
+        ),
+        pytest.param(
+            {
+                "text": (
+                    "for the `query` request parameter `limit`, "
+                    "the max was set to `50.00`"
+                )
+            },
+            None,
+            id="smaller-limit",
+        ),
+        pytest.param(
+            {"id": "request-parameter-max-decreased"}, None, id="future-tightening"
+        ),
+        pytest.param({}, {"type": "integer"}, id="no-legacy-typo"),
+        pytest.param({}, {"type": "integer", "lte": 200}, id="different-legacy-limit"),
+        pytest.param(
+            {},
+            {"type": "integer", "lte": 100, "maximum": 200},
+            id="previously-published-maximum",
+        ),
+    ],
+)
+def test_main_rejects_other_search_limit_changes(
+    run_rest_api_breakage_check, change_updates, baseline_limit_schema
+):
+    previous, current, change = _search_limit_repair_case()
+    change.update(change_updates)
+    if baseline_limit_schema is not None:
+        previous["paths"]["/api/conversations/search"]["get"]["parameters"][0][
+            "schema"
+        ] = baseline_limit_schema
+
+    assert run_rest_api_breakage_check(_prod, previous, current, [change]) == 1
+
+
+def test_search_limit_schema_repair_does_not_hide_other_breakages(
+    run_rest_api_breakage_check, capsys
+):
+    previous, current, repair = _search_limit_repair_case()
+    breaking_change = {
+        **repair,
+        "id": "request-parameter-became-required",
+        "text": "the query parameter `page_id` became required",
+    }
+
+    assert (
+        run_rest_api_breakage_check(_prod, previous, current, [repair, breaking_change])
+        == 1
+    )
+    output = capsys.readouterr().out
+    assert "Published the existing search limit of 100" in output
+    assert "page_id" in output
 
 
 def test_main_fails_when_additive_oneof_mixed_with_real_breakage(monkeypatch, capsys):

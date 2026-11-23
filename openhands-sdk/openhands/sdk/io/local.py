@@ -2,11 +2,13 @@ import os
 import shutil
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 
 from filelock import FileLock, Timeout
 
 from openhands.sdk.io.cache import MemoryLRUCache
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils.files import atomic_write_text
 from openhands.sdk.utils.path import to_posix_path
 
 from .base import FileStore
@@ -62,14 +64,16 @@ class LocalFileStore(FileStore):
         full_path = self.get_full_path(path)
         os.makedirs(os.path.dirname(full_path), exist_ok=True)
         if isinstance(contents, str):
-            with open(full_path, "w", encoding="utf-8") as f:
-                f.write(contents)
+            atomic_write_text(Path(full_path), contents)
             self.cache[full_path] = contents
         else:
             with open(full_path, "wb") as f:
                 f.write(contents)
             # Don't cache binary content - LocalFileStore is meant for JSON data
-            # If binary data is written and then read, it will error on read
+            # If binary data is written and then read, it will error on read.
+            # Drop any text cached for this path, or the next read would serve
+            # the content this write replaced.
+            self.cache.pop(full_path, None)
 
     def read(self, path: str) -> str:
         full_path = self.get_full_path(path)
@@ -109,7 +113,9 @@ class LocalFileStore(FileStore):
 
             if os.path.isfile(full_path):
                 os.remove(full_path)
-                del self.cache[full_path]
+                # Tolerate a cache miss: a file written by another process was
+                # never cached here, and deleting it is not an error.
+                self.cache.pop(full_path, None)
                 logger.debug(f"Removed local file: {full_path}")
             elif os.path.isdir(full_path):
                 shutil.rmtree(full_path)

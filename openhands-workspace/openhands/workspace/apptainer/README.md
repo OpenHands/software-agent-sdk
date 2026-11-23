@@ -100,7 +100,7 @@ available inside the workspace when the host has a working NVIDIA runtime.
 | `forward_env` | `list[str]` | `["DEBUG"]` | Environment variables to forward |
 | `detach_logs` | `bool` | `True` | Stream logs in background |
 | `platform` | `PlatformType` | `"linux/amd64"` | Platform architecture |
-| `extra_ports` | `bool` | `False` | Expose additional ports (VSCode, VNC) |
+| `extra_ports` | `bool` | `False` | Expose the additional VSCode port |
 | `enable_gpu` | `bool` | `False` | Enable NVIDIA GPU passthrough with `--nv` |
 | `use_fakeroot` | `bool` | `True` | Use --fakeroot for consistent file ownership |
 

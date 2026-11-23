@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Final
 
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils.path import get_user_persistence_dir, to_posix_path
 
 
 logger = get_logger(__name__)
@@ -66,9 +67,17 @@ def load_memory(
     the headers plus one notice per tier (~150 chars for both tiers).
     """
     tiers: list[tuple[str, str]] = []
-    user_index = _read_index(Path.home() / MEMORY_INDEX_RELPATH)
+    user_memory_path = get_user_persistence_dir() / "memory" / "MEMORY.md"
+    user_index = _read_index(user_memory_path)
     if user_index is not None:
-        tiers.append((f"# User memory (~/{MEMORY_INDEX_RELPATH})", user_index))
+        # Name the tier by the path it was actually read from so it matches the
+        # write location advertised in the <MEMORY> guidance. The unexpanded
+        # ``~/.openhands`` fallback keeps the per-user home path out of the
+        # prompt, exactly as MemorySection._user_memory_line does.
+        user_header_path = to_posix_path(
+            get_user_persistence_dir(Path("~/.openhands")) / "memory" / "MEMORY.md"
+        )
+        tiers.append((f"# User memory ({user_header_path})", user_index))
     project_index = _read_index(Path(working_dir) / MEMORY_INDEX_RELPATH)
     if project_index is not None:
         tiers.append((f"# Project memory ({MEMORY_INDEX_RELPATH})", project_index))

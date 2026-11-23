@@ -3,21 +3,18 @@ from __future__ import annotations
 import pathlib
 from collections.abc import Mapping
 from datetime import datetime
-from typing import Any, NamedTuple
+from typing import Annotated, Any, NamedTuple
 
 from pydantic import (
     BaseModel,
     Field,
-    SecretStr,
-    ValidationInfo,
-    field_serializer,
     field_validator,
     model_validator,
 )
 
 from openhands.sdk.context.prompts import render_template
 from openhands.sdk.context.prompts.presets import create_registry
-from openhands.sdk.context.prompts.section import PromptContext
+from openhands.sdk.context.prompts.section import PromptContext, SecretInfo
 from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
 from openhands.sdk.logger import get_logger
@@ -32,10 +29,7 @@ from openhands.sdk.skills import (
     to_prompt,
 )
 from openhands.sdk.skills.skill import DEFAULT_MARKETPLACE_PATH
-from openhands.sdk.utils.pydantic_secrets import (
-    serialize_secret,
-    validate_secret_dict,
-)
+from openhands.sdk.utils.pydantic_secrets import SecretField
 
 
 logger = get_logger(__name__)
@@ -168,6 +162,17 @@ class AgentContext(BaseModel):
         ),
         json_schema_extra={"acp_compatible": True},
     )
+    project_context: str | None = Field(
+        default=None,
+        description=(
+            "The project this conversation belongs to (its name, goal, "
+            "coordinator and memory index), rendered by the host into the "
+            "<PROJECT> prompt block. Set by the launch, not by the user."
+        ),
+        # Projects never set it on an ACP agent, but a copied context carries
+        # every field (unset ones as None), so ACP must accept it.
+        json_schema_extra={"acp_compatible": True},
+    )
     disabled_skills: list[str] = Field(
         default_factory=list,
         description=(
@@ -192,7 +197,17 @@ class AgentContext(BaseModel):
         ),
         json_schema_extra={"acp_compatible": True},
     )
-    secrets: Mapping[str, SecretValue] | None = Field(
+    # Raw-string entries are encrypted at rest and decrypted on load; an entry
+    # that cannot be decrypted, or is blank, is kept as given. SecretSource
+    # entries serialize through their own secret fields.
+    secrets: Annotated[
+        Mapping[str, SecretValue] | None,
+        SecretField(
+            undecryptable="keep",
+            keep_unusable=True,
+            serialized_as=dict[str, Any] | None,
+        ),
+    ] = Field(
         default=None,
         description=(
             "Dictionary mapping secret keys to values or secret sources. "
@@ -217,45 +232,6 @@ class AgentContext(BaseModel):
         json_schema_extra={"acp_compatible": True},
     )
 
-    @field_validator("secrets", mode="before")
-    @classmethod
-    def _decrypt_secrets(cls, value: Any, info: ValidationInfo) -> Any:
-        """Decrypt persisted raw-string ``secrets`` values when a cipher
-        is in context.
-
-        ``_serialize_secrets`` writes each raw-string value through
-        :func:`serialize_secret`, which produces Fernet ciphertext under
-        cipher context. Without a matching ``mode='before'`` decryption
-        validator, that ciphertext would survive round-trips through
-        :class:`StartConversationRequest` (whose
-        ``_populate_agent_from_settings`` validator runs *without*
-        cipher context) and get injected into the agent's system prompt
-        as-is — same bug class as any secret-bearing dict field that
-        round-trips without a matching decryption validator (e.g. MCP
-        ``env`` / ``headers``).
-
-        ``SecretSource`` entries are dict-shaped on the wire (Pydantic
-        models), so they're skipped by :func:`validate_secret_dict`'s
-        ``isinstance(value, str)`` gate and continue to construct
-        normally through their own validators.
-        """
-        return validate_secret_dict(value, info, description="AgentContext secrets")
-
-    @field_serializer("secrets", when_used="always")
-    def _serialize_secrets(
-        self, value: Mapping[str, SecretValue] | None, info
-    ) -> dict[str, Any] | None:
-        """Mask raw-string ``secrets`` values via :func:`serialize_secret`."""
-        if value is None:
-            return None
-        out: dict[str, Any] = {}
-        for k, v in value.items():
-            if isinstance(v, SecretSource):
-                out[k] = v.model_dump(mode=info.mode, context=info.context)
-            else:
-                out[k] = serialize_secret(SecretStr(v), info)
-        return out
-
     @field_validator("skills")
     @classmethod
     def _validate_skills(cls, v: list[Skill], _info):
@@ -272,6 +248,14 @@ class AgentContext(BaseModel):
     @model_validator(mode="after")
     def _load_auto_skills(self):
         """Load user/legacy-public skills if enabled, then apply ``disabled_skills``."""
+        return self.resolve_auto_skills()
+
+    def resolve_auto_skills(self) -> AgentContext:
+        """Resolve ``load_*_skills`` into ``skills`` and apply ``disabled_skills``.
+
+        Exposed because ``model_copy`` skips validators: callers that rebuild a
+        context that way must re-run this or the deny-list silently won't apply.
+        """
         include_public = self.load_public_skills
         if self.load_user_skills or include_public:
             auto_skills = load_available_skills(
@@ -301,21 +285,33 @@ class AgentContext(BaseModel):
         return self
 
     def get_secret_infos(self) -> list[dict[str, str | None]]:
-        """Get secret information (name and description) from the secrets field.
+        """Get secret information (name, description, scope) from the secrets field.
 
         Returns:
-            List of dictionaries with 'name' and 'description' keys.
-            Returns an empty list if no secrets are configured.
-            Description will be None if not available.
+            List of dictionaries with 'name', 'description', 'scope', and
+            'scope_description' keys. Returns an empty list if no secrets are
+            configured. Values default to None when not available on a source
+            (e.g. plain-string secrets carry no scope or description).
         """
         if not self.secrets:
             return []
         secret_infos: list[dict[str, str | None]] = []
         for name, secret_value in self.secrets.items():
             description = None
+            scope = None
+            scope_description = None
             if isinstance(secret_value, SecretSource):
                 description = secret_value.description
-            secret_infos.append({"name": name, "description": description})
+                scope = secret_value.scope
+                scope_description = secret_value.scope_description
+            secret_infos.append(
+                {
+                    "name": name,
+                    "description": description,
+                    "scope": scope,
+                    "scope_description": scope_description,
+                }
+            )
         return secret_infos
 
     def get_formatted_datetime(self) -> str | None:
@@ -400,7 +396,13 @@ class AgentContext(BaseModel):
             custom_suffix=self.system_message_suffix or None,
             memory_context=self.memory_context or None,
             secret_infos=tuple(
-                (info["name"] or "", info["description"]) for info in data.secret_infos
+                SecretInfo(
+                    name=info["name"] or "",
+                    description=info.get("description"),
+                    scope=info.get("scope"),
+                    scope_description=info.get("scope_description"),
+                )
+                for info in data.secret_infos
             ),
         )
         return create_registry().build(ctx).dynamic

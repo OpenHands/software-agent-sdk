@@ -1,5 +1,6 @@
 """Tests for browser tool executor initialization and timeout handling."""
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -10,6 +11,28 @@ from openhands.tools.utils.timeout import TimeoutError
 
 class TestBrowserInitialization:
     """Test browser tool executor initialization."""
+
+    def test_explicit_executable_path_skips_auto_detection(self, tmp_path: Path):
+        """Test that an explicit browser path has the highest priority."""
+        explicit_path = tmp_path / "custom-chrome.exe"
+        explicit_path.touch()
+        mock_server = MagicMock()
+
+        with (
+            patch.object(
+                BrowserToolExecutor,
+                "_ensure_chromium_available",
+                side_effect=AssertionError("auto detection should not run"),
+            ) as mock_detection,
+            patch(
+                "openhands.tools.browser_use.impl.CustomBrowserUseServer",
+                return_value=mock_server,
+            ),
+        ):
+            executor = BrowserToolExecutor(executable_path=str(explicit_path))
+
+        mock_detection.assert_not_called()
+        assert executor._config["executable_path"] == str(explicit_path)
 
     def test_initialization_timeout_handling(self):
         """Test that initialization timeout is handled properly."""
@@ -108,6 +131,7 @@ class TestBrowserInitialization:
                 "executable_path": "/usr/bin/chromium",
                 "chromium_sandbox": True,  # Enabled for non-root
                 "custom_param": "test",
+                "user_data_dir": executor._config["user_data_dir"],
             }
 
             assert executor._config == expected_config
@@ -238,3 +262,66 @@ class TestBrowserInitialization:
             mock_async_executor.run_async.assert_called_once()
             args, kwargs = mock_async_executor.run_async.call_args
             assert kwargs["timeout"] == 300.0
+
+
+class TestUniqueUserDataDir:
+    """Tests for unique user_data_dir per executor instance."""
+
+    def test_two_executors_get_distinct_profile_dirs(self):
+        """Two BrowserToolExecutor instances must get different user_data_dir
+        values so a crashed session's SingletonLock can't block another."""
+        mock_server = MagicMock()
+
+        with (
+            patch.object(
+                BrowserToolExecutor,
+                "_ensure_chromium_available",
+                return_value="/usr/bin/chromium",
+            ),
+            patch(
+                "openhands.tools.browser_use.impl.CustomBrowserUseServer",
+                return_value=mock_server,
+            ),
+            patch(
+                "openhands.tools.browser_use.impl.os.getuid",
+                return_value=1000,
+                create=True,
+            ),
+        ):
+            executor_a = BrowserToolExecutor()
+            executor_b = BrowserToolExecutor()
+
+            dir_a = executor_a._config["user_data_dir"]
+            dir_b = executor_b._config["user_data_dir"]
+
+            assert dir_a != dir_b, (
+                "Two executor instances must have distinct user_data_dir values"
+            )
+            assert "browseruse" in dir_a and "profiles" in dir_a
+            assert "browseruse" in dir_b and "profiles" in dir_b
+
+    def test_explicit_user_data_dir_overrides_default(self):
+        """An explicit user_data_dir passed via **config must override the
+        unique default."""
+        mock_server = MagicMock()
+
+        with (
+            patch.object(
+                BrowserToolExecutor,
+                "_ensure_chromium_available",
+                return_value="/usr/bin/chromium",
+            ),
+            patch(
+                "openhands.tools.browser_use.impl.CustomBrowserUseServer",
+                return_value=mock_server,
+            ),
+            patch(
+                "openhands.tools.browser_use.impl.os.getuid",
+                return_value=1000,
+                create=True,
+            ),
+        ):
+            custom_dir = "/tmp/my-custom-browser-profile"
+            executor = BrowserToolExecutor(user_data_dir=custom_dir)
+
+            assert executor._config["user_data_dir"] == custom_dir

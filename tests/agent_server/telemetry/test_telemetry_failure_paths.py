@@ -17,11 +17,11 @@ from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config, TelemetrySpec
 from openhands.agent_server.telemetry import (
     NoOpTelemetrySink,
-    build_telemetry_sink,
     get_telemetry_sink,
     notify_misc_settings_changed,
     shutdown_telemetry_sink,
 )
+from tests.agent_server.telemetry.conftest import build_sink
 
 
 SETTINGS_URL = "/api/settings"
@@ -54,7 +54,7 @@ async def test_missing_posthog_extra_degrades_to_noop(
         sys.modules, "openhands.agent_server.telemetry.posthog_exporter", raising=False
     )
 
-    sink = await build_telemetry_sink(Config(static_files_path=None, telemetry=_spec()))
+    sink = await build_sink(Config(static_files_path=None, telemetry=_spec()))
     assert isinstance(sink, NoOpTelemetrySink)
     assert sink.enabled is False
 
@@ -71,7 +71,7 @@ async def test_exporter_constructor_raising_degrades_to_noop(
     module.Posthog = _boom  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "posthog", module)
 
-    sink = await build_telemetry_sink(Config(static_files_path=None, telemetry=_spec()))
+    sink = await build_sink(Config(static_files_path=None, telemetry=_spec()))
     assert isinstance(sink, NoOpTelemetrySink)
 
 
@@ -90,7 +90,7 @@ async def test_unreadable_consent_is_treated_as_absent_consent(
 
     monkeypatch.setattr(service_mod, "_read_misc_settings_sync", _boom)
 
-    sink = await build_telemetry_sink(Config(static_files_path=None, telemetry=_spec()))
+    sink = await build_sink(Config(static_files_path=None, telemetry=_spec()))
     try:
         assert sink.enabled is False, "unreadable consent must not enable telemetry"
     finally:
@@ -104,7 +104,7 @@ async def test_exporter_aclose_raising_is_swallowed(temp_persistence_dir, monkey
     module.Posthog = lambda **kw: client  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "posthog", module)
 
-    await build_telemetry_sink(Config(static_files_path=None, telemetry=_spec()))
+    await build_sink(Config(static_files_path=None, telemetry=_spec()))
     # Must not propagate.
     await shutdown_telemetry_sink()
 

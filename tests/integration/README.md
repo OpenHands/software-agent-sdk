@@ -50,13 +50,13 @@ For condenser tests, use the `condenser-test` label instead.
 
 ```bash
 # Run all tests
-uv run python tests/integration/run_infer.py --llm-config '{"model": "litellm_proxy/anthropic/claude-sonnet-4-5-20250929"}'
+uv run python -m tests.integration.run_infer --llm-config '{"model": "litellm_proxy/anthropic/claude-sonnet-4-5-20250929"}'
 
 # Run a specific test
-uv run python tests/integration/run_infer.py --llm-config '{"model": "litellm_proxy/anthropic/claude-sonnet-4-5-20250929"}' --eval-ids t01_fix_simple_typo
+uv run python -m tests.integration.run_infer --llm-config '{"model": "litellm_proxy/anthropic/claude-sonnet-4-5-20250929"}' --eval-ids t01_fix_simple_typo
 
 # Run only condenser tests
-uv run python tests/integration/run_infer.py --llm-config '{"model": "litellm_proxy/anthropic/claude-opus-4-5", "extended_thinking": true}' --test-type condenser
+uv run python -m tests.integration.run_infer --llm-config '{"model": "litellm_proxy/anthropic/claude-opus-4-5", "extended_thinking": true}' --test-type condenser
 ```
 
 ## Automated Testing with GitHub Actions
@@ -71,7 +71,7 @@ Defined in `.github/workflows/integration-runner.yml`, this workflow runs integr
 1. **Pull Request Labels**: When a PR is labeled with `integration-test` or `behavior-test`
 2. **Manual Trigger**: Via workflow dispatch with a required reason
 
-**Test Coverage:** Runs across 5 LLM models (GPT-5.5, DeepSeek V4 Flash, MiniMax M2.7, Gemini 3.1 Pro, Claude Sonnet 4.6)
+**Test Coverage:** Runs across 5 LLM models (GPT-5.5, DeepSeek V4.1 Flash, MiniMax M2.7, Gemini 3.1 Pro, Claude Sonnet 4.6)
 
 ### Condenser Tests Workflow
 
@@ -128,8 +128,8 @@ These tests stress test the condensation system's interaction with LLM APIs to e
   - No malformed signature errors occur when condensed history is sent to the API
 - **c02_hard_context_reset** - Tests hard context reset when condensation is unavailable. Verifies that:
   - Explicit condense() calls trigger a hard context reset when no valid range exists
-  - The hard context reset condenses all events in the view (summary_offset=0)
-  - The conversation can continue successfully after the hard context reset
+  - The hard reset preserves the leading system prompt, replaces all other history with a summary, and keeps the next LLM request system-first
+  - The conversation can continue through a later normal condensation
 - **c03_delayed_condensation** - Tests delayed condensation with soft requirements. Verifies that:
   - Soft requirements (resource limits) gracefully continue when condensation is unavailable
   - Conversation continues without crashing when condensation can't be satisfied

@@ -1,5 +1,7 @@
 """Tests for the get_agent_final_response utility function."""
 
+import pytest
+
 from openhands.sdk.conversation.response_utils import get_agent_final_response
 from openhands.sdk.event import ActionEvent, MessageEvent
 from openhands.sdk.llm import Message, MessageToolCall, TextContent
@@ -233,3 +235,61 @@ def test_get_agent_final_response_with_non_finish_action():
 
     # Should return the agent message
     assert result == "File contents"
+
+
+@pytest.mark.parametrize("finish_text", ["", "Finished!"])
+def test_empty_finish_falls_back_to_last_agent_message(finish_text):
+    messages = [
+        MessageEvent(
+            source="agent",
+            llm_message=Message(role="assistant", content=[TextContent(text=text)]),
+        )
+        for text in ["First segment", "Last segment"]
+    ]
+    finish = ActionEvent(
+        source="agent",
+        thought=[],
+        action=FinishAction(message=finish_text),
+        tool_name="finish",
+        tool_call_id="finish-id",
+        tool_call=MessageToolCall(
+            id="finish-id", name="finish", arguments="{}", origin="completion"
+        ),
+        llm_response_id="response-id",
+    )
+    assert get_agent_final_response([*messages, finish]) == (
+        finish_text or "Last segment"
+    )
+
+
+@pytest.mark.parametrize("boundary", ["user", "finish", "none"])
+def test_empty_finish_does_not_return_a_previous_turn(boundary):
+    previous = MessageEvent(
+        source="agent",
+        llm_message=Message(
+            role="assistant", content=[TextContent(text="Previous turn")]
+        ),
+    )
+    finish = ActionEvent(
+        source="agent",
+        thought=[],
+        action=FinishAction(message=""),
+        tool_name="finish",
+        tool_call_id="finish-id",
+        tool_call=MessageToolCall(
+            id="finish-id", name="finish", arguments="{}", origin="completion"
+        ),
+        llm_response_id="response-id",
+    )
+    if boundary == "user":
+        user = MessageEvent(
+            source="user",
+            llm_message=Message(role="user", content=[TextContent(text="Next task")]),
+        )
+        events = [previous, user, finish]
+    elif boundary == "finish":
+        old_finish = finish.model_copy(update={"action": FinishAction(message="Old")})
+        events = [previous, old_finish, finish]
+    else:
+        events = [finish]
+    assert get_agent_final_response(events) == ""
