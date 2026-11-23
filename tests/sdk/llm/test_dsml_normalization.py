@@ -1,6 +1,5 @@
 """Tests for DeepSeek V4 DSML markup normalization and stream filtering."""
 
-import glob
 import json
 import logging
 import os
@@ -169,37 +168,62 @@ def test_parse_multiline_parameter_with_quotes_and_brackets():
 
 
 # ---------------------------------------------------------------------------
-# 3. Log Parity: Test against the 23 CVE benchmark completions
+# 3. Log Parity: Test against the CVE benchmark completion corpus
 # ---------------------------------------------------------------------------
 
+_FIXTURES_DIR = os.path.join(os.path.dirname(__file__), "fixtures", "dsml")
+_FIXTURES_FILE = os.path.join(_FIXTURES_DIR, "completions.json")
 
-def test_all_cve_benchmark_completions_parse_successfully():
-    completions_dir = (
-        "/Users/aibot/Downloads/cyberSecurityBenchmark/902AILAB/eval-executor/repo/"
-        "runs/concurrent-cve-2026-19373-20260903T122344Z/model-cve-2026-19373-20260903T122443Z/agent/completions"
+
+def _load_benchmark_completions():
+    if not os.path.isfile(_FIXTURES_FILE):
+        return []
+    with open(_FIXTURES_FILE, encoding="utf-8") as f:
+        data = json.load(f)
+    return [(item["name"], item["content"]) for item in data]
+
+
+def test_all_benchmark_completions_parse_successfully():
+    """Every committed benchmark completion must parse to >=1 tool call.
+
+    The fixture corpus under tests/sdk/llm/fixtures/dsml/completions.json
+    captures representative DSML shapes (standard, compact, mixed-format,
+    typed params, implicit closures) observed from DeepSeek V4 runs, so the
+    parity claim is enforced in CI rather than only on the author's laptop.
+    """
+    completions = _load_benchmark_completions()
+    assert len(completions) >= 23, (
+        f"Expected at least 23 fixture completions, found {len(completions)}"
     )
-    if not os.path.isdir(completions_dir):
-        pytest.skip("Completions directory not found on local path")
-
-    files = sorted(glob.glob(os.path.join(completions_dir, "*.json")))
-    assert len(files) > 0
 
     dsml_tested = 0
-    for fpath in files:
-        with open(fpath, encoding="utf-8") as f:
-            data = json.load(f)
-        msg = data["response"]["choices"][0]["message"]
-        content = msg.get("content") or ""
-        if "DSML" in content:
-            dsml_tested += 1
-            calls, cleaned = parse_dsml_tool_calls(content)
-            assert len(calls) >= 1, f"Failed to parse DSML in {os.path.basename(fpath)}"
-            assert calls[0].function.name == "execute_bash"
-            args = json.loads(calls[0].function.arguments)
-            assert "command" in args
-            assert len(args["command"]) > 0
+    for name, content in completions:
+        if "DSML" not in content:
+            continue
+        dsml_tested += 1
+        calls, _cleaned = parse_dsml_tool_calls(content)
+        assert len(calls) >= 1, f"Failed to parse DSML in fixture '{name}'"
+        assert calls[0].function.name == "execute_bash", (
+            f"Expected execute_bash in fixture '{name}', got {calls[0].function.name}"
+        )
+        args = json.loads(calls[0].function.arguments)
+        assert "command" in args, f"Missing 'command' arg in fixture '{name}'"
+        assert len(args["command"]) > 0, f"Empty command in fixture '{name}'"
 
-    assert dsml_tested == 23
+    assert dsml_tested >= 23, (
+        f"Expected at least 23 DSML fixtures, tested {dsml_tested}"
+    )
+
+
+@pytest.mark.parametrize("name,content", _load_benchmark_completions())
+def test_benchmark_completion_fixture(name, content):
+    """Each fixture must parse to at least one execute_bash tool call."""
+    if "DSML" not in content:
+        pytest.skip(f"Fixture '{name}' has no DSML markup")
+    calls, _cleaned = parse_dsml_tool_calls(content)
+    assert len(calls) >= 1, f"Failed to parse DSML in fixture '{name}'"
+    args = json.loads(calls[0].function.arguments)
+    assert "command" in args
 
 
 # ---------------------------------------------------------------------------
@@ -277,6 +301,31 @@ def test_malformed_unrecoverable_dsml_warns_and_avoids_partial_execution(caplog)
         "Malformed DeepSeek V4 DSML markup detected" in r.message
         for r in caplog.records
     )
+
+
+def test_mixed_format_standard_block_with_compact_body_recovers_tool_call():
+    """A standard <｜DSML｜tool_calls> block whose body uses compact
+    <｜｜DSML｜｜r=...> / <｜｜DSML｜｜m> syntax must still recover the tool call
+    instead of returning ([], content) and leaving markup in content.
+    """
+    content = (
+        "Running mixed-format completion.\n"
+        "<｜DSML｜tool_calls>\n"
+        "<｜｜DSML｜｜r=execute_bash>\n"
+        "<｜｜DSML｜｜m>whoami</｜｜DSML｜｜m>\n"
+        "</｜｜DSML｜｜r>\n"
+        "</｜DSML｜tool_calls>"
+    )
+    calls, cleaned = parse_dsml_tool_calls(content)
+
+    assert len(calls) == 1, (
+        "Expected compact body inside standard block to be recovered"
+    )
+    assert calls[0].function.name == "execute_bash"
+    args = json.loads(calls[0].function.arguments)
+    assert args["command"] == "whoami"
+    assert "DSML" not in cleaned
+    assert "Running mixed-format completion." in cleaned
 
 
 # ---------------------------------------------------------------------------

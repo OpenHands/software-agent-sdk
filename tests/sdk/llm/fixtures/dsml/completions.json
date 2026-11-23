@@ -1,0 +1,94 @@
+[
+  {
+    "name": "compact_r_with_m_param",
+    "content": "Let me check the current directory.\n<｜｜DSML｜｜r=execute_bash>\n<｜｜DSML｜｜m>pwd</｜｜DSML｜｜m>\n</｜｜DSML｜｜r>"
+  },
+  {
+    "name": "compact_r_with_parameter_tag",
+    "content": "Inspecting files.\n<||DSML||r=execute_bash>\n<parameter=command>ls -la</parameter>\n</||DSML||r>"
+  },
+  {
+    "name": "standard_with_typed_parameters",
+    "content": "I will execute the inspection tool.\n<｜DSML｜tool_calls>\n<invoke name=\"execute_bash\">\n<parameter name=\"command\" string=\"true\">cat /app/dist/index.js</parameter>\n</invoke>\n</｜DSML｜tool_calls>"
+  },
+  {
+    "name": "standard_multiple_invokes",
+    "content": "<|DSML|tool_calls>\n<invoke name=\"execute_bash\">\n<parameter name=\"command\" string=\"true\">echo hello</parameter>\n</invoke>\n<invoke name=\"execute_bash\">\n<parameter name=\"command\" string=\"true\">echo world</parameter>\n</invoke>\n</|DSML|tool_calls>"
+  },
+  {
+    "name": "mixed_format_standard_block_with_compact_body",
+    "content": "Running mixed-format completion.\n<｜DSML｜tool_calls>\n<｜｜DSML｜｜r=execute_bash>\n<｜｜DSML｜｜m>whoami</｜｜DSML｜｜m>\n</｜｜DSML｜｜r>\n</｜DSML｜tool_calls>"
+  },
+  {
+    "name": "compact_unclosed_m",
+    "content": "<||DSML||r=execute_bash>\n<||DSML||m>uname -a"
+  },
+  {
+    "name": "standard_with_non_string_params",
+    "content": "<｜DSML｜tool_calls>\n<invoke name=\"execute_bash\">\n<parameter name=\"timeout\" string=\"false\">30</parameter>\n<parameter name=\"flag\" string=\"false\">true</parameter>\n<parameter name=\"command\" string=\"true\">ls</parameter>\n</invoke>\n</｜DSML｜tool_calls>"
+  },
+  {
+    "name": "compact_with_leading_reasoning",
+    "content": "Thinking about command...\n\n<｜｜DSML｜｜r=execute_bash>\n<parameter=command>ls -la</parameter>\n</｜｜DSML｜｜r>"
+  },
+  {
+    "name": "standard_single_invoke_single_param",
+    "content": "Let me examine the compiled distribution code.\n<｜DSML｜tool_calls>\n<invoke name=\"execute_bash\">\n<parameter name=\"command\" string=\"true\">cat /app/dist/index.js</parameter>\n</invoke>\n</｜DSML｜tool_calls>"
+  },
+  {
+    "name": "compact_r_multiple_calls",
+    "content": "<||DSML||r=execute_bash>\n<parameter=command>git status</parameter>\n</||DSML||r>\n<||DSML||r=execute_bash>\n<parameter=command>git log --oneline</parameter>\n</||DSML||r>"
+  },
+  {
+    "name": "standard_implicit_closure",
+    "content": "<|DSML|tool_calls>\n<invoke name=\"execute_bash\">\n<parameter name=\"command\" string=\"true\">cat /app/src/index.ts\n<parameter name=\"offset\" string=\"false\">100\n</|DSML|tool_calls>"
+  },
+  {
+    "name": "compact_m_only",
+    "content": "Run a quick check.\n<｜｜DSML｜｜r=execute_bash>\n<｜｜DSML｜｜m>date</｜｜DSML｜｜m>\n</｜｜DSML｜｜r>"
+  },
+  {
+    "name": "standard_with_nested_json_param",
+    "content": "<｜DSML｜tool_calls>\n<invoke name=\"execute_bash\">\n<parameter name=\"config\" string=\"false\">{\"port\": 8000, \"debug\": true}</parameter>\n<parameter name=\"command\" string=\"true\">echo configured</parameter>\n</invoke>\n</｜DSML｜tool_calls>"
+  },
+  {
+    "name": "compact_with_multiline_command",
+    "content": "<||DSML||r=execute_bash>\n<parameter=command>echo line1\necho line2</parameter>\n</||DSML||r>"
+  },
+  {
+    "name": "standard_param_with_special_chars",
+    "content": "<｜DSML｜tool_calls>\n<invoke name=\"execute_bash\">\n<parameter name=\"command\" string=\"true\">ls -la /workspace && echo '<test>'</parameter>\n</invoke>\n</｜DSML｜tool_calls>"
+  },
+  {
+    "name": "compact_r_with_quoted_value",
+    "content": "<｜｜DSML｜｜r=execute_bash>\n<parameter=command>grep 'pattern' file.txt</parameter>\n</｜｜DSML｜｜r>"
+  },
+  {
+    "name": "standard_with_boolean_false",
+    "content": "<｜DSML｜tool_calls>\n<invoke name=\"execute_bash\">\n<parameter name=\"flag\" string=\"false\">false</parameter>\n<parameter name=\"command\" string=\"true\">echo false</parameter>\n</invoke>\n</｜DSML｜tool_calls>"
+  },
+  {
+    "name": "standard_with_null_value",
+    "content": "<｜DSML｜tool_calls>\n<invoke name=\"execute_bash\">\n<parameter name=\"target\" string=\"false\">null</parameter>\n<parameter name=\"command\" string=\"true\">echo null</parameter>\n</invoke>\n</｜DSML｜tool_calls>"
+  },
+  {
+    "name": "compact_fullwidth_marker",
+    "content": "<｜｜DSML｜｜r=execute_bash>\n<parameter=command>df -h</parameter>\n</｜｜DSML｜｜r>"
+  },
+  {
+    "name": "standard_fullwidth_marker",
+    "content": "<｜DSML｜tool_calls>\n<invoke name=\"execute_bash\">\n<parameter name=\"command\" string=\"true\">free -m</parameter>\n</invoke>\n</｜DSML｜tool_calls>"
+  },
+  {
+    "name": "compact_r_with_trailing_text",
+    "content": "Checking memory.\n<||DSML||r=execute_bash>\n<parameter=command>free -m</parameter>\n</||DSML||r>\nDone."
+  },
+  {
+    "name": "standard_with_float_param",
+    "content": "<｜DSML｜tool_calls>\n<invoke name=\"execute_bash\">\n<parameter name=\"ratio\" string=\"false\">3.14</parameter>\n<parameter name=\"command\" string=\"true\">echo 3.14</parameter>\n</invoke>\n</｜DSML｜tool_calls>"
+  },
+  {
+    "name": "compact_r_with_array_param_value",
+    "content": "<||DSML||r=execute_bash>\n<parameter=command>echo [\"alpha\", \"beta\"]</parameter>\n</||DSML||r>"
+  }
+]

@@ -141,21 +141,19 @@ def parse_dsml_tool_calls(
 
             raw_calls.append((tool_name, params))
 
-        cleaned_content = std_block_re.sub("", content).strip()
-        cleaned_content = re.sub(
-            rf"</?(?:\s*{_DSML_MARKER_PATTERN}\s*)[^>]*>",
-            "",
-            cleaned_content,
-        ).strip()
+        if raw_calls:
+            cleaned_content = std_block_re.sub("", content).strip()
+            cleaned_content = re.sub(
+                rf"</?(?:\s*{_DSML_MARKER_PATTERN}\s*)[^>]*>",
+                "",
+                cleaned_content,
+            ).strip()
+            return _build_tool_calls(raw_calls), cleaned_content
 
-        if not raw_calls:
-            logger.warning(
-                "Malformed DeepSeek V4 DSML markup detected; "
-                "cannot safely recover tool calls."
-            )
-            return [], content
-
-        return _build_tool_calls(raw_calls), cleaned_content
+        # Standard block matched but used compact <||DSML||r=...> / <||DSML||m>
+        # syntax inside its body (mixed-format completions). Fall through to
+        # compact parsing over the full content so those calls are recovered
+        # instead of being discarded.
 
     # 2. Check compact / evaluation log variants: <||DSML||r=tool_name> ...
     compact_tag_re = re.compile(
