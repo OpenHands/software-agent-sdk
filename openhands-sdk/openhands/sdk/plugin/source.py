@@ -9,10 +9,15 @@ from __future__ import annotations
 import re
 from pathlib import Path
 from typing import NamedTuple
+from urllib.parse import unquote, urlparse
 
 from openhands.sdk.git.cached_repo import try_cached_clone_or_update
 from openhands.sdk.logger import get_logger
-from openhands.sdk.utils.path import is_absolute_path_source, is_local_path_source
+from openhands.sdk.utils.path import (
+    get_user_persistence_dir,
+    is_absolute_path_source,
+    is_local_path_source,
+)
 from openhands.sdk.utils.redact import redact_url_credentials
 
 
@@ -22,7 +27,7 @@ GITHUB_URL_PATTERN = re.compile(
     r"^https://github\.com/(?P<owner>[^/]+)/(?P<repo>[^/]+)/"
     r"(?:blob|tree)/(?P<branch>[^/]+)/(?P<path>.+)$"
 )
-DEFAULT_CACHE_DIR = Path.home() / ".openhands" / "cache" / "git"
+DEFAULT_CACHE_DIR = get_user_persistence_dir() / "cache" / "git"
 
 
 class GitHubURLComponents(NamedTuple):
@@ -85,7 +90,14 @@ def resolve_source_path(
     """
     # Handle file:// URLs
     if source.startswith("file://"):
-        return Path(source[7:])
+        # Parse the URL rather than slicing the scheme off: the authority
+        # ("localhost" or empty) is not part of the path, and percent-escapes
+        # such as %20 stand for the characters they encode.
+        parsed = urlparse(source)
+        path = unquote(parsed.path)
+        if parsed.netloc and parsed.netloc != "localhost":
+            path = f"//{parsed.netloc}{path}"
+        return Path(path)
 
     # Handle GitHub URLs
     if gh := parse_github_url(source):

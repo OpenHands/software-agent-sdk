@@ -40,6 +40,7 @@ from typing import Final
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.subagent.schema import AgentDefinition
+from openhands.sdk.utils.path import get_user_persistence_dir, resolves_within
 
 
 logger = get_logger(__name__)
@@ -91,8 +92,19 @@ def load_user_agents() -> list[AgentDefinition]:
         A list of ``AgentDefinition`` objects, or an empty list if no
         directories exist.
     """
-    home = Path.home()
-    return _load_agents_from_dirs([home / d for d in _FILE_BASED_AGENTS_DIR])
+    return _load_agents_from_dirs([_user_agents_dir(d) for d in _FILE_BASED_AGENTS_DIR])
+
+
+def _user_agents_dir(relative: str) -> Path:
+    """Map a file-based agents dir onto its user-level base.
+
+    ``.openhands/agents`` goes under the persistence dir, which replaces the
+    ``~/.openhands`` base; every other entry stays home-relative.
+    """
+    base, _, rest = relative.partition("/")
+    if base == ".openhands":
+        return get_user_persistence_dir() / rest
+    return Path.home() / relative
 
 
 def _load_agents_from_dirs(dirs: list[Path]) -> list[AgentDefinition]:
@@ -160,7 +172,9 @@ def discover_agents(
     return result
 
 
-def load_agents_from_dir(agents_dir: Path) -> list[AgentDefinition]:
+def load_agents_from_dir(
+    agents_dir: Path, root: Path | None = None
+) -> list[AgentDefinition]:
     """Scans a directory for Markdown-based agent definitions.
 
     Iterates through the top-level of the provided directory, attempting to load
@@ -169,6 +183,8 @@ def load_agents_from_dir(agents_dir: Path) -> list[AgentDefinition]:
 
     Args:
         agents_dir: The filesystem path to the directory containing agent files.
+        root: If given, files that resolve outside this directory (e.g. through
+            a symlink) are skipped. Plugins pass their root here.
 
     Returns:
         A list of successfully instantiated AgentDefinition objects.
@@ -190,6 +206,8 @@ def load_agents_from_dir(agents_dir: Path) -> list[AgentDefinition]:
             or md_file.suffix.lower() != ".md"
             or md_file.name in _SKIP_FILES
         ):
+            continue
+        if root is not None and not resolves_within(md_file, root):
             continue
 
         try:

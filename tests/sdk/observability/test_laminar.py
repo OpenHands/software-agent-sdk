@@ -26,50 +26,6 @@ def _reset_observability_cache():
     laminar._observability_enabled = False
 
 
-@pytest.mark.parametrize(
-    ("env_value", "expected"),
-    [
-        ("https://custom.lmnr.ai", "https://custom.lmnr.ai"),
-        ("http://localhost:8080", "http://localhost:8080"),
-        ("", None),
-        (None, None),
-    ],
-)
-def test_lmnr_base_url_parsing(env_value, expected):
-    """Test that LMNR_BASE_URL is correctly parsed and passed to Laminar."""
-    import os
-
-    # Save original value
-    original = os.environ.get("LMNR_BASE_URL")
-    original_key = os.environ.get("LMNR_PROJECT_API_KEY")
-
-    try:
-        # Set up environment
-        os.environ["LMNR_PROJECT_API_KEY"] = "test-key"
-        if env_value is not None:
-            os.environ["LMNR_BASE_URL"] = env_value
-        elif "LMNR_BASE_URL" in os.environ:
-            del os.environ["LMNR_BASE_URL"]
-
-        from openhands.sdk.observability.laminar import get_env
-
-        result = get_env("LMNR_BASE_URL")
-        if expected is None:
-            assert result is None or result == ""
-        else:
-            assert result == expected
-    finally:
-        # Restore original values
-        if original is not None:
-            os.environ["LMNR_BASE_URL"] = original
-        elif "LMNR_BASE_URL" in os.environ:
-            del os.environ["LMNR_BASE_URL"]
-        if original_key is not None:
-            os.environ["LMNR_PROJECT_API_KEY"] = original_key
-        elif "LMNR_PROJECT_API_KEY" in os.environ:
-            del os.environ["LMNR_PROJECT_API_KEY"]
-
-
 def test_lmnr_base_url_passed_to_laminar():
     """Test that LMNR_BASE_URL is correctly passed to Laminar.initialize."""
     import os
@@ -170,45 +126,6 @@ def test_maybe_init_laminar_skips_when_already_initialized():
             del os.environ["LMNR_PROJECT_API_KEY"]
 
 
-@pytest.mark.parametrize(
-    ("env_value", "expected"),
-    [
-        ("true", True),
-        ("True", True),
-        ("TRUE", True),
-        ("1", True),
-        ("yes", True),
-        ("YES", True),
-        ("on", True),
-        ("ON", True),
-        ("false", False),
-        ("0", False),
-        ("no", False),
-        ("", False),
-        (None, False),
-    ],
-)
-def test_get_bool_env(env_value, expected):
-    """Test that _get_bool_env correctly parses boolean environment variables."""
-    original = os.environ.get("TEST_BOOL_VAR")
-
-    try:
-        if env_value is not None:
-            os.environ["TEST_BOOL_VAR"] = env_value
-        elif "TEST_BOOL_VAR" in os.environ:
-            del os.environ["TEST_BOOL_VAR"]
-
-        from openhands.sdk.observability.laminar import _get_bool_env
-
-        result = _get_bool_env("TEST_BOOL_VAR")
-        assert result == expected
-    finally:
-        if original is not None:
-            os.environ["TEST_BOOL_VAR"] = original
-        elif "TEST_BOOL_VAR" in os.environ:
-            del os.environ["TEST_BOOL_VAR"]
-
-
 def test_observe_preserves_async_signature():
     """@observe must keep an async function async so introspection works.
 
@@ -236,6 +153,8 @@ def test_observe_preserves_async_signature():
     [
         ("true", True),
         ("1", True),
+        ("YeS", True),
+        ("ON", True),
         ("false", False),
         ("0", False),
         (None, False),
@@ -272,6 +191,46 @@ def test_lmnr_force_http_passed_to_laminar(force_http_value, expected_force_http
             os.environ["LMNR_FORCE_HTTP"] = original_force_http
         elif "LMNR_FORCE_HTTP" in os.environ:
             del os.environ["LMNR_FORCE_HTTP"]
+
+
+@pytest.mark.parametrize("is_laminar_backend", [True, False])
+@pytest.mark.parametrize(
+    ("instruments_env", "expected", "invalid"),
+    [
+        ("litellm,mcp", {"litellm", "mcp"}, None),
+        ("litellm,,unsupported,", {"litellm"}, "unsupported"),
+    ],
+)
+def test_lmnr_instruments_passed_to_laminar(
+    is_laminar_backend, instruments_env, expected, invalid, caplog
+):
+    """LMNR_INSTRUMENTS limits Laminar to the selected integrations."""
+    from lmnr import Instruments
+
+    with patch.dict(
+        os.environ,
+        {
+            "LMNR_PROJECT_API_KEY": "test-key",
+            "LMNR_INSTRUMENTS": instruments_env,
+        },
+    ):
+        with (
+            patch("lmnr.Laminar") as mock_laminar,
+            patch(
+                "openhands.sdk.observability.laminar._is_otel_backend_laminar",
+                return_value=is_laminar_backend,
+            ),
+        ):
+            mock_laminar.is_initialized.return_value = False
+            from openhands.sdk.observability.laminar import maybe_init_laminar
+
+            maybe_init_laminar()
+
+    assert mock_laminar.initialize.call_args.kwargs["instruments"] == {
+        Instruments(value) for value in expected
+    }
+    if invalid:
+        assert f"Ignoring invalid LMNR_INSTRUMENTS value '{invalid}'" in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -701,3 +660,21 @@ def test_async_agent_and_conversation_paths_are_observed():
     assert Agent.astep.__code__.co_name == "async_wrapper"
     assert LocalConversation.run.__code__.co_name == "sync_wrapper"
     assert LocalConversation.arun.__code__.co_name == "async_wrapper"
+
+
+def test_should_enable_observability_returns_true_when_env_set():
+    """should_enable_observability returns True when an observability env var is set."""
+    from openhands.sdk.observability.laminar import should_enable_observability
+
+    with patch.dict(os.environ, {"LMNR_PROJECT_API_KEY": "test_key"}, clear=True):
+        assert should_enable_observability() is True
+
+
+def test_should_enable_observability_returns_false_when_no_env():
+    """should_enable_observability returns False when no relevant env vars are set."""
+    from openhands.sdk.observability.laminar import should_enable_observability
+
+    with patch.dict(os.environ, {}, clear=True):
+        with patch("lmnr.Laminar") as mock_laminar:
+            mock_laminar.is_initialized.return_value = False
+            assert should_enable_observability() is False

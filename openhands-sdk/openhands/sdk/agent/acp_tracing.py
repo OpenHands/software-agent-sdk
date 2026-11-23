@@ -14,6 +14,7 @@ import threading
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from openhands.sdk.agent.acp_contracts import is_model_dumpable
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import should_enable_observability
 
@@ -25,7 +26,7 @@ logger = get_logger(__name__)
 
 #: Marks a span as produced by an ACP agent rather than the native loop.
 AGENT_KIND_METADATA_KEY = "agent_kind"
-#: Which ACP CLI produced it ('claude-code', 'codex', 'gemini-cli', 'custom').
+#: Which ACP CLI produced it: an ACP_PROVIDERS key, or 'custom'.
 ACP_SERVER_METADATA_KEY = "acp_server"
 #: Model the ACP CLI reported for the turn, when it reports one.
 ACP_MODEL_METADATA_KEY = "acp_model"
@@ -216,8 +217,9 @@ def _mask_prompt(prompt: Any, mask: Callable[[str], str] | None) -> Any:
             return [walk(v) for v in node]
         if isinstance(node, dict):
             return {k: walk(v) for k, v in node.items()}
-        dump = getattr(node, "model_dump", None)
-        return walk(dump()) if callable(dump) else node
+        if is_model_dumpable(node):
+            return walk(node.model_dump())
+        return node
 
     try:
         return walk(prompt)

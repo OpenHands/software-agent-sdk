@@ -7,7 +7,7 @@ import json
 import os
 import re
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
@@ -16,10 +16,15 @@ from fastmcp.mcp_config import MCPConfig
 from openhands.sdk.git.cached_repo import GitHelper, try_cached_clone_or_update
 from openhands.sdk.logger import get_logger
 from openhands.sdk.skills.exceptions import SkillValidationError
-from openhands.sdk.utils.path import to_posix_path
+from openhands.sdk.utils.path import (
+    get_user_persistence_dir,
+    resolves_within,
+    to_posix_path,
+)
 
 
 if TYPE_CHECKING:
+    from openhands.sdk.mcp.config import MCPServer
     from openhands.sdk.skills.skill import Skill, SkillResources
 
 # Type alias for secret lookup functions
@@ -44,6 +49,7 @@ def expand_variable_references(
     check_env: bool = False,
     expand_defaults: bool = True,
     support_unbraced: bool = False,
+    on_unresolved: Callable[[str], None] | None = None,
 ) -> Any:
     """Expand variable references in data structures.
 
@@ -68,6 +74,8 @@ def expand_variable_references(
         check_env: If True, check os.environ for unresolved variables.
         expand_defaults: If True, apply default values for unresolved variables.
         support_unbraced: If True, support $VAR syntax in addition to ${VAR}.
+        on_unresolved: Called with the name of each reference that has no
+            default and that no source resolved; the reference is kept as is.
 
     Returns:
         Data with variable references expanded.
@@ -103,6 +111,8 @@ def expand_variable_references(
             return default_value
 
         # Return original if not found (preserves placeholder)
+        if on_unresolved is not None and default_value is None:
+            on_unresolved(var_name)
         return match.group(0)
 
     def expand_value(value: Any) -> Any:
@@ -174,6 +184,7 @@ def expand_mcp_variables(
     get_secret: SecretLookup | None = None,
     *,  # keyword-only after this (PEP 3102)
     expand_defaults: bool = True,
+    on_unresolved: Callable[[str], None] | None = None,
 ) -> dict:
     """Expand variables in MCP configuration.
 
@@ -196,6 +207,7 @@ def expand_mcp_variables(
         expand_defaults: If True, apply default values for unresolved variables.
             If False, preserve ${VAR:-default} as-is for later expansion.
             This allows deferred expansion when secrets are not yet available.
+        on_unresolved: See ``expand_variable_references``.
 
     Returns:
         Configuration with variables expanded.
@@ -210,11 +222,41 @@ def expand_mcp_variables(
         check_env=True,
         expand_defaults=expand_defaults,
         support_unbraced=False,
+        on_unresolved=on_unresolved,
     )
 
     if not isinstance(expanded_config, dict):
         raise TypeError("expanded MCP config must be a dictionary")
     return expanded_config
+
+
+def expand_mcp_servers(
+    servers: Mapping[str, MCPServer],
+    get_secret: SecretLookup | None = None,
+    *,
+    on_unresolved: Callable[[str], None] | None = None,
+) -> dict[str, MCPServer]:
+    """Expand ``${VAR}`` placeholders in MCP servers, applying defaults.
+
+    Servers with ``literal_values`` are returned untouched: they come from an
+    Agent Plugins package, whose loader has already expanded the only two
+    placeholders the standard allows, and §9.2 forbids expanding anything else
+    -- a package must not be able to pull a secret into its own subprocess.
+    """
+    # Imported lazily: openhands.sdk.mcp imports this module.
+    from openhands.sdk.mcp.config import coerce_mcp_config, dump_mcp_config
+
+    expandable = {name: s for name, s in servers.items() if not s.literal_values}
+    if not expandable:
+        return dict(servers)
+    expanded = expand_mcp_variables(
+        {"mcpServers": dump_mcp_config(expandable)},
+        {},
+        get_secret=get_secret,
+        expand_defaults=True,
+        on_unresolved=on_unresolved,
+    )
+    return {**servers, **coerce_mcp_config(expanded["mcpServers"])}
 
 
 def load_mcp_config(
@@ -246,7 +288,9 @@ def load_mcp_config(
             config = json.load(f)
     except json.JSONDecodeError as e:
         raise SkillValidationError(f"Invalid JSON in {mcp_json_path}: {e}") from e
-    except OSError as e:
+    except (UnicodeDecodeError, OSError) as e:
+        # Bytes that are not UTF-8 are as unreadable as a missing file, and
+        # callers handle a skill validation failure rather than a raw error.
         raise SkillValidationError(f"Cannot read {mcp_json_path}: {e}") from e
 
     if not isinstance(config, dict):
@@ -438,11 +482,13 @@ def find_nested_third_party_files(
     return sorted(results, key=lambda pair: pair[1].as_posix())
 
 
-def find_skill_md_directories(skill_dir: Path) -> list[Path]:
+def find_skill_md_directories(skill_dir: Path, root: Path | None = None) -> list[Path]:
     """Find AgentSkills-style directories containing SKILL.md files.
 
     Args:
         skill_dir: Path to the skills directory.
+        root: If given, directories and SKILL.md files that resolve outside it
+            are skipped, and an escaping directory is never listed.
 
     Returns:
         List of paths to SKILL.md files.
@@ -451,19 +497,29 @@ def find_skill_md_directories(skill_dir: Path) -> list[Path]:
     if not skill_dir.exists():
         return results
     for subdir in sorted(skill_dir.iterdir()):
+        if root is not None and not resolves_within(subdir, root):
+            continue
         if subdir.is_dir():
             skill_md = find_skill_md(subdir)
-            if skill_md:
+            if skill_md and (root is None or resolves_within(skill_md, root)):
                 results.append(skill_md)
     return results
 
 
-def find_regular_md_files(skill_dir: Path, exclude_dirs: set[Path]) -> list[Path]:
+def find_regular_md_files(
+    skill_dir: Path,
+    exclude_dirs: set[Path],
+    recursive: bool = True,
+    root: Path | None = None,
+) -> list[Path]:
     """Find regular .md skill files, excluding SKILL.md and files in excluded dirs.
 
     Args:
         skill_dir: Path to the skills directory.
         exclude_dirs: Set of directories to exclude (e.g., SKILL.md directories).
+        recursive: If False, only scan the immediate children of skill_dir,
+            where every .md file except a README is a skill.
+        root: If given, files that resolve outside it are skipped.
 
     Returns:
         List of paths to regular .md skill files.
@@ -471,12 +527,21 @@ def find_regular_md_files(skill_dir: Path, exclude_dirs: set[Path]) -> list[Path
     files: list[Path] = []
     if not skill_dir.exists():
         return files
+    if not recursive:
+        return [
+            f
+            for f in sorted(skill_dir.glob("*.md"))
+            if f.is_file()
+            and f.name.lower() != "readme.md"
+            and (root is None or resolves_within(f, root))
+        ]
     for f in sorted(skill_dir.rglob("*.md")):
-        is_readme = f.name == "README.md"
+        is_readme = f.name.lower() == "readme.md"
         is_skill_md = f.name.lower() == "skill.md"
         is_in_excluded_dir = any(f.is_relative_to(d) for d in exclude_dirs)
         if not is_readme and not is_skill_md and not is_in_excluded_dir:
-            files.append(f)
+            if root is None or resolves_within(f, root):
+                files.append(f)
     return files
 
 
@@ -486,6 +551,8 @@ def load_and_categorize(
     repo_skills: dict[str, Skill],
     knowledge_skills: dict[str, Skill],
     agent_skills: dict[str, Skill],
+    strict: bool = True,
+    root: Path | None = None,
 ) -> None:
     """Load a skill and categorize it.
 
@@ -497,11 +564,18 @@ def load_and_categorize(
         repo_skills: Dictionary for skills with trigger=None (permanent context).
         knowledge_skills: Dictionary for skills with triggers (progressive).
         agent_skills: Dictionary for AgentSkills standard SKILL.md files.
+        strict: If True, enforce strict AgentSkills name validation.
+        root: If given, a skill-level ``.mcp.json`` that resolves outside it is
+            not loaded.
     """
     # Import here to avoid circular dependency
     from openhands.sdk.skills.skill import Skill
 
-    skill = Skill.load(path, skill_base_dir)
+    skip_mcp = False
+    if root is not None:
+        mcp_json = find_mcp_config(path.parent)
+        skip_mcp = mcp_json is not None and not resolves_within(mcp_json, root)
+    skill = Skill.load(path, skill_base_dir, strict=strict, skip_mcp=skip_mcp)
 
     # AgentSkills (SKILL.md directories) are a separate category from OpenHands skills.
     # They follow the AgentSkills standard and should be handled differently.
@@ -518,9 +592,10 @@ def get_skills_cache_dir() -> Path:
     """Get the local cache directory for public skills repository.
 
     Returns:
-        Path to the skills cache directory (~/.openhands/cache/skills).
+        Path to the ``cache/skills`` subdirectory of the user persistence
+        directory (``~/.openhands/cache/skills`` absent OH_PERSISTENCE_DIR).
     """
-    cache_dir = Path.home() / ".openhands" / "cache" / "skills"
+    cache_dir = get_user_persistence_dir() / "cache" / "skills"
     cache_dir.mkdir(parents=True, exist_ok=True)
     return cache_dir
 
@@ -529,36 +604,40 @@ def update_skills_repository(
     repo_url: str,
     ref: str,
     cache_dir: Path,
+    strict: bool = False,
 ) -> Path | None:
     """Clone or update the local skills repository.
 
-    Uses the shared git caching infrastructure from openhands.sdk.git.cached_repo.
-    When updating, performs: fetch -> checkout ref -> reset --hard to origin/ref.
+    The shared Git cache resolves ``ref`` to a commit and uses a detached
+    checkout.
 
     Args:
         repo_url: URL of the skills repository.
         ref: Branch name, tag, or full commit SHA to checkout.
         cache_dir: Directory where the repository should be cached.
+        strict: If True, return None when an existing clone cannot be updated
+            (e.g. the fetch fails offline) instead of the stale clone.
 
     Returns:
         Path to the local repository if successful, None otherwise.
     """
     repo_path = cache_dir / "public-skills"
-    return try_cached_clone_or_update(repo_url, repo_path, ref=ref, update=True)
+    return try_cached_clone_or_update(
+        repo_url, repo_path, ref=ref, update=True, strict=strict
+    )
 
 
-def is_skills_repo_pinned(repo_path: Path) -> bool:
-    """Return True if the local skills repo is pinned to a fixed ref.
+def is_skills_repo_pinned(repo_path: Path, ref: str | None = None) -> bool:
+    """Return whether ``ref`` is a cached tag or object ID.
 
-    A pinned ref is one that cannot change over time — a tag or a specific
-    commit SHA. After checking out such a ref the repository is left in
-    detached HEAD state, which is the signal used here.
-
-    Returns False on any git error so callers can safely treat the result
-    as ``False`` (i.e., keep polling) when the state cannot be determined.
+    Public skills treat tags and object IDs as pinned. Branches and other named
+    refs stay refreshable. Without ``ref``, use the legacy detached-HEAD check.
+    Returns False when the ref cannot be classified.
     """
     try:
-        return GitHelper().get_current_branch(repo_path) is None
+        if ref is None:
+            return GitHelper().get_current_branch(repo_path) is None
+        return GitHelper().requested_ref_is_pinned(repo_path, ref)
     except Exception:
         return False
 
@@ -580,15 +659,18 @@ def discover_skill_resources(skill_dir: Path) -> SkillResources:
     # Import here to avoid circular dependency
     from openhands.sdk.skills.skill import SkillResources
 
-    resources = SkillResources(skill_root=to_posix_path(skill_dir.resolve()))
-
+    collected: dict[str, list[str]] = {}
     for resource_type in RESOURCE_DIRECTORIES:
         resource_dir = skill_dir / resource_type
         if resource_dir.is_dir():
-            files = _list_resource_files(resource_dir, resource_type)
-            setattr(resources, resource_type, files)
+            collected[resource_type] = _list_resource_files(resource_dir, resource_type)
 
-    return resources
+    return SkillResources(
+        skill_root=to_posix_path(skill_dir.resolve()),
+        scripts=collected.get("scripts", []),
+        references=collected.get("references", []),
+        assets=collected.get("assets", []),
+    )
 
 
 def _list_resource_files(

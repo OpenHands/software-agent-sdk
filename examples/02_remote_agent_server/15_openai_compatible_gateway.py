@@ -34,7 +34,6 @@ with ManagedAPIServer(
     port=8770,
     use_session_api_key=True,
     extra_env={
-        "OH_ENABLE_VNC": "0",
         "OH_ENABLE_VSCODE": "0",
         "OH_PRELOAD_TOOLS": "0",
         "OH_SECRET_KEY": "example-secret-key-for-demo-only-32b",

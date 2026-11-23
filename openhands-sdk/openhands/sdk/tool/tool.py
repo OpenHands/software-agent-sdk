@@ -383,6 +383,23 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
     # Automatic tool naming - set by __init_subclass__
     name: ClassVar[str] = ""
 
+    user_selectable: ClassVar[bool] = True
+    """Whether a user may pick this tool when configuring an agent's toolset."""
+
+    catalog_description: ClassVar[str] = ""
+    """User-facing catalog blurb; ``description`` is what the LLM reads."""
+
+    conversation_local: ClassVar[bool] = False
+    """Whether the tool only reads and writes its own conversation's state."""
+
+    ends_turn: ClassVar[bool] = False
+    """Whether a successful call ends the agent's turn, as ``finish`` does.
+
+    The agent's other calls in the same response still run; then the
+    conversation is ``finished`` and waits for the next message. A call whose
+    observation is an error does not end the turn.
+    """
+
     def __init_subclass__(cls, **kwargs):
         """Automatically set name from class name when subclass is created."""
         super().__init_subclass__(**kwargs)
@@ -400,6 +417,13 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
     # runtime-only; always hidden on dumps
     executor: SkipJsonSchema[ToolExecutor | None] = Field(
         default=None, repr=False, exclude=True
+    )
+
+    prompt_guidance: SkipJsonSchema[str | None] = Field(
+        default=None,
+        repr=False,
+        exclude=True,
+        description="System-prompt guidance for this tool; deduplicated by text.",
     )
 
     response_schema: SkipJsonSchema[ResponseSchema | None] = Field(
@@ -621,19 +645,26 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
         # Coerce output only if we declared a model; else wrap in base Observation
         if self.observation_type:
             if isinstance(result, self.observation_type):
-                return result
-            return self.observation_type.model_validate(result)
+                observation = result
+            else:
+                observation = self.observation_type.model_validate(result)
+        elif isinstance(result, Observation):
+            observation = result
+        elif isinstance(result, BaseModel):
+            observation = Observation.model_validate(result.model_dump())
+        elif isinstance(result, dict):
+            observation = Observation.model_validate(result)
         else:
-            # When no output schema is defined, wrap the result in Observation
-            if isinstance(result, Observation):
-                return result
-            elif isinstance(result, BaseModel):
-                return Observation.model_validate(result.model_dump())
-            elif isinstance(result, dict):
-                return Observation.model_validate(result)
             raise TypeError(
                 "Output must be dict or BaseModel when no output schema is defined"
             )
+
+        # Every tool's output funnels through here, so masking once keeps a new
+        # tool covered by default instead of by remembering to patch it.
+        if conversation is None:
+            return observation
+        registry = conversation.state.secret_registry
+        return registry.mask_secrets_in_model(observation)
 
     async def acall(
         self, action: ActionT, conversation: "LocalConversation | None" = None

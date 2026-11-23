@@ -115,11 +115,11 @@ def _tool_registry_isolation(monkeypatch: pytest.MonkeyPatch):
     """
     # Create isolated copies of the registry dictionaries
     isolated_reg = dict(tool_registry._REG)
-    isolated_qualnames = dict(tool_registry._MODULE_QUALNAMES)
+    isolated_tool_classes = dict(tool_registry._TOOL_CLASSES)
 
     # Patch the registry to use isolated copies
     monkeypatch.setattr(tool_registry, "_REG", isolated_reg)
-    monkeypatch.setattr(tool_registry, "_MODULE_QUALNAMES", isolated_qualnames)
+    monkeypatch.setattr(tool_registry, "_TOOL_CLASSES", isolated_tool_classes)
 
     # Register our test tool in the isolated registry
     register_tool_public(RerunTestTool.name, RerunTestTool)

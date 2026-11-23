@@ -1,7 +1,7 @@
 import asyncio
 import json
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from pydantic import SecretStr
@@ -19,6 +19,7 @@ from openhands.sdk.conversation.state import (
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.llm import Message, MessageToolCall, TextContent, llm_profile_store
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+from openhands.sdk.llm.router import MultimodalRouter, RouterLLM
 from openhands.sdk.testing import TestLLM
 from openhands.sdk.utils.cipher import Cipher
 from tests.conftest import create_mock_litellm_response
@@ -52,13 +53,14 @@ def profile_store(tmp_path, monkeypatch):
     return store
 
 
-def _make_conversation() -> LocalConversation:
+def _make_conversation(profile_store_dir: Path | None = None) -> LocalConversation:
     return LocalConversation(
         agent=Agent(
             llm=_make_llm("default-model", "test-llm"),
             tools=[],
         ),
         workspace=Path.cwd(),
+        profile_store_dir=profile_store_dir,
     )
 
 
@@ -77,10 +79,11 @@ def _make_acp_conversation(tmp_path) -> tuple[LocalConversation, ACPAgent]:
     """
     agent = ACPAgent(acp_command=["echo", "test"], acp_model="model-a")
     agent._conn = MagicMock()
+    agent._conn.set_session_model = AsyncMock()
     agent._session_id = "sess-1"
     agent._agent_name = "codex-acp"
     executor = MagicMock()
-    executor.run_async = MagicMock()
+    executor.run_async = MagicMock(side_effect=lambda coro, **_: asyncio.run(coro))
     agent._executor = executor
     conv = LocalConversation(
         agent=agent,
@@ -104,6 +107,34 @@ def _make_pre_session_acp_conversation(tmp_path) -> tuple[LocalConversation, ACP
         persistence_dir=str(tmp_path / "persist"),
     )
     return conv, agent
+
+
+def test_switch_llm_rejects_acp_agent(tmp_path):
+    """switch_llm is refused on an ACP conversation (#4158).
+
+    The ACP subprocess owns its model, so swapping OpenHands' LLM would only
+    overwrite the ``acp-managed`` placeholder without changing what runs.
+    """
+    conv, _ = _make_pre_session_acp_conversation(tmp_path)
+    base_before = conv.state._fs.read(BASE_STATE)
+
+    with pytest.raises(ValueError, match="switch_acp_model"):
+        conv.switch_llm(_make_llm("other-model", "other"))
+
+    assert conv.agent.llm.usage_id == "acp-managed"
+    assert conv.state.agent.llm.usage_id == "acp-managed"
+    assert conv.state._fs.read(BASE_STATE) == base_before
+
+
+def test_switch_profile_rejects_acp_agent(tmp_path, profile_store):
+    """switch_profile is refused on an ACP conversation, as switch_llm is."""
+    conv, _ = _make_pre_session_acp_conversation(tmp_path)
+
+    with pytest.raises(ValueError, match="switch_acp_model"):
+        conv.switch_profile("fast")
+
+    assert conv.agent.llm.usage_id == "acp-managed"
+    assert conv.state.agent.llm.usage_id == "acp-managed"
 
 
 def test_switch_acp_model_before_session_defers_and_persists(tmp_path):
@@ -139,6 +170,25 @@ def test_switch_acp_model_before_session_defers_and_persists(tmp_path):
     assert isinstance(reloaded.agent, ACPAgent)
     assert reloaded.agent.acp_model == "model-b"
     assert reloaded.agent.llm.model == "model-b"
+
+
+@pytest.mark.parametrize("model", ["", "   "])
+def test_switch_acp_model_before_session_rejects_blank_model(tmp_path, model):
+    """A blank model is refused before the first ``run()`` too, as it is live.
+
+    The pre-session path used to skip ``set_acp_model`` (which owns the
+    non-empty check) and persist the value unchecked, so ``acp_model`` became
+    ``"   "``.
+    """
+    conv, agent = _make_pre_session_acp_conversation(tmp_path)
+
+    with pytest.raises(ValueError, match="non-empty"):
+        conv.switch_acp_model(model)
+
+    assert conv.agent is agent
+    assert isinstance(conv.state.agent, ACPAgent)
+    assert conv.state.agent.acp_model == "model-a"
+    assert conv.state.agent_state.get("acp_current_model_id") != model
 
 
 def test_switch_acp_model_persists_authoritative_model(tmp_path):
@@ -199,6 +249,69 @@ def test_switch_acp_model_refreshes_surfaced_current_model_id(tmp_path):
     assert switched.current_model_id == "model-b"
     # Persisted hint written unconditionally for cold reads before re-init.
     assert conv.state.agent_state["acp_current_model_id"] == "model-b"
+
+
+def test_switch_acp_effort_before_session_persists(tmp_path):
+    conv, _ = _make_pre_session_acp_conversation(tmp_path)
+
+    conv.switch_acp_effort("high")
+
+    reloaded = ConversationState.model_validate(
+        json.loads(conv.state._fs.read(BASE_STATE))
+    )
+    assert isinstance(reloaded.agent, ACPAgent)
+    assert reloaded.agent.acp_effort == "high"
+    assert conv.state.agent_state["acp_current_effort"] == "high"
+
+
+def test_switch_acp_effort_live_applies_and_persists(tmp_path):
+    conv, agent = _make_acp_conversation(tmp_path)
+    agent._model_via_config_option = True
+    conn = agent._conn
+    assert conn is not None
+    conn.set_config_option = AsyncMock(
+        return_value={
+            "config_options": [
+                {
+                    "id": "reasoning_effort",
+                    "type": "select",
+                    "category": "thought_level",
+                    "current_value": "low",
+                    "options": [{"value": "low"}, {"value": "high"}],
+                }
+            ]
+        }
+    )
+
+    conv.switch_acp_effort("low")
+
+    conn.set_config_option.assert_awaited_once_with(
+        config_id="reasoning_effort", value="low", session_id="sess-1"
+    )
+    switched = conv.agent
+    assert isinstance(switched, ACPAgent)
+    assert switched.acp_effort == "low"
+    assert switched.current_effort == "low"
+    assert switched._conn is conn
+    assert conv.state.agent_state["acp_current_effort"] == "low"
+
+
+def test_switch_acp_effort_rejected_keeps_persisted_state(tmp_path):
+    conv, agent = _make_acp_conversation(tmp_path)
+
+    with pytest.raises(ValueError, match="non-empty"):
+        conv.switch_acp_effort(" ")
+    with pytest.raises(ValueError, match="no session config options"):
+        conv.switch_acp_effort("high")
+
+    assert conv.agent is agent
+    assert agent.acp_effort is None
+    assert "acp_current_effort" not in conv.state.agent_state
+
+
+def test_switch_acp_effort_rejects_non_acp_agent():
+    with pytest.raises(ValueError, match="only supported for ACP"):
+        _make_conversation().switch_acp_effort("high")
 
 
 def test_switch_acp_model_disarms_discarded_agent_finalizer(tmp_path):
@@ -267,6 +380,17 @@ def test_switch_profile(profile_store):
     assert conv.agent.llm.model == "slow-model"
 
 
+def test_switch_profile_uses_custom_profile_store(tmp_path: Path) -> None:
+    profile_dir = tmp_path / "profiles"
+    store = LLMProfileStore(profile_dir)
+    store.save("fast", _make_llm("fast-model", "fast"))
+
+    conv = _make_conversation(profile_store_dir=profile_dir)
+    conv.switch_profile("fast")
+
+    assert conv.agent.llm.model == "fast-model"
+
+
 def test_switch_profile_updates_state(profile_store):
     """switch_profile updates conversation state agent."""
     conv = _make_conversation()
@@ -312,20 +436,20 @@ def test_switch_nonexistent_raises(profile_store):
 
 
 def test_switch_profile_preserves_prompt_cache_key(profile_store):
-    """Regression test for #2918: switch_profile must repin _prompt_cache_key."""
+    """Regression test for #2918: switching keeps conversation cache identity."""
     conv = _make_conversation()
     expected = str(conv.id)
-    assert conv.agent.llm._call_context.prompt_cache_key == expected
+    assert conv.get_llm_call_context().prompt_cache_key == expected
 
     conv.switch_profile("fast")
-    assert conv.agent.llm._call_context.prompt_cache_key == expected
+    assert conv.get_llm_call_context().prompt_cache_key == expected
 
     conv.switch_profile("slow")
-    assert conv.agent.llm._call_context.prompt_cache_key == expected
+    assert conv.get_llm_call_context().prompt_cache_key == expected
 
-    # Switching back to a cached registry entry must still carry the key.
+    # Switching back to a cached registry entry must not change the context.
     conv.switch_profile("fast")
-    assert conv.agent.llm._call_context.prompt_cache_key == expected
+    assert conv.get_llm_call_context().prompt_cache_key == expected
 
 
 def test_switch_then_send_message(profile_store):
@@ -364,8 +488,8 @@ def test_switch_llm_swaps_when_store_empty(empty_profile_store):
     # Caller's usage_id is preserved as the registry key.
     assert conv.agent.llm.usage_id == "caller-supplied-id"
     assert conv.llm_registry.get("caller-supplied-id").model == "inline-model"
-    # Cache-key must be repinned (regression guard for #2918 on the new path).
-    assert conv.agent.llm._call_context.prompt_cache_key == str(conv.id)
+    # Cache identity belongs to the conversation, not the selected LLM.
+    assert conv.get_llm_call_context().prompt_cache_key == str(conv.id)
 
 
 def test_switch_llm_refreshes_llm_condenser_credentials(
@@ -413,7 +537,7 @@ def test_switch_llm_refreshes_llm_condenser_credentials(
     assert state_condenser_llm.model == condenser_llm.model
     assert state_condenser_llm.api_key == condenser_llm.api_key
     assert condenser_llm.metrics is not conv.agent.llm.metrics
-    assert condenser_llm._telemetry is not None
+    assert condenser_llm.telemetry.metrics is condenser_llm.metrics
 
     async def _fake_acompletion(**kwargs):
         return create_mock_litellm_response(
@@ -827,7 +951,7 @@ def test_switch_llm_to_subscription_profile_keeps_condenser(
 
     conv.switch_llm(
         LLM(
-            model="gpt-5.2-codex",
+            model="gpt-5.4",
             usage_id="profile:codex",
             auth_type="subscription",
             subscription_vendor="openai",
@@ -845,3 +969,203 @@ def test_switch_llm_to_subscription_profile_keeps_condenser(
     assert conv.agent.llm.model == "regular-model"
     assert conv.agent.condenser is condenser
     assert conv.state.agent.condenser is condenser
+
+
+def test_switch_llm_replaces_registered_usage_id_after_init(empty_profile_store):
+    """#5636: once the agent initialized, ``default`` is registered. Posting a
+    different config under that usage_id must install it, not keep the old LLM,
+    and the usage's accrued metrics must carry over to the new LLM.
+    """
+    # Plain LLMs: agent init registers only base-class LLMs, not TestLLM.
+    original = LLM(model="original-model", api_key=SecretStr("k"))
+    conv = LocalConversation(
+        agent=Agent(llm=original, tools=[]),
+        workspace=Path.cwd(),
+    )
+    conv.send_message("hi")  # initializes the agent and registers "default"
+    conv.llm_registry.get("default").metrics.add_cost(0.5)
+
+    # usage_id omitted: it defaults to "default", the registered slot.
+    conv.switch_llm(LLM(model="switched-model", api_key=SecretStr("k")))
+
+    assert conv.agent.llm.model == "switched-model"
+    assert conv.state.agent.llm.model == "switched-model"
+    assert conv.llm_registry.get("default") is conv.agent.llm
+    stats_metrics = conv.state.stats.usage_to_metrics["default"]
+    assert stats_metrics.accumulated_cost == 0.5
+    assert conv.agent.llm.metrics is stats_metrics
+
+
+def test_switch_llm_identical_config_reuses_registered_llm(empty_profile_store):
+    """Re-posting the registered config under the same usage_id keeps the
+    registered LLM object (and its metrics) instead of replacing it.
+    """
+    conv = _make_conversation()
+    conv.switch_llm(_make_llm("model-a", "x"))
+    registered = conv.llm_registry.get("x")
+
+    conv.switch_llm(_make_llm("model-b", "y"))
+    conv.switch_llm(_make_llm("model-a", "x"))
+
+    assert conv.agent.llm is registered
+    assert conv.llm_registry.get("x") is registered
+
+
+def _make_router() -> MultimodalRouter:
+    return MultimodalRouter(
+        llms_for_routing={
+            MultimodalRouter.PRIMARY_MODEL_KEY: _make_llm("primary-model", "primary"),
+            MultimodalRouter.SECONDARY_MODEL_KEY: _make_llm(
+                "secondary-model", "secondary"
+            ),
+        }
+    )
+
+
+def test_switch_routed_llm_updates_agent_and_state(tmp_path):
+    router = _make_router()
+    conv = LocalConversation(agent=Agent(llm=router, tools=[]), workspace=tmp_path)
+
+    conv.switch_routed_llm(MultimodalRouter.PRIMARY_MODEL_KEY)
+
+    assert isinstance(conv.agent.llm, MultimodalRouter)
+    assert conv.agent.llm.selection.mode == "manual"
+    assert (
+        conv.agent.llm.selection.manual_route_name == MultimodalRouter.PRIMARY_MODEL_KEY
+    )
+    assert conv.state.agent.llm is conv.agent.llm
+
+
+def test_resume_auto_llm_routing_updates_agent_and_state(tmp_path):
+    router = _make_router().with_manual_route(MultimodalRouter.PRIMARY_MODEL_KEY)
+    conv = LocalConversation(agent=Agent(llm=router, tools=[]), workspace=tmp_path)
+
+    conv.resume_auto_llm_routing()
+
+    assert isinstance(conv.agent.llm, MultimodalRouter)
+    assert conv.agent.llm.selection.mode == "auto"
+    assert conv.agent.llm.selection.manual_route_name is None
+    assert conv.state.agent.llm is conv.agent.llm
+
+
+def test_switch_routed_llm_survives_state_roundtrip(tmp_path):
+    router = _make_router()
+    conv = LocalConversation(agent=Agent(llm=router, tools=[]), workspace=tmp_path)
+    conv.switch_routed_llm(MultimodalRouter.SECONDARY_MODEL_KEY)
+
+    reloaded = ConversationState.model_validate(
+        json.loads(conv.state.model_dump_json())
+    )
+
+    assert isinstance(reloaded.agent.llm, MultimodalRouter)
+    assert reloaded.agent.llm.selection.mode == "manual"
+    assert (
+        reloaded.agent.llm.selection.manual_route_name
+        == MultimodalRouter.SECONDARY_MODEL_KEY
+    )
+    assert set(reloaded.agent.llm.available_routes()) == {"primary", "secondary"}
+
+
+def test_switch_routed_llm_rejects_non_router(tmp_path):
+    conv = LocalConversation(
+        agent=Agent(llm=_make_llm("plain-model", "plain"), tools=[]),
+        workspace=tmp_path,
+    )
+
+    with pytest.raises(ValueError, match="not a RouterLLM"):
+        conv.switch_routed_llm("anything")
+
+
+def test_add_model_router_route_wraps_plain_llm(tmp_path):
+    profile_store_dir = tmp_path / "profiles"
+    LLMProfileStore(profile_store_dir).save("reviewer", LLM(model="reviewer-model"))
+    conv = LocalConversation(
+        agent=Agent(llm=_make_llm("plain-model", "default"), tools=[]),
+        workspace=tmp_path,
+        profile_store_dir=profile_store_dir,
+    )
+
+    status = conv.add_model_router_route("reviewer")
+
+    assert isinstance(conv.agent.llm, RouterLLM)
+    assert status.enabled is True
+    assert status.selection is not None
+    assert status.selection.mode == "auto"
+    assert [route.name for route in status.routes] == ["default", "reviewer"]
+    assert conv.agent.llm.llms_for_routing["reviewer"].usage_id == "profile:reviewer"
+    assert (
+        conv.llm_registry.get("profile:reviewer")
+        is conv.agent.llm.llms_for_routing["reviewer"]
+    )
+    assert conv.state.agent.llm is conv.agent.llm
+
+
+def test_add_model_router_route_extends_existing_router(tmp_path):
+    profile_store_dir = tmp_path / "profiles"
+    LLMProfileStore(profile_store_dir).save(
+        "reviewer-profile", LLM(model="reviewer-model")
+    )
+    conv = LocalConversation(
+        agent=Agent(llm=_make_router(), tools=[]),
+        workspace=tmp_path,
+        profile_store_dir=profile_store_dir,
+    )
+
+    status = conv.add_model_router_route("reviewer-profile", route_name="reviewer")
+    conv.switch_routed_llm("reviewer")
+
+    assert isinstance(conv.agent.llm, MultimodalRouter)
+    assert {route.name for route in status.routes} == {
+        "primary",
+        "secondary",
+        "reviewer",
+    }
+    assert conv.agent.llm.selection.mode == "manual"
+    assert conv.agent.llm.selection.manual_route_name == "reviewer"
+    assert conv.agent.llm.llms_for_routing["reviewer"].model == "reviewer-model"
+
+
+def test_add_model_router_route_rejects_duplicate_name(tmp_path):
+    profile_store_dir = tmp_path / "profiles"
+    LLMProfileStore(profile_store_dir).save("other", LLM(model="other-model"))
+    conv = LocalConversation(
+        agent=Agent(llm=_make_router(), tools=[]),
+        workspace=tmp_path,
+        profile_store_dir=profile_store_dir,
+    )
+
+    with pytest.raises(ValueError, match="already exists"):
+        conv.add_model_router_route("other", route_name="primary")
+
+
+def test_add_model_router_route_rejects_missing_profile(tmp_path):
+    conv = LocalConversation(
+        agent=Agent(llm=_make_router(), tools=[]),
+        workspace=tmp_path,
+        profile_store_dir=tmp_path / "profiles",
+    )
+
+    with pytest.raises(FileNotFoundError, match="missing"):
+        conv.add_model_router_route("missing")
+
+
+def test_added_model_router_route_survives_profile_change(tmp_path):
+    profile_store_dir = tmp_path / "profiles"
+    profile_store = LLMProfileStore(profile_store_dir)
+    profile_store.save("reviewer", LLM(model="reviewer-model-v1"))
+    conv = LocalConversation(
+        agent=Agent(llm=_make_llm("plain-model", "default"), tools=[]),
+        workspace=tmp_path,
+        profile_store_dir=profile_store_dir,
+    )
+    conv.add_model_router_route("reviewer")
+
+    profile_store.save("reviewer", LLM(model="reviewer-model-v2"))
+    reloaded = ConversationState.model_validate(
+        json.loads(conv.state.model_dump_json())
+    )
+
+    assert isinstance(reloaded.agent.llm, RouterLLM)
+    assert reloaded.agent.llm.llms_for_routing["reviewer"].model == (
+        "reviewer-model-v1"
+    )

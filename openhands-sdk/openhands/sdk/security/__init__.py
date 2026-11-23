@@ -1,4 +1,4 @@
-from openhands.sdk.security.analyzer import SecurityAnalyzerBase
+from openhands.sdk.security.analyzer import SecurityAnalysis, SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     AlwaysConfirm,
     ConfirmationPolicyBase,
@@ -28,6 +28,7 @@ from openhands.sdk.security.toolshield_llm_analyzer import (
 
 __all__ = [
     "SecurityRisk",
+    "SecurityAnalysis",
     "SecurityAnalyzerBase",
     "LLMSecurityAnalyzer",
     "ToolShieldLLMSecurityAnalyzer",

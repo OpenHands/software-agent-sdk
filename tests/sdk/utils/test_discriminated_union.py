@@ -1,3 +1,4 @@
+import copy
 from abc import ABC, abstractmethod
 from typing import ClassVar
 
@@ -7,6 +8,7 @@ from pydantic import (
     ConfigDict,
     Field,
     TypeAdapter,
+    ValidationError,
     computed_field,
     model_validator,
 )
@@ -161,6 +163,16 @@ def test_additional_field() -> None:
     assert loaded == original
     assert isinstance(loaded, Dog)
     assert loaded.barking
+
+
+@pytest.mark.parametrize("value", ["plain", 5, None, True, ["x"]])
+def test_non_object_input_is_a_validation_error(value) -> None:
+    """A non-dict value is a ValidationError, not an AttributeError from .pop()."""
+    for target in (Animal, Cat, Dog):
+        with pytest.raises(ValidationError):
+            target.model_validate(value)
+    with pytest.raises(ValidationError):
+        AnimalPack.model_validate({"members": [value]})
 
 
 def test_property() -> None:
@@ -324,3 +336,32 @@ def test_enhanced_error_message_for_nested_no_kinds_type_adapter():
         "Expected one of: []"
     )
     assert expected in error_message
+
+
+class Vehicle(DiscriminatedUnionMixin, ABC):
+    wheels: int
+
+
+class Car(Vehicle):
+    pass
+
+
+class Bike(Vehicle):
+    pass
+
+
+class Garage(OpenHandsModel):
+    vehicles: list[Vehicle]
+
+
+def test_model_validate_does_not_mutate_input() -> None:
+    car = {"kind": "Car", "wheels": 4}
+    for model in (Vehicle, Car):
+        data = copy.deepcopy(car)
+        assert isinstance(model.model_validate(data), Car)
+        assert data == car
+
+    garage = {"vehicles": [copy.deepcopy(car), {"kind": "Bike", "wheels": 2}]}
+    data = copy.deepcopy(garage)
+    Garage.model_validate(data)
+    assert data == garage

@@ -7,12 +7,79 @@ For prompt caching to work across conversations, the system message must be
 identical for all conversations regardless of per-conversation context.
 """
 
+from typing import cast
+
 import pytest
+from litellm.llms.anthropic.chat.transformation import AnthropicConfig
+from litellm.types.llms.openai import AllMessageValues
 from pydantic import SecretStr
 
 from openhands.sdk import LLM, Agent, AgentContext
-from openhands.sdk.llm import Message, TextContent
+from openhands.sdk.llm import Message, MessageToolCall, TextContent
 from openhands.sdk.skills import Skill
+
+
+@pytest.mark.parametrize(
+    ("role", "text"),
+    [("tool", "Tool response"), ("tool", None), ("user", "Question")],
+)
+@pytest.mark.parametrize("blank", ["", " \t\n"])
+def test_blank_cache_breakpoint_survives_anthropic_request(role, text, blank):
+    llm = LLM(
+        model="anthropic/claude-sonnet-4-20250514",
+        api_key=SecretStr("fake-key"),
+        caching_prompt=True,
+    )
+    content = [] if text is None else [TextContent(text=text)]
+    content.append(TextContent(text=blank))
+    if role == "tool":
+        messages = [
+            Message(role="user", content=[TextContent(text="Run the tool")]),
+            Message(
+                role="assistant",
+                content=[],
+                tool_calls=[
+                    MessageToolCall(
+                        id="call_cache",
+                        name="test_tool",
+                        arguments="{}",
+                        origin="completion",
+                    )
+                ],
+            ),
+            Message(
+                role="tool",
+                content=content,
+                tool_call_id="call_cache",
+                name="test_tool",
+            ),
+        ]
+    else:
+        messages = [Message(role="user", content=content)]
+    stored = [message.model_dump_json() for message in messages]
+
+    formatted = llm.format_messages_for_llm(messages)
+    request = AnthropicConfig().transform_request(
+        model="claude-sonnet-4-20250514",
+        messages=cast(list[AllMessageValues], formatted),
+        optional_params={"max_tokens": 16},
+        litellm_params={},
+        headers={},
+    )
+
+    block = request["messages"][-1]["content"][-1]
+    assert block["cache_control"] == {"type": "ephemeral"}
+    if role == "tool":
+        assert block["type"] == "tool_result"
+        assert block["tool_use_id"] == "call_cache"
+        assert formatted[-1]["cache_control"] == {"type": "ephemeral"}
+        assert formatted[-1]["content"] == (
+            [{"type": "text", "text": text}] if text is not None else ""
+        )
+    else:
+        assert block["type"] == "text"
+        assert block["text"] == text
+    assert [message.model_dump_json() for message in messages] == stored
 
 
 def test_static_system_message_is_constant_across_different_contexts():

@@ -1,0 +1,6 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "Fatal Manifest",
+  "version": "1.0.0",
+  "description": "The name violates the naming constraints, which is fatal."
+}

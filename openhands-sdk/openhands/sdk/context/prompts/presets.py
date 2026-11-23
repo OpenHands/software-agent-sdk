@@ -10,11 +10,16 @@ repo/skills/suffix/secrets/datetime are preset-independent -- so a planning agen
 with an ``agent_context`` still gets its dynamic block.
 """
 
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Final
 
 from openhands.sdk.context.prompts.registry import PromptRegistry
-from openhands.sdk.context.prompts.section import PromptSection
+from openhands.sdk.context.prompts.section import (
+    CacheTier,
+    PromptContext,
+    PromptSection,
+)
 from openhands.sdk.context.prompts.sections.dynamic import (
     AvailableSkillsSection,
     CustomSecretsSection,
@@ -24,8 +29,27 @@ from openhands.sdk.context.prompts.sections.dynamic import (
     RepoContextSection,
 )
 from openhands.sdk.context.prompts.sections.planning import PlanningSection
+from openhands.sdk.context.prompts.sections.project import (
+    BriefsSection,
+    CoordinatingWorkflowSection,
+    CoordinatorEfficiencySection,
+    CoordinatorMemorySection,
+    CoordinatorRoleSection,
+    ProjectContextSection,
+    ProjectSecuritySection,
+    RoutingSection,
+    TalkingToTheUserSection,
+    WhatYouHearSection,
+    WhoIsSpeakingSection,
+    WorkerMemorySection,
+    WorkerProblemSolvingSection,
+    WorkerPullRequestsSection,
+    WorkerRoleSection,
+    WorkerTroubleshootingSection,
+    WorkerVersionControlSection,
+    YourReportSection,
+)
 from openhands.sdk.context.prompts.sections.static import (
-    BrowserSection,
     CodeQualitySection,
     EfficiencySection,
     EnvironmentSetupSection,
@@ -33,6 +57,7 @@ from openhands.sdk.context.prompts.sections.static import (
     FileSystemSection,
     MemorySection,
     ModelSpecificSection,
+    PersonaSection,
     ProblemSolvingSection,
     ProcessManagementSection,
     PullRequestsSection,
@@ -41,6 +66,7 @@ from openhands.sdk.context.prompts.sections.static import (
     SecuritySection,
     SelfDocumentationSection,
     SoulSection,
+    ToolGuidanceSection,
     TroubleshootingSection,
     VersionControlSection,
 )
@@ -54,34 +80,107 @@ class PromptPreset(StrEnum):
 
     DEFAULT = "default"
     PLANNING = "planning"
+    PROJECT_COORDINATOR = "project_coordinator"
+    PROJECT_WORKER = "project_worker"
+
+
+@dataclass(frozen=True, slots=True)
+class _ReplacedByPersona:
+    """A persona-layer section: dropped when the agent supplies its own persona."""
+
+    section: PromptSection
+    name: str = field(init=False)
+    cache_tier: CacheTier = field(init=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "name", self.section.name)
+        object.__setattr__(self, "cache_tier", self.section.cache_tier)
+
+    def guard(self, ctx: PromptContext) -> bool:
+        return ctx.persona is None and self.section.guard(ctx)
+
+    def render(self, ctx: PromptContext) -> str | None:
+        return self.section.render(ctx)
 
 
 _DEFAULT_STATIC_SECTIONS: Final[tuple[PromptSection, ...]] = (
-    SoulSection(),
-    RoleSection(),
+    PersonaSection(),  # guard: persona set
+    _ReplacedByPersona(SoulSection()),
+    _ReplacedByPersona(RoleSection()),
     MemorySection(),
-    EfficiencySection(),
-    FileSystemSection(),
-    CodeQualitySection(),
-    VersionControlSection(),
-    PullRequestsSection(),
-    ProblemSolvingSection(),
-    SelfDocumentationSection(),
+    _ReplacedByPersona(EfficiencySection()),
+    _ReplacedByPersona(FileSystemSection()),
+    _ReplacedByPersona(CodeQualitySection()),
+    _ReplacedByPersona(VersionControlSection()),
+    _ReplacedByPersona(PullRequestsSection()),
+    _ReplacedByPersona(ProblemSolvingSection()),
+    _ReplacedByPersona(SelfDocumentationSection()),
     SecuritySection(),  # guard: security_policy_filename set
     SecurityRiskAssessmentSection(),  # guard: llm_security_analyzer
-    BrowserSection(),  # guard: ctx.enable_browser
+    ToolGuidanceSection(),  # guard: loaded tools supply prompt_guidance
     ExternalServicesSection(),
-    EnvironmentSetupSection(),
-    TroubleshootingSection(),
+    _ReplacedByPersona(EnvironmentSetupSection()),
+    _ReplacedByPersona(TroubleshootingSection()),
     ProcessManagementSection(),
     ModelSpecificSection(),  # guard: model_family resolved
 )
+_PLANNING_STATIC_SECTIONS: Final[tuple[PromptSection, ...]] = (
+    PersonaSection(),
+    PlanningSection(),
+)
 
-_PLANNING_STATIC_SECTIONS: Final[tuple[PromptSection, ...]] = (PlanningSection(),)
+# A project's coordinator routes work rather than doing it, so it keeps no
+# coding-workflow sections. A persona replaces only its voice (``<SOUL>``),
+# never the job.
+_PROJECT_COORDINATOR_STATIC_SECTIONS: Final[tuple[PromptSection, ...]] = (
+    PersonaSection(),
+    _ReplacedByPersona(SoulSection()),
+    CoordinatorRoleSection(),
+    CoordinatorMemorySection(),
+    CoordinatorEfficiencySection(),
+    RoutingSection(),
+    BriefsSection(),
+    CoordinatingWorkflowSection(),
+    WhatYouHearSection(),
+    TalkingToTheUserSection(),
+    SelfDocumentationSection(),
+    ProjectSecuritySection(),
+    SecurityRiskAssessmentSection(),
+    ToolGuidanceSection(),
+    ExternalServicesSection(),
+    ModelSpecificSection(),
+)
+# A project's worker is the default coding agent, told who speaks to it, that
+# its final message is a report, and to ask there instead of in the chat. A
+# persona replaces the same sections as in the default preset; the project
+# sections stay.
+_PROJECT_WORKER_STATIC_SECTIONS: Final[tuple[PromptSection, ...]] = (
+    PersonaSection(),
+    _ReplacedByPersona(SoulSection()),
+    _ReplacedByPersona(WorkerRoleSection()),
+    WorkerMemorySection(),
+    _ReplacedByPersona(EfficiencySection()),
+    _ReplacedByPersona(FileSystemSection()),
+    _ReplacedByPersona(CodeQualitySection()),
+    _ReplacedByPersona(WorkerVersionControlSection()),
+    _ReplacedByPersona(WorkerPullRequestsSection()),
+    _ReplacedByPersona(WorkerProblemSolvingSection()),
+    WhoIsSpeakingSection(),
+    YourReportSection(),
+    ProjectSecuritySection(),
+    SecurityRiskAssessmentSection(),
+    ToolGuidanceSection(),
+    ExternalServicesSection(),
+    _ReplacedByPersona(EnvironmentSetupSection()),
+    _ReplacedByPersona(WorkerTroubleshootingSection()),
+    ProcessManagementSection(),
+    ModelSpecificSection(),
+)
 
 _DYNAMIC_SECTIONS: Final[tuple[PromptSection, ...]] = (
     RepoContextSection(),  # guard: gated repo skills present
     MemoryContextSection(),  # guard: resolved memory present
+    ProjectContextSection(),  # guard: project_context present
     AvailableSkillsSection(),  # guard: available_skills_prompt
     CustomSuffixSection(),  # guard: system_message_suffix
     CustomSecretsSection(),  # guard: secret_infos present
@@ -95,15 +194,20 @@ def create_registry(preset: PromptPreset = PromptPreset.DEFAULT) -> PromptRegist
     """Build the section registry for ``preset``.
 
     ``DEFAULT`` is the standard OpenHands composition; ``PLANNING`` is the read-only
-    analysis composition (no ``<SECURITY>``/``<SOUL>``/``<MEMORY>`` ...). Both share
-    the dynamic tier. Sections are stateless, so the per-preset sequences are reused
-    across calls.
+    analysis composition (no ``<SECURITY>``/``<SOUL>``/``<MEMORY>`` ...);
+    ``PROJECT_COORDINATOR`` and ``PROJECT_WORKER`` are the two roles of a project.
+    All share the dynamic tier. Sections are stateless, so the per-preset
+    sequences are reused across calls.
     """
     match preset:
         case PromptPreset.PLANNING:
             static_sections = _PLANNING_STATIC_SECTIONS
         case PromptPreset.DEFAULT:
             static_sections = _DEFAULT_STATIC_SECTIONS
+        case PromptPreset.PROJECT_COORDINATOR:
+            static_sections = _PROJECT_COORDINATOR_STATIC_SECTIONS
+        case PromptPreset.PROJECT_WORKER:
+            static_sections = _PROJECT_WORKER_STATIC_SECTIONS
         case _:
             raise ValueError(f"Unknown prompt preset: {preset!r}")
 

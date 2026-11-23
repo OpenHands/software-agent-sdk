@@ -4,6 +4,8 @@
 ``static_system_message`` produces and asserts the snapshot reproduces them.
 """
 
+import pytest
+
 import openhands.sdk.agent.base as agent_base
 from openhands.sdk import Agent
 from openhands.sdk.context.agent_context import AgentContext
@@ -44,26 +46,27 @@ def test_equivalent_to_static_template_kwargs(monkeypatch) -> None:
     _ = agent.static_system_message  # populates `captured`
 
     ctx = agent._build_prompt_context()
-    assert ctx.template_kwargs == captured
+    assert captured == ctx.template_kwargs
 
 
-def test_browser_auto_detected() -> None:
-    agent = Agent(llm=_make_llm(), tools=[Tool(name="browser_tool_set")])
-    assert agent._build_prompt_context().enable_browser is True
-
-
-def test_browser_absent_without_tool() -> None:
-    agent = Agent(llm=_make_llm(), tools=[Tool(name="terminal_tool")])
-    assert agent._build_prompt_context().enable_browser is False
-
-
-def test_browser_explicit_override_wins() -> None:
-    agent = Agent(
-        llm=_make_llm(),
-        tools=[Tool(name="browser_tool_set")],
-        system_prompt_kwargs={"enable_browser": False},
+@pytest.mark.parametrize("enabled", [False, True])
+def test_saved_browser_prompt_flag_loads_but_no_longer_controls_templates(
+    tmp_path, enabled
+) -> None:
+    template = tmp_path / "legacy.j2"
+    template.write_text("{{ enable_browser | default('removed') }} {{ cli_mode }}")
+    saved = Agent(llm=_make_llm(), system_prompt_filename=str(template)).model_dump(
+        mode="json"
     )
-    assert agent._build_prompt_context().enable_browser is False
+    saved["system_prompt_kwargs"] = {"enable_browser": enabled, "cli_mode": True}
+    agent = Agent.model_validate(saved)
+    assert "enable_browser" not in agent.system_prompt_kwargs
+    assert agent.system_prompt_kwargs["cli_mode"] is True
+    assert agent.static_system_message == "removed True"
+    assert (
+        Agent.model_validate_json(agent.model_dump_json()).system_prompt_kwargs
+        == agent.system_prompt_kwargs
+    )
 
 
 def test_model_family_from_spec() -> None:

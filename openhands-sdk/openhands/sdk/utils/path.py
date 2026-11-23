@@ -2,12 +2,74 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
+from contextlib import suppress
+from functools import cache
 from pathlib import Path, PureWindowsPath
 
 
+logger = logging.getLogger(__name__)
+
 _URL_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
+
+# Anchor for a relative OH_PERSISTENCE_DIR: captured once so the state tree
+# cannot move when something chdirs mid-process.
+_INITIAL_CWD = Path.cwd()
+
+
+@cache
+def _warn_relative_persistence_dir(env_dir: str) -> None:
+    """Warn once per distinct relative value; this is called on every lookup."""
+    logger.warning(
+        "OH_PERSISTENCE_DIR=%r is relative; anchoring it to %s. Set an absolute path.",
+        env_dir,
+        _INITIAL_CWD,
+    )
+
+
+def get_user_persistence_dir(default: Path | None = None) -> Path:
+    """Return the base directory for user-level OpenHands persistence.
+
+    Honors the ``OH_PERSISTENCE_DIR`` environment variable when set (used by
+    ephemeral/isolated sandboxes to redirect state onto a persistent volume),
+    otherwise returns ``default``, or ``~/.openhands`` when no ``default`` is
+    given. ``OH_PERSISTENCE_DIR`` replaces the ``~/.openhands`` base directory;
+    callers append their usual subdirectories (e.g. ``profiles``,
+    ``cache/skills``) to the result.
+
+    ``OH_PERSISTENCE_DIR`` is expected to be absolute. A relative value is
+    honored but anchored to the working directory this module was imported in,
+    so a later ``chdir`` cannot split the state tree across call sites.
+
+    Call sites that store the result in a module-level constant freeze it at
+    import time, so ``OH_PERSISTENCE_DIR`` must be set before ``openhands.sdk``
+    is imported; only call-time call sites pick up a later change.
+    """
+    env_dir = os.environ.get("OH_PERSISTENCE_DIR")
+    if env_dir:
+        resolved = Path(env_dir).expanduser()
+        if not resolved.is_absolute():
+            _warn_relative_persistence_dir(env_dir)
+            resolved = _INITIAL_CWD / resolved
+        return resolved
+    if default is not None:
+        return default
+    return Path.home() / ".openhands"
+
+
+def resolves_within(path: Path, root: Path) -> bool:
+    """Whether ``path`` resolves inside the resolved ``root``.
+
+    Symlinks may point anywhere under ``root`` but not outside it. A path that
+    cannot be resolved (a symlink loop raises on Python 3.12) counts as outside.
+    """
+    with suppress(OSError, RuntimeError):
+        if path.resolve().is_relative_to(root.resolve()):
+            return True
+    logger.warning(f"Denying {path}: it resolves outside {root}")
+    return False
 
 
 def to_posix_path(path: str | os.PathLike[str]) -> str:

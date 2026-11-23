@@ -3,7 +3,7 @@
 import os
 import platform
 from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, ClassVar, Literal
 
 from pydantic import Field
 
@@ -268,6 +268,10 @@ class TerminalObservation(Observation):
 class TerminalTool(ToolDefinition[TerminalAction, TerminalObservation]):
     """A ToolDefinition subclass that automatically initializes a TerminalExecutor with auto-detection."""  # noqa: E501
 
+    catalog_description: ClassVar[str] = (
+        "Run shell commands in a persistent terminal session."
+    )
+
     def declared_resources(self, action: Action) -> DeclaredResources:  # noqa: ARG002
         # When using the tmux backend, TmuxPanePool handles concurrency
         # internally via pane-level isolation — opt out of framework
@@ -290,6 +294,7 @@ class TerminalTool(ToolDefinition[TerminalAction, TerminalObservation]):
         executor: ToolExecutor | None = None,
         *,
         env: Mapping[str, str] | None = None,
+        max_observation_wait_seconds: float | None = None,
     ) -> Sequence["TerminalTool"]:
         """Initialize TerminalTool with executor parameters.
 
@@ -307,6 +312,14 @@ class TerminalTool(ToolDefinition[TerminalAction, TerminalObservation]):
             shell_path: Path to the shell binary. On Unix this applies to the
                        subprocess backend; on Windows it can point to a
                        PowerShell executable.
+            max_observation_wait_seconds: Optional finite positive observation-loop
+                wait cap in seconds, including polls and explicit action timeouts.
+                Returns the
+                existing still-running observation without killing the process.
+                Excludes setup, pool queuing and blocking backend I/O; this is not
+                an end-to-end tool-call deadline.
+                None preserves existing timeout behavior. Ignored with a custom
+                executor.
             env: Extra environment variables to add to the terminal session.
                  These are client-controlled session settings and are not part
                  of the LLM-facing TerminalAction schema.
@@ -327,6 +340,7 @@ class TerminalTool(ToolDefinition[TerminalAction, TerminalObservation]):
                 terminal_type=terminal_type,
                 shell_path=shell_path,
                 env=env,
+                max_observation_wait_seconds=max_observation_wait_seconds,
                 full_output_save_dir=conv_state.env_observation_persistence_dir,
             )
 

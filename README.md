@@ -27,7 +27,7 @@
   <hr>
 </div>
 
-The OpenHands Software Agent SDK is a set of Python and REST APIs for **building agents that work with code**.
+The OpenHands Software Agent SDK provides Python, TypeScript, and REST APIs for **building agents that work with code**.
 
 You can use the OpenHands Software Agent SDK for:
 * One-off tasks, like building a README for your repo
@@ -82,9 +82,9 @@ For local development from this repository, run `make build` to install the work
 
 ## Repository boundaries
 
-The Software Agent SDK is the canonical Python SDK and Agent Server implementation. It owns agents, tools, conversations, workspaces, events, and the REST/WebSocket API. [`OpenHands/typescript-client`](https://github.com/OpenHands/typescript-client) mirrors that API for browser-compatible clients, [`OpenHands/OpenHands`](https://github.com/OpenHands/OpenHands) consumes it as Agent Canvas, and [`OpenHands/automation`](https://github.com/OpenHands/automation) owns scheduling, webhooks, run history, and dispatching. The SDK/Agent Server executes the conversations dispatched by automation.
+This repository owns the canonical Python SDK and Agent Server implementation as well as the browser-compatible [TypeScript client](clients/typescript/). It owns agents, tools, conversations, workspaces, events, the REST/WebSocket API, and typed client access to that API. [`OpenHands/OpenHands`](https://github.com/OpenHands/OpenHands) consumes the TypeScript client as Agent Canvas, while [`OpenHands/automation`](https://github.com/OpenHands/automation) owns scheduling, webhooks, run history, and dispatching. The SDK/Agent Server executes the conversations dispatched by automation.
 
-The normal flow is SDK/Agent Server → OpenAPI contract → `typescript-client` → Agent Canvas. Backend behavior and endpoints belong here; client access belongs in `typescript-client`, UI in Agent Canvas, and automation lifecycle behavior in `automation`.
+The normal flow is SDK/Agent Server → OpenAPI contract → `clients/typescript` → Agent Canvas. Backend behavior and endpoints belong in the Python SDK or Agent Server packages; browser-compatible client access belongs in `clients/typescript`, UI in Agent Canvas, and automation lifecycle behavior in `automation`.
 
 ## Documentation
 

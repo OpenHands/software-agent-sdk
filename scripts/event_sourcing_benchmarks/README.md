@@ -31,13 +31,14 @@ After extraction, pass the inner run directory as `--eval-dir`. It should contai
 
 ## Scripts
 
-All scripts accept `--eval-dir <path>` pointing to the extracted evaluation run directory.
+All scripts accept `--eval-dir <path>` pointing to the extracted evaluation run directory, except `bench_append_scaling.py`, which synthesizes its own events and needs no data.
 
 | Script | Metrics | Usage |
 |---|---|---|
 | `bench_persist_latency.py` | Persist latency per event / action cycle | `python bench_persist_latency.py --eval-dir <path>` |
 | `bench_replay_and_recovery.py` | Replay time vs. log size, time-to-recover | `python bench_replay_and_recovery.py --eval-dir <path>` |
 | `bench_storage_growth.py` | Storage growth and composition | `python bench_storage_growth.py --eval-dir <path>` |
+| `bench_append_scaling.py` | `EventLog.append` latency vs. log length | `python bench_append_scaling.py` |
 
 ---
 

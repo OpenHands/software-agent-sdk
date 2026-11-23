@@ -199,6 +199,52 @@ def test_weak_schema_detector_finds_recursive_and_missing_schemas() -> None:
     )
 
 
+def test_weak_schema_detector_ignores_only_tool_definition_meta() -> None:
+    document = {
+        "components": {
+            "schemas": {
+                "ToolDefinition": {
+                    "oneOf": [{"$ref": "#/components/schemas/ExampleTool"}]
+                },
+                "ExampleTool": {
+                    "type": "object",
+                    "properties": {
+                        "meta": {
+                            "anyOf": [
+                                {
+                                    "type": "object",
+                                    "additionalProperties": True,
+                                },
+                                {"type": "null"},
+                            ]
+                        }
+                    },
+                },
+                "Opaque": {
+                    "type": "object",
+                    "properties": {
+                        "meta": {
+                            "type": "object",
+                            "additionalProperties": True,
+                        }
+                    },
+                },
+            }
+        }
+    }
+
+    findings = _quality.find_weak_locations(document)
+
+    assert not any("ExampleTool/properties/meta" in item.pointer for item in findings)
+    assert (
+        _quality.WeakLocation(
+            pointer="/components/schemas/Opaque/properties/meta/additionalProperties",
+            kind="unrestricted-additional-properties",
+        )
+        in findings
+    )
+
+
 def test_weak_schema_allowlist_is_an_exact_ratchet() -> None:
     finding = _quality.WeakLocation(
         pointer="/components/schemas/Opaque/additionalProperties",
@@ -230,3 +276,11 @@ def test_weak_schema_allowlist_is_an_exact_ratchet() -> None:
             today=dt.date(2025, 1, 2),
         )[0]
     )
+
+
+def test_experimental_projects_routes_stay_out_of_the_schema():
+    """Projects is experimental: its routes work but are not part of the
+    public REST surface, so they carry no deprecation runway yet."""
+    paths = build_public_openapi()["paths"]
+
+    assert not [path for path in paths if path.startswith("/api/projects")]

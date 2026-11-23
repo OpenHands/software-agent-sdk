@@ -2,7 +2,7 @@
 
 import os
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from pydantic import Field
 
@@ -66,6 +66,10 @@ TOOL_DESCRIPTION = """Fast content search tool.
 
 class GrepTool(ToolDefinition[GrepAction, GrepObservation]):
     """A ToolDefinition subclass that automatically initializes a GrepExecutor."""
+
+    catalog_description: ClassVar[str] = (
+        "Search file contents with regular expressions."
+    )
 
     def declared_resources(self, action: Action) -> DeclaredResources:
         """Declare resource usage for parallel execution.
