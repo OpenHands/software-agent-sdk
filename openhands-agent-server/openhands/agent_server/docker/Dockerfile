@@ -98,7 +98,9 @@ ARG APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=120 -o Acquire::ht
 # 20261114 skips the three-day window to pick up linux-libc-dev 6.12.117-1
 # (DSA-6628-1: CVE-2026-98466, CVE-2026-98715, CVE-2026-98853, CVE-2026-99109,
 # CVE-2026-99281, CVE-2026-99288), first published in snapshot 20261113T212035Z.
-ARG DEBIAN_SNAPSHOT=20261114T000000Z
+# 20261123 picks up krb5 1.21.3-5+deb13u2 and linux-libc-dev 6.12.118-1, first
+# published in trixie-security snapshots 20261122T195129Z and 20261122T200302Z.
+ARG DEBIAN_SNAPSHOT=20261123T000000Z
 
 COPY --from=python-runtime /usr/local /usr/local
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
