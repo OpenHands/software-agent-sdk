@@ -306,17 +306,25 @@ class ParallelToolExecutor:
         - ``declared=True``, keys present → lock those resources.
         """
         capture = active_capture()
-        execution_id = None
+        execution_id: str | None = None
         cancelled = cancel_token is not None and cancel_token.is_cancelled
         if cancelled:
             results = self._cancelled_error(action, span_owner)
         else:
+            execute = tool_runner
             if capture is not None:
-                execution_id = uuid4().hex
-                capture.append(
-                    "tool_start", {"action_id": action.id, "execution_id": execution_id}
-                )
-            results = self._run_locked(action, tool_runner, tool)
+
+                def execute_with_start(action: ActionEvent) -> list[Event]:
+                    nonlocal execution_id
+                    execution_id = uuid4().hex
+                    capture.append(
+                        "tool_start",
+                        {"action_id": action.id, "execution_id": execution_id},
+                    )
+                    return tool_runner(action)
+
+                execute = execute_with_start
+            results = self._run_locked(action, execute, tool)
         if capture is not None:
             for result in results:
                 if isinstance(result, (AgentErrorEvent, ObservationEvent)):

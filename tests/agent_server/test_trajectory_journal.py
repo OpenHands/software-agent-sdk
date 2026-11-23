@@ -38,6 +38,7 @@ from openhands.agent_server.persistence.trajectory_validation import (
 )
 from openhands.sdk import Agent, LocalConversation
 from openhands.sdk.agent.parallel_executor import ParallelToolExecutor
+from openhands.sdk.conversation.resource_lock_manager import ResourceLockManager
 from openhands.sdk.event import (
     ActionEvent,
     Event,
@@ -52,7 +53,7 @@ from openhands.sdk.observability.trajectory_capture import (
     use_admission,
 )
 from openhands.sdk.observability.trajectory_journal import Journal, encode
-from openhands.sdk.tool.builtins.think import ThinkObservation
+from openhands.sdk.tool.builtins.think import ThinkObservation, ThinkTool
 
 
 def _records(journal: Journal, root: Path):
@@ -161,31 +162,47 @@ def test_retry_preserves_attempts_and_repeated_input(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_async_interruption_persists_stream_prefix(tmp_path, monkeypatch):
+@pytest.mark.parametrize("adapter", ["completion", "responses"])
+async def test_async_interruption_persists_stream_prefix(
+    tmp_path, monkeypatch, adapter
+):
+    from litellm.types.llms.openai import (
+        FunctionCallArgumentsDoneEvent,
+        ResponsesAPIStreamEvents,
+    )
     from litellm.types.utils import Delta, ModelResponseStream, StreamingChoices
 
     journal = Journal(tmp_path / "spool", "conversation")
     arrived = asyncio.Event()
+    arguments = '{"command":"pwd"}'
 
     async def stream():
-        yield ModelResponseStream(
-            id="stream",
-            choices=[StreamingChoices(delta=Delta(content="prefix"), index=0)],
-        )
+        if adapter == "completion":
+            yield ModelResponseStream(
+                id="stream",
+                choices=[StreamingChoices(delta=Delta(content="prefix"), index=0)],
+            )
+        else:
+            yield FunctionCallArgumentsDoneEvent(
+                type=ResponsesAPIStreamEvents.FUNCTION_CALL_ARGUMENTS_DONE,
+                item_id="item",
+                output_index=0,
+                arguments=arguments,
+            )
+        arrived.set()
         await asyncio.Future()
 
     async def provider(**_kwargs):
         return stream()
 
-    monkeypatch.setattr("openhands.sdk.llm.llm.litellm_acompletion", provider)
+    monkeypatch.setattr(f"openhands.sdk.llm.llm.litellm_a{adapter}", provider)
     llm = LLM(model="gpt-4o", api_key=SecretStr("test"))
+    request = llm.acompletion if adapter == "completion" else llm.aresponses
     question = Message(role="user", content=[TextContent(text="stream")])
 
     with capture_run(ShadowCapture(journal), lambda: None, lambda: "paused"):
         task = asyncio.create_task(
-            llm.acompletion(
-                [question], on_token=lambda _chunk: arrived.set(), stream=True
-            )
+            request([question], on_token=lambda _chunk: None, stream=True)
         )
         await asyncio.wait_for(arrived.wait(), 5)
         task.cancel()
@@ -194,7 +211,10 @@ async def test_async_interruption_persists_stream_prefix(tmp_path, monkeypatch):
 
     records = _records(journal, tmp_path / "archive")
     (fragment,) = (item for item in records if item.record.kind == "stream_fragment")
-    assert fragment.payloads[0]["choices"][0]["delta"]["content"] == "prefix"
+    if adapter == "completion":
+        assert fragment.payloads[0]["choices"][0]["delta"]["content"] == "prefix"
+    else:
+        assert fragment.payloads[0]["arguments"] == arguments
     assert coverage(iter(records)).attempts == {
         fragment.record.data["attempt_id"]: "aborted"
     }
@@ -275,6 +295,39 @@ def test_parallel_tool_results_match_native_ids_and_keep_recorded_order(
         "custom-1": ["success"],
         "custom-2": ["rejected"],
     }
+
+
+@pytest.mark.asyncio
+async def test_tool_lock_timeout_records_error_without_execution(tmp_path):
+    journal = Journal(tmp_path / "spool", "conversation")
+    capture = ShadowCapture(journal)
+    (tool,) = ThinkTool.create()
+    tool_call = MessageToolCall(
+        id="tool-call", name=tool.name, arguments="{}", origin="completion"
+    )
+    action = ActionEvent(
+        thought=[],
+        tool_name=tool.name,
+        tool_call_id=tool_call.id,
+        tool_call=tool_call,
+        llm_response_id="response",
+        action=None,
+    )
+    locks = ResourceLockManager(timeouts={"tool": 0.0})
+    executor = ParallelToolExecutor(lock_manager=locks)
+
+    def run(_action: ActionEvent) -> list[Event]:
+        pytest.fail("Tool executed without its lock")
+
+    with capture_run(capture, lambda: None, lambda: "finished"):
+        capture.append_event(action, action_id=None)
+        with locks.lock(f"tool:{tool.name}"):
+            await executor.aexecute_batch([action], run, {tool.name: tool})
+
+    records = _records(journal, tmp_path / "archive")
+    report = coverage(iter(records))
+    assert report.actions == {action.id: ["error"]}
+    assert report.executions == {}
 
 
 def test_sigkill_recovers_acknowledged_prefix(tmp_path):
