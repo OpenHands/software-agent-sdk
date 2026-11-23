@@ -478,6 +478,24 @@ def test_recovery_provenance_served_over_http_and_websocket(server_env):
         conversation.close()
 
 
+def _wait_for_no_trajectory_temp_zips(
+    conversations_path: Path, timeout: float = 10.0
+) -> None:
+    """Wait for the downloads' temp zips to be unlinked.
+
+    Each download removes its temp zip after sending the body, so the last
+    request's cleanup can still be pending once the client has read every
+    byte. A zip that never disappears is still a leak, so this keeps the
+    assertion meaningful while not racing the server's cleanup.
+    """
+    deadline = time.monotonic() + timeout
+    while leftover := list(conversations_path.glob("*.zip*")):
+        assert time.monotonic() < deadline, (
+            f"trajectory temp zips were not removed: {[p.name for p in leftover]}"
+        )
+        time.sleep(0.01)
+
+
 def test_trajectory_downloads_are_independent(tmp_path, monkeypatch):
     with live_server_env(tmp_path, monkeypatch) as server_env:
         agent = Agent(
@@ -505,8 +523,8 @@ def test_trajectory_downloads_are_independent(tmp_path, monkeypatch):
                     assert (
                         f"{conversation_id.hex}/base_state.json" in archive.namelist()
                     )
-            assert not list(
-                (server_env["workspace_path"].parent / "conversations").glob("*.zip*")
+            _wait_for_no_trajectory_temp_zips(
+                server_env["workspace_path"].parent / "conversations"
             )
 
 
