@@ -95,6 +95,7 @@ export type {
   ProjectMemoryFile,
   ProjectMemoryFileContent,
   ProjectMemoryResponse,
+  ProjectPullRequest,
   ProjectsClientOptions,
   ProjectsListResponse,
   ProjectTranscriptMessage,

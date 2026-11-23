@@ -17,7 +17,8 @@ but never judged or resolved: the coordinator is how the user steers the
 project, so it stays open. A new
 user message removes these tags, since the conversation is open again. It also
 tells the coordinator what it needs to hear: finished turns, stops on the
-user, the user's own messages and answers to cards.
+user, the user's own messages and answers to cards. Across turns it keeps the
+pull requests a member opened (``prs``).
 
 The board reads these tags from the conversation catalog, so listing a project
 never loads conversation state or events.
@@ -31,6 +32,7 @@ from uuid import UUID
 
 from openhands.agent_server.project_turns import (
     CardAnswered,
+    PullRequestsOpened,
     TurnEnded,
     TurnOutcome,
     TurnSignal,
@@ -46,8 +48,10 @@ from openhands.sdk.conversation.types import (
     ASK_TAG_KEY,
     BOARD_TAG_KEYS,
     PROJECT_TAG_KEY,
+    PULL_REQUESTS_TAG_KEY,
     RESOLVE_NOTE_TAG_KEY,
     RESOLVED_TAG_KEY,
+    TAG_VALUE_MAX_LENGTH,
     TURN_TAG_KEY,
 )
 from openhands.sdk.event import Event
@@ -60,6 +64,17 @@ AUTO_RESOLVE_THRESHOLD: Final[float] = 0.9
 """Critic score at or above which a finished conversation is marked resolved."""
 
 ResolvedBy = Literal["user", "auto"]
+
+
+def merge_pull_requests(current: str | None, refs: list[str]) -> str:
+    """``current`` (a ``prs`` tag value) with ``refs`` added at the end. The
+    oldest refs drop off when the list outgrows a tag value."""
+    merged = [ref for ref in (current or "").split(",") if ref]
+    merged += [ref for ref in refs if ref not in merged]
+    while len(",".join(merged)) > TAG_VALUE_MAX_LENGTH:
+        merged.pop(0)
+    return ",".join(merged)
+
 
 AGENT_RESOLVE_NOTE = "agent"
 """``resolvenote`` of a conversation its own agent resolved, with
@@ -173,6 +188,8 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
         elif isinstance(signal, TurnStopped):
             if self.on_stopped is not None:
                 self._notify_stopped(project, signal, self.on_stopped)
+        elif isinstance(signal, PullRequestsOpened):
+            self._enqueue(lambda: self._add_pull_requests(signal.refs))
         else:
             self._enqueue(lambda: self._record(project, signal))
 
@@ -220,6 +237,14 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
                 )
 
         self._tail = asyncio.create_task(run())
+
+    async def _add_pull_requests(self, refs: list[str]) -> None:
+        if not await self._member():
+            return
+        current = self.tags().get(PULL_REQUESTS_TAG_KEY)
+        merged = merge_pull_requests(current, refs)
+        if merged != current:
+            await self.set_tag(self.conversation_id, PULL_REQUESTS_TAG_KEY, merged)
 
     async def _member(self) -> bool:
         return self.is_member is None or await self.is_member()
