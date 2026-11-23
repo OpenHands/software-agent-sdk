@@ -29,7 +29,7 @@ class TestMCPToolImmutability:
         self.mock_mcp_tool: Mock = MagicMock(spec=mcp.types.Tool)
         self.mock_mcp_tool.name = "test_tool"
         self.mock_mcp_tool.description = "Test tool description"
-        self.mock_mcp_tool.inputSchema = {
+        self.mock_mcp_tool.input_schema = {
             "type": "object",
             "properties": {"command": {"type": "string"}},
         }
@@ -50,7 +50,7 @@ class TestMCPToolImmutability:
             self.tool.mcp_tool = mcp.types.Tool(
                 name="modified_name",
                 description="modified description",
-                inputSchema={"type": "object", "properties": {}},
+                input_schema={"type": "object", "properties": {}},
             )
 
         with pytest.raises(Exception):
@@ -76,7 +76,7 @@ class TestMCPToolImmutability:
         modified_mcp_tool = MCPTool(
             name="modified_tool",
             description="Modified MCP tool description",
-            inputSchema=self.tool.mcp_tool.inputSchema,
+            input_schema=self.tool.mcp_tool.input_schema,
         )
 
         # Create a copy with modified fields
@@ -123,7 +123,7 @@ class TestMCPToolImmutability:
         mock_tool2 = MagicMock(spec=mcp.types.Tool)
         mock_tool2.name = "another_tool"
         mock_tool2.description = "Another test tool"
-        mock_tool2.inputSchema = {"type": "object"}
+        mock_tool2.input_schema = {"type": "object"}
         mock_tool2.annotations = None
         mock_tool2.meta = None
 
@@ -137,7 +137,7 @@ class TestMCPToolImmutability:
             tool2.mcp_tool = mcp.types.Tool(
                 name="modified_name",
                 description="modified description",
-                inputSchema={"type": "object", "properties": {}},
+                input_schema={"type": "object", "properties": {}},
             )
 
         # Verify it has the correct properties

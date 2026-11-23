@@ -53,8 +53,8 @@ def _make_result(content=None, is_error=False) -> MagicMock:
     """Build a mock CallToolResult with the given content blocks."""
     result = MagicMock(spec=mcp.types.CallToolResult)
     result.content = content or [mcp.types.TextContent(type="text", text="Success")]
-    result.isError = is_error
-    result.structuredContent = None
+    result.is_error = is_error
+    result.structured_content = None
     result.meta = None
     return result
 
@@ -112,7 +112,7 @@ def test_executor_copies_and_masks_structured_result_fields(
     assert secret is not None
     result = mcp.types.CallToolResult(
         _meta={"hint": f"Bearer {secret}"},
-        structuredContent={"token": secret},
+        structured_content={"token": secret},
         content=[mcp.types.TextContent(type="text", text=f"token={secret}")],
     )
 
@@ -336,7 +336,9 @@ def test_executor_masks_secrets_in_returned_observation(
             mcp.types.TextContent(
                 type="text", text=f"authenticated with {secret_value}"
             ),
-            mcp.types.ImageContent(type="image", data="aGVsbG8=", mimeType="image/png"),
+            mcp.types.ImageContent(
+                type="image", data="aGVsbG8=", mime_type="image/png"
+            ),
         ],
     )
     action = MCPToolAction(data={"api_key": "$API_KEY"})

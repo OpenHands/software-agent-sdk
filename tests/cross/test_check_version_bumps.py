@@ -142,6 +142,28 @@ def test_find_version_changes_detects_agent_server_package(tmp_path: Path):
     ]
 
 
+def test_write_version_change_output(tmp_path: Path):
+    output = tmp_path / "github-output"
+
+    _prod.write_version_change_output([], str(output))
+    _prod.write_version_change_output(
+        [
+            VersionChange(
+                package="openhands-sdk",
+                path=Path("openhands-sdk/pyproject.toml"),
+                previous_version="1.47.0",
+                current_version="1.48.0",
+            )
+        ],
+        str(output),
+    )
+
+    assert output.read_text().splitlines() == [
+        "versions_changed=false",
+        "versions_changed=true",
+    ]
+
+
 def test_validate_package_version_consistency_accepts_matching_versions(tmp_path: Path):
     repo_root = _init_repo_with_versions(tmp_path, "1.44.1")
 

@@ -357,7 +357,13 @@ class DelayedParser(EnvParser):
         return self.parser.to_env(key, value, output)
 
 
-def merge(a, b):
+def merge(a, b, *, none_overrides: bool = False):
+    """Merge ``b`` over ``a``.
+
+    By default a ``None`` in ``b`` keeps ``a``. With ``none_overrides=True`` an
+    explicit ``None`` in ``b`` replaces ``a`` (e.g. ``OH_<FIELD>_IS_NONE=1``
+    over a config file value); ``MISSING`` still keeps ``a``.
+    """
     if a is MISSING:
         return b
     if b is MISSING:
@@ -365,18 +371,20 @@ def merge(a, b):
     if isinstance(a, dict) and isinstance(b, dict):
         result = {**a}
         for key, value in b.items():
-            result[key] = merge(result.get(key), value)
+            result[key] = merge(result.get(key), value, none_overrides=none_overrides)
         return result
     if isinstance(a, list) and isinstance(b, list):
         result = a.copy()
         for index, value in enumerate(b):
             if index >= len(a):
-                result[index] = value
+                result.append(value)
             else:
-                result[index] = merge(result[index], value)
+                result[index] = merge(
+                    result[index], value, none_overrides=none_overrides
+                )
         return result
     # Favor present values over missing ones
-    if b is None:
+    if b is None and not none_overrides:
         return a
     # Later values overwrite earier ones
     return b

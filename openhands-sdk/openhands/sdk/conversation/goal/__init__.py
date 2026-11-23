@@ -16,6 +16,7 @@ Usage::
 """
 
 from openhands.sdk.conversation.goal.controller import (
+    GoalAsked,
     GoalContinue,
     GoalController,
     GoalDone,
@@ -29,6 +30,7 @@ from openhands.sdk.conversation.goal.runner import run_goal
 
 
 __all__ = [
+    "GoalAsked",
     "GoalContinue",
     "GoalController",
     "GoalDone",

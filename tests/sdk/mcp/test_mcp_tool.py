@@ -47,8 +47,8 @@ class TestMCPToolObservation:
         result.content = [
             mcp.types.TextContent(type="text", text="Operation completed successfully")
         ]
-        result.isError = False
-        result.structuredContent = None
+        result.is_error = False
+        result.structured_content = None
         result.meta = None
 
         observation = MCPToolObservation.from_call_tool_result(
@@ -69,8 +69,8 @@ class TestMCPToolObservation:
         # Create mock MCP result
         result = MagicMock(spec=mcp.types.CallToolResult)
         result.content = [mcp.types.TextContent(type="text", text="Operation failed")]
-        result.isError = True
-        result.structuredContent = None
+        result.is_error = True
+        result.structured_content = None
         result.meta = None
 
         observation = MCPToolObservation.from_call_tool_result(
@@ -92,11 +92,11 @@ class TestMCPToolObservation:
         result.content = [
             mcp.types.TextContent(type="text", text="Here's the image:"),
             mcp.types.ImageContent(
-                type="image", data="base64data", mimeType="image/png"
+                type="image", data="base64data", mime_type="image/png"
             ),
         ]
-        result.isError = False
-        result.structuredContent = None
+        result.is_error = False
+        result.structured_content = None
         result.meta = None
 
         observation = MCPToolObservation.from_call_tool_result(
@@ -120,7 +120,7 @@ class TestMCPToolObservation:
     def test_structured_result_fields_are_additive_and_not_llm_content(self):
         result = mcp.types.CallToolResult(
             _meta={"ui": {"resourceUri": "ui://app/index.html"}},
-            structuredContent={"rows": [{"value": "visible-to-client"}]},
+            structured_content={"rows": [{"value": "visible-to-client"}]},
             content=[mcp.types.TextContent(type="text", text="model-visible")],
         )
 
@@ -136,7 +136,7 @@ class TestMCPToolObservation:
         restored = restored_event.observation
         assert isinstance(restored, MCPToolObservation)
 
-        assert restored.structured_content == result.structuredContent
+        assert restored.structured_content == result.structured_content
         assert restored.result_meta == result.meta
         assert "visible-to-client" not in str(restored.to_llm_content)
         assert "model-visible" in str(restored.to_llm_content)
@@ -203,8 +203,8 @@ class TestMCPToolExecutor:
         mock_result.content = [
             mcp.types.TextContent(type="text", text="Success result")
         ]
-        mock_result.isError = False
-        mock_result.structuredContent = None
+        mock_result.is_error = False
+        mock_result.structured_content = None
         mock_result.meta = None
 
         # Mock action
@@ -232,8 +232,8 @@ class TestMCPToolExecutor:
         mock_result.content = [
             mcp.types.TextContent(type="text", text="Error occurred")
         ]
-        mock_result.isError = True
-        mock_result.structuredContent = None
+        mock_result.is_error = True
+        mock_result.structured_content = None
         mock_result.meta = None
 
         # Mock action
@@ -312,8 +312,8 @@ class TestMCPToolExecutor:
         mock_result.content = [
             mcp.types.TextContent(type="text", text="Success after reconnect")
         ]
-        mock_result.isError = False
-        mock_result.structuredContent = None
+        mock_result.is_error = False
+        mock_result.structured_content = None
         mock_result.meta = None
 
         mock_action = MagicMock()
@@ -423,7 +423,7 @@ class TestMCPTool:
         self.mock_mcp_tool: Mock = MagicMock(spec=mcp.types.Tool)
         self.mock_mcp_tool.name = "test_tool"
         self.mock_mcp_tool.description = "A test tool"
-        self.mock_mcp_tool.inputSchema = {
+        self.mock_mcp_tool.input_schema = {
             "type": "object",
             "properties": {"param": {"type": "string"}},
         }
@@ -463,7 +463,7 @@ class TestMCPTool:
         mock_tool_with_annotations = MagicMock(spec=mcp.types.Tool)
         mock_tool_with_annotations.name = "annotated_tool"
         mock_tool_with_annotations.description = "Tool with annotations"
-        mock_tool_with_annotations.inputSchema = {"type": "object"}
+        mock_tool_with_annotations.input_schema = {"type": "object"}
         mock_tool_with_annotations.annotations = ToolAnnotations(title="Annotated Tool")
         mock_tool_with_annotations.meta = {"version": "1.0"}
 
@@ -482,7 +482,7 @@ class TestMCPTool:
         mock_tool_no_desc = MagicMock(spec=mcp.types.Tool)
         mock_tool_no_desc.name = "no_desc_tool"
         mock_tool_no_desc.description = None
-        mock_tool_no_desc.inputSchema = {"type": "object"}
+        mock_tool_no_desc.input_schema = {"type": "object"}
         mock_tool_no_desc.annotations = None
         mock_tool_no_desc.meta = None
 
@@ -513,7 +513,7 @@ def test_action_type_cache_is_bounded():
         tool = mcp.types.Tool(
             name="churning_tool",
             description="d",
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {f"field_{i}": {"type": "string"}},
             },
@@ -552,10 +552,10 @@ def test_action_type_cache_serializes_get_and_evict(monkeypatch):
     monkeypatch.setattr(tool_module, "_mcp_dynamic_action_type", PausingDict())
 
     shared_tool = mcp.types.Tool(
-        name="shared", description="d", inputSchema={"type": "object"}
+        name="shared", description="d", input_schema={"type": "object"}
     )
     other_tool = mcp.types.Tool(
-        name="other", description="d", inputSchema={"type": "object"}
+        name="other", description="d", input_schema={"type": "object"}
     )
     tool_module._create_mcp_action_type(shared_tool)  # seed the cache
 

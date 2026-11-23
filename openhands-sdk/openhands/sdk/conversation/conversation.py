@@ -73,6 +73,7 @@ class Conversation:
         token_callbacks: list[ConversationTokenCallbackType] | None = None,
         hook_config: HookConfig | None = None,
         max_iteration_per_run: int = 500,
+        max_budget_per_run: float | None = None,
         stuck_detection: bool = True,
         stuck_detection_thresholds: (
             StuckDetectionThresholds | Mapping[str, int] | None
@@ -88,6 +89,7 @@ class Conversation:
         observability_metadata: dict[str, TraceMetadataValue] | None = None,
         observability_tags: list[str] | None = None,
         observability_span_name: str = "conversation",
+        observability_parent_span_context: str | None = None,
     ) -> "LocalConversation": ...
 
     @overload
@@ -102,6 +104,7 @@ class Conversation:
         token_callbacks: list[ConversationTokenCallbackType] | None = None,
         hook_config: HookConfig | None = None,
         max_iteration_per_run: int = 500,
+        max_budget_per_run: float | None = None,
         stuck_detection: bool = True,
         stuck_detection_thresholds: (
             StuckDetectionThresholds | Mapping[str, int] | None
@@ -117,6 +120,7 @@ class Conversation:
         observability_metadata: dict[str, TraceMetadataValue] | None = None,
         observability_tags: list[str] | None = None,
         observability_span_name: str = "conversation",
+        observability_parent_span_context: str | None = None,
     ) -> "RemoteConversation": ...
 
     def __new__(
@@ -131,6 +135,7 @@ class Conversation:
         token_callbacks: list[ConversationTokenCallbackType] | None = None,
         hook_config: HookConfig | None = None,
         max_iteration_per_run: int = 500,
+        max_budget_per_run: float | None = None,
         stuck_detection: bool = True,
         stuck_detection_thresholds: (
             StuckDetectionThresholds | Mapping[str, int] | None
@@ -146,6 +151,7 @@ class Conversation:
         observability_metadata: dict[str, TraceMetadataValue] | None = None,
         observability_tags: list[str] | None = None,
         observability_span_name: str = "conversation",
+        observability_parent_span_context: str | None = None,
     ) -> BaseConversation:
         from openhands.sdk.conversation.impl.local_conversation import LocalConversation
         from openhands.sdk.conversation.impl.remote_conversation import (
@@ -197,6 +203,7 @@ class Conversation:
                 token_callbacks=token_callbacks,
                 hook_config=hook_config,
                 max_iteration_per_run=max_iteration_per_run,
+                max_budget_per_run=max_budget_per_run,
                 stuck_detection=stuck_detection,
                 stuck_detection_thresholds=stuck_detection_thresholds,
                 visualizer=visualizer,
@@ -209,6 +216,7 @@ class Conversation:
                 observability_metadata=observability_metadata,
                 observability_tags=observability_tags,
                 observability_span_name=observability_span_name,
+                observability_parent_span_context=observability_parent_span_context,
             )
 
         return LocalConversation(
@@ -219,6 +227,7 @@ class Conversation:
             token_callbacks=token_callbacks,
             hook_config=hook_config,
             max_iteration_per_run=max_iteration_per_run,
+            max_budget_per_run=max_budget_per_run,
             stuck_detection=stuck_detection,
             stuck_detection_thresholds=stuck_detection_thresholds,
             visualizer=visualizer,
@@ -232,4 +241,5 @@ class Conversation:
             observability_metadata=observability_metadata,
             observability_tags=observability_tags,
             observability_span_name=observability_span_name,
+            observability_parent_span_context=observability_parent_span_context,
         )

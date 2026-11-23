@@ -2,7 +2,7 @@
 
 from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from pydantic import Field
 
@@ -68,6 +68,8 @@ Examples:
 
 class WriteFileTool(ToolDefinition[WriteFileAction, WriteFileObservation]):
     """Tool for writing complete file contents."""
+
+    user_selectable: ClassVar[bool] = False
 
     def declared_resources(self, action: Action) -> DeclaredResources:
         """Lock on the target file path so concurrent writes to the same

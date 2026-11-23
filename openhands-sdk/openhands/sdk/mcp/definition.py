@@ -76,7 +76,7 @@ class MCPToolObservation(Observation):
             elif isinstance(block, mcp.types.ImageContent):
                 content.append(
                     ImageContent(
-                        image_urls=[f"data:{block.mimeType};base64,{block.data}"],
+                        image_urls=[f"data:{block.mime_type};base64,{block.data}"],
                     )
                 )
             else:
@@ -86,9 +86,9 @@ class MCPToolObservation(Observation):
 
         return cls(
             content=content,
-            is_error=result.isError,
+            is_error=result.is_error,
             tool_name=tool_name,
-            structured_content=result.structuredContent,
+            structured_content=result.structured_content,
             result_meta=result.meta,
         )
 

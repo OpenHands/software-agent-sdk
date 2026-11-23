@@ -1,0 +1,14 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "full-package",
+  "version": "1.2.0",
+  "description": "Every component type the SDK implements, in one conformant package.",
+  "author": { "name": "OpenHands" },
+  "homepage": "https://openhands.dev",
+  "license": "MIT",
+  "keywords": ["fixture", "agent-plugins"],
+  "extensions": {
+    "dev.openhands": { "entry_command": "report" },
+    "com.example.other": { "entry_command": 17, "anything": [1, 2, 3] }
+  }
+}

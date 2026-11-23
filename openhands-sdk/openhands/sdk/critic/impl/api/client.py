@@ -1,6 +1,6 @@
 import copy
 from collections.abc import Sequence
-from typing import Any, cast
+from typing import Annotated, Any, cast
 
 import httpx
 from litellm import ChatCompletionToolParam
@@ -10,17 +10,11 @@ from pydantic import (
     Field,
     PrivateAttr,
     SecretStr,
-    field_serializer,
-    field_validator,
 )
 from pydantic.json_schema import SkipJsonSchema
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
-from openhands.sdk.utils.pydantic_secrets import (
-    is_redacted_secret,
-    serialize_secret,
-    validate_secret,
-)
+from openhands.sdk.utils.pydantic_secrets import SecretField, is_redacted_secret
 
 from .chat_template import ChatTemplateRenderer
 
@@ -98,10 +92,10 @@ class CriticClient(BaseModel):
         default=DEFAULT_CRITIC_SERVER_URL,
         description="Base URL of the vLLM classification service",
     )
-    # validate_secret() normalizes empty, whitespace-only, and redacted inputs
-    # to None. That value may serialize as null during response-model rebuilds,
-    # but it is not part of the public REST schema contract.
-    api_key: str | SecretStr | SkipJsonSchema[None] = Field(
+    # SecretField reads empty, whitespace-only, and redacted inputs as None.
+    # That value may serialize as null during response-model rebuilds, but it
+    # is not part of the public REST schema contract.
+    api_key: Annotated[str | SecretStr | SkipJsonSchema[None], SecretField()] = Field(
         ..., description="API key for authenticating with the vLLM service"
     )
     model_name: str = Field(
@@ -165,22 +159,6 @@ class CriticClient(BaseModel):
         "Neutral": "sentiment_neutral",
         "Negative": "sentiment_negative",
     }
-
-    # ---------------------
-    # Validation
-    # ---------------------
-    @field_validator("api_key", mode="before")
-    @classmethod
-    def _validate_and_convert_api_key(
-        cls, v: str | SecretStr | None, info
-    ) -> SecretStr | None:
-        """Validate api_key and decrypt it when needed."""
-        return validate_secret(v, info)
-
-    @field_serializer("api_key", when_used="always")
-    def _serialize_api_key(self, v: str | SecretStr | None, info):
-        secret = v if v is None or isinstance(v, SecretStr) else SecretStr(v)
-        return serialize_secret(secret, info)
 
     # ---------------------
     # Label helpers

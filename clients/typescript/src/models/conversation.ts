@@ -14,7 +14,8 @@ import {
   Message,
 } from '../types/base';
 import type { HookConfig } from '../hooks';
-import type { LaunchedProfile } from './agent-profile';
+import type { ACPEffortOption } from './acp-model-discovery';
+import type { LaunchedAgentProfile, LaunchedProfile } from './agent-profile';
 
 export enum ConversationSortOrder {
   CREATED_AT = 'CREATED_AT',
@@ -23,13 +24,31 @@ export enum ConversationSortOrder {
   UPDATED_AT_DESC = 'UPDATED_AT_DESC',
 }
 
+export type ConversationRuntimeStatus =
+  'available' | 'starting' | 'missing' | 'ownership_lost' | 'error';
+
+export interface ConversationRuntimeError {
+  code: string;
+  message: string;
+}
+
+export interface ConversationRuntimeInfo {
+  runtime_status: ConversationRuntimeStatus;
+  can_resume: boolean;
+  runtime_error: ConversationRuntimeError | null;
+}
+
 export interface ConversationInfo {
   id: ConversationID;
+  /** Availability of the execution runtime backing this catalog entry. */
+  runtime_info?: ConversationRuntimeInfo | null;
   /**
    * Current execution status of the conversation.
    * Note: This field was renamed from agent_status to execution_status in the API.
    */
   execution_status: ConversationExecutionStatus;
+  current_effort?: string | null;
+  available_efforts?: ACPEffortOption[];
   /**
    * @deprecated Use execution_status instead. This field is kept for backward compatibility.
    */
@@ -41,6 +60,8 @@ export interface ConversationInfo {
   workspace: unknown;
   persistence_dir: string;
   max_iterations?: number;
+  /** USD limit on accumulated conversation cost; a completed step may overshoot. */
+  max_budget_per_run?: number | null;
   stuck_detection?: boolean;
   conversation_stats?: ConversationStats;
   /** API may return stats instead of conversation_stats */
@@ -63,8 +84,9 @@ export interface ConversationInfo {
    * Provenance of the agent profile that launched this conversation.
    * Present when the conversation was started via `agent_profile_id`; absent
    * for conversations started directly with `agent` or `agent_settings`.
-   * Lands with SDK PR #3784.
    */
+  launched_agent_profile?: LaunchedAgentProfile | null;
+  /** @deprecated Use launched_agent_profile, the canonical server field. */
   launched_profile?: LaunchedProfile | null;
   /**
    * @deprecated Use execution_status instead. This field is kept for backward compatibility.
@@ -101,6 +123,8 @@ export interface CreateConversationRequest {
   agent: AgentBase;
   initial_message?: Message;
   max_iterations: number;
+  /** Positive USD limit on accumulated conversation cost; null means unbounded. */
+  max_budget_per_run?: number | null;
   stuck_detection: boolean;
   workspace: Record<string, unknown>;
   hook_config?: HookConfig | null;
@@ -111,6 +135,8 @@ export interface CreateACPConversationRequest {
   agent: ACPAgentConfig;
   initial_message?: Message;
   max_iterations: number;
+  /** Positive USD limit on accumulated conversation cost; null means unbounded. */
+  max_budget_per_run?: number | null;
   stuck_detection: boolean;
   workspace: Record<string, unknown>;
   hook_config?: HookConfig | null;
@@ -120,12 +146,16 @@ export interface CreateACPConversationRequest {
 export interface UpdateConversationRequest {
   title?: string;
   tags?: Record<string, string>;
+  /** New positive USD limit; omit to keep it, null to remove the limit. */
+  max_budget_per_run?: number | null;
 }
 
 export interface StaticSecret {
   kind: 'StaticSecret';
   value?: string | null;
   description?: string | null;
+  scope?: string | null;
+  scope_description?: string | null;
 }
 
 export interface LookupSecret {
@@ -133,6 +163,8 @@ export interface LookupSecret {
   url: string;
   headers?: Record<string, string>;
   description?: string | null;
+  scope?: string | null;
+  scope_description?: string | null;
   /**
    * @deprecated v1.23.0 agent servers use `url` and optional `headers`.
    */

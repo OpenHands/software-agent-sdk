@@ -1,0 +1,13 @@
+---
+# Pre-warms agent-server pods so AgentSandboxWorkspace claims are near-instant.
+# Set replicas to how many ready pods you want kept available; 0 turns this into a
+# plain on-demand pool (a pod is created per claim, paying full cold-start).
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxWarmPool
+metadata:
+    name: openhands-pool
+    namespace: default
+spec:
+    replicas: 2
+    sandboxTemplateRef:
+        name: openhands-agent-server

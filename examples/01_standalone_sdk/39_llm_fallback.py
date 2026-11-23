@@ -3,7 +3,7 @@
 When the primary LLM fails with a transient error (rate limit, timeout, etc.),
 FallbackStrategy automatically tries alternate LLMs in order.  Fallback is
 per-call: each new request starts with the primary model.  Token usage and
-cost from fallback calls are merged into the primary LLM's metrics.
+cost from fallback calls are recorded in the caller's usage session.
 
 This example:
   1. Saves two fallback LLM profiles to a temporary store.

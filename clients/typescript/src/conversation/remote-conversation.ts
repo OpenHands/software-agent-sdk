@@ -18,6 +18,8 @@ import {
   AgentBase,
   SecretValue,
   LLM,
+  ModelRouterSelection,
+  ModelRouterStatus,
 } from '../types/base';
 import {
   ConversationInfo,
@@ -42,6 +44,11 @@ import type { HookConfig } from '../hooks';
  * Options for creating a RemoteConversation instance.
  */
 export interface RemoteConversationOptions extends BaseConversationOptions {
+  /**
+   * Positive USD limit on accumulated conversation cost, including earlier runs.
+   * Null means unbounded. A completed agent step may overshoot the limit.
+   */
+  maxBudgetPerRun?: number | null;
   /**
    * Optional user ID to associate with server-side observability traces.
    */
@@ -83,7 +90,7 @@ export interface RemoteConversationOptions extends BaseConversationOptions {
  */
 export class RemoteConversation implements IConversation {
   public readonly agent: AgentBase;
-  public readonly workspace: RemoteWorkspace;
+  private _workspace: RemoteWorkspace;
   private _conversationId?: string;
   private _state?: RemoteState;
   private client: HttpClient;
@@ -92,6 +99,9 @@ export class RemoteConversation implements IConversation {
   private onError?: ErrorCallbackType;
   private hookConfig?: HookConfig;
   private userId?: string;
+  private maxIterations?: number;
+  private maxBudgetPerRun?: number | null;
+  private stuckDetection?: boolean;
 
   constructor(
     agent: AgentBase,
@@ -99,18 +109,25 @@ export class RemoteConversation implements IConversation {
     options: RemoteConversationOptions = {}
   ) {
     this.agent = agent;
-    this.workspace = workspace;
+    this._workspace = workspace;
     this.callback = options.callback;
     this.onError = options.onError;
     this._conversationId = options.conversationId;
     this.hookConfig = options.hookConfig;
     this.userId = options.userId;
+    this.maxIterations = options.maxIterations;
+    this.maxBudgetPerRun = options.maxBudgetPerRun;
+    this.stuckDetection = options.stuckDetection;
 
     this.client = new HttpClient({
       baseUrl: workspace.host,
       apiKey: workspace.apiKey,
       timeout: 60000,
     });
+  }
+
+  get workspace(): RemoteWorkspace {
+    return this._workspace;
   }
 
   get id(): ConversationID {
@@ -136,14 +153,18 @@ export class RemoteConversation implements IConversation {
     options: {
       initialMessage?: string;
       maxIterations?: number;
+      maxBudgetPerRun?: number | null;
       stuckDetection?: boolean;
       hookConfig?: HookConfig;
       userId?: string;
     } = {}
   ): Promise<void> {
     if (this._conversationId) {
-      // Existing conversation - verify it exists
-      await this.client.get<ConversationInfo>(`/api/conversations/${this._conversationId}`);
+      // Existing conversation - verify it exists and use its actual workspace.
+      const { data } = await this.client.get<ConversationInfo>(
+        `/api/conversations/${this._conversationId}`
+      );
+      this.bindConversationWorkspace(data);
       return;
     }
 
@@ -156,15 +177,17 @@ export class RemoteConversation implements IConversation {
       };
     }
 
-    // Use hook config from start options, falling back to constructor option
+    // Start options take precedence over the constructor options
     const hookConfig = options.hookConfig ?? this.hookConfig ?? undefined;
     const userId = options.userId ?? this.userId ?? undefined;
 
     const request: CreateConversationRequest = {
       agent: this.agent,
       initial_message: initialMessage,
-      max_iterations: options.maxIterations || 500,
-      stuck_detection: options.stuckDetection ?? true,
+      max_iterations: options.maxIterations || this.maxIterations || 500,
+      max_budget_per_run:
+        options.maxBudgetPerRun !== undefined ? options.maxBudgetPerRun : this.maxBudgetPerRun,
+      stuck_detection: options.stuckDetection ?? this.stuckDetection ?? true,
       workspace: { type: 'local', working_dir: this.workspace.workingDir },
       hook_config: hookConfig ?? null,
       user_id: userId ?? null,
@@ -173,6 +196,26 @@ export class RemoteConversation implements IConversation {
     const response = await this.client.post<ConversationInfo>('/api/conversations', request);
     const conversationInfo = response.data;
     this._conversationId = conversationInfo.id;
+    this.bindConversationWorkspace(conversationInfo);
+  }
+
+  private getConversationWorkingDir(conversationInfo: ConversationInfo): string {
+    const workspace = conversationInfo.workspace;
+    return workspace &&
+      typeof workspace === 'object' &&
+      'working_dir' in workspace &&
+      typeof workspace.working_dir === 'string'
+      ? workspace.working_dir
+      : this.workspace.workingDir;
+  }
+
+  private bindConversationWorkspace(conversationInfo: ConversationInfo): void {
+    this._workspace = new RemoteWorkspace({
+      host: this.workspace.host,
+      workingDir: this.getConversationWorkingDir(conversationInfo),
+      apiKey: this.workspace.apiKey,
+      conversationId: conversationInfo.id,
+    });
   }
 
   /**
@@ -296,14 +339,72 @@ export class RemoteConversation implements IConversation {
   }
 
   /**
-   * Switch the model of a running ACP conversation in place (the ACP analog of
-   * {@link switchLlm}). Calls the wrapper's `session/set_model` on the live
-   * session with context preserved. Only valid once the session exists — the
-   * server returns 409 before the first message and 400 for non-ACP
-   * conversations.
+   * Return model-router state for this conversation.
+   */
+  async getModelRouter(): Promise<ModelRouterStatus> {
+    const response = await this.client.get<ModelRouterStatus>(
+      `/api/conversations/${this.id}/model_router`
+    );
+    return response.data;
+  }
+
+  /**
+   * Add a saved LLM profile as a route to this conversation's model router.
+   */
+  async addModelRouterRoute(
+    profileName: string,
+    routeName?: string,
+    baseRouteName = 'default'
+  ): Promise<ModelRouterStatus> {
+    const response = await this.client.post<ModelRouterStatus>(
+      `/api/conversations/${this.id}/model_router/routes`,
+      { profile_name: profileName, route_name: routeName, base_route_name: baseRouteName }
+    );
+    return response.data;
+  }
+
+  /**
+   * Update route selection for this RouterLLM-backed conversation.
+   */
+  async updateModelRouter(selection: ModelRouterSelection): Promise<ModelRouterStatus> {
+    const response = await this.client.patch<ModelRouterStatus>(
+      `/api/conversations/${this.id}/model_router`,
+      { selection }
+    );
+    return response.data;
+  }
+
+  /**
+   * Switch a RouterLLM-backed conversation to a manual route.
+   */
+  async switchModelRouter(routeName: string): Promise<ModelRouterStatus> {
+    return this.updateModelRouter({
+      mode: 'manual',
+      manual_route_name: routeName,
+    });
+  }
+
+  /**
+   * Return a RouterLLM-backed conversation to automatic routing.
+   */
+  async resumeAutoModelRouting(): Promise<ModelRouterStatus> {
+    return this.updateModelRouter({ mode: 'auto' });
+  }
+
+  /**
+   * Switch the model of an ACP conversation (the ACP analog of
+   * {@link switchLlm}). On a live session the server calls the wrapper's
+   * `session/set_model` in place with context preserved. Before the first run
+   * there is no session yet, so the server answers 200 and stores the model for
+   * the first session. Non-ACP conversations get 400.
    */
   async switchAcpModel(model: string): Promise<void> {
     await this.client.post(`/api/conversations/${this.id}/switch_acp_model`, { model });
+  }
+
+  /** Switch this ACP conversation's reasoning effort (see `ConversationClient.switchAcpEffort`). */
+  async switchAcpEffort(effort: string): Promise<void> {
+    await this.client.post(`/api/conversations/${this.id}/switch_acp_effort`, { effort });
   }
 
   /**
@@ -360,8 +461,9 @@ export class RemoteConversation implements IConversation {
 
     const forkWorkspace = new RemoteWorkspace({
       host: this.workspace.host,
-      workingDir: this.workspace.workingDir,
+      workingDir: this.getConversationWorkingDir(response.data),
       apiKey: this.workspace.apiKey,
+      conversationId: response.data.id,
     });
 
     return new RemoteConversation(response.data.agent, forkWorkspace, {

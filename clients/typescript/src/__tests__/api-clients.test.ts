@@ -1,15 +1,20 @@
+import type { Mock } from 'vitest';
 import {
   Agent,
   ConversationExecutionStatus,
   ConversationManager,
   HttpClient,
   HttpError,
+  isAskUserAnswerEvent,
+  isMessageEditEvent,
+  isReactionEvent,
   RemoteConversation,
   RemoteEventsList,
   RemoteWorkspace,
   Workspace,
 } from '../index';
 import {
+  ACPClient,
   AgentProfilesClient,
   AgentServerClient,
   AgentServerVersionError,
@@ -20,6 +25,7 @@ import {
   ConversationClient,
   DeviceFlowError,
   FileClient,
+  GitClient,
   HooksClient,
   isAgentServerVersionError,
   isOpenHandsCloudHost,
@@ -28,21 +34,24 @@ import {
   MetaProfilesClient,
   PluginsClient,
   ProfilesClient,
+  ProjectsClient,
+  projectIdKey,
   ServerClient,
   SettingsClient,
   SharedClient,
   SkillsClient,
   SubAgentsClient,
+  ToolClient,
   WorkspacesClient,
 } from '../clients';
 import * as http from 'node:http';
 import { EventEmitter } from 'node:events';
 
 // `fetch` rejects a GET body, so the batch endpoints route through node:http.
-// Its `request` export isn't configurable (jest.spyOn fails), so mock the module.
-jest.mock('node:http', () => ({
-  ...jest.requireActual('node:http'),
-  request: jest.fn(),
+// Its `request` export isn't configurable (vi.spyOn fails), so mock the module.
+vi.mock('node:http', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('node:http')>()),
+  request: vi.fn(),
 }));
 
 const originalFetch = global.fetch;
@@ -54,14 +63,14 @@ const originalFetch = global.fetch;
  */
 function mockNodeHttpRequest(responseBody: string, status = 200) {
   const captured: { url?: URL; options?: http.RequestOptions; body?: string } = {};
-  (http.request as jest.Mock).mockImplementation((url: unknown, options: unknown, cb: unknown) => {
+  (http.request as Mock).mockImplementation((url: unknown, options: unknown, cb: unknown) => {
     captured.url = url as URL;
     captured.options = options as http.RequestOptions;
     const callback = cb as (res: http.IncomingMessage) => void;
     const req = new EventEmitter() as unknown as http.ClientRequest;
-    (req as unknown as { setTimeout: unknown }).setTimeout = jest.fn();
-    (req as unknown as { destroy: unknown }).destroy = jest.fn();
-    (req as unknown as { end: unknown }).end = jest.fn((body?: string) => {
+    (req as unknown as { setTimeout: unknown }).setTimeout = vi.fn();
+    (req as unknown as { destroy: unknown }).destroy = vi.fn();
+    (req as unknown as { end: unknown }).end = vi.fn((body?: string) => {
       captured.body = body;
       process.nextTick(() => {
         const res = new EventEmitter() as unknown as http.IncomingMessage;
@@ -82,7 +91,7 @@ describe('Auxiliary API clients', () => {
   afterEach(() => {
     global.fetch = originalFetch;
     clearAgentServerInfoCache();
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 
   it('ConversationManager exposes server and skills namespaces', () => {
@@ -111,7 +120,7 @@ describe('Auxiliary API clients', () => {
 
   describe('Aggregate clients', () => {
     it('AgentServerClient preserves the existing endpoint clients behind namespaces', async () => {
-      global.fetch = jest.fn().mockResolvedValue(
+      global.fetch = vi.fn().mockResolvedValue(
         new Response(JSON.stringify({ status: 'ok' }), {
           status: 200,
           headers: { 'content-type': 'application/json' },
@@ -124,6 +133,7 @@ describe('Auxiliary API clients', () => {
       expect(client.server).toBeInstanceOf(ServerClient);
       expect(client.conversations).toBeInstanceOf(ConversationClient);
       expect(client.settings).toBeInstanceOf(SettingsClient);
+      expect(client.git).toBeInstanceOf(GitClient);
       expect(client.host).toBe('http://example.com');
 
       await client.request({ method: 'GET', path: '/health' });
@@ -140,7 +150,7 @@ describe('Auxiliary API clients', () => {
     });
 
     it('CloudClient sends bearer auth and X-Org-Id for cloud app-host requests', async () => {
-      global.fetch = jest.fn().mockResolvedValue(
+      global.fetch = vi.fn().mockResolvedValue(
         new Response(JSON.stringify({ items: [], current_org_id: 'org-1' }), {
           status: 200,
           headers: { 'content-type': 'application/json' },
@@ -168,7 +178,7 @@ describe('Auxiliary API clients', () => {
     });
 
     it('CloudClient routes hostOverride requests through the configured proxy', async () => {
-      global.fetch = jest.fn().mockResolvedValue(
+      global.fetch = vi.fn().mockResolvedValue(
         new Response(JSON.stringify({ ok: true }), {
           status: 200,
           headers: { 'content-type': 'application/json' },
@@ -202,7 +212,7 @@ describe('Auxiliary API clients', () => {
           }),
         })
       );
-      const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body as string);
+      const body = JSON.parse((global.fetch as Mock).mock.calls[0][1].body as string);
       expect(body).toEqual({
         host: 'https://runtime.example.com',
         method: 'POST',
@@ -213,7 +223,7 @@ describe('Auxiliary API clients', () => {
     });
 
     it('CloudClient forwards app-conversation observability fields', async () => {
-      global.fetch = jest.fn().mockResolvedValue(
+      global.fetch = vi.fn().mockResolvedValue(
         new Response(
           JSON.stringify({
             id: 'task-1',
@@ -258,7 +268,7 @@ describe('Auxiliary API clients', () => {
           }),
         })
       );
-      const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body as string);
+      const body = JSON.parse((global.fetch as Mock).mock.calls[0][1].body as string);
       expect(body).toMatchObject({
         initial_message: null,
         observability_span_name: 'mySpanName',
@@ -293,7 +303,7 @@ describe('Auxiliary API clients', () => {
         ],
         active_agent_profile_id: 'uuid-1',
       };
-      global.fetch = jest.fn().mockResolvedValue(
+      global.fetch = vi.fn().mockResolvedValue(
         new Response(JSON.stringify(payload), {
           status: 200,
           headers: { 'content-type': 'application/json' },
@@ -314,7 +324,7 @@ describe('Auxiliary API clients', () => {
 
     it('getAgentProfile sets X-Expose-Secrets header when requested', async () => {
       const payload = { name: 'default', profile: { agent_kind: 'openhands' } };
-      global.fetch = jest.fn().mockResolvedValue(
+      global.fetch = vi.fn().mockResolvedValue(
         new Response(JSON.stringify(payload), {
           status: 200,
           headers: { 'content-type': 'application/json' },
@@ -324,14 +334,14 @@ describe('Auxiliary API clients', () => {
       const client = new AgentProfilesClient({ host: 'http://example.com' });
       await client.getAgentProfile('default', { exposeSecrets: 'plaintext' });
 
-      const call = (global.fetch as jest.Mock).mock.calls[0];
+      const call = (global.fetch as Mock).mock.calls[0];
       expect(call[0]).toBe('http://example.com/api/agent-profiles/default');
       const headers = call[1]?.headers as Record<string, string>;
       expect(headers['X-Expose-Secrets']).toBe('plaintext');
     });
 
     it('saveAgentProfile posts to /api/agent-profiles/{name}', async () => {
-      global.fetch = jest.fn().mockResolvedValue(
+      global.fetch = vi.fn().mockResolvedValue(
         new Response(
           JSON.stringify({ name: 'myprofile', message: "Agent profile 'myprofile' saved" }),
           {
@@ -352,12 +362,12 @@ describe('Auxiliary API clients', () => {
         'http://example.com/api/agent-profiles/myprofile',
         expect.objectContaining({ method: 'POST' })
       );
-      const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body as string);
+      const body = JSON.parse((global.fetch as Mock).mock.calls[0][1].body as string);
       expect(body).toEqual({ agent_kind: 'openhands', llm_profile_ref: 'gpt-4o' });
     });
 
     it('deleteAgentProfile sends DELETE to /api/agent-profiles/{name}', async () => {
-      global.fetch = jest.fn().mockResolvedValue(
+      global.fetch = vi.fn().mockResolvedValue(
         new Response(
           JSON.stringify({ name: 'myprofile', message: "Agent profile 'myprofile' deleted" }),
           {
@@ -378,7 +388,7 @@ describe('Auxiliary API clients', () => {
     });
 
     it('renameAgentProfile posts new_name', async () => {
-      global.fetch = jest.fn().mockResolvedValue(
+      global.fetch = vi.fn().mockResolvedValue(
         new Response(JSON.stringify({ name: 'newname', message: 'renamed' }), {
           status: 200,
           headers: { 'content-type': 'application/json' },
@@ -388,13 +398,13 @@ describe('Auxiliary API clients', () => {
       const client = new AgentProfilesClient({ host: 'http://example.com' });
       await client.renameAgentProfile('oldname', 'newname');
 
-      const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body as string);
+      const body = JSON.parse((global.fetch as Mock).mock.calls[0][1].body as string);
       expect(body.new_name).toBe('newname');
     });
 
     it('activateAgentProfile posts to /{profileId}/activate', async () => {
       const profileId = 'uuid-abc-123';
-      global.fetch = jest
+      global.fetch = vi
         .fn()
         .mockResolvedValue(
           new Response(
@@ -423,14 +433,14 @@ describe('Auxiliary API clients', () => {
         llm_profile_resolved: true,
         llm_api_key_set: true,
         mcp_server_refs: null,
-        resolved_mcp_servers: [],
+        resolved_mcp_config_keys: [],
         dangling_mcp_server_refs: [],
         acp_api_key_secret_name: null,
         acp_base_url_secret_name: null,
         acp_file_secret_names: [],
         resolved_settings: {},
       };
-      global.fetch = jest.fn().mockResolvedValue(
+      global.fetch = vi.fn().mockResolvedValue(
         new Response(JSON.stringify(diagnostics), {
           status: 200,
           headers: { 'content-type': 'application/json' },
@@ -447,6 +457,54 @@ describe('Auxiliary API clients', () => {
         expect.objectContaining({ method: 'POST' })
       );
     });
+
+    it('materializeAgentProfile sends a draft as the profile body', async () => {
+      global.fetch = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ agent_kind: 'openhands', valid: true, errors: [] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      ) as typeof fetch;
+
+      const client = new AgentProfilesClient({ host: 'http://example.com' });
+      const draft = {
+        agent_kind: 'openhands' as const,
+        llm_profile_ref: 'gpt-4o',
+        tools: [{ name: 'terminal', params: {} }],
+      };
+      await client.materializeAgentProfile('draft', draft);
+
+      const [, init] = (global.fetch as Mock).mock.calls[0];
+      expect(JSON.parse(init.body)).toEqual({ profile: draft });
+    });
+  });
+
+  it('ToolClient.getToolCatalog gets /api/tools/catalog', async () => {
+    const catalog = {
+      tools: [
+        {
+          name: 'terminal',
+          user_selectable: true,
+          usable: true,
+          description: 'Run shell commands',
+          in_default_set: true,
+        },
+      ],
+    };
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(catalog), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+
+    const client = new ToolClient({ host: 'http://example.com' });
+
+    expect(await client.getToolCatalog()).toEqual(catalog);
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/tools/catalog',
+      expect.objectContaining({ method: 'GET' })
+    );
   });
 
   it('Workspace exposes bash namespace', () => {
@@ -462,7 +520,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('ServerClient.getReady accepts a 503 readiness response', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ status: 'initializing', message: 'Booting' }), {
         status: 503,
         headers: { 'content-type': 'application/json' },
@@ -477,7 +535,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('RemoteEventsList can be constructed from client options', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ items: [], next_page_id: null }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -500,7 +558,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('ConversationClient.switchLLM posts an explicit LLM config', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ success: true }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -519,8 +577,121 @@ describe('Auxiliary API clients', () => {
     );
   });
 
+  it('ConversationClient supports model-router endpoints', async () => {
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            enabled: true,
+            selection: { mode: 'manual', manual_route_name: 'primary' },
+            last_route_name: 'primary',
+            routes: [
+              { name: 'primary', model: 'primary-model', label: 'primary' },
+              { name: 'secondary', model: 'secondary-model', label: 'secondary' },
+            ],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            enabled: true,
+            selection: { mode: 'auto', manual_route_name: null },
+            last_route_name: null,
+            routes: [
+              { name: 'primary', model: 'primary-model', label: 'primary' },
+              { name: 'reviewer', model: 'reviewer-model', label: 'reviewer' },
+            ],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        )
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify({ success: true }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ success: true }), { status: 200 }));
+
+    const client = new ConversationClient({ host: 'http://example.com' });
+    const status = await client.getModelRouter('c1');
+    await client.addModelRouterRoute('c1', 'reviewer-profile', 'reviewer');
+    await client.switchModelRouter('c1', 'secondary');
+    await client.resumeAutoModelRouting('c1');
+
+    expect(status.selection?.manual_route_name).toBe('primary');
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      1,
+      'http://example.com/api/conversations/c1/model_router',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      2,
+      'http://example.com/api/conversations/c1/model_router/routes',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          profile_name: 'reviewer-profile',
+          route_name: 'reviewer',
+          base_route_name: 'default',
+        }),
+      })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      3,
+      'http://example.com/api/conversations/c1/model_router',
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({
+          selection: { mode: 'manual', manual_route_name: 'secondary' },
+        }),
+      })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      4,
+      'http://example.com/api/conversations/c1/model_router',
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({ selection: { mode: 'auto' } }),
+      })
+    );
+  });
+
+  it('ACPClient.discoverModels posts the agent and secrets and returns the discovery', async () => {
+    const discovery = {
+      agent_name: 'pi-acp',
+      agent_version: '0.0.33',
+      current_model_id: 'anthropic/claude-opus-4-8',
+      available_models: [{ model_id: 'anthropic/claude-opus-4-8', name: 'Opus 4.8' }],
+      supports_runtime_model_switch: true,
+      error: null,
+    };
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(discovery), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+    const request = {
+      agent_settings: { agent_kind: 'acp' as const, acp_server: 'pi' },
+      secrets: {
+        ANTHROPIC_API_KEY: {
+          kind: 'LookupSecret' as const,
+          url: '/api/settings/secrets/ANTHROPIC_API_KEY',
+        },
+      },
+    };
+
+    const client = new ACPClient({ host: 'http://example.com/', apiKey: 'secret' });
+    const result = await client.discoverModels(request);
+
+    expect(result).toEqual(discovery);
+    const [url, init] = (global.fetch as Mock).mock.calls[0];
+    expect(url).toBe('http://example.com/api/acp/models');
+    expect(init).toMatchObject({ method: 'POST' });
+    expect(JSON.parse(init.body as string)).toEqual(request);
+  });
+
   it('LLMMetadataClient.getOpenAISubscriptionModels returns models array', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ vendor: 'openai', models: ['gpt-5.2', 'gpt-5.3-codex'] }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -551,7 +722,7 @@ describe('Auxiliary API clients', () => {
       { vendor: 'openai', connected: true, account_email: null, expires_at: 4102444800000 },
       { vendor: 'openai', connected: false, account_email: null, expires_at: null },
     ];
-    global.fetch = jest.fn().mockImplementation(() =>
+    global.fetch = vi.fn().mockImplementation(() =>
       Promise.resolve(
         new Response(JSON.stringify(responses.shift()), {
           status: 200,
@@ -599,12 +770,12 @@ describe('Auxiliary API clients', () => {
       'http://example.com/api/llm/subscription/openai/logout',
       expect.objectContaining({ method: 'POST' })
     );
-    expect(JSON.stringify((global.fetch as jest.Mock).mock.calls)).not.toContain('access-token');
-    expect(JSON.stringify((global.fetch as jest.Mock).mock.calls)).not.toContain('refresh-token');
+    expect(JSON.stringify((global.fetch as Mock).mock.calls)).not.toContain('access-token');
+    expect(JSON.stringify((global.fetch as Mock).mock.calls)).not.toContain('refresh-token');
   });
 
   it('SkillsClient.syncSkills posts to the sync endpoint', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ status: 'success', message: 'ok' }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -656,7 +827,7 @@ describe('Auxiliary API clients', () => {
       refreshResponse,
       marketplaceResponse,
     ];
-    global.fetch = jest.fn().mockImplementation(() => {
+    global.fetch = vi.fn().mockImplementation(() => {
       const body = responses.shift();
       return Promise.resolve(
         new Response(JSON.stringify(body), {
@@ -734,7 +905,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('SkillsClient.refreshSkill POSTs to the /refresh route', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ message: 'updated', skill: { name: 'my-skill' } }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -752,7 +923,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('SkillsClient percent-encodes skill names with special characters', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ name: 'my skill', enabled: true }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -815,7 +986,7 @@ describe('Auxiliary API clients', () => {
         },
       ],
     };
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify(payload), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -852,7 +1023,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('SubAgentsClient.getSubAgents defaults to an empty request body', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ agents: [] }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -885,7 +1056,7 @@ describe('Auxiliary API clients', () => {
         },
       ],
     };
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify(payload), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -936,7 +1107,7 @@ describe('Auxiliary API clients', () => {
       uninstallResponse,
       refreshResponse,
     ];
-    global.fetch = jest.fn().mockImplementation(() => {
+    global.fetch = vi.fn().mockImplementation(() => {
       const body = responses.shift();
       return Promise.resolve(
         new Response(JSON.stringify(body), {
@@ -1052,7 +1223,7 @@ describe('Auxiliary API clients', () => {
         workspaceParents: [{ id: '/home', name: 'home', path: '/home' }],
       },
     ];
-    global.fetch = jest.fn().mockImplementation(() => {
+    global.fetch = vi.fn().mockImplementation(() => {
       const body = responses.shift();
       return Promise.resolve(
         new Response(JSON.stringify(body), {
@@ -1092,8 +1263,55 @@ describe('Auxiliary API clients', () => {
     );
   });
 
+  it('WorkspacesClient retries agent-server info after a transient failure', async () => {
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ detail: 'temporarily unavailable' }), {
+          status: 503,
+          headers: { 'content-type': 'application/json' },
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ version: '1.23.0', uptime: 1, idle_time: 0 }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ workspaces: [], workspaceParents: [] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      ) as typeof fetch;
+
+    const client = new WorkspacesClient({ host: 'http://example.com' });
+
+    await expect(client.listWorkspaces()).rejects.toMatchObject({ status: 503 });
+    await expect(client.listWorkspaces()).resolves.toEqual({
+      workspaces: [],
+      workspaceParents: [],
+    });
+
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      1,
+      'http://example.com/server_info',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      2,
+      'http://example.com/server_info',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      3,
+      'http://example.com/api/workspaces',
+      expect.objectContaining({ method: 'GET' })
+    );
+  });
+
   it('WorkspacesClient throws AgentServerVersionError for old agent servers', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ version: '1.22.1', uptime: 1, idle_time: 0 }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -1128,7 +1346,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('BashClient.startCommand normalizes string requests', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
           id: 'bash-command-1',
@@ -1158,8 +1376,31 @@ describe('Auxiliary API clients', () => {
     );
   });
 
+  it('BashClient.stopCommand POSTs to the stop endpoint and swallows 404', async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ success: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+
+    const client = new BashClient({ host: 'http://example.com' });
+    await client.stopCommand('cmd-1');
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/bash/bash_commands/cmd-1/stop',
+      expect.objectContaining({ method: 'POST' })
+    );
+
+    global.fetch = vi
+      .fn()
+      .mockResolvedValue(new Response('Not Found', { status: 404 })) as typeof fetch;
+
+    await expect(client.stopCommand('missing')).resolves.toBeUndefined();
+  });
+
   it('ProfilesClient.listProfiles GETs the profiles endpoint', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
           profiles: [{ name: 'default', model: 'gpt-4o', api_key_set: true }],
@@ -1180,7 +1421,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('ProfilesClient.getProfile sends X-Expose-Secrets header when requested', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
           name: 'default',
@@ -1196,7 +1437,7 @@ describe('Auxiliary API clients', () => {
 
     expect(result.name).toBe('default');
     expect(result.api_key_set).toBe(true);
-    const fetchMock = global.fetch as jest.Mock;
+    const fetchMock = global.fetch as Mock;
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe('http://example.com/api/profiles/default');
     expect(init.method).toBe('GET');
@@ -1204,7 +1445,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('ProfilesClient.getProfile omits X-Expose-Secrets header by default', async () => {
-    global.fetch = jest
+    global.fetch = vi
       .fn()
       .mockResolvedValue(
         new Response(
@@ -1216,13 +1457,13 @@ describe('Auxiliary API clients', () => {
     const client = new ProfilesClient({ host: 'http://example.com' });
     await client.getProfile('default');
 
-    const fetchMock = global.fetch as jest.Mock;
+    const fetchMock = global.fetch as Mock;
     const [, init] = fetchMock.mock.calls[0];
     expect(init.headers['X-Expose-Secrets']).toBeUndefined();
   });
 
   it('ProfilesClient.getProfile percent-encodes the profile name', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ name: 'my profile', config: {}, api_key_set: false }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -1239,7 +1480,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('ProfilesClient.saveProfile POSTs the profile body', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ name: 'default', message: "Profile 'default' saved" }), {
         status: 201,
         headers: { 'content-type': 'application/json' },
@@ -1266,7 +1507,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('ProfilesClient.deleteProfile DELETEs the profile endpoint', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ name: 'default', message: "Profile 'default' deleted" }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -1284,7 +1525,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('ProfilesClient.renameProfile POSTs to the rename endpoint', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ name: 'new', message: "Profile 'old' renamed to 'new'" }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -1305,7 +1546,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('ProfilesClient.getProfile sends X-Expose-Secrets: encrypted', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
           name: 'default',
@@ -1320,13 +1561,13 @@ describe('Auxiliary API clients', () => {
     const result = await client.getProfile('default', { exposeSecrets: 'encrypted' });
 
     expect(result.config.api_key).toBe('gAAAAA-encrypted-blob');
-    const fetchMock = global.fetch as jest.Mock;
+    const fetchMock = global.fetch as Mock;
     const [, init] = fetchMock.mock.calls[0];
     expect(init.headers['X-Expose-Secrets']).toBe('encrypted');
   });
 
   it('ProfilesClient.getProfile surfaces HttpError on 404', async () => {
-    global.fetch = jest.fn(
+    global.fetch = vi.fn(
       async () =>
         new Response(JSON.stringify({ detail: "Profile 'missing' not found" }), {
           status: 404,
@@ -1343,7 +1584,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('ProfilesClient.saveProfile omits include_secrets when not provided', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ name: 'default', message: "Profile 'default' saved" }), {
         status: 201,
         headers: { 'content-type': 'application/json' },
@@ -1353,7 +1594,7 @@ describe('Auxiliary API clients', () => {
     const client = new ProfilesClient({ host: 'http://example.com' });
     await client.saveProfile('default', { llm: { model: 'gpt-4o' } });
 
-    const fetchMock = global.fetch as jest.Mock;
+    const fetchMock = global.fetch as Mock;
     const [, init] = fetchMock.mock.calls[0];
     const body = JSON.parse(init.body as string);
     expect(body).toEqual({ llm: { model: 'gpt-4o' } });
@@ -1361,7 +1602,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('ProfilesClient.validateProfile POSTs to the validate endpoint', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ valid: true, error: null }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -1383,7 +1624,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('ProfilesClient.validateProfile returns a valid=false verdict with the error', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
           valid: false,
@@ -1405,7 +1646,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('ProfilesClient.validateProfile percent-encodes the profile name', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ valid: true }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -1422,7 +1663,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('ProfilesClient.validateProfile surfaces HttpError on 404', async () => {
-    global.fetch = jest.fn(
+    global.fetch = vi.fn(
       async () =>
         new Response(JSON.stringify({ detail: 'Not Found' }), {
           status: 404,
@@ -1440,7 +1681,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('ProfilesClient.renameProfile percent-encodes the source name', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ name: 'fresh', message: 'renamed' }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -1457,7 +1698,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('ProfilesClient.activateProfile POSTs to the activate endpoint', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
           name: 'default',
@@ -1483,14 +1724,13 @@ describe('Auxiliary API clients', () => {
   });
 
   it('MetaProfilesClient.listMetaProfiles GETs the meta-profiles endpoint', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
           meta_profiles: [
             {
               name: 'balanced',
               classifier_model: 'classifier',
-              default_model: 'default',
               num_classes: 2,
             },
           ],
@@ -1513,13 +1753,12 @@ describe('Auxiliary API clients', () => {
   });
 
   it('MetaProfilesClient.getMetaProfile percent-encodes the name', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
           name: 'my profile',
           config: {
             classifier_model: 'classifier',
-            default_model: 'default',
             classes: [{ description: 'UI', model: 'fast' }],
           },
         }),
@@ -1539,7 +1778,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('MetaProfilesClient.saveMetaProfile POSTs the meta-profile body', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ name: 'balanced', message: "Meta-profile 'balanced' saved" }), {
         status: 201,
         headers: { 'content-type': 'application/json' },
@@ -1549,7 +1788,6 @@ describe('Auxiliary API clients', () => {
     const client = new MetaProfilesClient({ host: 'http://example.com' });
     const config = {
       classifier_model: 'classifier',
-      default_model: 'default',
       classes: [{ description: 'tests', model: 'slow' }],
     };
     const result = await client.saveMetaProfile('balanced', config);
@@ -1562,7 +1800,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('MetaProfilesClient.deleteMetaProfile DELETEs the meta-profile endpoint', async () => {
-    global.fetch = jest
+    global.fetch = vi
       .fn()
       .mockResolvedValue(
         new Response(
@@ -1582,19 +1820,22 @@ describe('Auxiliary API clients', () => {
   });
 
   it('MetaProfilesClient.activateMetaProfile POSTs to the activate endpoint', async () => {
-    global.fetch = jest
-      .fn()
-      .mockResolvedValue(
-        new Response(
-          JSON.stringify({ name: 'balanced', message: "Meta-profile 'balanced' activated" }),
-          { status: 200, headers: { 'content-type': 'application/json' } }
-        )
-      ) as typeof fetch;
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          name: 'balanced',
+          message: "Meta-profile 'balanced' activated",
+          applied: true,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } }
+      )
+    ) as typeof fetch;
 
     const client = new MetaProfilesClient({ host: 'http://example.com' });
     const result = await client.activateMetaProfile('balanced');
 
     expect(result.name).toBe('balanced');
+    expect(result.applied).toBe(true);
     expect(global.fetch).toHaveBeenCalledWith(
       'http://example.com/api/meta-profiles/balanced/activate',
       expect.objectContaining({ method: 'POST', body: '{}' })
@@ -1602,7 +1843,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('RemoteConversation.switchLlm POSTs the llm to the switch_llm endpoint', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ success: true }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -1627,8 +1868,112 @@ describe('Auxiliary API clients', () => {
     );
   });
 
+  it('RemoteConversation supports model-router endpoints', async () => {
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            enabled: true,
+            selection: { mode: 'auto' },
+            last_route_name: null,
+            routes: [
+              { name: 'primary', model: 'primary-model', label: 'primary' },
+              { name: 'secondary', model: 'secondary-model', label: 'secondary' },
+            ],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            enabled: true,
+            selection: { mode: 'auto' },
+            last_route_name: null,
+            routes: [
+              { name: 'primary', model: 'primary-model', label: 'primary' },
+              { name: 'reviewer', model: 'reviewer-model', label: 'reviewer' },
+            ],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        )
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify({ success: true }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ success: true }), { status: 200 }));
+
+    const agent = new Agent({ llm: { model: 'gpt-4o', api_key: 'k' } });
+    const workspace = new RemoteWorkspace({ host: 'http://example.com', workingDir: '/tmp' });
+    const conversation = new RemoteConversation(agent, workspace, {
+      conversationId: 'conv-123',
+    });
+
+    const status = await conversation.getModelRouter();
+    await conversation.addModelRouterRoute('reviewer-profile', 'reviewer');
+    await conversation.switchModelRouter('secondary');
+    await conversation.resumeAutoModelRouting();
+
+    expect(status.selection?.mode).toBe('auto');
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      1,
+      'http://example.com/api/conversations/conv-123/model_router',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      2,
+      'http://example.com/api/conversations/conv-123/model_router/routes',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          profile_name: 'reviewer-profile',
+          route_name: 'reviewer',
+          base_route_name: 'default',
+        }),
+      })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      3,
+      'http://example.com/api/conversations/conv-123/model_router',
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({
+          selection: { mode: 'manual', manual_route_name: 'secondary' },
+        }),
+      })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      4,
+      'http://example.com/api/conversations/conv-123/model_router',
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({ selection: { mode: 'auto' } }),
+      })
+    );
+  });
+
+  it('RemoteConversation.switchAcpEffort POSTs the effort', async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ success: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+    const agent = new Agent({ llm: { model: 'gpt-4o', api_key: 'k' } });
+    const workspace = new RemoteWorkspace({ host: 'http://example.com', workingDir: '/tmp' });
+    const conversation = new RemoteConversation(agent, workspace, {
+      conversationId: 'conv-123',
+    });
+
+    await conversation.switchAcpEffort('low');
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/conversations/conv-123/switch_acp_effort',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ effort: 'low' }) })
+    );
+  });
+
   it('RemoteConversation.switchAcpModel POSTs the model to the switch_acp_model endpoint', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ success: true }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -1660,7 +2005,7 @@ describe('Auxiliary API clients', () => {
     });
 
     // Omitted maxIterations must not appear on the wire (server default applies).
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ success: true }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -1677,7 +2022,7 @@ describe('Auxiliary API clients', () => {
 
     // A 409 from the server (run/goal already active) must propagate as HttpError,
     // and maxIterations must be forwarded when supplied.
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ detail: 'Conversation run or goal loop already running.' }), {
         status: 409,
         statusText: 'Conflict',
@@ -1697,7 +2042,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('RemoteConversation.resumeGoal POSTs to goal/resume and surfaces HttpError 400 when nothing is resumable', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ detail: 'no_resumable_goal' }), {
         status: 400,
         statusText: 'Bad Request',
@@ -1721,7 +2066,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('RemoteConversation.stopGoal POSTs to goal/stop and surfaces HttpError 404 for a missing conversation', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ detail: 'Item not found' }), {
         status: 404,
         statusText: 'Not Found',
@@ -1745,7 +2090,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('RemoteConversation.setConfirmationPolicy wraps the SDK v1.23.0 request body', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ success: true }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -1770,7 +2115,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('RemoteConversation.start sends the optional observability user ID', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ id: 'conv-123' }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -1791,7 +2136,7 @@ describe('Auxiliary API clients', () => {
         method: 'POST',
       })
     );
-    const [, init] = (global.fetch as jest.Mock).mock.calls[0];
+    const [, init] = (global.fetch as Mock).mock.calls[0];
     expect(JSON.parse(init.body)).toMatchObject({
       user_id: 'user-42',
       initial_message: {
@@ -1802,7 +2147,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('ConversationManager.createACPConversation sends the optional observability user ID', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ id: 'acp-123' }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -1821,14 +2166,14 @@ describe('Auxiliary API clients', () => {
         method: 'POST',
       })
     );
-    const [, init] = (global.fetch as jest.Mock).mock.calls[0];
+    const [, init] = (global.fetch as Mock).mock.calls[0];
     expect(JSON.parse(init.body)).toMatchObject({
       user_id: 'user-42',
     });
   });
 
   it('HttpClient can parse blob responses when requested', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(new Blob(['zip-data']), {
         status: 200,
         headers: { 'content-type': 'application/zip' },
@@ -1841,6 +2186,19 @@ describe('Auxiliary API clients', () => {
     expect(response.data).toBeInstanceOf(Blob);
     expect(await response.data.text()).toBe('zip-data');
   });
+
+  it.each([undefined, 'reload'] as const)(
+    'HttpClient forwards cache=%s without changing the default',
+    async (cache) => {
+      global.fetch = vi.fn().mockResolvedValue(new Response('file contents')) as typeof fetch;
+      const client = new HttpClient({ baseUrl: 'http://example.com' });
+
+      const response = await client.get('/download.txt', { cache });
+
+      expect(response.data).toBe('file contents');
+      expect((global.fetch as Mock).mock.calls[0][1].cache).toBe(cache);
+    }
+  );
   it('SettingsClient manages LLM profiles', async () => {
     const responses = [
       { profiles: [{ name: 'fast', model: 'openai/gpt-4o', base_url: null, api_key_set: true }] },
@@ -1849,7 +2207,7 @@ describe('Auxiliary API clients', () => {
       { name: 'slow', message: "Profile 'fast' renamed to 'slow'" },
       { name: 'slow', message: "Profile 'slow' deleted" },
     ];
-    global.fetch = jest.fn().mockImplementation(() => {
+    global.fetch = vi.fn().mockImplementation(() => {
       const body = responses.shift();
       return Promise.resolve(
         new Response(JSON.stringify(body), {
@@ -1910,7 +2268,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('ConversationClient.switchProfile posts the profile name', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ success: true }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -1929,8 +2287,27 @@ describe('Auxiliary API clients', () => {
     );
   });
 
+  it('ConversationClient.switchAcpEffort posts the effort', async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ success: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+
+    await new ConversationClient({ host: 'http://example.com' }).switchAcpEffort(
+      'conversation-1',
+      'high'
+    );
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/conversations/conversation-1/switch_acp_effort',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ effort: 'high' }) })
+    );
+  });
+
   it('ConversationClient.switchAcpModel posts the model', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ success: true }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -1950,7 +2327,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('ConversationClient.navigateConversation POSTs event_id and returns the re-rooted info', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ id: 'conversation-1', leaf_event_id: 'event-7' }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -1976,7 +2353,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('ConversationClient.navigateConversation selects the empty tree with a null event_id', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ id: 'conversation-1', leaf_event_id: null }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -2000,7 +2377,7 @@ describe('Auxiliary API clients', () => {
     // navigateTo posts to the route and then GETs the conversation to refresh
     // the cache (leaf_event_id is not broadcast over the WebSocket). Two calls
     // means each needs its own Response (a body can only be read once).
-    global.fetch = jest.fn().mockImplementation(() =>
+    global.fetch = vi.fn().mockImplementation(() =>
       Promise.resolve(
         new Response(JSON.stringify({ id: 'conv-123', leaf_event_id: 'event-3' }), {
           status: 200,
@@ -2033,7 +2410,7 @@ describe('Auxiliary API clients', () => {
 
   it('RemoteConversation.navigateTo passes a null event_id for the empty tree', async () => {
     // Fresh Response per call: navigateTo posts and then refreshes state.
-    global.fetch = jest.fn().mockImplementation(() =>
+    global.fetch = vi.fn().mockImplementation(() =>
       Promise.resolve(
         new Response(JSON.stringify({ id: 'conv-123', leaf_event_id: null }), {
           status: 200,
@@ -2060,7 +2437,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('ConversationManager.switchProfile posts the profile name', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ success: true }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -2079,6 +2456,269 @@ describe('Auxiliary API clients', () => {
     );
   });
 
+  it('updateConversation resolves with the updated ConversationInfo, not the PATCH Success body', async () => {
+    const updated = { id: 'c1', title: 'New title', execution_status: 'idle' };
+    const jsonResponse = (body: unknown) =>
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    const mockFetch = () =>
+      vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse({ success: true }))
+        .mockResolvedValueOnce(jsonResponse(updated)) as typeof fetch;
+
+    for (const client of [
+      new ConversationManager({ host: 'http://example.com' }),
+      new ConversationClient({ host: 'http://example.com' }),
+    ]) {
+      global.fetch = mockFetch();
+      const result = await client.updateConversation('c1', { title: 'New title' });
+
+      expect(result).toEqual(updated);
+      expect(global.fetch).toHaveBeenNthCalledWith(
+        1,
+        'http://example.com/api/conversations/c1',
+        expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ title: 'New title' }) })
+      );
+      expect(global.fetch).toHaveBeenNthCalledWith(
+        2,
+        'http://example.com/api/conversations/c1',
+        expect.objectContaining({ method: 'GET' })
+      );
+    }
+  });
+
+  it('SettingsClient lists and switches experimental features', async () => {
+    const feature = {
+      key: 'qa_feature',
+      label: 'QA feature',
+      description: 'A feature for tests.',
+      enabled: true,
+    };
+    const responses = [[{ ...feature, enabled: false }], feature];
+    global.fetch = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify(responses.shift()), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      )
+    ) as typeof fetch;
+
+    const client = new SettingsClient({ host: 'http://example.com' });
+    await expect(client.listExperimentalFeatures()).resolves.toEqual([
+      { ...feature, enabled: false },
+    ]);
+    await expect(client.updateExperimentalFeature('qa_feature', true)).resolves.toEqual(feature);
+
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      1,
+      'http://example.com/api/settings/experimental',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      2,
+      'http://example.com/api/settings/experimental/qa_feature',
+      expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ enabled: true }) })
+    );
+  });
+
+  it('isMessageEditEvent recognizes an edit of an agent message', () => {
+    const edit = {
+      id: 'e1',
+      kind: 'MessageEditEvent',
+      source: 'agent',
+      timestamp: '2026-11-15T00:00:00Z',
+      target_event_id: 'm1',
+      text: '~~Should I run it?~~ [Edit: Running it.]',
+    };
+
+    expect(isMessageEditEvent(edit)).toBe(true);
+    expect(isMessageEditEvent({ ...edit, kind: 'MessageEvent' })).toBe(false);
+  });
+
+  it('ConversationClient.react sends only the fields it is given', async () => {
+    const saved = {
+      id: 'r1',
+      kind: 'ReactionEvent',
+      source: 'user',
+      timestamp: '2026-11-07T00:00:00Z',
+      target_event_id: 'm1',
+      emoji: 'heart',
+      removed: false,
+    };
+    global.fetch = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify(saved), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      )
+    ) as typeof fetch;
+
+    const client = new ConversationClient({ host: 'http://example.com' });
+    const event = await client.react('conv-1', 'heart', { targetEventId: 'm1', removed: true });
+    await client.react('conv-1', '+1');
+
+    expect(isReactionEvent(event)).toBe(true);
+    expect(isReactionEvent({ ...saved, kind: 'MessageEvent' })).toBe(false);
+    const fetchMock = global.fetch as Mock;
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'http://example.com/api/conversations/conv-1/reactions'
+    );
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      emoji: 'heart',
+      target_event_id: 'm1',
+      removed: true,
+    });
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ emoji: '+1' });
+  });
+
+  it('ProjectsClient covers projects, membership, artifacts and memory', async () => {
+    const project = {
+      id: 'p-1',
+      name: 'Launch',
+      description: '',
+      coordinator_conversation_id: 'c-1',
+      worker_agent_profile_id: null,
+      created_at: '2026-11-10T00:00:00Z',
+      updated_at: '2026-11-10T00:00:00Z',
+    };
+    const artifact = {
+      name: 'notes.md',
+      size: 5,
+      source: 'user',
+      conversation_id: null,
+      created_at: '2026-11-10T00:00:00Z',
+      updated_at: '2026-11-10T00:00:00Z',
+    };
+    const memory = {
+      name: 'MEMORY.md',
+      size: 4,
+      revision: 'r2',
+      updated_at: '2026-11-10T00:00:00Z',
+      content: '- a\n',
+    };
+    const json = (body: unknown, status = 200) =>
+      new Response(JSON.stringify(body), {
+        status,
+        headers: { 'content-type': 'application/json' },
+      });
+    const responses: Array<() => Response> = [
+      () => json({ projects: [project] }),
+      () => json(project, 201),
+      () => json({ ...project, name: 'Renamed' }),
+      () => json({ project_id: 'p-1', coordinator: null, conversations: [] }),
+      () => json({ conversation_id: 'c-2', messages: [] }),
+      () => new Response(null, { status: 204 }),
+      () => new Response(null, { status: 204 }),
+      () => json({ deleted: true }),
+      () => json({ artifacts: [artifact] }),
+      () => json(artifact, 201),
+      () =>
+        new Response('hello', {
+          status: 200,
+          headers: { 'content-type': 'application/octet-stream' },
+        }),
+      () => json({ files: [memory] }),
+      () => json(memory),
+      () => json({ deleted: true }),
+    ];
+    global.fetch = vi.fn().mockImplementation(() => {
+      const next = responses.shift();
+      if (!next) throw new Error('Unexpected fetch call');
+      return Promise.resolve(next());
+    }) as typeof fetch;
+
+    const client = new ProjectsClient({ host: 'http://example.com/' });
+    await expect(client.listProjects()).resolves.toEqual([project]);
+    await client.createProject({ name: 'Launch', coordinator: { working_dir: '/w' } });
+    await client.updateProject('p-1', { name: 'Renamed' });
+    await expect(client.listConversations('p-1')).resolves.toEqual({
+      project_id: 'p-1',
+      coordinator: null,
+      conversations: [],
+    });
+    await client.readConversation('p-1', 'c-2', { limit: 5 });
+    await expect(client.resolveConversation('p-1', 'c-2')).resolves.toBeUndefined();
+    await expect(client.reopenConversation('p-1', 'c-2')).resolves.toBeUndefined();
+    await client.removeConversation('p-1', 'c-2');
+    await expect(client.listArtifacts('p-1')).resolves.toEqual([artifact]);
+    await client.uploadArtifact('p-1', new File(['hello'], 'notes.md'));
+    await expect(client.readArtifactText('p-1', 'my notes.md')).resolves.toBe('hello');
+    await expect(client.listMemory('p-1')).resolves.toEqual([memory]);
+    await client.writeMemory('p-1', 'MEMORY.md', '- a\n', { baseRevision: 'r1' });
+    await client.deleteMemory('p-1', 'topic.md', { baseRevision: 'r2' });
+
+    const calls = (global.fetch as Mock).mock.calls.map(([url, init]) => [
+      init.method,
+      url,
+      init.body,
+    ]);
+    expect(calls.map(([method, url]) => `${method} ${url}`)).toEqual([
+      'GET http://example.com/api/projects',
+      'POST http://example.com/api/projects',
+      'PATCH http://example.com/api/projects/p-1',
+      'GET http://example.com/api/projects/p-1/conversations',
+      'GET http://example.com/api/projects/p-1/conversations/c-2/messages?limit=5',
+      'POST http://example.com/api/projects/p-1/conversations/c-2/resolve',
+      'POST http://example.com/api/projects/p-1/conversations/c-2/reopen',
+      'DELETE http://example.com/api/projects/p-1/conversations/c-2',
+      'GET http://example.com/api/projects/p-1/artifacts',
+      'POST http://example.com/api/projects/p-1/artifacts',
+      'GET http://example.com/api/projects/p-1/artifacts/my%20notes.md',
+      'GET http://example.com/api/projects/p-1/memory',
+      'PUT http://example.com/api/projects/p-1/memory/MEMORY.md',
+      'DELETE http://example.com/api/projects/p-1/memory/topic.md?base_revision=r2',
+    ]);
+    expect(JSON.parse(calls[1][2])).toEqual({ name: 'Launch', coordinator: { working_dir: '/w' } });
+    expect(calls[9][2]).toBeInstanceOf(FormData);
+    expect((calls[9][2] as FormData).get('file')).toBeInstanceOf(File);
+    expect(JSON.parse(calls[12][2])).toEqual({ content: '- a\n', base_revision: 'r1' });
+    expect(projectIdKey('AB-CD')).toBe('abcd');
+  });
+
+  it('ConversationClient answers an ask_user question', async () => {
+    const saved = {
+      id: 'a1',
+      timestamp: '2026-11-14T00:00:00',
+      source: 'user',
+      kind: 'AskUserAnswerEvent',
+      ask_id: 'q1',
+      option_index: 1,
+      option_label: 'SQLite',
+      text: null,
+    };
+    global.fetch = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify(saved), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      )
+    ) as typeof fetch;
+
+    const client = new ConversationClient({ host: 'http://example.com' });
+    const event = await client.answerAskUser('conv-1', 'q1', { optionIndex: 1 });
+    await client.answerAskUser('conv-1', 'q1', { text: 'Neither' });
+
+    expect(isAskUserAnswerEvent(event)).toBe(true);
+    const fetchMock = global.fetch as Mock;
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'http://example.com/api/conversations/conv-1/ask_user/answer'
+    );
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      ask_id: 'q1',
+      option_index: 1,
+    });
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({
+      ask_id: 'q1',
+      text: 'Neither',
+    });
+  });
+
   it('SettingsClient fetches and updates settings and secrets', async () => {
     const responses = [
       { agent_settings: { llm_model: 'gpt-4o' }, conversation_settings: {} },
@@ -2088,7 +2728,7 @@ describe('Auxiliary API clients', () => {
       'plain-secret',
       { deleted: true },
     ];
-    global.fetch = jest.fn().mockImplementation(() => {
+    global.fetch = vi.fn().mockImplementation(() => {
       const body = responses.shift();
       const isText = typeof body === 'string';
       return Promise.resolve(
@@ -2102,7 +2742,7 @@ describe('Auxiliary API clients', () => {
     const client = new SettingsClient({ host: 'http://example.com' });
     await client.getSettings({ exposeSecrets: 'encrypted' });
     await client.updateSettings({ conversation_settings_diff: { max_iterations: 50 } });
-    await client.listSecrets();
+    await client.listSecrets({ agentProfileId: 'profile-id' });
     await client.upsertSecret({ name: 'TOKEN', value: 'secret', description: 'token' });
     await expect(client.getSecret('TOKEN')).resolves.toBe('plain-secret');
     await client.deleteSecret('TOKEN/with slash');
@@ -2125,7 +2765,7 @@ describe('Auxiliary API clients', () => {
     );
     expect(global.fetch).toHaveBeenNthCalledWith(
       3,
-      'http://example.com/api/settings/secrets',
+      'http://example.com/api/settings/secrets?agent_profile_id=profile-id',
       expect.objectContaining({ method: 'GET' })
     );
     expect(global.fetch).toHaveBeenNthCalledWith(
@@ -2147,7 +2787,7 @@ describe('Auxiliary API clients', () => {
 
   it('FileClient wraps file browsing and download endpoints', async () => {
     const binary = new TextEncoder().encode('hello').buffer;
-    global.fetch = jest
+    global.fetch = vi
       .fn()
       .mockResolvedValueOnce(
         new Response(JSON.stringify({ home: '/workspace' }), {
@@ -2192,22 +2832,25 @@ describe('Auxiliary API clients', () => {
       'http://example.com/api/file/upload?path=%2Fworkspace%2Fhello.txt',
       expect.objectContaining({ method: 'POST', body: expect.any(FormData) })
     );
-    const uploadInit = (global.fetch as jest.Mock).mock.calls[2][1];
+    const uploadInit = (global.fetch as Mock).mock.calls[2][1];
     expect(uploadInit.headers['Content-Type']).toBeUndefined();
     expect(global.fetch).toHaveBeenNthCalledWith(
       4,
       'http://example.com/api/file/download?path=%2Fworkspace%2FREADME.md',
-      expect.objectContaining({ method: 'GET' })
+      expect.objectContaining({ method: 'GET', cache: 'no-store' })
     );
     expect(global.fetch).toHaveBeenNthCalledWith(
       5,
       'http://example.com/api/file/download-trajectory/conv%201',
       expect.objectContaining({ method: 'GET' })
     );
+    for (const index of [0, 1, 2, 4]) {
+      expect((global.fetch as Mock).mock.calls[index][1].cache).toBeUndefined();
+    }
   });
 
   it('FileClient forwards includeHidden to the home and search_subdirs endpoints', async () => {
-    global.fetch = jest
+    global.fetch = vi
       .fn()
       .mockResolvedValueOnce(
         new Response(JSON.stringify({ home: '/workspace' }), {
@@ -2241,7 +2884,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('FileClient omits include_hidden when includeHidden is not set', async () => {
-    global.fetch = jest
+    global.fetch = vi
       .fn()
       .mockResolvedValueOnce(
         new Response(JSON.stringify({ home: '/workspace' }), {
@@ -2260,14 +2903,14 @@ describe('Auxiliary API clients', () => {
     await client.getHome();
     await client.searchSubdirectories('/workspace');
 
-    expect((global.fetch as jest.Mock).mock.calls[0][0]).toBe('http://example.com/api/file/home');
-    expect((global.fetch as jest.Mock).mock.calls[1][0]).toBe(
+    expect((global.fetch as Mock).mock.calls[0][0]).toBe('http://example.com/api/file/home');
+    expect((global.fetch as Mock).mock.calls[1][0]).toBe(
       'http://example.com/api/file/search_subdirs?path=%2Fworkspace'
     );
   });
 
   it('ConversationClient wraps agent-canvas conversation endpoints', async () => {
-    global.fetch = jest.fn().mockImplementation(() =>
+    global.fetch = vi.fn().mockImplementation(() =>
       Promise.resolve(
         new Response(JSON.stringify({ success: true, response: 'ok' }), {
           status: 200,
@@ -2285,6 +2928,8 @@ describe('Auxiliary API clients', () => {
     await client.respondToConfirmation('c1', { accept: true });
     await client.deleteConversation('c1');
     await client.updateConversation('c1', { title: 'New title' });
+    await client.getRuntime('c1');
+    await client.reprovisionRuntime('c1');
 
     expect(global.fetch).toHaveBeenNthCalledWith(
       1,
@@ -2314,6 +2959,21 @@ describe('Auxiliary API clients', () => {
       'http://example.com/api/conversations/c1',
       expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ title: 'New title' }) })
     );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      9,
+      'http://example.com/api/conversations/c1',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      10,
+      'http://example.com/api/conversations/c1/runtime',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      11,
+      'http://example.com/api/conversations/c1/runtime/reprovision',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({}) })
+    );
   });
 
   it('ConversationClient wraps SDK v1.23.0 conversation endpoints', async () => {
@@ -2335,7 +2995,7 @@ describe('Auxiliary API clients', () => {
       { success: true },
       { id: 'fork-1' },
     ];
-    global.fetch = jest.fn().mockImplementation(() => {
+    global.fetch = vi.fn().mockImplementation(() => {
       const body = responses.shift();
       return Promise.resolve(
         new Response(JSON.stringify(body), {
@@ -2404,7 +3064,7 @@ describe('Auxiliary API clients', () => {
 
   describe('ConversationClient goal endpoints (error paths)', () => {
     function mockErrorResponse(status: number, statusText: string, detail: string): void {
-      global.fetch = jest.fn(
+      global.fetch = vi.fn(
         async () =>
           new Response(JSON.stringify({ detail }), {
             status,
@@ -2510,7 +3170,7 @@ describe('Auxiliary API clients', () => {
       serverInfo,
       { ok: true, tools: ['ping'] },
     ];
-    global.fetch = jest.fn().mockImplementation(() => {
+    global.fetch = vi.fn().mockImplementation(() => {
       const body = responses.shift();
       return Promise.resolve(
         new Response(JSON.stringify(body), {
@@ -2561,7 +3221,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('new SDK v1.23.0 clients throw AgentServerVersionError for old servers', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ version: '1.22.1', uptime: 1, idle_time: 0 }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -2608,7 +3268,7 @@ describe('Auxiliary API clients', () => {
         },
       },
     ];
-    global.fetch = jest.fn().mockImplementation(() => {
+    global.fetch = vi.fn().mockImplementation(() => {
       const body = responses.shift();
       return Promise.resolve(
         new Response(JSON.stringify(body), {
@@ -2683,7 +3343,7 @@ describe('Auxiliary API clients', () => {
       [{ id: 'shared-1', created_by_user_id: null, selected_repository: null }],
       { items: [], next_page_id: null },
     ];
-    global.fetch = jest.fn().mockImplementation(() => {
+    global.fetch = vi.fn().mockImplementation(() => {
       const body = responses.shift() ?? { success: true };
       return Promise.resolve(
         new Response(JSON.stringify(body), {
@@ -2717,5 +3377,48 @@ describe('Auxiliary API clients', () => {
     expect(captured.options?.method).toBe('GET');
     expect(captured.url?.toString()).toBe('http://example.com/api/bash/bash_events/');
     expect(JSON.parse(captured.body ?? 'null')).toEqual(['e1', 'missing']);
+  });
+
+  it('GitClient searches provider repositories', async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          items: [
+            {
+              id: '123',
+              full_name: 'OpenHands/software-agent-sdk',
+              git_provider: 'github',
+              is_public: true,
+              stargazers_count: 7,
+              pushed_at: '2026-09-29T12:00:00Z',
+              main_branch: 'main',
+            },
+          ],
+          next_page_id: '2',
+          missing_token: false,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } }
+      )
+    ) as typeof fetch;
+
+    const client = new GitClient({ host: 'http://example.com', apiKey: 'secret' });
+    const result = await client.searchRepositories({
+      provider: 'github',
+      query: 'OpenHands',
+      limit: 30,
+      pageId: '1',
+    });
+
+    expect(result.items[0].full_name).toBe('OpenHands/software-agent-sdk');
+    expect(result.next_page_id).toBe('2');
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/git/repositories/search?provider=github&query=OpenHands&limit=30&page_id=1',
+      expect.objectContaining({
+        method: 'GET',
+        headers: expect.objectContaining({
+          'X-Session-API-Key': 'secret',
+        }),
+      })
+    );
   });
 });

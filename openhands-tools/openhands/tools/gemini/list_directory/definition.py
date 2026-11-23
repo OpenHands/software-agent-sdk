@@ -2,7 +2,7 @@
 
 from collections.abc import Sequence
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from pydantic import BaseModel, Field
 from rich.text import Text
@@ -140,6 +140,8 @@ MAX_ENTRIES = 500
 
 class ListDirectoryTool(ToolDefinition[ListDirectoryAction, ListDirectoryObservation]):
     """Tool for listing directory contents with metadata."""
+
+    user_selectable: ClassVar[bool] = False
 
     def declared_resources(self, action: Action) -> DeclaredResources:  # noqa: ARG002
         """Declare resource usage for parallel execution.

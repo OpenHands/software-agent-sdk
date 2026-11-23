@@ -30,7 +30,9 @@ SESSION_KEY = "test-key-abc"
 def client_factory(tmp_path):
     """Build a TestClient with auth configured and one workspace served."""
 
-    def _build(*, conversation_id: UUID, workspace_dir=None) -> TestClient:
+    def _build(
+        *, conversation_id: UUID, workspace_dir=None, web_url: str | None = None
+    ) -> TestClient:
         ws = workspace_dir if workspace_dir is not None else tmp_path
 
         event_service = AsyncMock(spec=EventService)
@@ -46,10 +48,10 @@ def client_factory(tmp_path):
 
         conversation_service.get_event_service.side_effect = _get_event_service
 
-        app = create_app(Config(session_api_keys=[SESSION_KEY]))
+        app = create_app(Config(session_api_keys=[SESSION_KEY], web_url=web_url))
         # Override the lifespan-managed conversation service with our mock.
-        app.dependency_overrides[get_conversation_service] = (
-            lambda: conversation_service
+        app.dependency_overrides[get_conversation_service] = lambda: (
+            conversation_service
         )
         return TestClient(app, raise_server_exceptions=False)
 
@@ -155,6 +157,8 @@ def test_mint_session_returns_cookie_attrs_over_https(client_factory):
         "localhost:8000",
         "127.0.0.1",
         "127.0.0.1:8000",
+        "[::1]",
+        "[::1]:8000",
     ],
 )
 def test_mint_session_marks_cookie_secure_on_loopback(client_factory, host_header):
@@ -175,12 +179,37 @@ def test_mint_session_marks_cookie_secure_on_loopback(client_factory, host_heade
     assert "Partitioned" in set_cookie
 
 
-def test_mint_session_over_remote_plain_http_drops_secure(client_factory):
+def test_mint_session_marks_cookie_secure_on_forwarded_ipv6_loopback(
+    client_factory,
+):
+    """A bracketed IPv6 loopback in ``X-Forwarded-Host`` is a secure context."""
+    client = client_factory(conversation_id=uuid4())
+
+    resp = client.post(
+        "/api/auth/workspace-session",
+        headers={
+            "X-Session-API-Key": SESSION_KEY,
+            "Host": "agent.example.com",
+            "X-Forwarded-Host": "[::1]:8000",
+        },
+    )
+    assert resp.status_code == 204
+
+    set_cookie = resp.headers["set-cookie"]
+    assert "Secure" in set_cookie
+    assert "Partitioned" in set_cookie
+
+
+def test_mint_session_over_remote_plain_http_uses_lax(client_factory):
     """On non-HTTPS to a non-loopback host we don't claim Secure — the
-    browser would reject a Secure cookie over plain HTTP anyway. The
-    cookie won't actually work for cross-site embedding in that case
-    (SameSite=None requires Secure), but emitting a Secure attribute we
-    can't honor would just make the failure mode less obvious."""
+    browser would reject a Secure cookie over plain HTTP anyway. We also
+    mint with ``SameSite=Lax`` instead of ``None``: Chromium refuses to
+    store any ``SameSite=None`` cookie without ``Secure``, so a ``None``
+    cookie would never be stored and the workspace preview would always
+    401 (OpenHands/OpenHands#15567). ``Lax`` keeps the cookie usable for
+    the same-site workspace requests the canvas makes when served from
+    the same origin; cross-site embedding remains unsupported on plain
+    HTTP."""
     client = client_factory(conversation_id=uuid4())
 
     resp = client.post(
@@ -193,9 +222,35 @@ def test_mint_session_over_remote_plain_http_drops_secure(client_factory):
     assert resp.status_code == 204
 
     set_cookie = resp.headers["set-cookie"]
-    assert "SameSite=none" in set_cookie
+    assert "SameSite=lax" in set_cookie
+    assert "SameSite=none" not in set_cookie
     assert "Secure" not in set_cookie
     assert "Partitioned" not in set_cookie
+
+
+def test_workspace_accepts_cookie_over_remote_plain_http(
+    client_factory, workspace_with_index
+):
+    """End-to-end regression for OpenHands/OpenHands#15567: over plain
+    HTTP to a non-loopback host, mint the cookie with the Host header a
+    LAN browser would send, then load the workspace preview using only
+    the cookie."""
+    cid = uuid4()
+    client = client_factory(conversation_id=cid, workspace_dir=workspace_with_index)
+
+    mint = client.post(
+        "/api/auth/workspace-session",
+        headers={"X-Session-API-Key": SESSION_KEY, "Host": "192.168.1.50:8000"},
+    )
+    assert mint.status_code == 204
+    set_cookie = mint.headers["set-cookie"]
+    assert "Secure" not in set_cookie
+    assert "SameSite=lax" in set_cookie
+    assert WORKSPACE_SESSION_COOKIE_NAME in mint.cookies
+
+    resp = client.get(_workspace_url(cid))
+    assert resp.status_code == 200
+    assert resp.text == "<title>hello</title>"
 
 
 # ---- Cookie auth on workspace router --------------------------------------
@@ -225,6 +280,41 @@ def test_workspace_rejects_bogus_cookie(client_factory, workspace_with_index):
     client.cookies.set(WORKSPACE_SESSION_COOKIE_NAME, "definitely-wrong")
     resp = client.get(_workspace_url(cid))
     assert resp.status_code == 401
+
+
+def test_cookie_path_includes_root_path(client_factory, workspace_with_index):
+    """Behind a path prefix the browser uses the prefixed workspace URLs, so
+    the cookie must be scoped to them or it is never sent back."""
+    cid = uuid4()
+    client = client_factory(
+        conversation_id=cid,
+        workspace_dir=workspace_with_index,
+        web_url="http://127.0.0.1/qa-prefix",
+    )
+
+    mint = client.post(
+        "/qa-prefix/api/auth/workspace-session",
+        headers={"X-Session-API-Key": SESSION_KEY},
+    )
+    assert mint.status_code == 204
+    assert "Path=/qa-prefix/api/conversations" in mint.headers["set-cookie"]
+
+    # The client's cookie jar honors Path, like a browser.
+    resp = client.get(f"/qa-prefix{_workspace_url(cid)}")
+    assert resp.status_code == 200
+    assert resp.text == "<title>hello</title>"
+
+    # The value stays a valid credential on the unprefixed URL (what a
+    # prefix-stripping proxy forwards) when the cookie is presented there.
+    client.cookies.clear()
+    client.cookies.set(WORKSPACE_SESSION_COOKIE_NAME, SESSION_KEY)
+    assert client.get(_workspace_url(cid)).status_code == 200
+
+    cleared = client.delete(
+        "/qa-prefix/api/auth/workspace-session",
+        headers={"X-Session-API-Key": SESSION_KEY},
+    )
+    assert "Path=/qa-prefix/api/conversations" in cleared.headers["set-cookie"]
 
 
 # ---- Cookie is rejected by non-workspace endpoints ------------------------

@@ -23,7 +23,7 @@ class MockMCPClient(MCPClient):
         """Mock implementation that returns a successful result."""
         return mcp.types.CallToolResult(
             content=[mcp.types.TextContent(type="text", text="Mock result")],
-            isError=False,
+            is_error=False,
         )
 
     def call_async_from_sync(self, coro_func, timeout=None, **kwargs):
@@ -54,7 +54,7 @@ def test_mcp_tool_to_openai_with_security_risk():
     mcp_tool_def = mcp.types.Tool(
         name="fetch_fetch",
         description="Fetch a URL",
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {"url": {"type": "string", "description": "URL to fetch"}},
             "required": ["url"],
@@ -100,7 +100,7 @@ def test_mcp_tool_to_responses_with_security_risk():
     mcp_tool_def = mcp.types.Tool(
         name="fetch_fetch",
         description="Fetch a URL",
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {"url": {"type": "string", "description": "URL to fetch"}},
             "required": ["url"],
@@ -137,7 +137,7 @@ def test_mcp_tool_action_from_arguments_with_security_risk():
     mcp_tool_def = mcp.types.Tool(
         name="fetch_fetch",
         description="Fetch a URL",
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {"url": {"type": "string", "description": "URL to fetch"}},
             "required": ["url"],
@@ -178,7 +178,7 @@ def test_mcp_tool_validates_correctly_after_security_risk_pop():
     mcp_tool_def = mcp.types.Tool(
         name="fetch_fetch",
         description="Fetch a URL",
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {"url": {"type": "string", "description": "URL to fetch"}},
             "required": ["url"],

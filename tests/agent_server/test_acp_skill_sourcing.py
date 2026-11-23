@@ -15,10 +15,11 @@ from unittest.mock import patch
 import pytest
 
 from openhands.agent_server.config import ACPSkillSourcing, Config
-from openhands.agent_server.conversation_service import _apply_acp_skill_sourcing
 from openhands.sdk import LLM, Agent, Conversation
 from openhands.sdk.agent import ACPAgent, AgentBase
 from openhands.sdk.context import AgentContext
+from openhands.sdk.conversation.request import AgentLaunchAdditions
+from openhands.sdk.launch import LaunchRuntime, finalize
 from openhands.sdk.marketplace.registration import MarketplaceRegistration
 from openhands.sdk.settings.model import validate_agent_settings
 from openhands.sdk.skills import Skill
@@ -38,11 +39,11 @@ def _managed_skill() -> Skill:
     )
 
 
-def _acp_agent(**context_kwargs) -> ACPAgent:
+def _acp_agent(acp_server: str = "claude-code", **context_kwargs) -> ACPAgent:
     settings = validate_agent_settings(
         {
             "agent_kind": "acp",
-            "acp_server": "claude-code",
+            "acp_server": acp_server,
             "agent_context": AgentContext(**context_kwargs).model_dump(),
         }
     )
@@ -61,6 +62,12 @@ def _workspace(root: Path) -> Path:
         "---\nname: project-skill\ndescription: local\n---\n\nbody\n"
     )
     return project
+
+
+def _apply_acp_skill_sourcing(
+    agent: AgentBase, sourcing: ACPSkillSourcing
+) -> AgentBase:
+    return finalize(agent, LaunchRuntime(acp_skill_sourcing=sourcing)).agent
 
 
 def _installed_suffix(agent: AgentBase, project: Path) -> str:
@@ -159,9 +166,109 @@ def test_native_sourcing_leaves_a_non_acp_agent_alone() -> None:
         tools=[],
         agent_context=AgentContext(skills=[_managed_skill()]),
     )
-    assert _apply_acp_skill_sourcing(agent, "native") is agent
+    sourced = _apply_acp_skill_sourcing(agent, "native")
+    assert sourced.agent_context is not None
+    assert [s.name for s in sourced.agent_context.skills] == [MANAGED_SKILL]
 
 
 def test_native_sourcing_is_a_no_op_without_skills() -> None:
-    agent = _acp_agent()
+    agent = _acp_agent(current_datetime=None)
     assert _apply_acp_skill_sourcing(agent, "native") is agent
+
+
+@pytest.mark.parametrize("sourcing", ["native", "openhands_managed"])
+def test_launch_supplied_skills_reach_the_acp_agent(
+    tmp_path: Path, sourcing: ACPSkillSourcing
+) -> None:
+    project = _workspace(tmp_path)
+    launch_skill = Skill(name="launch-skill", content="launch content")
+    agent = finalize(
+        _acp_agent(skills=[_managed_skill()]),
+        LaunchRuntime(acp_skill_sourcing=sourcing),
+        additions=AgentLaunchAdditions(skills=[launch_skill]),
+    ).agent
+    assert agent.agent_context is not None
+    names = {s.name for s in agent.agent_context.skills}
+    assert "launch-skill" in names
+    assert (MANAGED_SKILL in names) == (sourcing == "openhands_managed")
+    assert "launch-skill" in _installed_suffix(agent, project)
+
+
+def _skills_dir(project: Path) -> Path:
+    return project / ".openhands" / "acp" / "skills"
+
+
+@pytest.mark.parametrize("acp_server", ["claude-code", "codex", "gemini-cli"])
+def test_acp_skills_are_listed_by_path_for_every_provider(
+    tmp_path: Path, acp_server: str
+) -> None:
+    project = _workspace(tmp_path)
+    agent = _acp_agent(
+        acp_server,
+        skills=[
+            Skill(
+                name="launch-skill",
+                description="does the launch thing",
+                content="launch body",
+                is_agentskills_format=True,
+            )
+        ],
+    )
+    suffix = _installed_suffix(agent, project)
+
+    skill_md = _skills_dir(project) / "launch-skill" / "SKILL.md"
+    assert "launch body" in skill_md.read_text()
+    assert f"<location>{skill_md}</location>" in suffix
+    assert "does the launch thing" in suffix
+    assert "launch body" not in suffix
+    assert "invoke_skill" not in suffix
+
+
+def test_skill_names_cannot_escape_the_skills_directory(tmp_path: Path) -> None:
+    project = _workspace(tmp_path)
+    agent = _acp_agent(
+        skills=[Skill(name="../evil", content="x", is_agentskills_format=True)]
+    )
+    _installed_suffix(agent, project)
+
+    written = [p for p in project.rglob("SKILL.md") if "evil" in str(p)]
+    assert written
+    assert all(_skills_dir(project) in p.parents for p in written)
+
+
+def test_skills_hidden_from_the_model_are_not_written_or_listed(tmp_path: Path) -> None:
+    project = _workspace(tmp_path)
+    agent = _acp_agent(
+        skills=[
+            Skill(name="shown", content="s", is_agentskills_format=True),
+            Skill(
+                name="hidden",
+                content="h",
+                is_agentskills_format=True,
+                disable_model_invocation=True,
+            ),
+        ]
+    )
+    suffix = _installed_suffix(agent, project)
+
+    assert (_skills_dir(project) / "shown" / "SKILL.md").exists()
+    assert not (_skills_dir(project) / "hidden").exists()
+    assert "<name>hidden</name>" not in suffix
+
+
+def test_skill_names_differing_only_by_case_get_separate_directories(
+    tmp_path: Path,
+) -> None:
+    project = _workspace(tmp_path)
+    agent = _acp_agent(
+        skills=[
+            Skill(name="Zebra", content="upper", is_agentskills_format=True),
+            Skill(name="zebra", content="lower", is_agentskills_format=True),
+        ]
+    )
+    _installed_suffix(agent, project)
+
+    bodies = [p.read_text() for p in _skills_dir(project).rglob("SKILL.md")]
+    assert len(bodies) == 2
+    assert any("upper" in body for body in bodies)
+    assert any("lower" in body for body in bodies)
