@@ -1,4 +1,8 @@
 import logging
+import os
+import shutil
+import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -8,6 +12,7 @@ from openhands.sdk.extensions.installation import (
     InstallationInfo,
     InstallationInterface,
     InstallationMetadata,
+    InstallationMetadataLoadError,
 )
 
 
@@ -316,6 +321,73 @@ def test_open_does_not_save_on_exception(tmp_path: Path):
     assert loaded.extensions == {}
 
 
+@pytest.mark.parametrize(
+    "content",
+    [
+        pytest.param(b"invalid json {", id="invalid-json"),
+        pytest.param(b'{"extensions": []}', id="wrong-field-type"),
+        pytest.param(b"[]", id="wrong-top-level-type"),
+        pytest.param(b"\xff\xfe not utf-8", id="not-utf-8"),
+    ],
+)
+def test_open_refuses_metadata_it_cannot_load(tmp_path: Path, content: bytes):
+    """A write session must not save its empty fallback over a broken file."""
+    installation_dir = tmp_path / "installed"
+    _write_mock_extension(installation_dir / "mock-extension")
+    metadata_path = InstallationMetadata.get_metadata_path(installation_dir)
+    metadata_path.write_bytes(content)
+
+    with pytest.raises(InstallationMetadataLoadError) as exc_info:
+        with InstallationMetadata.open(
+            installation_dir, interface=MockExtensionInstallationInterface()
+        ) as session:
+            session.sync()
+
+    assert exc_info.value.metadata_path == metadata_path
+    assert str(metadata_path) in str(exc_info.value)
+    assert metadata_path.read_bytes() == content
+
+
+def test_open_without_metadata_file_starts_empty(tmp_path: Path):
+    """A missing file is a fresh install, not an error."""
+    installation_dir = tmp_path / "installed"
+    _write_mock_extension(installation_dir / "mock-extension")
+
+    with InstallationMetadata.open(
+        installation_dir, interface=MockExtensionInstallationInterface()
+    ) as session:
+        assert session.extensions == {}
+        session.sync()
+
+    loaded = InstallationMetadata.load_from_dir(installation_dir)
+    assert "mock-extension" in loaded.extensions
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+@pytest.mark.skipif(
+    getattr(os, "geteuid", lambda: -1)() == 0,
+    reason="root bypasses file permissions",
+)
+def test_open_refuses_unreadable_metadata(tmp_path: Path):
+    """An unreadable file raises instead of being replaced by an atomic save."""
+    installation_dir = tmp_path / "installed"
+    _write_mock_extension(installation_dir / "mock-extension")
+    metadata_path = InstallationMetadata.get_metadata_path(installation_dir)
+    content = b'{"extensions": {}}'
+    metadata_path.write_bytes(content)
+    metadata_path.chmod(0)
+    try:
+        with pytest.raises(InstallationMetadataLoadError):
+            with InstallationMetadata.open(
+                installation_dir, interface=MockExtensionInstallationInterface()
+            ) as session:
+                session.sync()
+    finally:
+        metadata_path.chmod(0o644)
+
+    assert metadata_path.read_bytes() == content
+
+
 # ============================================================================
 # validate_tracked Tests
 # ============================================================================
@@ -368,3 +440,94 @@ def test_discover_untracked_skips_mismatched_manifest_name(tmp_path: Path):
 
     assert discovered == []
     assert "some-ext" not in metadata.extensions
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+@pytest.mark.parametrize("existing_mode", [0o600, 0o644], ids=oct)
+def test_save_to_dir_keeps_existing_file_mode(tmp_path: Path, existing_mode: int):
+    """A save keeps the file's mode whatever the umask: an owner-only file stays
+    owner-only (sources can carry URL credentials), and a file other local users
+    read is not narrowed under them."""
+    metadata_path = InstallationMetadata.get_metadata_path(tmp_path)
+    metadata_path.write_text("{}")
+    metadata_path.chmod(existing_mode)
+    previous_umask = os.umask(0o027)
+    try:
+        InstallationMetadata().save_to_dir(tmp_path)
+    finally:
+        os.umask(previous_umask)
+
+    assert stat.S_IMODE(metadata_path.stat().st_mode) == existing_mode
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+@pytest.mark.parametrize(
+    ("umask", "expected"),
+    [
+        pytest.param(0o022, 0o644, id="umask-022"),
+        pytest.param(0o077, 0o600, id="umask-077"),
+    ],
+)
+def test_save_to_dir_creates_new_file_with_umask_mode(
+    tmp_path: Path, umask: int, expected: int
+):
+    """A new file gets the umask's mode, as a plain write would give it: a
+    strict umask keeps sources, which can carry URL credentials, owner-only."""
+    metadata_path = InstallationMetadata.get_metadata_path(tmp_path)
+    previous_umask = os.umask(umask)
+    try:
+        InstallationMetadata().save_to_dir(tmp_path)
+    finally:
+        os.umask(previous_umask)
+
+    assert stat.S_IMODE(metadata_path.stat().st_mode) == expected
+
+
+# A uid and gid that are not root's: the user a root process (an agent-server
+# container) shares an installation directory with.
+_USER = 65534
+
+_requires_root = pytest.mark.skipif(
+    getattr(os, "geteuid", lambda: -1)() != 0, reason="changing owners needs root"
+)
+
+
+@_requires_root
+def test_root_session_keeps_the_directory_users_ownership(tmp_path: Path):
+    """When root saves in a user's installation directory, that user can still
+    read the metadata file and take the lock afterwards."""
+    installation_dir = tmp_path / "installed"
+    _write_mock_extension(installation_dir / "mock-extension")
+    shutil.chown(installation_dir, _USER, _USER)
+    metadata_path = InstallationMetadata.get_metadata_path(installation_dir)
+    metadata_path.write_text('{"extensions": {}}')
+    metadata_path.chmod(0o600)
+    shutil.chown(metadata_path, _USER, _USER)
+
+    with InstallationMetadata.open(
+        installation_dir, interface=MockExtensionInstallationInterface()
+    ) as session:
+        session.sync()
+
+    for path in (metadata_path, installation_dir / ".metadata.lock"):
+        assert (path.stat().st_uid, path.stat().st_gid) == (_USER, _USER), path
+    assert stat.S_IMODE(metadata_path.stat().st_mode) == 0o600
+
+
+@_requires_root
+def test_root_session_does_not_give_away_a_hard_linked_lock_file(tmp_path: Path):
+    """A lock file that is another file's second name is left alone: the
+    directory's owner must not be able to get that file through root."""
+    installation_dir = tmp_path / "installed"
+    installation_dir.mkdir()
+    shutil.chown(installation_dir, _USER, _USER)
+    other_file = tmp_path / "root-owned"
+    other_file.write_text("x")
+    os.link(other_file, installation_dir / ".metadata.lock")
+
+    with InstallationMetadata.open(
+        installation_dir, interface=MockExtensionInstallationInterface()
+    ):
+        pass
+
+    assert other_file.stat().st_uid == 0

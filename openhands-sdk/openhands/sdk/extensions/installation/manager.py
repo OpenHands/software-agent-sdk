@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import tempfile
 from dataclasses import dataclass
@@ -31,6 +32,35 @@ logger = get_logger(__name__)
 DEFAULT_CACHE_DIR = get_user_persistence_dir() / "cache" / "extensions"
 
 
+@dataclass(frozen=True)
+class InstallationOutcome:
+    """Result of ``InstallationManager.install_with_outcome``."""
+
+    info: InstallationInfo
+    was_installed: bool
+    """Whether an extension of this name was installed (tracked, with its
+    directory present) when this install replaced it. Decided inside the
+    metadata session that records the install."""
+
+
+def _swap_directory(staged_path: Path, install_path: Path, backup_path: Path) -> None:
+    """Move ``staged_path`` to ``install_path``.
+
+    POSIX ``rename`` can't replace a non-empty directory, so an existing
+    ``install_path`` is first moved to ``backup_path``. If the second rename
+    fails, the first is undone and the error is re-raised.
+    """
+    replacing = install_path.exists()
+    if replacing:
+        os.replace(install_path, backup_path)
+    try:
+        os.replace(staged_path, install_path)
+    except OSError:
+        if replacing:
+            os.replace(backup_path, install_path)
+        raise
+
+
 @dataclass
 class InstallationManager[T: ExtensionProtocol]:
     """Generic manager for installing, tracking, and loading extensions.
@@ -51,9 +81,11 @@ class InstallationManager[T: ExtensionProtocol]:
     def __post_init__(self) -> None:
         self.installation_dir = self.installation_dir.resolve()
 
-    @property
     def metadata_session(self) -> MetadataSession:
-        """Open a metadata session bound to this manager's dir and interface."""
+        """Open a metadata session bound to this manager's dir and interface.
+
+        Takes the metadata lock when called; use it in a ``with`` statement.
+        """
         return InstallationMetadata.open(
             self.installation_dir, interface=self.installation_interface
         )
@@ -88,6 +120,22 @@ class InstallationManager[T: ExtensionProtocol]:
             FileExistsError: If extension is already installed and force=False.
             ValueError: If the extension name is invalid.
         """
+        return self._install(source, ref=ref, repo_path=repo_path, force=force).info
+
+    def install_with_outcome(
+        self,
+        source: str | Path,
+        ref: str | None = None,
+        repo_path: str | None = None,
+        force: bool = False,
+    ) -> InstallationOutcome:
+        """Install as ``install`` does, and report whether it replaced an
+        installed extension.
+
+        For callers whose handling of the result depends on that. Checking
+        with ``get()`` before calling ``install`` can be out of date by the
+        time the install is recorded; this is decided while it is recorded.
+        """
         return self._install(source, ref=ref, repo_path=repo_path, force=force)
 
     def _install(
@@ -97,7 +145,7 @@ class InstallationManager[T: ExtensionProtocol]:
         repo_path: str | None = None,
         force: bool = False,
         root_name: str | None = None,
-    ) -> InstallationInfo:
+    ) -> InstallationOutcome:
         """Install as ``install`` does; ``root_name`` names a repository root.
 
         ``root_name`` replaces the repository's name as the directory name a
@@ -127,14 +175,6 @@ class InstallationManager[T: ExtensionProtocol]:
                 f" at {install_path}. Use force=True to overwrite."
             )
 
-        if install_path.exists():
-            logger.info(f"Removing existing installation of '{extension.name}'")
-            shutil.rmtree(install_path)
-
-        logger.info(f"Installing extension '{extension.name}' to {install_path}")
-        self.installation_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(fetched_path, install_path)
-
         info = InstallationInfo.from_extension(
             extension,
             source=source,
@@ -144,16 +184,49 @@ class InstallationManager[T: ExtensionProtocol]:
             repo_path=repo_path,
         )
 
-        with self.metadata_session as session:
-            existing = session.extensions.get(extension.name)
-            if existing is not None:
-                info.enabled = existing.enabled
-            session.extensions[extension.name] = info
+        # Copy outside the lock into a dot-prefixed directory, which discovery
+        # skips: a concurrent list never sees a partly copied extension, and
+        # lock time doesn't grow with its size. Only the swap into place and
+        # the metadata write happen under the lock. Staging inside the
+        # installation directory keeps the swap a same-filesystem rename.
+        logger.info(f"Installing extension '{extension.name}' to {install_path}")
+        self.installation_dir.mkdir(parents=True, exist_ok=True)
+        staging_dir = Path(
+            tempfile.mkdtemp(
+                prefix=f".{extension.name}.installing-", dir=self.installation_dir
+            )
+        )
+        backup_path = staging_dir / "previous"
+        try:
+            staged_path = staging_dir / "new"
+            shutil.copytree(fetched_path, staged_path)
+
+            with self.metadata_session() as session:
+                if install_path.exists() and not force:
+                    raise FileExistsError(
+                        f"Extension '{extension.name}' is already installed"
+                        f" at {install_path}. Use force=True to overwrite."
+                    )
+                existing = session.extensions.get(extension.name)
+                was_installed = existing is not None and install_path.exists()
+                if existing is not None:
+                    info.enabled = existing.enabled
+                _swap_directory(staged_path, install_path, backup_path)
+                session.extensions[extension.name] = info
+        finally:
+            # The previous version is deleted after the lock is released.
+            if backup_path.exists() and not install_path.exists():
+                logger.error(
+                    f"Could not restore {install_path} after a failed install;"
+                    f" the previous version was kept at {backup_path}"
+                )
+            else:
+                shutil.rmtree(staging_dir, ignore_errors=True)
 
         logger.info(
             f"Successfully installed extension '{extension.name}' v{info.version}"
         )
-        return info
+        return InstallationOutcome(info=info, was_installed=was_installed)
 
     def _load_fetched(
         self,
@@ -202,7 +275,7 @@ class InstallationManager[T: ExtensionProtocol]:
         """
         validate_extension_name(name)
 
-        with self.metadata_session as session:
+        with self.metadata_session() as session:
             if name not in session.extensions:
                 logger.warning(f"Extension '{name}' is not installed")
                 return False
@@ -240,7 +313,7 @@ class InstallationManager[T: ExtensionProtocol]:
             )
             return False
 
-        with self.metadata_session as session:
+        with self.metadata_session() as session:
             session.sync()
 
             info = session.extensions.get(name)
@@ -286,11 +359,7 @@ class InstallationManager[T: ExtensionProtocol]:
         if not self.installation_dir.exists():
             return []
 
-        with InstallationMetadata.open(
-            self.installation_dir,
-            interface=self.installation_interface,
-            strict=strict,
-        ) as session:
+        with self.metadata_session() as session:
             return session.sync(strict=strict)
 
     def load_installed(self, *, strict: bool = False) -> list[T]:
@@ -394,4 +463,4 @@ class InstallationManager[T: ExtensionProtocol]:
             repo_path=current_info.repo_path,
             force=True,
             root_name=name,
-        )
+        ).info

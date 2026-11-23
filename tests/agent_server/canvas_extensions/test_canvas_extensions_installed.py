@@ -8,6 +8,9 @@ containment enforced at load time.
 
 import inspect
 import json
+import os
+import shutil
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +18,7 @@ import pytest
 from pydantic import ValidationError
 
 from openhands.agent_server.canvas_extensions.installed import (
+    InstalledCanvasExtensionInfo,
     disable_canvas_extension,
     enable_canvas_extension,
     get_installed_canvas_extension,
@@ -25,7 +29,10 @@ from openhands.agent_server.canvas_extensions.installed import (
     uninstall_canvas_extension,
 )
 from openhands.agent_server.canvas_extensions.manifest import MANIFEST_FILENAME
-from openhands.sdk.extensions.installation import InstallationMetadata
+from openhands.sdk.extensions.installation import (
+    InstallationMetadata,
+    manager as installation_manager,
+)
 
 from .conftest import write_extension as _write_extension
 
@@ -397,3 +404,133 @@ def test_disable_nonexistent_extension_returns_false(installed_dir: Path):
 
 def test_enable_nonexistent_extension_returns_false(installed_dir: Path):
     assert enable_canvas_extension("nonexistent", installed_dir=installed_dir) is False
+
+
+# ============================================================================
+# Force reinstall racing other operations
+# ============================================================================
+
+
+def test_force_reinstall_with_a_concurrent_list_keeps_disabled_state(
+    extension_dir: Path, installed_dir: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A list call while a force reinstall copies the new bundle must not
+    prune the disabled entry: the reinstall would then record it as new and
+    enabled, skipping the approval that enabling requires.
+    """
+    install_canvas_extension(str(extension_dir), installed_dir=installed_dir)
+    real_copytree = shutil.copytree
+    listed: list[list[Any]] = []
+
+    def copytree(src, dst, *args, **kwargs):
+        if Path(dst).is_relative_to(installed_dir.resolve()) and not listed:
+            thread = threading.Thread(
+                target=lambda: listed.append(
+                    list_installed_canvas_extensions(installed_dir=installed_dir)
+                )
+            )
+            thread.start()
+            thread.join(10)
+        return real_copytree(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(installation_manager.shutil, "copytree", copytree)
+
+    info = install_canvas_extension(
+        str(extension_dir), installed_dir=installed_dir, force=True
+    )
+
+    assert [(i.name, i.enabled) for i in listed[0]] == [("my-extension", False)]
+    assert info.enabled is False
+    on_disk = get_installed_canvas_extension(
+        "my-extension", installed_dir=installed_dir
+    )
+    assert on_disk is not None
+    assert on_disk.enabled is False
+
+
+def test_force_reinstall_after_a_concurrent_uninstall_lands_disabled(
+    extension_dir: Path, installed_dir: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Whether a force install replaced an installed extension is decided when
+    the install is recorded. Decided earlier, an uninstall in between would
+    let the new entry pass as a reinstall and land enabled.
+    """
+    install_canvas_extension(str(extension_dir), installed_dir=installed_dir)
+    enable_canvas_extension("my-extension", installed_dir=installed_dir)
+    real_copytree = shutil.copytree
+    uninstalled: list[bool] = []
+
+    def copytree(src, dst, *args, **kwargs):
+        if not uninstalled:
+            uninstalled.append(
+                uninstall_canvas_extension("my-extension", installed_dir=installed_dir)
+            )
+        return real_copytree(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(installation_manager.shutil, "copytree", copytree)
+
+    info = install_canvas_extension(
+        str(extension_dir), installed_dir=installed_dir, force=True
+    )
+
+    assert uninstalled == [True]
+    assert info.enabled is False
+    on_disk = InstallationMetadata.load_from_dir(installed_dir)
+    assert on_disk.extensions["my-extension"].enabled is False
+
+
+def test_list_during_a_reinstall_keeps_an_enabled_extension_enabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A list landing while a force reinstall swaps the directory in must not
+    take the installed extension for a new one and disable it.
+    """
+    installed_dir = tmp_path / "installed"
+    source = _write_extension(
+        tmp_path / "src" / "demo-extension", name="demo-extension"
+    )
+    install_canvas_extension(source=str(source), installed_dir=installed_dir)
+    assert enable_canvas_extension("demo-extension", installed_dir=installed_dir)
+
+    list_waiting = threading.Event()
+    acquire_lock = InstallationMetadata._acquire_lock
+
+    def signalling_acquire_lock(directory: Path):
+        if threading.current_thread().name == "list":
+            list_waiting.set()
+        return acquire_lock(directory)
+
+    monkeypatch.setattr(
+        InstallationMetadata, "_acquire_lock", staticmethod(signalling_acquire_lock)
+    )
+    real_replace = os.replace
+    lists: list[threading.Thread] = []
+    listed: list[list[InstalledCanvasExtensionInfo]] = []
+
+    def replace(src, dst) -> None:
+        real_replace(src, dst)
+        if Path(src) == installed_dir / "demo-extension" and not lists:
+            thread = threading.Thread(
+                target=lambda: listed.append(
+                    list_installed_canvas_extensions(installed_dir=installed_dir)
+                ),
+                name="list",
+                daemon=True,
+            )
+            lists.append(thread)
+            thread.start()
+            assert list_waiting.wait(5)
+
+    monkeypatch.setattr(installation_manager.os, "replace", replace)
+
+    install_canvas_extension(
+        source=str(source), installed_dir=installed_dir, force=True
+    )
+
+    assert len(lists) == 1, "the reinstall did not move the installed directory aside"
+    lists[0].join(10)
+    assert not lists[0].is_alive(), "the concurrent list did not finish"
+    assert [(i.name, i.enabled) for i in listed[0]] == [("demo-extension", True)]
+    info = get_installed_canvas_extension("demo-extension", installed_dir=installed_dir)
+    assert info is not None
+    assert info.enabled is True

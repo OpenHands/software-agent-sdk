@@ -40,7 +40,13 @@ from openhands.agent_server.canvas_extensions.manifest import (
 )
 from openhands.agent_server.errors import error_responses
 from openhands.agent_server.server_context import server_context_of
-from openhands.sdk.errors import Conflict, Invalid, NotFound, Unprocessable
+from openhands.sdk.errors import (
+    Conflict,
+    Invalid,
+    LockTimeout,
+    NotFound,
+    Unprocessable,
+)
 from openhands.sdk.extensions.fetch import ExtensionFetchError
 from openhands.sdk.utils.redact import redact_url_credentials
 
@@ -203,6 +209,7 @@ class UninstallCanvasExtensionResponse(BaseModel):
             Invalid: "Could not read canvas extension source",
             Conflict: "Canvas extension already installed (use force=true)",
             Unprocessable: "Invalid canvas extension (bad manifest, etc.)",
+            LockTimeout: "Another extension operation is in progress",
         }
     ),
 )
@@ -251,6 +258,9 @@ async def install_canvas_extension_endpoint(
             "Source plus Path must point at the extension's own "
             "directory, not the repository root."
         )
+    except LockTimeout:
+        # A LockTimeout is also an OSError; it means busy, not invalid.
+        raise
     except (ValidationError, ValueError, OSError):
         raise Unprocessable(
             "Invalid canvas extension. Ensure the manifest is well-formed."
@@ -258,7 +268,11 @@ async def install_canvas_extension_endpoint(
 
 
 @canvas_extensions_router.get(
-    "/installed", response_model=InstalledCanvasExtensionsListResponse
+    "/installed",
+    response_model=InstalledCanvasExtensionsListResponse,
+    responses=error_responses(
+        {LockTimeout: "Another extension operation is in progress"}
+    ),
 )
 def list_installed_canvas_extensions_endpoint() -> (
     InstalledCanvasExtensionsListResponse
@@ -295,7 +309,12 @@ def get_installed_canvas_extension_endpoint(
 @canvas_extensions_router.patch(
     "/installed/{extension_name}",
     response_model=UpdateCanvasExtensionStateResponse,
-    responses=error_responses({NotFound: "Canvas extension not installed"}),
+    responses=error_responses(
+        {
+            NotFound: "Canvas extension not installed",
+            LockTimeout: "Another extension operation is in progress",
+        }
+    ),
 )
 async def set_canvas_extension_enabled_endpoint(
     extension_name: CanvasExtensionNamePath,
@@ -308,7 +327,9 @@ async def set_canvas_extension_enabled_endpoint(
     async with lock:
         if not request.enabled:
             await _revoke_and_stop_backend(http_request, extension_name)
-            if not disable_canvas_extension(name=extension_name):
+            if not await asyncio.to_thread(
+                disable_canvas_extension, name=extension_name
+            ):
                 raise NotFound("Canvas App is not installed")
             return UpdateCanvasExtensionStateResponse(
                 name=extension_name, enabled=False
@@ -356,13 +377,13 @@ async def set_canvas_extension_enabled_endpoint(
                     )
             except (ValueError, RuntimeError, OSError) as exc:
                 await _revoke_and_stop_backend(http_request, extension_name)
-                disable_canvas_extension(name=extension_name)
+                await asyncio.to_thread(disable_canvas_extension, name=extension_name)
                 raise Conflict(str(exc)) from exc
             except BaseException:
                 await _revoke_and_stop_backend(http_request, extension_name)
-                disable_canvas_extension(name=extension_name)
+                await asyncio.to_thread(disable_canvas_extension, name=extension_name)
                 raise
-        if not enable_canvas_extension(name=extension_name):
+        if not await asyncio.to_thread(enable_canvas_extension, name=extension_name):
             raise NotFound("Canvas App is not installed")
         return UpdateCanvasExtensionStateResponse(name=extension_name, enabled=True)
 
@@ -370,7 +391,12 @@ async def set_canvas_extension_enabled_endpoint(
 @canvas_extensions_router.delete(
     "/installed/{extension_name}",
     response_model=UninstallCanvasExtensionResponse,
-    responses=error_responses({NotFound: "Canvas extension not installed"}),
+    responses=error_responses(
+        {
+            NotFound: "Canvas extension not installed",
+            LockTimeout: "Another extension operation is in progress",
+        }
+    ),
 )
 async def uninstall_canvas_extension_endpoint(
     extension_name: CanvasExtensionNamePath,
@@ -378,7 +404,7 @@ async def uninstall_canvas_extension_endpoint(
 ) -> UninstallCanvasExtensionResponse:
     """Uninstall a canvas extension by name while retaining backend data."""
     await _revoke_and_stop_backend(request, extension_name)
-    if not uninstall_canvas_extension(name=extension_name):
+    if not await asyncio.to_thread(uninstall_canvas_extension, name=extension_name):
         raise NotFound(f"Canvas extension '{extension_name}' is not installed")
     return UninstallCanvasExtensionResponse(
         message=f"Canvas extension '{extension_name}' uninstalled"
@@ -553,6 +579,9 @@ async def grant_canvas_extension_backend_secrets_endpoint(
 @canvas_extensions_router.delete(
     "/installed/{extension_name}/backend/secret-grant",
     response_model=BackendStatus,
+    responses=error_responses(
+        {LockTimeout: "Another extension operation is in progress"}
+    ),
 )
 async def revoke_canvas_extension_backend_secrets_endpoint(
     extension_name: CanvasExtensionNamePath,
@@ -560,6 +589,6 @@ async def revoke_canvas_extension_backend_secrets_endpoint(
 ) -> BackendStatus:
     """Revoke consent, terminate the process group and invalidate bridge sessions."""
     async with _lifecycle_lock(request, extension_name):
-        disable_canvas_extension(name=extension_name)
+        await asyncio.to_thread(disable_canvas_extension, name=extension_name)
         await _backend_manager(request).revoke_secrets(extension_name)
         return await _revoke_and_stop_backend(request, extension_name)
