@@ -17,6 +17,7 @@ import type {
   ErrorClassification as AgentServerErrorClassification,
   Event as AgentServerEvent,
   HookExecutionEvent as AgentServerHookExecutionEvent,
+  ImageContent as AgentServerImageContent,
   LlmCompletionLogEvent as AgentServerLlmCompletionLogEvent,
   MessageEvent as AgentServerMessageEvent,
   MessageToolCall as AgentServerMessageToolCall,
@@ -25,6 +26,7 @@ import type {
   SecurityRisk as AgentServerSecurityRisk,
   StreamingDeltaEvent as AgentServerStreamingDeltaEvent,
   SystemPromptEvent as AgentServerSystemPromptEvent,
+  TextContent as AgentServerTextContent,
   TokenEvent as AgentServerTokenEvent,
   ToolDefinition as AgentServerToolDefinition,
   UserRejectObservation as AgentServerUserRejectObservation,
@@ -165,11 +167,95 @@ export interface ThinkEvent extends BaseEvent {
   thought: string;
 }
 
+/** Emoji shortcodes a reaction can use. */
+export type ReactionEmoji = 'eyes' | '+1' | 'white_check_mark' | 'tada' | 'thinking_face' | 'heart';
+
+/**
+ * Reaction event - an emoji put on (or taken off) a message.
+ *
+ * The latest event for a (target, emoji, source) triple is the current state.
+ * The agent sees the user's reactions on its next turn, as one line with the
+ * end of the message (`target_text_ending`); its own stay out of what it sees.
+ * Needs the `conversation_reactions` feature.
+ */
+export interface ReactionEvent extends BaseEvent {
+  kind: 'ReactionEvent';
+  /** The message or finish action the reaction is on */
+  target_event_id: EventID;
+  emoji: ReactionEmoji;
+  /** True when this event takes the reaction off */
+  removed: boolean;
+  /** Who reacted: the agent or the user */
+  source: 'agent' | 'user';
+  /** The end of the reacted message's text (at most 500 characters), on the user's reactions */
+  target_text_ending?: string | null;
+  /** True when the message is longer than `target_text_ending` */
+  target_text_clipped?: boolean;
+}
+
+/** The `openhands.tools.ask_user` tool's question payload. */
+export interface AskUserAction {
+  kind: 'AskUserAction' | 'AskUserForConversationAction';
+  question: string;
+  options: { label: string; consequence?: string }[];
+  recommended?: number | null;
+  for_conversation?: string | null;
+}
+
+/** The tool result acknowledges display; the answer arrives separately. */
+export interface AskUserObservation {
+  kind: 'AskUserObservation';
+  content: (AgentServerTextContent | AgentServerImageContent)[];
+  is_error: boolean;
+}
+
+/**
+ * The user's answer to the agent's `ask_user` question, picked on its card.
+ *
+ * The question is the agent's `ask_user` ActionEvent (`ask_id`). It stays
+ * pending until a genuine user MessageEvent (source='user', no sender)
+ * follows it; an ordinary chat reply counts too. This answer event alone
+ * does not close the question: a crash before its following user message
+ * is saved leaves it retryable. The agent reads that message, not this event.
+ * Needs the `ask_user` feature.
+ */
+export interface AskUserAnswerEvent extends BaseEvent {
+  kind: 'AskUserAnswerEvent';
+  source: 'user';
+  /** The `ask_user` ActionEvent answered */
+  ask_id: EventID;
+  /** The option picked, counted from 0 */
+  option_index?: number | null;
+  /** The picked option's label, as it was shown */
+  option_label?: string | null;
+  /** The user's own words, when they added any */
+  text?: string | null;
+}
+
+/**
+ * Message edit event - the agent's edit of one of its earlier messages.
+ *
+ * The event log is append-only: the message itself never changes. Show the
+ * latest edit's `text` in place of the message's text, marked as edited.
+ * The LLM does not see this event. Needs the `message_edits` feature.
+ */
+export interface MessageEditEvent extends BaseEvent {
+  kind: 'MessageEditEvent';
+  /** The agent's message or finish action that was edited */
+  target_event_id: EventID;
+  /** The message's whole text after the edit */
+  text: string;
+  source: 'agent';
+}
+
 /**
  * Union type of all conversation events
  */
 export type ConversationEvent =
   | AgentServerEvent
+  | ReactionEvent
+  | AskUserAnswerEvent
+  | MessageEditEvent
   | ConfirmationRequestEvent
   | ConfirmationResponseEvent
   | StuckDetectionEvent
@@ -181,6 +267,27 @@ export type ConversationEvent =
  */
 export function isMessageEvent(event: BaseEvent): event is MessageEvent {
   return event.kind === 'MessageEvent';
+}
+
+/**
+ * Type guard to check if an event is a ReactionEvent
+ */
+export function isReactionEvent(event: BaseEvent): event is ReactionEvent {
+  return event.kind === 'ReactionEvent';
+}
+
+/**
+ * Type guard to check if an event is an AskUserAnswerEvent
+ */
+export function isAskUserAnswerEvent(event: BaseEvent): event is AskUserAnswerEvent {
+  return event.kind === 'AskUserAnswerEvent';
+}
+
+/**
+ * Type guard to check if an event is a MessageEditEvent
+ */
+export function isMessageEditEvent(event: BaseEvent): event is MessageEditEvent {
+  return event.kind === 'MessageEditEvent';
 }
 
 /**

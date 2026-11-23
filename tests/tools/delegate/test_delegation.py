@@ -2,9 +2,12 @@
 
 import json
 import uuid
+import warnings
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+from deprecation import DeprecatedWarning
 from pydantic import SecretStr
 
 from openhands.sdk.agent.utils import fix_malformed_tool_arguments
@@ -12,11 +15,13 @@ from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.hooks.config import HookConfig, HookDefinition, HookMatcher
 from openhands.sdk.llm import LLM, TextContent
+from openhands.sdk.llm.call_context import LLMCallContext
 from openhands.sdk.subagent.registry import (
     _reset_registry_for_tests,
     register_agent,
 )
 from openhands.sdk.subagent.schema import AgentDefinition
+from openhands.sdk.tool import Action, Observation
 from openhands.tools.delegate import (
     DelegateExecutor,
     DelegateObservation,
@@ -40,6 +45,10 @@ def create_test_executor_and_parent():
     parent_conversation.state.workspace.working_dir = "/tmp"
     parent_conversation.state.persistence_dir = None
     parent_conversation.visualize = False
+    parent_conversation.get_llm_call_context.return_value = LLMCallContext(
+        prompt_cache_key=str(parent_conversation.id),
+        session_id=str(parent_conversation.id),
+    )
 
     executor = DelegateExecutor()
 
@@ -610,3 +619,35 @@ def test_spawn_no_persistence_when_parent_has_none():
     sub_conv = executor._sub_agents["sub1"]
     # The sub-conversation should have no persistence_dir
     assert sub_conv._state.persistence_dir is None
+
+
+def test_legacy_executor_warns_before_its_removal_and_still_closes(monkeypatch):
+    monkeypatch.setattr(
+        "openhands.sdk.utils.deprecation._current_version", lambda: "1.60.0"
+    )
+    with pytest.warns(DeprecatedWarning, match="TaskToolSet") as caught:
+        executor = DelegateExecutor()
+    assert isinstance(caught[0].message, DeprecatedWarning)
+    assert caught[0].message.deprecated_in == "1.60.0"
+    assert caught[0].message.removed_in == "1.65.0"
+    executor.close()
+
+
+def test_legacy_models_remain_readable_without_deprecation_warnings():
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        action = Action.model_validate(
+            {
+                "kind": "DelegateAction",
+                "command": "delegate",
+                "tasks": {"worker": "Do it"},
+            }
+        )
+        observation = Observation.model_validate(
+            {"kind": "DelegateObservation", "command": "delegate", "content": []}
+        )
+    assert isinstance(action, DelegateAction)
+    assert action.tasks == {"worker": "Do it"}
+    assert isinstance(observation, DelegateObservation)
+    assert Action.model_validate_json(action.model_dump_json()) == action
+    assert Observation.model_validate_json(observation.model_dump_json()) == observation

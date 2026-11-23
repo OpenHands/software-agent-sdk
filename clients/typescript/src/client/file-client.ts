@@ -1,40 +1,47 @@
-import { HttpClient } from './http-client';
+import { createRuntimeHttpClients } from './runtime-transport';
+import type { RuntimeServiceClientOptions } from './runtime-transport';
+import type { HttpClient } from './http-client';
 import type {
   FileHomeOptions,
   FileHomeResponse,
   FileSearchSubdirsOptions,
   FileSubdirectoryPage,
 } from '../models/api';
+import type { AgentServerArchiveQuery } from '../models/agent-server-api';
 import type { Success } from '../types/base';
 
-export interface FileClientOptions {
-  host: string;
-  apiKey?: string;
-  timeout?: number;
+export type FileArchiveFormat = NonNullable<AgentServerArchiveQuery['format']>;
+
+export interface FileArchiveOptions {
+  format?: FileArchiveFormat;
+  baseRef?: string | null;
+  useDefaultExcludes?: boolean;
+  exclude?: string[];
 }
+
+export type FileClientOptions = RuntimeServiceClientOptions;
 
 export type FileUploadContent = string | Blob | File;
 
 export class FileClient {
   public readonly host: string;
   public readonly apiKey?: string;
-  private readonly client: HttpClient;
+  private readonly runtimeClient: HttpClient;
+  private readonly serverClient: HttpClient;
 
   constructor(options: FileClientOptions) {
+    const { serverClient, runtimeClient } = createRuntimeHttpClients(options);
     this.host = options.host.replace(/\/$/, '');
     this.apiKey = options.apiKey;
-    this.client = new HttpClient({
-      baseUrl: this.host,
-      apiKey: this.apiKey,
-      timeout: options.timeout || 60000,
-    });
+    this.runtimeClient = runtimeClient;
+    this.serverClient = serverClient;
   }
 
   async searchSubdirectories(
     path: string,
     options: FileSearchSubdirsOptions = {}
   ): Promise<FileSubdirectoryPage> {
-    const response = await this.client.get<FileSubdirectoryPage>('/api/file/search_subdirs', {
+    const response = await this.serverClient.get<FileSubdirectoryPage>('/api/file/search_subdirs', {
       params: {
         path,
         page_id: options.pageId,
@@ -46,7 +53,7 @@ export class FileClient {
   }
 
   async getHome(options: FileHomeOptions = {}): Promise<FileHomeResponse> {
-    const response = await this.client.get<FileHomeResponse>('/api/file/home', {
+    const response = await this.serverClient.get<FileHomeResponse>('/api/file/home', {
       params: {
         include_hidden: options.includeHidden || undefined,
       },
@@ -55,9 +62,10 @@ export class FileClient {
   }
 
   async downloadFile(path: string): Promise<ArrayBuffer> {
-    const response = await this.client.get<ArrayBuffer>('/api/file/download', {
+    const response = await this.runtimeClient.get<ArrayBuffer>('/api/file/download', {
       params: { path },
       responseType: 'arrayBuffer',
+      cache: 'no-store',
     });
     return response.data;
   }
@@ -86,7 +94,7 @@ export class FileClient {
       );
     }
 
-    const response = await this.client.post<Success>('/api/file/upload', formData, {
+    const response = await this.runtimeClient.post<Success>('/api/file/upload', formData, {
       params: { path: destinationPath },
     });
     return response.data;
@@ -96,8 +104,43 @@ export class FileClient {
     return this.uploadFile(text, destinationPath, fileName);
   }
 
+  /** Download a zip/tar archive of a directory as a browser-compatible Blob. */
+  async downloadArchive(path: string, options: FileArchiveOptions = {}): Promise<Blob> {
+    const response = await this.runtimeClient.get<Blob>('/api/file/archive', {
+      params: {
+        path,
+        format: options.format,
+        base_ref: options.baseRef ?? undefined,
+        use_default_excludes: options.useDefaultExcludes,
+        exclude: options.exclude,
+      },
+      responseType: 'blob',
+      cache: 'no-store',
+    });
+    return response.data;
+  }
+
+  /** Same archive as {@link downloadArchive}, as an ArrayBuffer. */
+  async downloadArchiveBuffer(
+    path: string,
+    options: FileArchiveOptions = {}
+  ): Promise<ArrayBuffer> {
+    const response = await this.runtimeClient.get<ArrayBuffer>('/api/file/archive', {
+      params: {
+        path,
+        format: options.format,
+        base_ref: options.baseRef ?? undefined,
+        use_default_excludes: options.useDefaultExcludes,
+        exclude: options.exclude,
+      },
+      responseType: 'arrayBuffer',
+      cache: 'no-store',
+    });
+    return response.data;
+  }
+
   async downloadTrajectory(conversationId: string): Promise<Blob> {
-    const response = await this.client.get<Blob>(
+    const response = await this.runtimeClient.get<Blob>(
       `/api/file/download-trajectory/${encodeURIComponent(conversationId)}`,
       { responseType: 'blob' }
     );
@@ -105,6 +148,6 @@ export class FileClient {
   }
 
   close(): void {
-    this.client.close();
+    this.runtimeClient.close();
   }
 }

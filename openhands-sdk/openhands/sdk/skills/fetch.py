@@ -14,9 +14,10 @@ from openhands.sdk.extensions.fetch import (
     fetch_with_resolution as _ext_fetch_with_resolution,
 )
 from openhands.sdk.git.cached_repo import GitHelper
+from openhands.sdk.utils.path import get_user_persistence_dir
 
 
-DEFAULT_CACHE_DIR = Path.home() / ".openhands" / "cache" / "skills"
+DEFAULT_CACHE_DIR = get_user_persistence_dir() / "cache" / "skills"
 
 
 class SkillFetchError(Exception):

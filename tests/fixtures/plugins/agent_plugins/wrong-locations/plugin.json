@@ -1,0 +1,6 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "wrong-locations",
+  "version": "1.0.0",
+  "description": "Claude Code locations and an unsupported component type, all at the root."
+}

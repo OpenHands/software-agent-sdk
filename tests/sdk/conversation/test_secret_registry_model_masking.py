@@ -1,11 +1,17 @@
 """Unit tests for SecretRegistry.mask_secrets_in_model (issue #4677)."""
 
+import base64
 from enum import Enum
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 
+import mcp.types
 from pydantic import BaseModel, SecretStr
 
 from openhands.sdk.conversation.secret_registry import SecretRegistry
+from openhands.sdk.event import Event
+from openhands.sdk.event.security import SecurityAnalysisEvent
+from openhands.sdk.llm import ImageContent
+from openhands.sdk.mcp import MCPToolObservation
 
 
 SECRET = "sk-supersecret-value"
@@ -38,9 +44,15 @@ class Outer(BaseModel):
     span: Span | None = None
 
 
-def _registry() -> SecretRegistry:
+class Command(BaseModel):
+    command: Literal["view", "undo_edit"]
+    isolation: Literal["worktree", "shared"] | None = None
+    output: str = ""
+
+
+def _registry(secret: str = SECRET) -> SecretRegistry:
     registry = SecretRegistry()
-    registry.update_secrets({"TOKEN": SECRET})
+    registry.update_secrets({"TOKEN": secret})
     registry.get_secret_value("TOKEN")  # resolve -> tracked for masking
     return registry
 
@@ -85,6 +97,30 @@ def test_preserves_str_subclass_enum_members():
     assert isinstance(masked.inner.kind, Kind)
 
 
+def test_preserves_literal_values():
+    """A ``Literal`` value must survive masking, like an Enum member.
+
+    A masked value is outside the vocabulary, so the model no longer loads.
+    """
+    model = Command(command="undo_edit", isolation="shared", output="undo_edit shared")
+
+    masked = _registry("ed").mask_secrets_in_model(model)
+
+    assert masked.command == "undo_edit"
+    assert masked.isolation == "shared"
+    assert masked.output == f"undo_{MASK}it shar{MASK}"
+
+
+def test_masked_event_source_still_loads():
+    event = SecurityAnalysisEvent(analyzer="iron", policy="p", risks={})
+
+    masked = _registry("iron").mask_secrets_in_model(event)
+
+    assert masked.source == "environment"
+    assert masked.analyzer == MASK
+    assert Event.model_validate_json(masked.model_dump_json()) == masked
+
+
 def test_secretstr_is_not_walked_as_a_string():
     model = Outer(title="clean", inner=Inner(note="clean"), opaque=SecretStr(SECRET))
 
@@ -122,3 +158,46 @@ def test_preserves_namedtuple_type():
     assert isinstance(masked.span, Span)
     assert masked.span.label == f"s {MASK}"
     assert masked.span.line == 3
+
+
+def _base64_payload() -> str:
+    return base64.b64encode(b"abc").decode()
+
+
+def test_preserves_data_image_urls_but_masks_regular_image_urls():
+    payload = _base64_payload()
+    registry = SecretRegistry()
+    registry.update_secrets({"TOKEN": payload})
+    registry.get_secret_value("TOKEN")
+    content = ImageContent(
+        image_urls=[
+            f"data:image/png;base64,{payload}",
+            f"https://example.com/{payload}.png",
+        ]
+    )
+
+    masked = registry.mask_secrets_in_model(content)
+
+    assert masked.image_urls == [
+        f"data:image/png;base64,{payload}",
+        f"https://example.com/{MASK}.png",
+    ]
+
+
+def test_preserves_mcp_image_data_url():
+    payload = _base64_payload()
+    registry = SecretRegistry()
+    registry.update_secrets({"TOKEN": payload})
+    registry.get_secret_value("TOKEN")
+    result = mcp.types.CallToolResult(
+        content=[
+            mcp.types.ImageContent(type="image", data=payload, mime_type="image/png")
+        ]
+    )
+    observation = MCPToolObservation.from_call_tool_result("image_tool", result)
+
+    masked = registry.mask_secrets_in_model(observation)
+
+    image_content = masked.content[-1]
+    assert isinstance(image_content, ImageContent)
+    assert image_content.image_urls == [f"data:image/png;base64,{payload}"]

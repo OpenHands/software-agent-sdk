@@ -64,8 +64,9 @@ class ToolCallMatchingProperty(ViewPropertyBase):
     ) -> ManipulationIndices:
         """Calculate manipulation indices for tool call matching.
 
-        This property is maintained by ensuring there are no manipulation indices
-        between action events and their paired observation event.
+        Indices between an action and its matching observation are protected.
+        Observation-like events without a pending action do not affect boundaries;
+        property enforcement separately removes orphaned and duplicate observations.
         """
         # Start with a complete set of manipulation indices, then we'll remove those
         # between actions and their paired observations.
@@ -84,13 +85,7 @@ class ToolCallMatchingProperty(ViewPropertyBase):
                 case ActionEvent():
                     pending_tool_call_ids.add(event.tool_call_id)
                 case ObservationBaseEvent():
-                    # Intentionally use remove(), not discard(): a second
-                    # observation-like event for the same tool_call_id means the
-                    # view has already violated the 1 action -> 1 result
-                    # invariant that downstream LLM APIs expect. That case must
-                    # be fixed by de-duplicating the view before serialization,
-                    # not by silently tolerating it here.
-                    pending_tool_call_ids.remove(event.tool_call_id)
+                    pending_tool_call_ids.discard(event.tool_call_id)
 
             if pending_tool_call_ids:
                 # The enumeration index corresponds to the position of the event, but we

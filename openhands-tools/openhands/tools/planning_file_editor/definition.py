@@ -2,7 +2,7 @@
 
 from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 
 if TYPE_CHECKING:
@@ -64,6 +64,8 @@ class PlanningFileEditorTool(
     ToolDefinition[PlanningFileEditorAction, PlanningFileEditorObservation]
 ):
     """A planning file editor tool with read-all, edit-PLAN.md-only access."""
+
+    user_selectable: ClassVar[bool] = False
 
     @classmethod
     def create(

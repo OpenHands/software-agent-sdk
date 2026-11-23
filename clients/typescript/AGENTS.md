@@ -22,7 +22,7 @@ All pull requests must follow the repository's contribution and applicable code-
 - **Workspace Management**: File operations, uploads, downloads, and workspace state management
 - **Conversation Lifecycle**: Create, start, stop, and manage AI agent conversations
 - **Error Handling**: Robust error handling with custom exception classes and retry logic
-- **Modern Tooling**: ESLint, Prettier, Jest testing framework, and GitHub Actions CI/CD
+- **Modern Tooling**: ESLint, Prettier, Vitest, and GitHub Actions CI/CD
 
 ## Browser Compatibility Requirement
 
@@ -43,7 +43,7 @@ All pull requests must follow the repository's contribution and applicable code-
 - Web-standard APIs (`URL`, `Blob`, `File`, `FormData`, `TextEncoder`/`TextDecoder`, etc.)
 - Browser-compatible npm packages only
 
-This applies to all source code under `src/`. Test files (`src/__tests__/`) are an exception since they run in Node.js via Jest.
+This applies to all source code under `src/`. Test files (`src/__tests__/`) are an exception since they run in Node.js via Vitest.
 
 ## Source Material
 
@@ -199,7 +199,7 @@ src/conversation/
 
 - Integrates with ILLM interface for LLM communication
 - Implements agent loop with tool calling support
-- Built-in tools: `execute_command`, `read_file`, `write_file`, `finish`
+- Built-in tools: `finish` with a stub `LocalWorkspace`; workspace tools (`execute_command`, `read_file`, `write_file`) require a functional workspace
 - Maintains message history for multi-turn conversations
 - Supports pause/resume functionality
 - Event emission with callback support
@@ -207,10 +207,10 @@ src/conversation/
 **Local Conversation Example**:
 
 ```typescript
-import { LocalWorkspace, LocalConversation, OpenRouterLLM } from '@openhands/typescript-client';
+import { RemoteWorkspace, LocalConversation, OpenRouterLLM } from '@openhands/typescript-client';
 
-// Create components
-const workspace = new LocalWorkspace({ workingDir: '/path/to/project' });
+// Create components; filesystem tools execute on the remote Agent Server.
+const workspace = new RemoteWorkspace({ host: 'http://localhost:8000', workingDir: '/workspace' });
 const llm = new OpenRouterLLM({
   apiKey: 'your-key',
   defaultModel: 'anthropic/claude-3.5-sonnet',
@@ -229,7 +229,7 @@ await conversation.close();
 
 **Factory Functions**:
 
-**Ergonomic API note**: Keep `ConversationManager` as the main server-scoped entry point. Server/LLM/settings/skills/tools/VSCode/desktop operations should be reachable through manager namespaces such as `manager.server`, `manager.llm`, and `manager.desktop`; ACP-specific operations should be reachable via `manager.acp`.
+**Ergonomic API note**: Keep `ConversationManager` as the main server-scoped entry point. Server/LLM/settings/skills/tools/VSCode operations should be reachable through manager namespaces such as `manager.server`, `manager.llm`, and `manager.vscode`; ACP-specific operations should be reachable via `manager.acp`.
 
 - `createConversation({ type, agent, workspace, options })` - Explicit type selection
 - `createConversationAuto(agent, workspace, options)` - Auto-detect based on workspace type
@@ -270,19 +270,16 @@ src/hooks/
 
 ## Release Process
 
-TypeScript client releases are driven from the monorepo root by
-`.github/workflows/typescript-client-release.yml`, which delegates to OpenHands'
-centralized release-please workflow. The component configuration and state live
-in `.github/release-please/typescript-client-config.json` and
-`.github/release-please/typescript-client-manifest.json`.
+The TypeScript client is versioned with the Python packages by the monorepo's
+release process. `.github/workflows/prepare-release.yml` updates
+`clients/typescript/package.json` and its lockfile on the shared `rel-X.Y.Z`
+release branch. Merging that release PR publishes a `vX.Y.Z` GitHub release.
 
-Release-please maintains the client release PR and creates component tags named
-`typescript-client-vX.Y.Z`. Publishing that GitHub release triggers
+Publishing the GitHub release triggers
 `.github/workflows/typescript-client-npm-publish.yml` and
 `.github/workflows/typescript-client-github-packages-publish.yml`; both workflows
-also accept a `workflow_dispatch` version for manual recovery. The npm package
-version is independent of the Python SDK release and the tracked Agent Server
-image version.
+also accept a `workflow_dispatch` version for manual recovery. The tracked Agent
+Server image version remains independent and may lag the client package version.
 
 ### Tracking the agent-server / SDK version
 
@@ -290,8 +287,7 @@ This client is tested and documented against a specific `software-agent-sdk`
 release, expressed as the agent-server image tag
 (`ghcr.io/openhands/agent-server:<version>-python`, where `<version>` equals the
 SDK release `vX.Y.Z`). The **source of truth** is `package.json` →
-`config.agentServerImage`; `AGENTS.md`, `README.md`, and the generated schema
-mirror the same version.
+`config.agentServerImage`; the README and generated schema should reflect that pin.
 
 After an SDK release, the root `.github/workflows/version-bump-prs.yml` workflow
 opens a `bump-typescript-agent-server-X.Y.Z` PR in this repository. It updates
@@ -361,10 +357,11 @@ Integration tests are in `src/__tests__/integration/` and require a running agen
 export LLM_API_KEY="your-api-key"
 export LLM_MODEL="anthropic/claude-sonnet-4-5-20250929"
 
-# Start agent-server in Docker (software-agent-sdk v1.44.0)
+# Start agent-server in Docker (matching the pinned image in package.json -> config.agentServerImage)
+IMAGE=$(node -p "require('./package.json').config.agentServerImage")
 docker run -d --name agent-server -p 127.0.0.1:8010:8000 \
   -v /tmp/agent-workspace:/workspace \
-  ghcr.io/openhands/agent-server:1.44.0-python --host 0.0.0.0
+  "$IMAGE" --host 0.0.0.0
 
 # Run integration tests
 npm run test:integration
@@ -394,7 +391,7 @@ Required GitHub secrets:
 
 ### CI Image Version
 
-- The integration workflow pins `ghcr.io/openhands/agent-server:1.44.0-python`, which corresponds to the `software-agent-sdk` release `v1.44.0`.
+- The pinned agent-server image for the TypeScript client is `package.json` → `config.agentServerImage` (read its current value rather than hard-coding a tag), which is the source of truth the generated schema and integration workflows use.
 - Keep the TypeScript client tests strict against that released server image rather than adding compatibility fallbacks for older prerelease builds.
 
 ## Agent Behavior Guidelines

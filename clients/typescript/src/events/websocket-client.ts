@@ -3,32 +3,11 @@
  */
 
 import { Event, ConversationCallbackType } from '../types/base';
-
-// Use native WebSocket in browser, ws library in Node.js.
-//
-// IMPORTANT: this block must never throw. It runs whenever this file is
-// imported, and this file is transitively imported by the package barrel
-// (via RemoteConversation), so any throw here crashes consumers that
-// merely `import { RemoteWorkspace } from "@openhands/typescript-client"`
-// even when they have no intent to open a WebSocket. The "no implementation
-// available" condition is deferred to connect() time, where it is surfaced
-// through the existing onError callback channel.
-let WebSocketImpl: any;
-
-if (typeof window !== 'undefined' && window.WebSocket) {
-  // Browser environment
-  WebSocketImpl = window.WebSocket;
-} else {
-  // Node.js environment
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const ws = require('ws');
-    WebSocketImpl = ws;
-  } catch {
-    // Leave WebSocketImpl undefined; connect() reports the error via onError.
-    WebSocketImpl = undefined;
-  }
-}
+import {
+  ConversationEventStream,
+  buildConversationEventStreamUrl,
+} from '../client/conversation-event-stream';
+import { WEBSOCKET_UNAVAILABLE_MESSAGE, getGlobalWebSocket } from './global-websocket';
 
 /**
  * Error callback type for reporting non-fatal errors.
@@ -45,131 +24,53 @@ export interface WebSocketClientOptions {
   onError?: ErrorCallbackType;
 }
 
+/** Typed event adapter over the same transport used by browser consumers. */
 export class WebSocketCallbackClient {
-  private host: string;
-  private conversationId: string;
-  private callback: ConversationCallbackType;
-  private apiKey?: string;
-  private onError?: ErrorCallbackType;
-  private ws?: any; // WebSocket instance (browser or Node.js)
-  private reconnectDelay = 1000;
-  private maxReconnectDelay = 30000;
-  private currentDelay = 1000;
-  private shouldReconnect = true;
-  private reconnectTimer?: NodeJS.Timeout;
+  private stream?: ConversationEventStream;
 
-  constructor(options: WebSocketClientOptions) {
-    this.host = options.host;
-    this.conversationId = options.conversationId;
-    this.callback = options.callback;
-    this.apiKey = options.apiKey;
-    this.onError = options.onError;
-  }
+  constructor(private options: WebSocketClientOptions) {}
 
-  start(): void {
-    if (this.ws) {
-      return;
-    }
-
-    this.shouldReconnect = true;
-    this.connect();
-  }
-
-  stop(): void {
-    this.shouldReconnect = false;
-
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = undefined;
-    }
-
-    if (this.ws) {
-      this.ws.close();
-      this.ws = undefined;
-    }
-  }
-
-  private connect(): void {
-    try {
-      if (!WebSocketImpl) {
-        throw new Error(
-          'WebSocket implementation not available. Install the `ws` package, ' +
-            'or run in an environment with a global WebSocket constructor.'
-        );
-      }
-      // Convert HTTP URL to WebSocket URL
-      const url = new URL(this.host);
-      const wsScheme = url.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsUrl = `${wsScheme}//${url.host}${url.pathname.replace(/\/$/, '')}/sockets/events/${this.conversationId}`;
-
-      // Add API key as query parameter if provided
-      const finalUrl = this.apiKey ? `${wsUrl}?session_api_key=${this.apiKey}` : wsUrl;
-
-      this.ws = new WebSocketImpl(finalUrl);
-
-      this.ws.onopen = () => {
-        this.currentDelay = this.reconnectDelay;
-      };
-
-      this.ws.onmessage = (event: { data: any }) => {
+  private createStream(): ConversationEventStream {
+    const options = this.options;
+    let lastError: Error | null = null;
+    return new ConversationEventStream({
+      url: buildConversationEventStreamUrl(options.host, options.conversationId),
+      sessionApiKey: options.apiKey,
+      reconnect: { enabled: true },
+      createWebSocket: (url) => {
+        const WebSocketImpl = getGlobalWebSocket();
+        if (!WebSocketImpl) throw new Error(WEBSOCKET_UNAVAILABLE_MESSAGE);
+        return new WebSocketImpl(url);
+      },
+      onMessage: (event) => {
         try {
           const message = typeof event.data === 'string' ? event.data : event.data.toString();
-          const eventData: Event = JSON.parse(message);
-          this.callback(eventData);
+          options.callback(JSON.parse(message) as Event);
         } catch (error) {
-          this.reportError(
+          options.onError?.(
             new Error(
               `Error processing WebSocket message: ${error instanceof Error ? error.message : String(error)}`
             )
           );
         }
-      };
+      },
+      onStateChange: ({ error }) => {
+        if (error && error !== lastError) options.onError?.(error);
+        lastError = error;
+      },
+    });
+  }
 
-      this.ws.onclose = () => {
-        this.ws = undefined;
-        if (this.shouldReconnect) {
-          this.scheduleReconnect();
-        }
-      };
-
-      this.ws.onerror = () => {
-        if (this.shouldReconnect) {
-          this.scheduleReconnect();
-        }
-      };
+  start(): void {
+    try {
+      this.stream ??= this.createStream();
+      this.stream.start();
     } catch (error) {
-      this.reportError(
-        new Error(
-          `Failed to create WebSocket connection: ${error instanceof Error ? error.message : String(error)}`
-        )
-      );
-      if (this.shouldReconnect) {
-        this.scheduleReconnect();
-      }
+      this.options.onError?.(error instanceof Error ? error : new Error(String(error)));
     }
   }
 
-  /**
-   * Report a non-fatal error via the onError callback if provided.
-   */
-  private reportError(error: Error): void {
-    if (this.onError) {
-      this.onError(error);
-    }
-  }
-
-  private scheduleReconnect(): void {
-    if (this.reconnectTimer) {
-      return;
-    }
-
-    this.reconnectTimer = setTimeout(() => {
-      this.reconnectTimer = undefined;
-      if (this.shouldReconnect) {
-        this.connect();
-        // Exponential backoff with jitter
-        this.currentDelay = Math.min(this.currentDelay * 2, this.maxReconnectDelay);
-      }
-    }, this.currentDelay);
+  stop(): void {
+    this.stream?.stop();
   }
 }

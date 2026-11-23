@@ -1,4 +1,5 @@
 import { HttpClient } from './http-client';
+import type { ToolCatalogResponse } from '../models/tool-catalog';
 
 export interface ToolClientOptions {
   host: string;
@@ -23,6 +24,12 @@ export class ToolClient {
 
   async listTools(): Promise<string[]> {
     const response = await this.client.get<string[]>('/api/tools/');
+    return response.data;
+  }
+
+  /** Tools a client may offer when configuring an agent. */
+  async getToolCatalog(): Promise<ToolCatalogResponse> {
+    const response = await this.client.get<ToolCatalogResponse>('/api/tools/catalog');
     return response.data;
   }
 

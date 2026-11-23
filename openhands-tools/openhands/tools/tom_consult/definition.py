@@ -18,6 +18,7 @@ from openhands.sdk.tool import (
     ToolDefinition,
     register_tool,
 )
+from openhands.sdk.utils.path import get_user_persistence_dir
 
 
 if TYPE_CHECKING:
@@ -186,7 +187,7 @@ class TomConsultTool(ToolDefinition[ConsultTomAction, ConsultTomObservation]):
         # Import here to avoid circular imports and make tom-swe optional
         from openhands.tools.tom_consult.executor import TomConsultExecutor
 
-        file_store = LocalFileStore(root="~/.openhands")
+        file_store = LocalFileStore(root=str(get_user_persistence_dir()))
 
         # Initialize the executor
         executor = TomConsultExecutor(
@@ -241,7 +242,7 @@ class SleeptimeComputeTool(
         # Import here to avoid circular imports and make tom-swe optional
         from openhands.tools.tom_consult.executor import TomConsultExecutor
 
-        file_store = LocalFileStore(root="~/.openhands")
+        file_store = LocalFileStore(root=str(get_user_persistence_dir()))
 
         # Initialize the executor
         executor = TomConsultExecutor(

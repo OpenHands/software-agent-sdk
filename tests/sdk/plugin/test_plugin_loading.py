@@ -229,6 +229,39 @@ Body.
 
         assert plugin.skills == []
 
+    def test_skills_dir_nested_md_and_relaxed_names(self, tmp_path: Path):
+        """Nested .md files are skill resources, not skills; names are relaxed."""
+        plugin_dir = tmp_path / "nested"
+        skill_dir = plugin_dir / "skills" / "Summarize_Tool"
+        (skill_dir / "references").mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: Summarize_Tool\ndescription: d\n---\nbody\n"
+        )
+        (skill_dir / "references" / "notes.md").write_text("# notes\n")
+        (plugin_dir / "skills" / "shared").mkdir()
+        (plugin_dir / "skills" / "shared" / "notes.md").write_text("# notes\n")
+        (plugin_dir / "skills" / "loose.md").write_text("loose skill\n")
+        (plugin_dir / "skills" / "readme.md").write_text("# readme\n")
+
+        plugin = Plugin.load(plugin_dir)
+
+        assert [s.name for s in plugin.skills] == ["Summarize_Tool", "loose"]
+
+    def test_skills_dir_bad_skill_skips_only_itself(self, tmp_path: Path):
+        """A skill that fails to load does not abort the remaining skills."""
+        plugin_dir = tmp_path / "partial"
+        skills_dir = plugin_dir / "skills"
+        (skills_dir / "broken").mkdir(parents=True)
+        (skills_dir / "broken" / "SKILL.md").write_bytes(b"\xff\xfe\xfa")
+        (skills_dir / "good").mkdir()
+        (skills_dir / "good" / "SKILL.md").write_text(
+            "---\nname: good\ndescription: d\n---\nbody\n"
+        )
+
+        plugin = Plugin.load(plugin_dir)
+
+        assert [s.name for s in plugin.skills] == ["good"]
+
     def test_load_plugin_with_hooks(self, tmp_path: Path):
         """Test loading a plugin with hooks."""
         plugin_dir = tmp_path / "hook-plugin"
@@ -263,6 +296,26 @@ Body.
         assert plugin.hooks is not None
         assert not plugin.hooks.is_empty()
         assert len(plugin.hooks.pre_tool_use) == 1
+
+    def test_load_plugin_binds_plugin_root_to_hooks(self, tmp_path: Path):
+        """Every hook records the resolved plugin directory as its plugin root."""
+        plugin_dir = tmp_path / "hook-plugin"
+        hooks_dir = plugin_dir / "hooks"
+        hooks_dir.mkdir(parents=True)
+        (hooks_dir / "hooks.json").write_text(
+            """{
+            "hooks": {
+                "PreToolUse": [{"hooks": [{"command": "echo pre"}]}],
+                "Stop": [{"hooks": [{"command": "echo stop"}]}]
+            }
+        }"""
+        )
+
+        plugin = Plugin.load(plugin_dir)
+
+        assert plugin.hooks is not None
+        hooks = [*plugin.hooks.pre_tool_use[0].hooks, *plugin.hooks.stop[0].hooks]
+        assert [h.plugin_root for h in hooks] == [str(plugin_dir.resolve())] * 2
 
     def test_load_plugin_with_agents(self, tmp_path: Path):
         """Test loading a plugin with agent definitions."""

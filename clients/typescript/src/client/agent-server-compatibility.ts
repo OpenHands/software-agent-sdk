@@ -94,6 +94,11 @@ export async function getCachedAgentServerInfo(client: HttpClient): Promise<Serv
 
   const request = client.get<ServerInfo>('/server_info').then((response) => response.data);
   serverInfoCache.set(client, request);
+  void request.catch(() => {
+    if (serverInfoCache.get(client) === request) {
+      serverInfoCache.delete(client);
+    }
+  });
   return request;
 }
 

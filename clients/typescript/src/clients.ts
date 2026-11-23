@@ -1,12 +1,25 @@
+export { ACPClient } from './client/acp-client';
 export { AgentProfilesClient } from './client/agent-profiles-client';
+export {
+  ConversationEventStream,
+  buildConversationEventStreamUrl,
+} from './client/conversation-event-stream';
+export type {
+  ConversationEventStreamOptions,
+  ConversationEventStreamState,
+} from './client/conversation-event-stream';
 export { ServerClient } from './client/server-client';
 export { BashClient } from './client/bash-client';
+export { CanvasExtensionsClient } from './client/canvas-extensions-client';
 export { ConversationClient } from './client/conversation-client';
 export { FileClient } from './client/file-client';
 export { HooksClient } from './client/hooks-client';
+export { GitClient } from './client/git-client';
+export { InitClient } from './client/init-client';
 export { LLMMetadataClient } from './client/llm-client';
 export { MCPClient } from './client/mcp-client';
 export { ProfilesClient } from './client/profiles-client';
+export { PROJECT_ATTENTION_ORDER, ProjectsClient, projectIdKey } from './client/projects-client';
 export { MetaProfilesClient } from './client/meta-profiles-client';
 export { SettingsClient } from './client/settings-client';
 export { SkillsClient } from './client/skills-client';
@@ -14,7 +27,6 @@ export { SubAgentsClient } from './client/sub-agents-client';
 export { PluginsClient } from './client/plugins-client';
 export { ToolClient } from './client/tool-client';
 export { VSCodeClient } from './client/vscode-client';
-export { DesktopClient } from './client/desktop-client';
 export { SharedClient } from './client/shared-client';
 export { WorkspacesClient } from './client/workspaces-client';
 export { AgentServerClient, OpenHandsClient } from './client/openhands-client';
@@ -36,15 +48,28 @@ export {
   isAgentServerVersionError,
 } from './client/agent-server-compatibility';
 
+export type { ACPClientOptions } from './client/acp-client';
 export type { ServerClientOptions } from './client/server-client';
 export type { BashClientOptions } from './client/bash-client';
+export type { CanvasExtensionsClientOptions } from './client/canvas-extensions-client';
 export type {
   ConversationClientOptions,
   CreateConversationPayload,
   SendConversationEventOptions,
 } from './client/conversation-client';
-export type { FileClientOptions, FileUploadContent } from './client/file-client';
+export type {
+  FileArchiveFormat,
+  FileArchiveOptions,
+  FileClientOptions,
+  FileUploadContent,
+} from './client/file-client';
 export type { HooksClientOptions } from './client/hooks-client';
+export type {
+  GitClientOptions,
+  GitCommitsOptions,
+  SearchRepositoriesOptions,
+} from './client/git-client';
+export type { InitClientOptions, InitializeServerOptions } from './client/init-client';
 export type { LLMMetadataClientOptions } from './client/llm-client';
 export type { MCPClientOptions } from './client/mcp-client';
 export type { ProfilesClientOptions, GetProfileOptions } from './client/profiles-client';
@@ -58,6 +83,28 @@ export type {
 } from './client/agent-profiles-client';
 export type { MetaProfilesClientOptions } from './client/meta-profiles-client';
 export type {
+  CreateProjectRequest,
+  NewProjectCoordinator,
+  Project,
+  ProjectArtifact,
+  ProjectArtifactsResponse,
+  ProjectAttention,
+  ProjectConversation,
+  ProjectConversationsResponse,
+  ProjectDeleteResponse,
+  ProjectMemoryFile,
+  ProjectMemoryFileContent,
+  ProjectMemoryResponse,
+  ProjectPullRequest,
+  ProjectsClientOptions,
+  ProjectsListResponse,
+  ProjectTranscriptMessage,
+  ProjectTranscriptResponse,
+  SaveConversationArtifactRequest,
+  UpdateProjectRequest,
+} from './client/projects-client';
+export type {
+  ExperimentalFeature,
   SettingsClientOptions,
   ExposeSecretsMode,
   LLMProfileSummary,
@@ -71,7 +118,6 @@ export type { SubAgentsClientOptions } from './client/sub-agents-client';
 export type { PluginsClientOptions } from './client/plugins-client';
 export type { ToolClientOptions } from './client/tool-client';
 export type { VSCodeClientOptions, GetVSCodeUrlOptions } from './client/vscode-client';
-export type { DesktopClientOptions } from './client/desktop-client';
 export type { SharedClientOptions, SharedEventSearchOptions } from './client/shared-client';
 export type {
   DeleteWorkspaceResponse,
@@ -82,6 +128,28 @@ export type {
 } from './client/workspaces-client';
 export type { AgentServerFeatureRequirement } from './client/agent-server-compatibility';
 export type {
+  AgentServerArchiveQuery,
+  AgentServerBatchEventIds,
+  AgentServerBatchEventsResponse,
+  AgentServerGitCommitChangesQuery,
+  AgentServerGitCommitChangesResponse,
+  AgentServerGitCommitsQuery,
+  AgentServerGitCommitsResponse,
+  AgentServerInitRequest,
+  AgentServerInitResponse,
+  AgentServerInitStatus,
+  AgentServerLoadPluginRequest,
+  AgentServerLoadPluginResponse,
+  AgentServerCanvasBackendDataDeleteResponse,
+  AgentServerCanvasBackendLogs,
+  AgentServerCanvasBackendLogsResponse,
+  AgentServerCanvasBackendPrepareResponse,
+  AgentServerCanvasBackendRevisionRequest,
+  AgentServerCanvasBackendSecretGrantRequest,
+  AgentServerCanvasBackendStartResponse,
+  AgentServerCanvasBackendStatus,
+  AgentServerCanvasBackendStatusResponse,
+  AgentServerCanvasBackendStopResponse,
   AgentServerConversationSettingsSchema,
   AgentServerMCPOAuthCallbackRequest,
   AgentServerMCPOAuthCallbackResponse,
@@ -122,6 +190,7 @@ export type {
   OpenHandsRequestMethod,
   OpenHandsRequestOptions,
 } from './client/openhands-client';
+export type { GitProviderRepository, GitProviderRepositoryPage } from './models/api';
 export type {
   CloudApiKeyMetadata,
   CloudAppConversation,

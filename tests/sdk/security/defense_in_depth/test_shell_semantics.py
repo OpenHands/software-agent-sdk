@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from openhands.sdk.event import ActionEvent
 from openhands.sdk.llm import MessageToolCall, TextContent
 from openhands.sdk.security.defense_in_depth.pattern import PatternSecurityAnalyzer
@@ -74,6 +76,237 @@ def _nest_in_runners(payload: str, levels: int) -> str:
     for _ in range(levels):
         command = f"bash -c {_double_quoted(command)}"
     return command
+
+
+def test_dynamic_runner_option_boundary_is_uncertain():
+    command = f"bash \"$OPT\" -c '{_DEL_QUOTED}'"
+    result = scan_shell_command(command, _DETECTOR_ID)
+
+    assert result.matched is False
+    assert result.uncertain is True
+    assert PatternSecurityAnalyzer().security_risk(make_action(command)) == (
+        SecurityRisk.UNKNOWN
+    )
+
+
+@pytest.mark.parametrize(
+    ("shell", "flag"),
+    [("bash", "+c"), ("bash", "+xc"), ("dash", "+c"), ("dash", "+xc")],
+)
+def test_plus_c_runner_script_is_scanned(shell: str, flag: str):
+    command = f"{shell} {flag} '{_DEL_QUOTED}'"
+    result = scan_shell_command(command, _DETECTOR_ID)
+
+    assert result.matched is True
+    assert result.detector_id == _DETECTOR_ID
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        f"bash 2>/dev/null -c '{_DEL_QUOTED}'",
+        f"eval 2>/dev/null '{_DEL_QUOTED}'",
+        f"eval 0<<< x '{_DEL_QUOTED}'",
+        f"builtin command -p -- eval '{_DEL_QUOTED}'",
+        f"bash 2>/dev/null 0<<< '{_DEL_QUOTED}'",
+        f"bash 2>/dev/null 00<<< '{_DEL_QUOTED}'",
+    ],
+)
+def test_redirected_executable_source_is_scanned(command: str):
+    result = scan_shell_command(command, _DETECTOR_ID)
+
+    assert result.matched is True
+    assert result.detector_id == _DETECTOR_ID
+    assert PatternSecurityAnalyzer().security_risk(make_action(command)) == (
+        SecurityRisk.HIGH
+    )
+
+
+def test_pattern_ast_uses_original_shell_source():
+    command = 'echo ＃; r"m" -rf /'
+
+    assert PatternSecurityAnalyzer().security_risk(make_action(command)) == (
+        SecurityRisk.HIGH
+    )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        f"0<<< '{_DEL_QUOTED}' bash",
+        f"bash </dev/null <<< '{_DEL_QUOTED}'",
+    ],
+)
+def test_parser_recovered_source_is_scanned(command: str):
+    result = scan_shell_command(command, _DETECTOR_ID)
+
+    assert result.matched is True
+    assert result.detector_id == _DETECTOR_ID
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        f"bash '0'<<< '{_DEL_QUOTED}'",
+        f"bash \"0\"<<< '{_DEL_QUOTED}'",
+        f"bash \\0<<< '{_DEL_QUOTED}'",
+        f"bash 2>/dev/null 0 <<< '{_DEL_QUOTED}'",
+        f"bash 2>/dev/null 00 <<< '{_DEL_QUOTED}'",
+        f"bash <<< '{_DEL_QUOTED}' </dev/null",
+        f"builtin command -- -p eval '{_DEL_QUOTED}'",
+    ],
+)
+def test_non_executable_source_control(command: str):
+    result = scan_shell_command(command, _DETECTOR_ID)
+
+    assert result.matched is False
+    assert result.uncertain is False
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        f"bash -oc errexit '{_DEL_QUOTED}'",
+        f"dash -oc errexit '{_DEL_QUOTED}'",
+        f"bash -Oxc extglob '{_DEL_QUOTED}'",
+        f"bash -ooc errexit nounset '{_DEL_QUOTED}'",
+        f"bash -oco errexit nounset '{_DEL_QUOTED}'",
+        f"bash -cOO extglob nullglob '{_DEL_QUOTED}'",
+    ],
+)
+def test_grouped_runner_option_values_are_uncertain(command: str):
+    result = scan_shell_command(command, _DETECTOR_ID)
+
+    assert result.matched is False
+    assert result.uncertain is True
+
+
+@pytest.mark.parametrize(
+    "option_group",
+    ["-co errexit", "-cO extglob"],
+)
+def test_script_flag_before_value_option_is_scanned(option_group: str):
+    command = f"bash {option_group} '{_DEL_QUOTED}'"
+    result = scan_shell_command(command, _DETECTOR_ID)
+
+    assert result.matched is True
+    assert result.detector_id == _DETECTOR_ID
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    ["--rcfile profile", "--noprofile", "++c"],
+)
+def test_non_script_options_do_not_select_script_mode(arguments: str):
+    command = f"bash {arguments} '{_DEL_QUOTED}'"
+    result = scan_shell_command(command, _DETECTOR_ID)
+
+    assert result.matched is False
+    assert result.uncertain is False
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        f"set -- -c '{_DEL_QUOTED}'; bash \"$@\"",
+        f"set -- errexit -c '{_DEL_QUOTED}'; bash -o \"$@\"",
+        f"ARGS=(-c '{_DEL_QUOTED}'); bash \"${{ARGS[@]}}\"",
+        'bash -c -- "$@"',
+        'bash -c - "$@"',
+        'bash -c -- "${SCRIPTS[@]}"',
+    ],
+)
+def test_multi_argument_runner_expansion_is_uncertain(command: str):
+    result = scan_shell_command(command, _DETECTOR_ID)
+
+    assert result.matched is False
+    assert result.uncertain is True
+    assert PatternSecurityAnalyzer().security_risk(make_action(command)) == (
+        SecurityRisk.UNKNOWN
+    )
+
+
+@pytest.mark.parametrize("command", ['bash -- "$@"', 'bash - "$@"'])
+def test_multi_argument_operand_without_script_flag_is_not_scanned(command: str):
+    result = scan_shell_command(command, _DETECTOR_ID)
+
+    assert result.matched is False
+    assert result.uncertain is False
+    assert PatternSecurityAnalyzer().security_risk(make_action(command)) == (
+        SecurityRisk.LOW
+    )
+
+
+def test_multi_argument_command_name_is_uncertain():
+    command = f"r{{m,x}} {_RF} /"
+    result = scan_shell_command(command, _DETECTOR_ID)
+
+    assert result.matched is False
+    assert result.uncertain is True
+    assert PatternSecurityAnalyzer().security_risk(make_action(command)) == (
+        SecurityRisk.UNKNOWN
+    )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "rm {-r,-f} /",
+        "rm -r {-f,file} /",
+        "rm -f {-r,file} /",
+        "rm {--recursive,--force} /",
+        "rm -* /",
+        "rm ?rf /",
+        "rm *rf /",
+        "rm [--]rf /",
+        "rm [^a]rf /",
+        "rm [[:punct:]][[:alpha:]][[:alpha:]] /",
+        "rm ?r ?f /",
+        "rm -f -f? /",
+        "rm -r -? /",
+        "rm {{-r,-f},file} /",
+    ],
+)
+def test_expanded_rm_flags_are_uncertain(command: str):
+    result = scan_shell_command(command, _DETECTOR_ID)
+
+    assert result.matched is False
+    assert result.uncertain is True
+    assert PatternSecurityAnalyzer().security_risk(make_action(command)) == (
+        SecurityRisk.UNKNOWN
+    )
+
+
+def test_deep_brace_expansion_is_bounded():
+    command = "rm " + "{,-r}{,-f}" * 250 + " /"
+    result = scan_shell_command(command, _DETECTOR_ID)
+
+    assert result.matched is False
+    assert result.uncertain is True
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "rm *.o",
+        "rm build/*.log",
+        "rm -- ./build/*.o",
+        "rm {file-old,file-new}",
+        "rm foo{-r,-f} /",
+        "rm {foo-f,-r} /",
+        "rm -f foo{,-r} /",
+        'rm -f "{-r,-f}"* /',
+        "rm -- {-r,-f} /",
+    ],
+)
+def test_expansion_without_destructive_flags_is_low(command: str):
+    result = scan_shell_command(command, _DETECTOR_ID)
+
+    assert result.matched is False
+    assert result.uncertain is False
+    assert PatternSecurityAnalyzer().security_risk(make_action(command)) == (
+        SecurityRisk.LOW
+    )
 
 
 class TestDetectorIdentity:

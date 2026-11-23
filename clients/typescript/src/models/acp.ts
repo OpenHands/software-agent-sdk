@@ -9,6 +9,13 @@
  * To add or modify a provider, edit `acp_providers.py` in software-agent-sdk
  * first, then mirror the change in `acp-providers.json` here. CI will fail
  * until the two match.
+ *
+ * This registry describes which harnesses exist, not which ones a product
+ * offers. Clients that surface a subset declare `SURFACED_ACP_PROVIDERS`
+ * independently and enforce that policy themselves. They assert only that
+ * surfaced keys remain in this registry: a rename or removal fails, while a
+ * registry addition is a no-op. A complementary not-surfaced list would make
+ * every upstream addition a required client edit and must not be used.
  */
 
 import providersData from './acp-providers.json';
@@ -16,22 +23,18 @@ import providersData from './acp-providers.json';
 /**
  * Stable registry key for a built-in ACP provider.
  *
+ * Derived from the mirrored data, so a provider added to `acp-providers.json`
+ * (regenerated from the Python registry by `check-acp-drift.py --write`)
+ * widens this union too. Spelled out by hand the two could drift: the drift
+ * check compares only the JSON, so a provider present in the runtime map but
+ * missing from the union was a compile error for consumers while CI here
+ * stayed green.
+ *
  * Does **not** include `'custom'` — `custom` is a UI-side discriminator
  * meaning "user typed their own command" and intentionally has no registry
  * entry.
  */
-export type ACPProviderKey = 'claude-code' | 'codex' | 'gemini-cli';
-
-/**
- * One selectable model for a built-in ACP provider's model picker. Mirrors
- * `openhands.sdk.settings.acp_providers.ACPModelOption` field-for-field.
- */
-export interface ACPModelOption {
-  /** Exact model identifier sent to the ACP server as `acp_model`. */
-  readonly id: string;
-  /** Human-readable label shown in the model picker (e.g. `"Claude Opus 4.7"`). */
-  readonly label: string;
-}
+export type ACPProviderKey = keyof typeof providersData;
 
 /**
  * Declarative spec for one file-content credential a provider can consume
@@ -54,6 +57,18 @@ export interface ACPFileSecretSpec {
 }
 
 /**
+ * One provider's rule for env vars that must not coexist with a credential it
+ * authenticates with. Mirrors
+ * `openhands.sdk.settings.acp_providers.ACPEnvConflictSpec` field-for-field.
+ */
+export interface ACPEnvConflictSpec {
+  /** Env var whose presence means the provider authenticates with it. */
+  readonly dominant: string;
+  /** Env vars removed from the subprocess environment when `dominant` is present. */
+  readonly strip: readonly string[];
+}
+
+/**
  * Immutable metadata record for one built-in ACP provider. Mirrors
  * `openhands.sdk.settings.acp_providers.ACPProviderInfo` field-for-field.
  */
@@ -65,8 +80,11 @@ export interface ACPProviderInfo {
   readonly api_key_env_var: string | null;
   /** `null` if the provider does not support env-based base-URL override. */
   readonly base_url_env_var: string | null;
-  /** ACP session-mode ID that suppresses all permission prompts. */
-  readonly default_session_mode: string;
+  /**
+   * ACP session-mode ID that suppresses all permission prompts, or `null` for a
+   * server that exposes no such mode (pi-acp maps modes onto thinking levels).
+   */
+  readonly default_session_mode: string | null;
   /** Lowercase substring fragments matched against the runtime agent name. */
   readonly agent_name_patterns: readonly string[];
   /**
@@ -81,17 +99,6 @@ export interface ACPProviderInfo {
   readonly supports_runtime_model_switch: boolean;
   /** Top-level `_meta` key for model selection, or `null`. */
   readonly session_meta_key: string | null;
-  /**
-   * Curated `acp_model` candidates surfaced in this provider's model picker.
-   * Suggestions, not authoritative access checks — a custom `acp_model` is
-   * always allowed, and availability depends on the account's plan tier.
-   */
-  readonly available_models: readonly ACPModelOption[];
-  /**
-   * Model ID preselected when none is configured (one of {@link available_models}),
-   * or `null` to let the ACP server pick its own default.
-   */
-  readonly default_model: string | null;
   /** File-content credentials the agent server can materialise on disk. */
   readonly file_secrets: readonly ACPFileSecretSpec[];
   /**
@@ -101,6 +108,16 @@ export interface ACPProviderInfo {
   readonly binary_name: string | null;
   /** Env var that relocates the provider's data/config directory, or `null`. */
   readonly data_dir_env_var: string | null;
+  /** Env vars this provider's own credentials must not coexist with. */
+  readonly env_conflicts: readonly ACPEnvConflictSpec[];
+  /**
+   * Session config option that sets reasoning effort, or `null`. When set, an
+   * `acp_model` of the form `<model>/<effort>` is split into a model selection
+   * plus this option.
+   */
+  readonly effort_config_id: string | null;
+  /** Effort values accepted as a `/<effort>` model-id suffix. */
+  readonly effort_levels: readonly string[];
 }
 
 export const ACP_PROVIDERS: Readonly<Record<ACPProviderKey, ACPProviderInfo>> =
@@ -128,7 +145,9 @@ export const ACP_SETTINGS_KEYS: readonly string[] = [
   'acp_args',
   'acp_env',
   'acp_model',
+  'acp_effort',
   'acp_session_mode',
   'acp_prompt_timeout',
   'acp_server',
+  'acp_isolate_data_dir',
 ];
