@@ -3340,7 +3340,7 @@ class TestEventServiceClose:
         def record_close():
             call_order.append("close")
 
-        conversation.pause = record_pause
+        conversation._pause_for_server_shutdown = record_pause
         conversation.close = record_close
         event_service._conversation = conversation
 
@@ -3359,16 +3359,16 @@ class TestEventServiceClose:
 
     @pytest.mark.asyncio
     async def test_close_skips_pause_when_no_run_task(self, event_service):
-        """close() must not call pause() when no run task is in flight."""
+        """close() must not pause when no run task is in flight."""
         conversation = MagicMock(spec=Conversation)
-        conversation.pause = MagicMock()
+        conversation._pause_for_server_shutdown = MagicMock()
         conversation.close = MagicMock()
         event_service._conversation = conversation
         event_service._run_task = None
 
         await event_service.close()
 
-        conversation.pause.assert_not_called()
+        conversation._pause_for_server_shutdown.assert_not_called()
         conversation.close.assert_called_once()
 
     @pytest.mark.asyncio
@@ -3380,7 +3380,7 @@ class TestEventServiceClose:
         Pause must still be attempted so the common case (step finishes
         promptly) stays clean."""
         conversation = MagicMock(spec=Conversation)
-        conversation.pause = MagicMock()
+        conversation._pause_for_server_shutdown = MagicMock()
         conversation.close = MagicMock()
         event_service._conversation = conversation
 
@@ -3404,7 +3404,7 @@ class TestEventServiceClose:
             with contextlib.suppress(asyncio.CancelledError, BaseException):
                 await hanging_task
 
-        conversation.pause.assert_called_once()
+        conversation._pause_for_server_shutdown.assert_called_once()
         assert "did not exit cleanly" in caplog.text
         assert event_service._run_task is None
         conversation.close.assert_called_once()
