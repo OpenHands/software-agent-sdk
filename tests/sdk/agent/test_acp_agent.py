@@ -5,12 +5,16 @@ from __future__ import annotations
 import asyncio
 import gc
 import json
+import os
+import signal
+import sys
 import threading
 import time
 import uuid
 import weakref
 from collections.abc import Mapping
 from concurrent.futures import Future
+from contextlib import suppress
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -90,6 +94,7 @@ from openhands.sdk.settings.acp_install_catalog import (
 from openhands.sdk.settings.acp_providers import ACP_PROVIDERS
 from openhands.sdk.skills import KeywordTrigger, Skill
 from openhands.sdk.tool.builtins.finish import FinishAction
+from openhands.sdk.utils.async_executor import AsyncExecutor
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 from openhands.sdk.workspace.local import LocalWorkspace
@@ -6493,7 +6498,7 @@ class TestACPSessionIdPersistence:
         """
         from contextlib import ExitStack
 
-        mock_process = MagicMock(spec=asyncio.subprocess.Process)
+        mock_process = MagicMock(spec=asyncio.subprocess.Process, pid=None)
         mock_process.returncode = None
         mock_process.wait = AsyncMock(return_value=0)
         mock_process.stdin = MagicMock()
@@ -7654,7 +7659,7 @@ class TestACPSecretsEnvInjection:
         captured: dict = {}
         conn = TestACPSecretsEnvInjection._make_conn()
 
-        mock_process = MagicMock(spec=asyncio.subprocess.Process)
+        mock_process = MagicMock(spec=asyncio.subprocess.Process, pid=None)
         mock_process.returncode = None
         mock_process.wait = AsyncMock(return_value=0)
         mock_process.stdin = MagicMock()
@@ -7812,7 +7817,7 @@ class TestACPSecretRegistryEnvInjection:
         captured: dict = {}
         conn = TestACPSecretsEnvInjection._make_conn()
 
-        mock_process = MagicMock(spec=asyncio.subprocess.Process)
+        mock_process = MagicMock(spec=asyncio.subprocess.Process, pid=None)
         mock_process.returncode = None
         mock_process.wait = AsyncMock(return_value=0)
         mock_process.stdin = MagicMock()
@@ -8048,7 +8053,7 @@ class TestACPEnvConflictSuppression:
         captured: dict = {}
         conn = TestACPEnvConflictSuppression._make_conn()
 
-        mock_process = MagicMock(spec=asyncio.subprocess.Process)
+        mock_process = MagicMock(spec=asyncio.subprocess.Process, pid=None)
         mock_process.returncode = None
         mock_process.wait = AsyncMock(return_value=0)
         mock_process.stdin = MagicMock()
@@ -9232,7 +9237,7 @@ class TestACPFileSecretMaterialisation:
         from openhands.sdk.utils.async_executor import AsyncExecutor
 
         captured: dict[str, Any] = {}
-        mock_process = MagicMock(spec=asyncio.subprocess.Process)
+        mock_process = MagicMock(spec=asyncio.subprocess.Process, pid=None)
         mock_process.returncode = None
         mock_process.wait = AsyncMock(return_value=0)
         mock_process.stdin = MagicMock()
@@ -10553,3 +10558,141 @@ class TestUnperformableAuthMethodLogging:
 
         assert "session creation may fail" in caplog.text
         assert "GEMINI_API_KEY is unset" in caplog.text
+
+
+class TestACPProcessGroupShutdown:
+    @pytest.mark.parametrize("posix", [True, False])
+    def test_spawn_records_only_isolated_process_groups(self, tmp_path, posix):
+        agent = _make_agent()
+        agent._executor = AsyncExecutor()
+        conn = TestACPSessionIdPersistence._make_conn()
+        process = MagicMock()
+        process.pid = 54321
+        process.returncode = 0
+        process.wait = AsyncMock(return_value=0)
+        spawn = AsyncMock(return_value=process)
+        drain = AsyncMock()
+
+        try:
+            with (
+                patch.object(acp_agent_module, "_ACP_POSIX_PROCESS_GROUPS", posix),
+                patch.object(asyncio, "create_subprocess_exec", spawn),
+                patch.object(
+                    acp_agent_module, "_ACPClientConnection", return_value=conn
+                ),
+                patch.object(acp_agent_module, "_filter_jsonrpc_lines", drain),
+                patch.object(acp_agent_module, "_log_acp_subprocess_stderr", drain),
+            ):
+                agent._start_acp_server(_make_state(tmp_path))
+
+            if posix:
+                assert spawn.call_args.kwargs["start_new_session"] is True
+                assert agent._process_group_id == process.pid
+            else:
+                assert "start_new_session" not in spawn.call_args.kwargs
+                assert agent._process_group_id is None
+        finally:
+            with patch.object(ACPAgent, "_signal_process_group", return_value=False):
+                agent.close()
+
+    @pytest.mark.skipif(os.name != "posix", reason="Requires POSIX process groups")
+    @pytest.mark.parametrize(
+        ("leader_group", "own_group", "returncode"),
+        [(54322, 12345, None), (54321, 12345, 0), (54321, 54321, None)],
+    )
+    def test_never_signals_reused_or_caller_process_group(
+        self, leader_group, own_group, returncode
+    ):
+        process = MagicMock()
+        process.returncode = returncode
+
+        with (
+            patch.object(os, "getpgid", return_value=leader_group),
+            patch.object(os, "getpgrp", return_value=own_group),
+            patch.object(os, "killpg") as killpg,
+        ):
+            for sig in (signal.SIGTERM, signal.SIGKILL):
+                assert not ACPAgent._signal_process_group(process, 54321, sig)
+
+        killpg.assert_not_called()
+
+    @pytest.mark.skipif(os.name != "posix", reason="Requires POSIX process groups")
+    @pytest.mark.parametrize("leader_exited", [False, True])
+    @pytest.mark.parametrize("restart", [False, True])
+    def test_releases_descendant_writer_lock(self, tmp_path, leader_exited, restart):
+        fcntl = pytest.importorskip("fcntl")
+        worker = """
+import fcntl, signal, sys
+
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+with open(sys.argv[1], "a") as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    print("ready", flush=True)
+    signal.pause()
+"""
+        leader = """
+import signal, subprocess, sys
+
+child = subprocess.Popen(
+    [sys.executable, "-c", sys.argv[1], sys.argv[2]],
+    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+    text=True,
+)
+assert child.stdout.readline() == "ready\\n"
+print(child.pid, flush=True)
+if sys.argv[3] == "False":
+    signal.pause()
+"""
+        lock_path = tmp_path / "writer.lock"
+        executor = AsyncExecutor()
+        agent = _make_agent()
+        agent._executor = executor
+
+        async def spawn():
+            return await asyncio.create_subprocess_exec(
+                sys.executable,
+                "-c",
+                leader,
+                worker,
+                str(lock_path),
+                str(leader_exited),
+                stdout=asyncio.subprocess.PIPE,
+                start_new_session=True,
+            )
+
+        def assert_lock_released(*args, **kwargs):
+            with lock_path.open("a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+        process = executor.run_async(spawn, timeout=5.0)
+        agent._process = process
+        agent._process_group_id = process.pid
+        child_pid = None
+        try:
+            assert process.stdout is not None
+            child_pid = int(executor.run_async(process.stdout.readline, timeout=5.0))
+            assert os.getpgid(child_pid) == process.pid
+            if leader_exited:
+                assert executor.run_async(process.wait, timeout=5.0) == 0
+            with pytest.raises(BlockingIOError):
+                assert_lock_released()
+
+            if restart:
+                with patch.object(
+                    ACPAgent, "init_state", side_effect=assert_lock_released
+                ) as initialize:
+                    agent._restart_session_after_drain_timeout(
+                        _make_state(tmp_path), on_event=lambda _: None
+                    )
+                initialize.assert_called_once()
+            else:
+                agent.close()
+                assert_lock_released()
+        finally:
+            agent.close()
+            if child_pid is not None:
+                try:
+                    assert_lock_released()
+                except BlockingIOError:
+                    with suppress(ProcessLookupError):
+                        os.kill(child_pid, signal.SIGKILL)
