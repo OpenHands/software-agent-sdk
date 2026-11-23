@@ -1,0 +1,19 @@
+Prompt composition per call (S=system T=tool_schema H=history L=latest, bar width ~50 chars)
+   seq  composition                                         est_total   provider
+     0  SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS         3368       4603 *
+     1  SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSHL       3490       4712 *
+  * tool schemas not reconstructable from this log (tool_schema bucket undercounted)
+
+Trend over seq:
+   seq |   system | tool_schema |  history |   latest | est_total | provider |  ratio | latency_s
+     0 |     3346 |           0 |        0 |       22 |      3368 |     4603 |      - |      3.56
+     1 |     3346 |           0 |       53 |       91 |      3490 |     4712 |      - |      2.62
+
+Summary:
+  calls: 2 (skipped files: 0, uncountable tool schemas: 2)
+  avg system: 3346.0
+  avg tool_schema: 0.0
+  avg history: 26.5
+  avg latest: 56.5
+  avg est total: 3429.0  avg provider prompt: 4657.5
+  est/provider median ratio: n/a (over 0 calls)
