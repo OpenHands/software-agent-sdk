@@ -101,6 +101,7 @@ OPENHANDS_CONTEXT = {
     "memory_context": LAUNCH,
     "project_context": LAUNCH,
     "disabled_skills": PROFILE,
+    "disabled_agents": NotOnProfile("no profile field yet"),
     "secrets": NotOnProfile("a profile is secret-free; secrets ride the request"),
     "current_datetime": LAUNCH,
 }
@@ -133,6 +134,7 @@ ACP_CONTEXT = {
     "skills": Reference("catalog"),
     "system_message_suffix": NotOnProfile("the ACP CLI owns its prompt"),
     "disabled_skills": NotOnProfile("the ACP CLI owns its skills"),
+    "disabled_agents": NotOnProfile("the ACP CLI owns its sub-agents"),
     "load_project_skills": Fixed(False),
     "current_datetime": Fixed(None),
 }
