@@ -51,6 +51,7 @@ from openhands.sdk.conversation.state import (
 from openhands.sdk.credential import CredentialSyncError
 from openhands.sdk.critic.impl.api import APIBasedCritic
 from openhands.sdk.event import ActionEvent, AgentErrorEvent, ObservationEvent
+from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.git.exceptions import GitCommandError
@@ -5312,3 +5313,35 @@ async def test_settings_launch_builds_the_agent_once(conversation_service, tmp_p
 
     create_agent.assert_called_once()
     assert "browser_tool_set" in [t.name for t in captured["agent"].tools]
+
+
+@pytest.mark.asyncio
+async def test_acp_startup_failure_yields_one_typed_error_event(tmp_path):
+    """ACPAgent.init_state emits a typed ConversationErrorEvent before
+    re-raising, so the run-loop backstop must not add a generic duplicate."""
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    request = StartConversationRequest(
+        agent=ACPAgent(acp_command=["definitely-missing-acp-cli"]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+    )
+    async with ConversationService(
+        conversations_dir=tmp_path / "conversations"
+    ) as service:
+        info, _ = await service.start_conversation(request)
+        event_service = await service.get_event_service(info.id)
+        assert event_service is not None
+        await event_service.send_message(
+            Message(role="user", content=[TextContent(text="hi")]), run=True
+        )
+        assert event_service._run_task is not None
+        await event_service._run_task
+
+        state = event_service.get_conversation().state
+        errors = [
+            (event.code, event.source)
+            for event in state.events
+            if isinstance(event, ConversationErrorEvent)
+        ]
+        assert errors == [("ACPSpawnError", "agent")]
+        assert state.execution_status == ConversationExecutionStatus.ERROR
