@@ -19,6 +19,7 @@ from openhands.sdk.conversation.state import (
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.llm import Message, MessageToolCall, TextContent, llm_profile_store
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+from openhands.sdk.llm.router import MultimodalRouter, RouterLLM
 from openhands.sdk.testing import TestLLM
 from openhands.sdk.utils.cipher import Cipher
 from tests.conftest import create_mock_litellm_response
@@ -907,3 +908,163 @@ def test_switch_llm_identical_config_reuses_registered_llm(empty_profile_store):
 
     assert conv.agent.llm is registered
     assert conv.llm_registry.get("x") is registered
+
+
+def _make_router() -> MultimodalRouter:
+    return MultimodalRouter(
+        llms_for_routing={
+            MultimodalRouter.PRIMARY_MODEL_KEY: _make_llm("primary-model", "primary"),
+            MultimodalRouter.SECONDARY_MODEL_KEY: _make_llm(
+                "secondary-model", "secondary"
+            ),
+        }
+    )
+
+
+def test_switch_routed_llm_updates_agent_and_state(tmp_path):
+    router = _make_router()
+    conv = LocalConversation(agent=Agent(llm=router, tools=[]), workspace=tmp_path)
+
+    conv.switch_routed_llm(MultimodalRouter.PRIMARY_MODEL_KEY)
+
+    assert isinstance(conv.agent.llm, MultimodalRouter)
+    assert conv.agent.llm.selection.mode == "manual"
+    assert (
+        conv.agent.llm.selection.manual_route_name == MultimodalRouter.PRIMARY_MODEL_KEY
+    )
+    assert conv.state.agent.llm is conv.agent.llm
+
+
+def test_resume_auto_llm_routing_updates_agent_and_state(tmp_path):
+    router = _make_router().with_manual_route(MultimodalRouter.PRIMARY_MODEL_KEY)
+    conv = LocalConversation(agent=Agent(llm=router, tools=[]), workspace=tmp_path)
+
+    conv.resume_auto_llm_routing()
+
+    assert isinstance(conv.agent.llm, MultimodalRouter)
+    assert conv.agent.llm.selection.mode == "auto"
+    assert conv.agent.llm.selection.manual_route_name is None
+    assert conv.state.agent.llm is conv.agent.llm
+
+
+def test_switch_routed_llm_survives_state_roundtrip(tmp_path):
+    router = _make_router()
+    conv = LocalConversation(agent=Agent(llm=router, tools=[]), workspace=tmp_path)
+    conv.switch_routed_llm(MultimodalRouter.SECONDARY_MODEL_KEY)
+
+    reloaded = ConversationState.model_validate(
+        json.loads(conv.state.model_dump_json())
+    )
+
+    assert isinstance(reloaded.agent.llm, MultimodalRouter)
+    assert reloaded.agent.llm.selection.mode == "manual"
+    assert (
+        reloaded.agent.llm.selection.manual_route_name
+        == MultimodalRouter.SECONDARY_MODEL_KEY
+    )
+    assert set(reloaded.agent.llm.available_routes()) == {"primary", "secondary"}
+
+
+def test_switch_routed_llm_rejects_non_router(tmp_path):
+    conv = LocalConversation(
+        agent=Agent(llm=_make_llm("plain-model", "plain"), tools=[]),
+        workspace=tmp_path,
+    )
+
+    with pytest.raises(ValueError, match="not a RouterLLM"):
+        conv.switch_routed_llm("anything")
+
+
+def test_add_model_router_route_wraps_plain_llm(tmp_path):
+    profile_store_dir = tmp_path / "profiles"
+    LLMProfileStore(profile_store_dir).save("reviewer", LLM(model="reviewer-model"))
+    conv = LocalConversation(
+        agent=Agent(llm=_make_llm("plain-model", "default"), tools=[]),
+        workspace=tmp_path,
+        profile_store_dir=profile_store_dir,
+    )
+
+    status = conv.add_model_router_route("reviewer")
+
+    assert isinstance(conv.agent.llm, RouterLLM)
+    assert status.enabled is True
+    assert status.selection is not None
+    assert status.selection.mode == "auto"
+    assert [route.name for route in status.routes] == ["default", "reviewer"]
+    assert conv.agent.llm.llms_for_routing["reviewer"].usage_id == "profile:reviewer"
+    assert (
+        conv.llm_registry.get("profile:reviewer")
+        is conv.agent.llm.llms_for_routing["reviewer"]
+    )
+    assert conv.state.agent.llm is conv.agent.llm
+
+
+def test_add_model_router_route_extends_existing_router(tmp_path):
+    profile_store_dir = tmp_path / "profiles"
+    LLMProfileStore(profile_store_dir).save(
+        "reviewer-profile", LLM(model="reviewer-model")
+    )
+    conv = LocalConversation(
+        agent=Agent(llm=_make_router(), tools=[]),
+        workspace=tmp_path,
+        profile_store_dir=profile_store_dir,
+    )
+
+    status = conv.add_model_router_route("reviewer-profile", route_name="reviewer")
+    conv.switch_routed_llm("reviewer")
+
+    assert isinstance(conv.agent.llm, MultimodalRouter)
+    assert {route.name for route in status.routes} == {
+        "primary",
+        "secondary",
+        "reviewer",
+    }
+    assert conv.agent.llm.selection.mode == "manual"
+    assert conv.agent.llm.selection.manual_route_name == "reviewer"
+    assert conv.agent.llm.llms_for_routing["reviewer"].model == "reviewer-model"
+
+
+def test_add_model_router_route_rejects_duplicate_name(tmp_path):
+    profile_store_dir = tmp_path / "profiles"
+    LLMProfileStore(profile_store_dir).save("other", LLM(model="other-model"))
+    conv = LocalConversation(
+        agent=Agent(llm=_make_router(), tools=[]),
+        workspace=tmp_path,
+        profile_store_dir=profile_store_dir,
+    )
+
+    with pytest.raises(ValueError, match="already exists"):
+        conv.add_model_router_route("other", route_name="primary")
+
+
+def test_add_model_router_route_rejects_missing_profile(tmp_path):
+    conv = LocalConversation(
+        agent=Agent(llm=_make_router(), tools=[]),
+        workspace=tmp_path,
+        profile_store_dir=tmp_path / "profiles",
+    )
+
+    with pytest.raises(FileNotFoundError, match="missing"):
+        conv.add_model_router_route("missing")
+
+
+def test_added_model_router_route_survives_profile_change(tmp_path):
+    profile_store_dir = tmp_path / "profiles"
+    profile_store = LLMProfileStore(profile_store_dir)
+    profile_store.save("reviewer", LLM(model="reviewer-model-v1"))
+    conv = LocalConversation(
+        agent=Agent(llm=_make_llm("plain-model", "default"), tools=[]),
+        workspace=tmp_path,
+        profile_store_dir=profile_store_dir,
+    )
+    conv.add_model_router_route("reviewer")
+
+    profile_store.save("reviewer", LLM(model="reviewer-model-v2"))
+    reloaded = ConversationState.model_validate(
+        json.loads(conv.state.model_dump_json())
+    )
+
+    assert isinstance(reloaded.agent.llm, RouterLLM)
+    assert reloaded.agent.llm.llms_for_routing["reviewer"].model == (
+        "reviewer-model-v1"
+    )

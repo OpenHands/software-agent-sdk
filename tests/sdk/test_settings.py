@@ -491,6 +491,7 @@ def test_export_agent_settings_schema_emits_variant_tagged_sections() -> None:
         "claude-code",
         "codex",
         "gemini-cli",
+        "antigravity",
         "kimi-code",
         "pi",
         "opencode",

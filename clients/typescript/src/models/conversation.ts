@@ -238,14 +238,25 @@ export type ConversationEventCountOptions = Omit<
   'page_id' | 'limit' | 'sort_order'
 >;
 
+export interface BrokenConversationInfo {
+  id: ConversationID;
+  title?: string | null;
+  created_at: string;
+  updated_at: string;
+  tags?: Record<string, string>;
+  reason: 'metadata' | 'state';
+}
+
 export interface ConversationSearchResponse {
   items: ConversationInfo[];
+  broken_items?: BrokenConversationInfo[];
   next_page_id?: string;
   total_count?: number;
 }
 
 export interface ACPConversationSearchResponse {
   items: ACPConversationInfo[];
+  broken_items?: BrokenConversationInfo[];
   next_page_id?: string;
   total_count?: number;
 }

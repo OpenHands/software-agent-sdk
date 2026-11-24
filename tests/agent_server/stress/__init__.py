@@ -40,13 +40,16 @@ Layout
                      docstring names the bug class it catches and any
                      architectural caveats.
 
+Listing and paging 2,000 conversations lives in the verify-agent-server
+feature map as ``F04.search-at-scale``: it drives a real server over REST.
+
 How to run
 ----------
 The suite is a marker-based opt-in. Pass ``-m stress`` to override the
 ``-m 'not stress'`` filter set in ``addopts``::
 
     uv run pytest -m stress
-    uv run pytest -m stress tests/agent_server/stress/test_conversation_listing.py
+    uv run pytest -m stress tests/agent_server/stress/test_long_running_command.py
 
 A bare ``pytest tests/agent_server/stress/`` will collect-then-deselect
 because the addopts filter still applies — pass ``-m stress`` alongside
@@ -57,10 +60,9 @@ What you'll see
 - On pass: ``N passed in T s``. Most files are a single test.
 - On budget breach: an ``AssertionError`` with the measured value, the
   budget, and a one-line diagnosis pointing at the likely regression
-  (e.g. "listing path may be materializing the full store into memory
-  per call"). The budget files in ``budgets.py`` document the intent of
-  each threshold so you can decide whether to fix the regression or
-  re-tune.
+  (e.g. "the event loop is being blocked by this load"). The budget
+  files in ``budgets.py`` document the intent of each threshold so you
+  can decide whether to fix the regression or re-tune.
 - A few tests are intentionally marked ``@pytest.mark.xfail(strict=True)``
   to surface known bugs as regression markers — if one of those starts
   passing, the bug got fixed and the marker should be removed.

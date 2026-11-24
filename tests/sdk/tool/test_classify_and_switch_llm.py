@@ -6,7 +6,7 @@ import pytest
 
 from openhands.sdk import LLM, LocalConversation, OpenHandsAgentSettings
 from openhands.sdk.agent import Agent
-from openhands.sdk.llm import Message, TextContent, llm_profile_store
+from openhands.sdk.llm import Message, RouterLLM, TextContent, llm_profile_store
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.meta_profile_store import MetaProfile, MetaProfileStore
 from openhands.sdk.testing import TestLLM
@@ -20,8 +20,10 @@ from openhands.sdk.tool.builtins.classify_and_switch_llm import (
     _recent_messages_text,
     build_classifier_messages,
     build_classifier_prompt,
+    build_router_classifier_messages,
     parse_class_index,
     parse_direct_model,
+    parse_router_route,
     render_direct_prompt,
 )
 
@@ -75,6 +77,19 @@ def profile_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> LLMProfile
 def _make_conversation() -> LocalConversation:
     return LocalConversation(
         agent=Agent(llm=_make_llm("default-model", "default"), tools=[]),
+        workspace=Path.cwd(),
+    )
+
+
+def _make_router_conversation() -> LocalConversation:
+    router = RouterLLM(
+        llms_for_routing={
+            "fast": _make_llm("fast-model", "fast"),
+            "slow": _make_llm("slow-model", "slow"),
+        }
+    )
+    return LocalConversation(
+        agent=Agent(llm=router, tools=[]),
         workspace=Path.cwd(),
     )
 
@@ -182,11 +197,52 @@ def test_build_classifier_messages_direct_mode_has_system_and_user() -> None:
     assert user_text  # non-empty
 
 
+def test_build_router_classifier_messages_uses_router_routes() -> None:
+    from openhands.sdk.llm.meta_profile_store import MetaProfile
+
+    router = RouterLLM(
+        llms_for_routing={
+            "fast": _make_llm("fast-model", "fast"),
+            "slow": _make_llm("slow-model", "slow"),
+        }
+    )
+    messages = build_router_classifier_messages(
+        MetaProfile.model_validate(META), "user: add parser tests", router
+    )
+
+    assert [m.role for m in messages] == ["system", "user"]
+    user_text = "".join(
+        c.text for c in messages[1].content if isinstance(c, TextContent)
+    )
+    assert "Routes:" in user_text
+    assert "- fast" in user_text
+    assert "model: fast-model" in user_text
+    assert "UI / images" in user_text
+    assert '"route": "<exact route name>"' in user_text
+
+
+def test_build_router_classifier_messages_overrides_direct_model_table() -> None:
+    from openhands.sdk.llm.meta_profile_store import MetaProfile
+
+    router = RouterLLM(llms_for_routing={"slow": _make_llm("slow-model", "slow")})
+    messages = build_router_classifier_messages(
+        MetaProfile.model_validate(DIRECT_META), "user: add parser tests", router
+    )
+
+    user_text = "".join(
+        c.text for c in messages[1].content if isinstance(c, TextContent)
+    )
+    assert "- slow" in user_text
+    assert "slow-model" in user_text
+    assert "GPT-5.4" not in user_text
+
+
 @pytest.mark.parametrize(
     "reply,expected",
     [
         ('{"model": "GPT-5.4", "reason": "qa"}', "GPT-5.4"),
         ('```json\n{"model": "MiniMax-M3", "reason": "tests"}\n```', "MiniMax-M3"),
+        ('{"route": "MiniMax-M3", "reason": "tests"}', "MiniMax-M3"),
         ("I choose GPT-5.4 for this task", "GPT-5.4"),
         ('{"model": "unknown"}', None),
     ],
@@ -200,6 +256,31 @@ def test_parse_direct_model_matches_saved_profile_names_case_insensitively() -> 
     assert parse_direct_model('{"model": "MiniMax-M3"}', ["minimax-m3"]) == (
         "minimax-m3"
     )
+
+
+def test_parse_router_route_accepts_unique_underlying_model() -> None:
+    router = RouterLLM(
+        llms_for_routing={
+            "gpt-5.5-copy": _make_llm("openhands/gpt-5.5", "gpt-copy"),
+            "gpt-sol": _make_llm("openhands/gpt-sol", "gpt-sol"),
+        }
+    )
+
+    assert (
+        parse_router_route('{"route": "openhands/gpt-5.5"}', router) == "gpt-5.5-copy"
+    )
+    assert parse_router_route("I choose openhands/gpt-sol", router) == "gpt-sol"
+
+
+def test_parse_router_route_rejects_ambiguous_underlying_model() -> None:
+    router = RouterLLM(
+        llms_for_routing={
+            "primary": _make_llm("openhands/gpt-5.5", "primary"),
+            "secondary": _make_llm("openhands/gpt-5.5", "secondary"),
+        }
+    )
+
+    assert parse_router_route('{"route": "openhands/gpt-5.5"}', router) is None
 
 
 def test_recent_messages_text_takes_last_n() -> None:
@@ -395,6 +476,80 @@ def test_executor_switches_to_matched_class(
     assert obs.model == "fast"
     assert obs.chosen_class == "UI / images"
     assert conversation.agent.llm.model == "fast-model"
+
+
+def test_executor_router_llm_switches_to_selected_route(
+    profile_store, meta_store, monkeypatch
+) -> None:
+    conversation = _make_router_conversation()
+    _register_tool(conversation, meta_store)
+    _patch_classifier(conversation, monkeypatch, reply='{"route": "slow"}')
+
+    obs = conversation.execute_tool("route_task_to_model", ClassifyAndSwitchLLMAction())
+
+    assert isinstance(obs, ClassifyAndSwitchLLMObservation)
+    assert not obs.is_error
+    assert obs.model == "slow"
+    assert obs.chosen_class == "route: slow"
+    assert obs.active_model == "slow-model"
+    assert isinstance(conversation.agent.llm, RouterLLM)
+    assert conversation.agent.llm.selection.mode == "manual"
+    assert conversation.agent.llm.selection.manual_route_name == "slow"
+    assert conversation.agent.llm.active_llm is not None
+    assert conversation.agent.llm.active_llm.model == "slow-model"
+
+
+def test_executor_router_llm_switches_when_classifier_returns_model_id(
+    profile_store, meta_store, monkeypatch
+) -> None:
+    conversation = _make_router_conversation()
+    _register_tool(conversation, meta_store)
+    _patch_classifier(conversation, monkeypatch, reply='{"route": "slow-model"}')
+
+    obs = conversation.execute_tool("route_task_to_model", ClassifyAndSwitchLLMAction())
+
+    assert isinstance(obs, ClassifyAndSwitchLLMObservation)
+    assert not obs.is_error
+    assert obs.model == "slow"
+    assert obs.chosen_class == "route: slow"
+    assert obs.active_model == "slow-model"
+    assert isinstance(conversation.agent.llm, RouterLLM)
+    assert conversation.agent.llm.selection.manual_route_name == "slow"
+    assert conversation.agent.llm.active_llm is not None
+    assert conversation.agent.llm.active_llm.model == "slow-model"
+
+
+def test_executor_router_llm_keeps_router_when_classifier_uses_plain_route_name(
+    profile_store, meta_store, monkeypatch
+) -> None:
+    conversation = _make_router_conversation()
+    _register_tool(conversation, meta_store)
+    _patch_classifier(conversation, monkeypatch, reply="fast")
+
+    obs = conversation.execute_tool("route_task_to_model", ClassifyAndSwitchLLMAction())
+
+    assert isinstance(obs, ClassifyAndSwitchLLMObservation)
+    assert not obs.is_error
+    assert obs.model == "fast"
+    assert isinstance(conversation.agent.llm, RouterLLM)
+    assert conversation.agent.llm.selection.manual_route_name == "fast"
+
+
+def test_executor_router_llm_errors_when_route_is_unknown(
+    profile_store, meta_store, monkeypatch
+) -> None:
+    conversation = _make_router_conversation()
+    _register_tool(conversation, meta_store)
+    _patch_classifier(conversation, monkeypatch, reply='{"route": "missing"}')
+
+    obs = conversation.execute_tool("route_task_to_model", ClassifyAndSwitchLLMAction())
+
+    assert isinstance(obs, ClassifyAndSwitchLLMObservation)
+    assert obs.is_error
+    assert obs.model is None
+    assert isinstance(conversation.agent.llm, RouterLLM)
+    assert conversation.agent.llm.selection.mode == "auto"
+    assert "RouterLLM route" in obs.text
 
 
 def test_executor_uses_inline_cloud_llms_without_profile_store(tmp_path) -> None:

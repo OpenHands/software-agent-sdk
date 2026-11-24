@@ -11,10 +11,17 @@ from typing import Annotated, Any
 from uuid import UUID, uuid4
 
 import httpx
-from fastapi import APIRouter, Query, Request, WebSocket
+from fastapi import APIRouter, Depends, Query, Request, WebSocket
 from starlette.responses import JSONResponse, Response, StreamingResponse
 
-from openhands.agent_server.dependencies import get_conversation_service
+from openhands.agent_server.config import Config
+from openhands.agent_server.conversation_registry import ConversationRegistry
+from openhands.agent_server.conversation_service import ConversationService
+from openhands.agent_server.dependencies import (
+    get_config,
+    get_conversation_registry,
+    get_conversation_service,
+)
 from openhands.agent_server.docker_runtime.mediation import materialize_secrets
 from openhands.agent_server.docker_runtime.proxy import (
     bridge_websocket,
@@ -26,7 +33,7 @@ from openhands.agent_server.docker_runtime.registry import (
     DockerConversationRegistry,
     RuntimeArchivedError,
 )
-from openhands.agent_server.event_router import require_reactions_enabled
+from openhands.agent_server.event_router import require_feature_enabled
 from openhands.agent_server.launch import (
     forward_to_runtime,
     launch_error,
@@ -40,7 +47,7 @@ from openhands.agent_server.models import (
     StartConversationRequest,
     UpdateSecretsRequest,
 )
-from openhands.agent_server.persistence import PersistedSettings, get_settings_store
+from openhands.agent_server.persistence import PersistedSettings, run_store
 from openhands.agent_server.utils import safe_rmtree
 from openhands.sdk.conversation.request import ConversationContainerOptions
 from openhands.sdk.errors import (
@@ -61,14 +68,14 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.profiles.agent_profile import LaunchedAgentProfile
 from openhands.sdk.profiles.resolver import ProfileNotFound
 from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.pydantic_secrets import cipher_context, client_context
 from openhands.sdk.workspace import LocalWorkspace
 
 
 logger = get_logger(__name__)
 
 
-def get_registry(request: Request) -> DockerConversationRegistry:
-    registry = request.app.state.conversation_registry
+def get_registry(registry: ConversationRegistry) -> DockerConversationRegistry:
     if not isinstance(registry, DockerConversationRegistry):
         raise Unavailable("Docker conversation runtime is unavailable")
     return registry
@@ -140,10 +147,38 @@ docker_conversation_router = APIRouter(
 )
 
 
+def _worktree_git_paths(workspace_path: Path) -> dict[str, Path]:
+    """The repository and git common dir a worktree start records, if any."""
+    try:
+        validate_git_repository(workspace_path)
+        repo_root = Path(
+            run_git_command(
+                ["git", "--no-pager", "rev-parse", "--show-toplevel"],
+                workspace_path,
+            )
+        ).resolve()
+        git_common_dir = Path(
+            run_git_command(
+                ["git", "--no-pager", "rev-parse", "--git-common-dir"],
+                workspace_path,
+            )
+        )
+    except (GitCommandError, GitRepositoryError):
+        return {}
+    if not git_common_dir.is_absolute():
+        git_common_dir = workspace_path / git_common_dir
+    return {
+        "worktree_repository_path": repo_root,
+        "worktree_git_common_dir_path": git_common_dir.resolve(),
+    }
+
+
 @docker_conversation_router.post("")
 async def start_conversation(
     request: Request,
     include_skills: Annotated[bool, Query()] = False,
+    conversation_registry: ConversationRegistry = Depends(get_conversation_registry),
+    conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> JSONResponse:
     try:
         body = json.loads(await request.body())
@@ -153,13 +188,11 @@ async def start_conversation(
         raise Unprocessable("Expected a JSON object")
     status_code, content, conversation_id = await start_docker_conversation(
         body,
-        get_registry(request),
+        get_registry(conversation_registry),
         include_skills=include_skills,
     )
     if status_code < 400:
-        await get_conversation_service(request).refresh_persisted_conversation(
-            conversation_id
-        )
+        await conversation_service.refresh_persisted_conversation(conversation_id)
     return JSONResponse(content=content, status_code=status_code)
 
 
@@ -205,33 +238,14 @@ async def start_docker_conversation(
         payload, launched, options, worktree = await _prepare_forward(
             body, registry, existing=existing
         )
-        identity = registry.provisioning.create(conversation_id, host_workspace)
+        identity = await run_store(
+            registry.provisioning.create, conversation_id, host_workspace
+        )
         updates: dict[str, Any] = {}
         if worktree:
-            try:
-                validate_git_repository(identity.workspace_path)
-                repo_root = Path(
-                    run_git_command(
-                        ["git", "--no-pager", "rev-parse", "--show-toplevel"],
-                        identity.workspace_path,
-                    )
-                ).resolve()
-                git_common_dir = Path(
-                    run_git_command(
-                        ["git", "--no-pager", "rev-parse", "--git-common-dir"],
-                        identity.workspace_path,
-                    )
-                )
-                if not git_common_dir.is_absolute():
-                    git_common_dir = identity.workspace_path / git_common_dir
-                git_common_dir = git_common_dir.resolve()
-            except (GitCommandError, GitRepositoryError):
-                pass
-            else:
-                updates.update(
-                    worktree_repository_path=repo_root,
-                    worktree_git_common_dir_path=git_common_dir,
-                )
+            updates.update(
+                await asyncio.to_thread(_worktree_git_paths, identity.workspace_path)
+            )
         if launched is not None and identity.launched_agent_profile is None:
             updates["launched_agent_profile"] = launched
         # Fixed once the container accepted the conversation; until then a
@@ -240,7 +254,7 @@ async def start_docker_conversation(
             updates["container"] = options
         if updates:
             identity = identity.model_copy(update=updates)
-            registry.provisioning.save(identity)
+            await run_store(registry.provisioning.save, identity)
         container = await registry.get_or_create(conversation_id)
         release = registry.acquire_lease(conversation_id)
         forwarded = await asyncio.to_thread(payload, identity.cipher)
@@ -298,10 +312,12 @@ async def _prepare_forward(
     config = registry.config
     start = StartConversationRequest.model_validate(
         body,
-        context={"cipher": config.cipher} if body.get("secrets_encrypted") else None,
+        context=(
+            cipher_context(config.cipher) if body.get("secrets_encrypted") else None
+        ),
     )
     try:
-        settings = await asyncio.to_thread(get_settings_store(config).load)
+        settings = await run_store(registry.stores.settings.load)
     except (OSError, PermissionError):
         settings = None
     settings = settings or PersistedSettings()
@@ -314,7 +330,7 @@ async def _prepare_forward(
         else await asyncio.to_thread(
             launch_source,
             start,
-            lambda: server_launch_stores(settings, config.cipher),
+            lambda: server_launch_stores(settings, registry.stores, config.cipher),
             config.cipher,
         )
     )
@@ -332,35 +348,41 @@ async def _prepare_forward(
     "/{conversation_id}/runtime", response_model=ConversationRuntimeInfo
 )
 async def runtime_info(
-    conversation_id: UUID, request: Request
+    conversation_id: UUID,
+    conversation_registry: ConversationRegistry = Depends(get_conversation_registry),
 ) -> ConversationRuntimeInfo:
-    registry = get_registry(request)
+    registry = get_registry(conversation_registry)
     if not registry.conversation_dir(conversation_id).joinpath("meta.json").is_file():
         raise NotFound("Conversation not found")
     return registry.runtime_info(conversation_id)
 
 
 @docker_conversation_router.post("/{conversation_id}/runtime/credentials")
-async def runtime_credentials(conversation_id: UUID, request: Request) -> JSONResponse:
+async def runtime_credentials(
+    conversation_id: UUID,
+    conversation_registry: ConversationRegistry = Depends(get_conversation_registry),
+) -> JSONResponse:
     """Return the key for an authenticated client attached to this runtime."""
-    registry = get_registry(request)
+    registry = get_registry(conversation_registry)
     if not registry.conversation_dir(conversation_id).joinpath("meta.json").is_file():
         raise NotFound("Conversation not found")
-    identity = registry.provisioning.load(conversation_id)
+    identity = await run_store(registry.provisioning.load, conversation_id)
     return JSONResponse({"session_api_key": identity.api_key.get_secret_value()})
 
 
 @docker_conversation_router.delete("/{conversation_id}/runtime", status_code=204)
-async def release_runtime(conversation_id: UUID, request: Request) -> Response:
+async def release_runtime(
+    conversation_id: UUID,
+    conversation_registry: ConversationRegistry = Depends(get_conversation_registry),
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> Response:
     """Stop the container while retaining conversation and workspace state."""
-    registry = get_registry(request)
+    registry = get_registry(conversation_registry)
     if not registry.conversation_dir(conversation_id).joinpath("meta.json").is_file():
         raise NotFound("Conversation not found")
     try:
         await registry.stop(conversation_id)
-        await get_conversation_service(request).refresh_persisted_conversation(
-            conversation_id
-        )
+        await conversation_service.refresh_persisted_conversation(conversation_id)
     except Exception as exc:
         logger.exception("Could not release conversation runtime %s", conversation_id)
         raise UpstreamFailed("Could not release conversation runtime") from exc
@@ -371,9 +393,10 @@ async def release_runtime(conversation_id: UUID, request: Request) -> Response:
     "/{conversation_id}/runtime/reprovision", response_model=ConversationRuntimeInfo
 )
 async def reprovision_runtime(
-    conversation_id: UUID, request: Request
+    conversation_id: UUID,
+    conversation_registry: ConversationRegistry = Depends(get_conversation_registry),
 ) -> ConversationRuntimeInfo:
-    registry = get_registry(request)
+    registry = get_registry(conversation_registry)
     await _container(registry, conversation_id)
     return ConversationRuntimeInfo(
         runtime_status=ConversationRuntimeStatus.AVAILABLE, can_resume=True
@@ -381,8 +404,12 @@ async def reprovision_runtime(
 
 
 @docker_conversation_router.delete("/{conversation_id}")
-async def delete_conversation(conversation_id: UUID, request: Request) -> Response:
-    registry = get_registry(request)
+async def delete_conversation(
+    conversation_id: UUID,
+    conversation_registry: ConversationRegistry = Depends(get_conversation_registry),
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> Response:
+    registry = get_registry(conversation_registry)
     if not registry.provisioning.manifest_path(conversation_id).is_file():
         raise NotFound("Conversation not found")
 
@@ -401,15 +428,14 @@ async def delete_conversation(conversation_id: UUID, request: Request) -> Respon
             logger.exception(
                 "Could not clean up conversation worktree %s", conversation_id
             )
-        await asyncio.to_thread(
-            safe_rmtree, registry.provisioning.runtime_dir(conversation_id)
+        runtime_dir = await run_store(
+            registry.provisioning.runtime_dir, conversation_id
         )
+        await asyncio.to_thread(safe_rmtree, runtime_dir)
         await asyncio.to_thread(safe_rmtree, registry.conversation_dir(conversation_id))
         registry.provisioning.manifest_path(conversation_id).unlink(missing_ok=True)
         registry.archived_marker(conversation_id).unlink(missing_ok=True)
-        await get_conversation_service(request).refresh_persisted_conversation(
-            conversation_id
-        )
+        await conversation_service.refresh_persisted_conversation(conversation_id)
     finally:
         await registry.finish_delete(conversation_id)
     return Response(status_code=200)
@@ -420,9 +446,14 @@ async def delete_conversation(conversation_id: UUID, request: Request) -> Respon
     methods=["POST", "PUT", "PATCH", "OPTIONS"],
 )
 async def proxy_conversation_root(
-    conversation_id: UUID, request: Request
+    conversation_id: UUID,
+    request: Request,
+    conversation_registry: ConversationRegistry = Depends(get_conversation_registry),
+    conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> StreamingResponse:
-    return await proxy_conversation(conversation_id, "", request)
+    return await proxy_conversation(
+        conversation_id, "", request, conversation_registry, conversation_service
+    )
 
 
 @docker_conversation_router.api_route(
@@ -430,7 +461,11 @@ async def proxy_conversation_root(
     methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
 )
 async def proxy_conversation(
-    conversation_id: UUID, tail: str, request: Request
+    conversation_id: UUID,
+    tail: str,
+    request: Request,
+    conversation_registry: ConversationRegistry = Depends(get_conversation_registry),
+    conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> StreamingResponse:
     if tail.split("/", 1)[0] in {
         "credential-bindings",
@@ -439,11 +474,19 @@ async def proxy_conversation(
         "switch_profile",
     }:
         raise NotSupported("This operation is unavailable in Docker runtime mode")
-    registry = get_registry(request)
+    registry = get_registry(conversation_registry)
+    # The runtime's server has no settings of its own to check: the user's
+    # switches live here and are followed at once.
     if tail == "reactions" and request.method == "POST":
-        # The runtime's server has no settings of its own to check: the
-        # user's switch lives here and follows the switch at once.
-        await require_reactions_enabled(registry.config)
+        await require_feature_enabled(
+            registry.stores.settings,
+            "conversation_reactions",
+            "Conversation reactions are turned off",
+        )
+    if tail == "ask_user/answer" and request.method == "POST":
+        await require_feature_enabled(
+            registry.stores.settings, "ask_user", "Decision cards are turned off"
+        )
     container = await _container(registry, conversation_id)
     upstream_path = _upstream_path(
         request,
@@ -454,7 +497,8 @@ async def proxy_conversation(
             update = UpdateSecretsRequest.model_validate_json(await request.body())
         except ValueError as exc:
             raise Unprocessable("Invalid secrets payload") from exc
-        profile = registry.provisioning.load(conversation_id).launched_agent_profile
+        identity = await run_store(registry.provisioning.load, conversation_id)
+        profile = identity.launched_agent_profile
         secrets = update.secrets
         if profile is not None:
             secrets = {
@@ -464,7 +508,7 @@ async def proxy_conversation(
             }
         materialized = await asyncio.to_thread(materialize_secrets, secrets)
         body = UpdateSecretsRequest(secrets=materialized).model_dump(
-            mode="json", context={"expose_secrets": "plaintext"}
+            mode="json", context=client_context("plaintext")
         )
         response = await _proxy_with_session(
             registry,
@@ -483,9 +527,7 @@ async def proxy_conversation(
             upstream_path=upstream_path,
         )
     if request.method not in {"GET", "HEAD", "OPTIONS"} and response.status_code < 400:
-        await get_conversation_service(request).refresh_persisted_conversation(
-            conversation_id
-        )
+        await conversation_service.refresh_persisted_conversation(conversation_id)
     return response
 
 
@@ -494,9 +536,12 @@ docker_workspace_router = APIRouter(prefix="/conversations", tags=["Docker Works
 
 @docker_workspace_router.get("/{conversation_id}/workspace/{file_path:path}")
 async def proxy_workspace_file(
-    conversation_id: UUID, file_path: str, request: Request
+    conversation_id: UUID,
+    file_path: str,
+    request: Request,
+    conversation_registry: ConversationRegistry = Depends(get_conversation_registry),
 ) -> StreamingResponse:
-    registry = get_registry(request)
+    registry = get_registry(conversation_registry)
     container = await _container(registry, conversation_id)
     return await _proxy_with_session(
         registry,
@@ -518,12 +563,14 @@ async def _proxy_socket(
     conversation_id: UUID,
     session_api_key: str | None,
     socket_name: str,
+    config: Config,
+    registry: ConversationRegistry,
+    conversation_service: ConversationService,
 ) -> None:
     from openhands.agent_server.sockets import _accept_authenticated_websocket
 
-    if not await _accept_authenticated_websocket(websocket, session_api_key):
+    if not await _accept_authenticated_websocket(websocket, session_api_key, config):
         return
-    registry = websocket.app.state.conversation_registry
     if not isinstance(registry, DockerConversationRegistry):
         await websocket.close(code=1011)
         return
@@ -548,9 +595,7 @@ async def _proxy_socket(
         if release is not None:
             release()
         registry.detach_session(conversation_id)
-        await websocket.app.state.conversation_service.refresh_persisted_conversation(
-            conversation_id
-        )
+        await conversation_service.refresh_persisted_conversation(conversation_id)
 
 
 @docker_sockets_router.websocket("/events/{conversation_id}")
@@ -558,8 +603,19 @@ async def proxy_events(
     websocket: WebSocket,
     conversation_id: UUID,
     session_api_key: Annotated[str | None, Query(alias="session_api_key")] = None,
+    config: Config = Depends(get_config),
+    registry: ConversationRegistry = Depends(get_conversation_registry),
+    conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> None:
-    await _proxy_socket(websocket, conversation_id, session_api_key, "events")
+    await _proxy_socket(
+        websocket,
+        conversation_id,
+        session_api_key,
+        "events",
+        config,
+        registry,
+        conversation_service,
+    )
 
 
 @docker_session_sockets_router.websocket("/session/{conversation_id}")
@@ -567,5 +623,16 @@ async def proxy_session(
     websocket: WebSocket,
     conversation_id: UUID,
     session_api_key: Annotated[str | None, Query(alias="session_api_key")] = None,
+    config: Config = Depends(get_config),
+    registry: ConversationRegistry = Depends(get_conversation_registry),
+    conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> None:
-    await _proxy_socket(websocket, conversation_id, session_api_key, "session")
+    await _proxy_socket(
+        websocket,
+        conversation_id,
+        session_api_key,
+        "session",
+        config,
+        registry,
+        conversation_service,
+    )

@@ -35,6 +35,49 @@ from openhands.sdk.security.confirmation_policy import AlwaysConfirm
 from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
 
 
+@pytest.mark.parametrize("operation", ["confirmation_policy", "interrupt"])
+@patch("openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient")
+def test_mutation_updates_state_before_websocket_delivery(
+    mock_ws_client: Mock, operation: str
+) -> None:
+    server_state = {
+        "id": str(uuid.uuid4()),
+        "execution_status": "idle",
+        "confirmation_policy": {"kind": "NeverConfirm"},
+    }
+
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/events/search"):
+            return httpx.Response(200, json={"items": [], "next_page_id": None})
+        if request.method == "POST":
+            if request.url.path.endswith("/confirmation_policy"):
+                server_state["confirmation_policy"] = {"kind": "AlwaysConfirm"}
+            elif request.url.path.endswith("/interrupt"):
+                server_state["execution_status"] = "paused"
+        return httpx.Response(200, json=server_state)
+
+    workspace = RemoteWorkspace(host="http://test", working_dir="/tmp")
+    agent = Agent(llm=LLM(model="gpt-4o-mini", api_key=SecretStr("test")), tools=[])
+    with httpx.Client(
+        transport=httpx.MockTransport(handle_request), base_url="http://test"
+    ) as client:
+        workspace._client = client
+        conversation = RemoteConversation(
+            agent=agent, workspace=workspace, visualizer=None
+        )
+        try:
+            assert conversation.state.execution_status.value == "idle"
+            assert conversation.confirmation_policy_active is False
+            if operation == "confirmation_policy":
+                conversation.set_confirmation_policy(AlwaysConfirm())
+                assert conversation.confirmation_policy_active is True
+            else:
+                conversation.interrupt()
+                assert conversation.state.execution_status.value == "paused"
+        finally:
+            conversation.close()
+
+
 class TestRemoteConversation:
     """Test RemoteConversation functionality."""
 
@@ -319,6 +362,41 @@ class TestRemoteConversation:
             for call in client.request.call_args_list
             if call.args[0] == "POST" and call.args[1] == "/api/conversations"
         ]
+        conversation.close()
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation._restore_tool_registrations"
+    )
+    def test_create_restores_tools_the_server_added(
+        self, restore_tool_registrations, mock_ws_client
+    ):
+        """A tool the server adds (an experimental feature's) is registered
+        locally before the first sync, though the client never imported it."""
+        mock_ws_client.return_value.wait_until_ready.return_value = True
+        cid = uuid.uuid4()
+        client = self.setup_mock_client(str(cid))
+        original = client.request.side_effect
+
+        def respond(method, url, **kwargs):
+            response = original(method, url, **kwargs)
+            if method == "POST" and url == "/api/conversations":
+                response.json.return_value.update(
+                    tool_module_qualnames={
+                        "edit_message": "openhands.tools.message_edit.definition"
+                    },
+                )
+            return response
+
+        client.request.side_effect = respond
+
+        conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
+
+        restore_tool_registrations.assert_called_once_with(
+            {"edit_message": "openhands.tools.message_edit.definition"}
+        )
         conversation.close()
 
     @patch(

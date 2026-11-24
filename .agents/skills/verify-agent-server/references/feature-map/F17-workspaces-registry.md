@@ -683,9 +683,11 @@ Preconditions:
 
 ## Gotchas
 
-- The workspaces store is a process-wide singleton created on the first
-  request (`get_workspaces_store`), so the file location is fixed for the
-  life of the process: changing `OH_PERSISTENCE_DIR` needs a restart.
+- The workspaces store belongs to the server context
+  (`ServerStores.workspaces`) and its location is resolved when that context
+  is built, so it is fixed for the life of the process: changing
+  `OH_PERSISTENCE_DIR` needs a restart (a deferred-init server resolves it
+  again at `POST /api/init`).
   Without it, the location follows `conversations_path`, which for the
   default relative `workspace/conversations` is `./workspace/.openhands`
   under the server's working directory. The contents are not cached: every

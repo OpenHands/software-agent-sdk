@@ -16,11 +16,11 @@ from openhands.sdk.skills import Skill
 from openhands.sdk.tool.builtins import (
     BUILT_IN_TOOL_CLASSES,
     BUILT_IN_TOOLS,
+    FinishAction,
     InvokeSkillAction,
     InvokeSkillObservation,
     InvokeSkillTool,
 )
-from openhands.sdk.tool.schema import Action
 from openhands.sdk.workspace.local import LocalWorkspace
 
 
@@ -405,9 +405,5 @@ def test_invoke_skill_declared_resources_typed():
     res = tool.declared_resources(action)
     assert res.keys == ("skill:test-skill",)
 
-    class OtherAction(Action):
-        pass
-
-    other_action = OtherAction()
-    res_other = tool.declared_resources(other_action)
+    res_other = tool.declared_resources(FinishAction(message="done"))
     assert res_other.keys == ("skill:",)
