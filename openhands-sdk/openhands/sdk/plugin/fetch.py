@@ -33,8 +33,9 @@ _FULL_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 
 PLUGIN_FETCH_CLIENT_MESSAGE = (
     "The plugin could not be fetched. Set a ${VAR} with "
-    "POST /{conversation_id}/secrets and retry this send, retry after the "
-    "source recovers, or start a new conversation to change the source."
+    "POST /api/conversations/{conversation_id}/secrets and retry this send, "
+    "retry after the source recovers, or start a new conversation to change "
+    "the source."
 )
 
 

@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
+from urllib.parse import urlparse
 from uuid import UUID, uuid4
 from weakref import WeakValueDictionary
 
@@ -366,26 +367,55 @@ _PLUGIN_SOURCE_PLACEHOLDER_RE = re.compile(r"\$\{[a-zA-Z_][a-zA-Z0-9_]*(?::-[^}]
 _PLUGIN_SOURCE_SHAPE = "https://example.com/plugin.git"
 
 
+def _http_literal_rejects_urlparse(source: str) -> bool:
+    """Whether an http(s) literal skips ``urlparse`` and cannot be read.
+
+    ``normalize_git_url`` calls ``urlparse`` only for http(s) URLs that do
+    not already end in ``.git``. A trailing slash that strips back to
+    ``.git`` takes that same skip. This check is only for that gap.
+    """
+    text = source.strip()
+    if not text.startswith(("http://", "https://")):
+        return False
+    if text.endswith(".git"):
+        candidate = text
+    else:
+        stripped = text.rstrip("/")
+        if not stripped.endswith(".git") or stripped == text:
+            return False
+        candidate = stripped
+    try:
+        urlparse(candidate)
+    except ValueError:
+        return True
+    return False
+
+
+def _plugin_source_parses(source: str) -> bool:
+    try:
+        parse_extension_source(source)
+    except (ExtensionFetchError, ValueError):
+        return False
+    return not _http_literal_rejects_urlparse(source)
+
+
 def _plugin_source_is_usable(source: str) -> bool:
     """Whether create can accept this source without knowing secret values.
 
-    A literal that ``parse_extension_source`` rejects is not usable. A
+    A literal that cannot be parsed is not usable. That includes
+    ``ExtensionFetchError`` and a ``ValueError`` from ``urlparse``, including
+    an http(s) URL ending in ``.git`` that never reaches ``urlparse``. A
     ``${VAR}`` template is usable when the raw text already parses, or when
-    substituting each placeholder with a normal git URL makes it parse. The
-    real value may arrive later through ``POST /{id}/secrets``.
+    substituting each placeholder with a normal git URL makes it parse.
+    The real value may arrive later through
+    ``POST /api/conversations/{conversation_id}/secrets``.
     """
-    try:
-        parse_extension_source(source)
+    if _plugin_source_parses(source):
         return True
-    except ExtensionFetchError:
-        if _PLUGIN_SOURCE_PLACEHOLDER_RE.search(source) is None:
-            return False
-    shaped = _PLUGIN_SOURCE_PLACEHOLDER_RE.sub(_PLUGIN_SOURCE_SHAPE, source)
-    try:
-        parse_extension_source(shaped)
-    except ExtensionFetchError:
+    if _PLUGIN_SOURCE_PLACEHOLDER_RE.search(source) is None:
         return False
-    return True
+    shaped = _PLUGIN_SOURCE_PLACEHOLDER_RE.sub(_PLUGIN_SOURCE_SHAPE, source)
+    return _plugin_source_parses(shaped)
 
 
 def _reject_unparseable_plugin_sources(request: StartConversationRequest) -> None:

@@ -566,7 +566,7 @@ class TestLocalConversationPlugins:
         "broken_source, named_in_warning",
         [
             pytest.param(
-                "./plugins/does-not-exist", "does-not-exist", id="missing_source"
+                "./plugins/does-not-exist", "broken-plugin", id="missing_source"
             ),
             pytest.param(None, "broken-plugin", id="invalid_manifest"),
             pytest.param(
@@ -581,7 +581,7 @@ class TestLocalConversationPlugins:
             ),
             pytest.param(
                 {"source": "url", "url": "https://user:s3cr3t-token@127.0.0.1:9/x.git"},
-                "127.0.0.1:9/x.git",
+                "broken-plugin",
                 id="unreachable_url_with_credentials",
             ),
         ],
@@ -731,7 +731,9 @@ class TestLocalConversationPlugins:
             if isinstance(event, ConversationErrorEvent)
         ]
         assert [error.code for error in errors] == ["PluginLoadError"]
-        assert "does-not-exist" in errors[0].detail
+        assert "'broken-plugin'" in errors[0].detail
+        assert "marketplace 'auto'" in errors[0].detail
+        assert "does-not-exist" not in errors[0].detail
         assert conversation.state.execution_status != ConversationExecutionStatus.ERROR
         conversation.close()
 

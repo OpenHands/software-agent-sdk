@@ -16,7 +16,10 @@ from pydantic import SecretStr
 
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
-from openhands.agent_server.conversation_service import INVALID_PLUGIN_SOURCE_MESSAGE
+from openhands.agent_server.conversation_service import (
+    INVALID_PLUGIN_SOURCE_MESSAGE,
+    _plugin_source_is_usable,
+)
 from openhands.sdk import LLM, Agent
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
@@ -250,6 +253,46 @@ def test_failed_fetch_retries_without_duplicating_the_message(
     assert retried.status_code == 200, retried.text
     assert _user_texts(test_client, conversation_id) == ["hello once"]
     assert marker.is_file()
+
+
+@pytest.mark.parametrize(
+    "source",
+    ["http://[::1", "http://[::1/plugin.git"],
+)
+def test_malformed_plugin_url_is_422_before_persistence(client, source: str) -> None:
+    test_client, workspace = client
+    assert _count(test_client) == 0
+
+    response = test_client.post(
+        "/api/conversations",
+        json=_payload(workspace, plugins=[{"source": source}]),
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"] == {
+        "code": "InvalidPluginSource",
+        "message": INVALID_PLUGIN_SOURCE_MESSAGE,
+    }
+    assert source not in response.text
+    assert _count(test_client) == 0
+    stored = workspace.parent / "conversations"
+    assert not stored.exists() or not any(stored.iterdir())
+
+
+def test_plugin_source_precheck_keeps_ordinary_shapes() -> None:
+    assert _plugin_source_is_usable("https://github.com/owner/repo.git")
+    assert _plugin_source_is_usable("https://dev.azure.com/org/project/_git/repo")
+    assert _plugin_source_is_usable("git@github.com:owner/repo.git")
+    assert _plugin_source_is_usable("ssh://git@github.com/owner/repo.git")
+    assert _plugin_source_is_usable("file:///tmp/plugin.git")
+    assert _plugin_source_is_usable("github:owner/repo")
+    assert _plugin_source_is_usable("${PLUGIN_SOURCE}")
+    assert _plugin_source_is_usable(
+        "https://x-access-token:${TOKEN}@127.0.0.1:9/plugin.git"
+    )
+    assert not _plugin_source_is_usable("http://[::1")
+    assert not _plugin_source_is_usable("http://[::1/plugin.git")
+    assert not _plugin_source_is_usable("http://[::1/plugin.git/")
 
 
 def test_invalid_plugin_source_is_422_before_persistence(client) -> None:

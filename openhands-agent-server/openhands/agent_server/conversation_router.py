@@ -366,15 +366,19 @@ async def start_conversation(
 ) -> ConversationInfo:
     """Start a conversation in the local environment.
 
-    A ``plugins[].source`` that cannot be parsed, and is not a ``${VAR}``
-    template that can become a valid source, is rejected with 422 before the
-    conversation is stored. Reusing an existing conversation id does not
-    recheck plugins. Plugin sources cannot be changed afterwards.
-    If a source uses ``${VAR}``, set it with
-    ``POST /{conversation_id}/secrets`` and send again. If the source was
-    down, retry the send once it recovers. To use a different source, start
-    a new conversation. A plugin that cannot be fetched while delivering
-    ``initial_message`` fails with 502 and returns the conversation id.
+    A ``plugins[].source`` that cannot be parsed is rejected with 422 before
+    the conversation is stored. That includes a literal ``urlparse`` cannot
+    read, and an http(s) URL ending in ``.git`` that skips ``urlparse``.
+    File, git, and SSH sources stay accepted, including Azure-style
+    ``/_git/`` URLs. A ``${VAR}`` template that becomes a valid source once
+    each placeholder is filled is still accepted. Reusing an existing
+    conversation id does not recheck plugins. Plugin sources cannot be
+    changed afterwards. If a source uses ``${VAR}``, set it with
+    ``POST /api/conversations/{conversation_id}/secrets`` and send again.
+    If the source was down, retry the send once it recovers. To use a
+    different source, start a new conversation. A plugin that cannot be
+    fetched while delivering ``initial_message`` fails with 502 and returns
+    the conversation id.
     """
     if request.conversation_runtime not in (None, "local"):
         raise Unprocessable("This server only runs local conversations")

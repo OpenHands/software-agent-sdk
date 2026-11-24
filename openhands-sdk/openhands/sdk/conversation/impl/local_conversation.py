@@ -1239,7 +1239,7 @@ class LocalConversation(BaseConversation):
         has_mcp_config = bool(merged_mcp)
         marketplace_skills_loaded = False
 
-        plugins_to_load: list[tuple[PluginSource, str | None]] = []
+        plugins_to_load: list[tuple[PluginSource, str | None, str | None]] = []
         if merged_context is not None and merged_context.registered_marketplaces:
             original_marketplaces = list(merged_context.registered_marketplaces)
             originals_by_name = {
@@ -1302,7 +1302,11 @@ class LocalConversation(BaseConversation):
                         )
                         continue
                     plugins_to_load.append(
-                        (plugin_source, f"plugin:{registration.name}:{entry.name}")
+                        (
+                            plugin_source,
+                            f"plugin:{registration.name}:{entry.name}",
+                            f"'{entry.name}' from marketplace '{registration.name}'",
+                        )
                     )
                 # Standalone skills. Merged below as low precedence; plugins
                 # loaded afterwards override same-named skills, matching the
@@ -1323,14 +1327,14 @@ class LocalConversation(BaseConversation):
                 marketplace_skills_loaded = True
 
         if self._plugin_specs:
-            plugins_to_load.extend((spec, None) for spec in self._plugin_specs)
+            plugins_to_load.extend((spec, None, None) for spec in self._plugin_specs)
 
         # Load plugins if specified or registered for auto-load
         if plugins_to_load:
             logger.info(f"Loading {len(plugins_to_load)} plugin(s)...")
             self._resolved_plugins = []
 
-            for spec, auto_load_identity in plugins_to_load:
+            for spec, auto_load_identity, auto_load_label in plugins_to_load:
                 if auto_load_identity is not None:
                     fetch_source = spec.source
                     fetch_ref = spec.ref
@@ -1352,8 +1356,8 @@ class LocalConversation(BaseConversation):
                 except Exception as exc:
                     # Attaching a plugin that cannot load is an error, but an
                     # auto-loaded one must not prevent the conversation from
-                    # starting. The client message names the original source,
-                    # not the expanded fetch input or the underlying error.
+                    # starting. The client message names the marketplace and
+                    # entry already in hand, not the resolved source.
                     if auto_load_identity is None:
                         if type(exc) is PluginFetchError:
                             raise PluginFetchError(
@@ -1362,15 +1366,15 @@ class LocalConversation(BaseConversation):
                                 conversation_id=self.id,
                             ) from exc
                         raise
-                    locator = public_url_locator(spec.source) or "the configured plugin"
+                    label = auto_load_label or "the configured plugin"
                     logger.warning(
-                        "Failed to load plugin '%s'; continuing without it",
-                        locator,
+                        "Failed to load plugin %s; continuing without it",
+                        label,
                         exc_info=True,
                     )
                     self._emit_auto_load_error(
                         "PluginLoadError",
-                        f"Plugin {locator} could not be loaded, so its skills, "
+                        f"Plugin {label} could not be loaded, so its skills, "
                         "agents and hooks are unavailable.",
                         identity=auto_load_identity,
                     )
