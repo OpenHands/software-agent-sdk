@@ -359,6 +359,8 @@ class EventLog(EventsListBase):
                 # depend on the event ids.
                 disk_idx = max(idx, self._next_disk_idx)
                 with write_guard:
+                    # A rename can succeed even if the subsequent fsync fails.
+                    self._fs.delete(self._marker_path(idx))
                     self._fs.write(self._file_path(disk_idx, evt_id), payload)
                 if disk_idx != idx:
                     self._disk_idx[idx] = disk_idx
@@ -367,7 +369,7 @@ class EventLog(EventsListBase):
                 self._id_to_idx[evt_id] = idx
                 self._event_cache[idx] = event
                 self._length += 1
-                self._advance_length_marker(idx)
+                self._write_length_marker()
                 return idx
         except TimeoutError:
             logger.error(
@@ -391,14 +393,8 @@ class EventLog(EventsListBase):
             logger.warning("Error reading event count marker in %s: %s", self._dir, e)
             return False
 
-    def _advance_length_marker(self, previous_length: int) -> None:
-        """Move the marker from ``previous_length`` to the current length.
-
-        Deleting first is deliberate: an interrupted update leaves no marker
-        rather than a stale one claiming to be current.
-        """
+    def _write_length_marker(self) -> None:
         try:
-            self._fs.delete(self._marker_path(previous_length))
             self._fs.write(self._marker_path(self._length), "")
         except Exception as e:
             logger.warning("Error updating event count marker in %s: %s", self._dir, e)
