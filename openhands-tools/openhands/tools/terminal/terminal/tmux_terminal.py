@@ -224,6 +224,9 @@ _TMUX_SPECIALS: dict[str, str] = {
     "C-C": "C-c",
 }
 _SHELL_PROMPT_TIMEOUT_SECONDS = 10
+# How long clear_screen waits for the prompt to be redrawn (a slow
+# PROMPT_COMMAND delays it) before handing the pane to the next command.
+_CLEAR_PROMPT_TIMEOUT_SECONDS = 5
 
 
 class TmuxTerminal(TerminalInterface):
@@ -460,6 +463,25 @@ class TmuxTerminal(TerminalInterface):
         self._send_then_enter("clear")
         time.sleep(0.1)
         self.pane.cmd("clear-history")
+        # Bash redraws the prompt only after PROMPT_COMMAND returns. If the
+        # next command read the screen before then, it would see no prompt and
+        # mistake this late one for its own completion, losing its output.
+        deadline = time.monotonic() + _CLEAR_PROMPT_TIMEOUT_SECONDS
+        while True:
+            try:
+                screen = self.read_screen()
+            except LibTmuxException:
+                # The shell is gone; the next command reports that itself.
+                break
+            if screen.rstrip().endswith(CMD_OUTPUT_PS1_END.rstrip()):
+                break
+            if time.monotonic() >= deadline:
+                logger.debug(
+                    "Prompt did not reappear within %ss after clear",
+                    _CLEAR_PROMPT_TIMEOUT_SECONDS,
+                )
+                break
+            time.sleep(0.01)
 
     def interrupt(self) -> bool:
         """Send interrupt signal (Ctrl+C) to the tmux pane.
