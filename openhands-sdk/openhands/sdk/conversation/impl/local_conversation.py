@@ -5,7 +5,7 @@ import copy
 import json
 import threading
 import uuid
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Iterator, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from datetime import datetime
 from pathlib import Path, PurePath
@@ -162,6 +162,16 @@ _RUNTIME_MCP_TIMEOUT_SECS = 30
 ACP_STOP_HOOK_FEEDBACK_PREFIX = "[Stop hook feedback]"
 
 ASK_AGENT_LLM_USAGE_ID: Final[str] = "ask-agent-llm"
+
+
+@contextlib.contextmanager
+def _recording_run_error() -> Iterator[None]:
+    """Record a run failure best-effort: a failed write (e.g. a full disk) must
+    not replace the error being reported."""
+    try:
+        yield
+    except Exception:
+        logger.exception("Failed to record the conversation run error")
 
 
 def _agent_already_surfaced_error(events: Sequence[Event], since: int = 0) -> bool:
@@ -2809,7 +2819,7 @@ class LocalConversation(BaseConversation):
                         )
                         break
         except LLMAuthenticationError as e:
-            with self._state:
+            with _recording_run_error(), self._state:
                 self._state.transition(
                     ConversationExecutionStatus.ERROR, "LLM authentication failed"
                 )
@@ -2823,10 +2833,15 @@ class LocalConversation(BaseConversation):
                     )
                 )
             raise ConversationRunError(
-                self._state.id, e, persistence_dir=self._state.persistence_dir
+                self._state.id,
+                e,
+                persistence_dir=self._state.persistence_dir,
+                conversation_error=_latest_conversation_error(
+                    self._state.events, _run_start_event_count
+                ),
             ) from e
         except Exception as e:
-            with self._state:
+            with _recording_run_error(), self._state:
                 self._state.transition(
                     ConversationExecutionStatus.ERROR,
                     f"run failed with {type(e).__name__}",
@@ -3356,7 +3371,7 @@ class LocalConversation(BaseConversation):
                 )
                 self._on_event(InterruptEvent())
         except LLMAuthenticationError as e:
-            with self._state:
+            with _recording_run_error(), self._state:
                 self._state.transition(
                     ConversationExecutionStatus.ERROR, "LLM authentication failed"
                 )
@@ -3370,10 +3385,15 @@ class LocalConversation(BaseConversation):
                     )
                 )
             raise ConversationRunError(
-                self._state.id, e, persistence_dir=self._state.persistence_dir
+                self._state.id,
+                e,
+                persistence_dir=self._state.persistence_dir,
+                conversation_error=_latest_conversation_error(
+                    self._state.events, _run_start_event_count
+                ),
             ) from e
         except Exception as e:
-            with self._state:
+            with _recording_run_error(), self._state:
                 updated_agent_state = dict(self._state.agent_state)
                 updated_agent_state.pop(ACP_INFLIGHT_PROMPT_USER_MESSAGE_ID, None)
                 updated_agent_state.pop(ACP_SUPERSEDE_INFLIGHT_PROMPT, None)

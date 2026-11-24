@@ -879,11 +879,15 @@ class EventService:
         """
         if not self._conversation:
             return
-        with self._conversation._state as state:
-            if state.execution_status != ConversationExecutionStatus.ERROR:
-                state.transition(
-                    ConversationExecutionStatus.ERROR, "run failed outside the run loop"
-                )
+        try:
+            with self._conversation._state as state:
+                if state.execution_status != ConversationExecutionStatus.ERROR:
+                    state.transition(
+                        ConversationExecutionStatus.ERROR,
+                        "run failed outside the run loop",
+                    )
+        except Exception:
+            logger.exception("Failed to mark the conversation as ERROR")
 
     def _publish_error_event_sync(self, exc: BaseException) -> None:
         """Emit a ConversationErrorEvent so the UI sees the failure detail.
@@ -1827,6 +1831,16 @@ class EventService:
                     # own event, so skip it there to avoid duplicating the error.
                     if not isinstance(exc, ConversationRunError):
                         await self.run_state_op(self._publish_error_event_sync, exc)
+                    elif exc.conversation_error is None:
+                        # run() could not record its error (e.g. the disk is
+                        # full). Notify subscribers without persisting it.
+                        await self._pub_sub(
+                            ConversationErrorEvent(
+                                source="environment",
+                                code=type(exc.original_exception).__name__,
+                                detail=str(exc.original_exception),
+                            )
+                        )
                     await self.run_state_op(self._mark_error_status_sync)
                 finally:
                     settle()
