@@ -189,3 +189,17 @@ def test_a_changed_default_wording_does_not_break_the_import(caplog) -> None:
     )
     assert _insert_before_close("<A>\nx", "A", "y") == "<A>\nx\ny"
     assert "cannot find 'gone'" in caplog.text
+
+
+def test_every_project_edit_applies_to_the_current_default_wording(caplog) -> None:
+    """A rewording of the default prompt must update the project sections too:
+    an edit that no longer applies only logs a warning at import, which every
+    program that builds a prompt would then print."""
+    import importlib
+
+    import openhands.sdk.context.prompts.sections.project as project
+
+    with caplog.at_level("WARNING"):
+        importlib.reload(project)
+
+    assert "Default prompt text changed" not in caplog.text
