@@ -59,14 +59,9 @@ class ConversationStats(BaseModel):
         total_metrics = Metrics()
         for metrics in self.usage_to_metrics.values():
             total_metrics.merge(metrics)
-        # merge() preserves the detailed records but leaves the aggregate
-        # model at its "default" fallback. Attribute the aggregate to the
-        # single model behind the rolled-up usage when there is one, so
-        # sub-agent entries (task:*, delegate:*) and the conversation-wide
-        # metric don't show up as unknown in downstream dashboards. Keep
-        # "default" for mixed or indeterminate usage so a condenser or a
-        # nested sub-agent on another model can't misattribute the whole
-        # entry (OHE-4216).
+        # merge() never populates model_name; attribute the aggregate when
+        # the rolled-up usage is single-model, and keep "default" otherwise
+        # so mixed usage (e.g. a condenser on another model) isn't misattributed.
         models = {
             m.model_name for m in self.usage_to_metrics.values() if m.model_name != ""
         }
