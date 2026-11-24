@@ -611,7 +611,12 @@ class SetSecurityAnalyzerRequest(BaseModel):
 
 
 class UpdateConversationRequest(BaseModel):
-    """Payload to update conversation metadata."""
+    """Payload to update conversation metadata.
+
+    Plugin sources are fixed at creation and are not part of this request.
+    Set a ``${VAR}`` with ``POST /{conversation_id}/secrets``, retry the send
+    after a source recovers, or start a new conversation for a different source.
+    """
 
     title: str | None = Field(
         default=None,

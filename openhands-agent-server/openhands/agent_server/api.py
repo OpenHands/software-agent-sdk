@@ -121,6 +121,7 @@ from openhands.agent_server.vscode_router import vscode_router
 from openhands.agent_server.workspaces_router import workspaces_router
 from openhands.sdk.errors import DomainError
 from openhands.sdk.logger import DEBUG, get_logger
+from openhands.sdk.plugin.fetch import PluginFetchError
 from openhands.sdk.tool.registry import seal_tool_catalog, unseal_tool_catalog
 from openhands.sdk.utils.redact import sanitize_dict
 from openhands.tools.terminal.constants import (
@@ -784,15 +785,21 @@ def _sanitize_validation_errors(errors: Sequence[Any]) -> list[dict]:
 async def _domain_error_handler(request: Request, exc: DomainError) -> JSONResponse:
     """Map a domain error to its status from ``ERROR_STATUS``, the only map."""
     headers = {"Retry-After": exc.retry_after} if exc.retry_after else {}
+    # PluginFetchError's detail is already redacted. Show it on the 502 so a
+    # caller can tell a plugin source failure from an unhandled 500. Strict
+    # source errors subclass it and keep their own status mapping.
+    show_fetch_detail = type(exc) is PluginFetchError
     if isinstance(exc, GatewayTimeout):
         headers["x-should-retry"] = "true" if exc.retry_safe else "false"
         if exc.conversation_id is not None:
             headers["X-OpenHands-ServerConversation-ID"] = str(exc.conversation_id)
+    elif show_fetch_detail and exc.conversation_id is not None:
+        headers["X-OpenHands-ServerConversation-ID"] = str(exc.conversation_id)
     return _error_response(
         request,
         HTTPException(status_for(exc), exc.detail, headers),
         exc.extra,
-        show_detail=isinstance(exc, GatewayTimeout),
+        show_detail=isinstance(exc, GatewayTimeout) or show_fetch_detail,
     )
 
 

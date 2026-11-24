@@ -58,6 +58,7 @@ from openhands.sdk.errors import (
     RateLimited,
     Unavailable,
     Unprocessable,
+    UpstreamFailed,
 )
 from openhands.sdk.event import Event, ReactionEvent
 from openhands.sdk.event.ask_user import AskUserAnswerEvent
@@ -269,6 +270,7 @@ async def batch_get_conversation_events_via_post(
         {
             Conflict: "Gateway run in progress; message not saved",
             RateLimited: "Message saved but server run capacity is full",
+            UpstreamFailed: "A plugin source could not be fetched",
         }
     ),
 )

@@ -75,6 +75,7 @@ from openhands.sdk.errors import (
     NotFound,
     RateLimited,
     Unprocessable,
+    UpstreamFailed,
     UpstreamTimeout,
 )
 from openhands.sdk.launch import AgentLaunchError, LaunchStoreError
@@ -336,7 +337,11 @@ async def batch_get_conversations(
 @conversation_router.post(
     "",
     responses=error_responses(
-        {RateLimited: "Server conversation run capacity is full"}
+        {
+            RateLimited: "Server conversation run capacity is full",
+            Unprocessable: "A plugin source cannot be parsed",
+            UpstreamFailed: "A plugin source could not be fetched",
+        }
     ),
 )
 async def start_conversation(
@@ -359,7 +364,16 @@ async def start_conversation(
     ] = None,
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> ConversationInfo:
-    """Start a conversation in the local environment."""
+    """Start a conversation in the local environment.
+
+    An unparseable ``plugins[].source`` is rejected with 422 before the
+    conversation is stored. Plugin sources cannot be changed afterwards.
+    If a source uses ``${VAR}``, set it with
+    ``POST /{conversation_id}/secrets`` and send again. If the source was
+    down, retry the send once it recovers. To use a different source, start
+    a new conversation. A plugin that cannot be fetched while delivering
+    ``initial_message`` fails with 502 and returns the conversation id.
+    """
     if request.conversation_runtime not in (None, "local"):
         raise Unprocessable("This server only runs local conversations")
     await _refuse_project_member(conversation_service, request.tags)
@@ -585,7 +599,11 @@ async def update_conversation_secrets(
     request: UpdateSecretsRequest,
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> Success:
-    """Update secrets for a conversation."""
+    """Update secrets for a conversation.
+
+    A ``${VAR}`` in a plugin source is expanded from these secrets on the
+    next send. This does not change the plugin source itself.
+    """
     event_service = await conversation_service.get_event_service(conversation_id)
     if event_service is None:
         raise NotFound()

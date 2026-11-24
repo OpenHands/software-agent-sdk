@@ -112,6 +112,7 @@ from openhands.sdk.observability.laminar import (
 from openhands.sdk.observability.utils import extract_action_name
 from openhands.sdk.plugin import (
     Plugin,
+    PluginFetchError,
     PluginSource,
     ResolvedPluginSource,
     fetch_plugin_with_resolution,
@@ -274,6 +275,7 @@ class LocalConversation(BaseConversation):
     _plugin_specs: list[PluginSource] | None
     _resolved_plugins: list[ResolvedPluginSource] | None
     _plugins_loaded: bool
+    _reported_auto_load_errors: set[tuple[str, str]]
     _pending_hook_config: HookConfig | None  # Hook config to combine with plugin hooks
     _mcp_tool_provider: MCPToolProvider
     _mcp_startup_budget: float | None
@@ -412,6 +414,7 @@ class LocalConversation(BaseConversation):
         self._plugin_specs = plugins
         self._resolved_plugins = None
         self._plugins_loaded = False
+        self._reported_auto_load_errors = set()
         self._pending_hook_config = hook_config  # Will be combined with plugin hooks
         self._agent_ready = False  # Agent initialized lazily after plugins loaded
         self._mcp_tool_provider = mcp_tool_provider or DefaultMCPToolProvider()
@@ -888,11 +891,18 @@ class LocalConversation(BaseConversation):
         failure as a non-fatal ConversationErrorEvent (the run status is
         left untouched).
         """
+        safe_detail = redact_url_credentials_in_text(detail)
+        # A failed explicit plugin retries this whole load. Keep the first
+        # report of each auto-load failure instead of appending another.
+        identity = (code, safe_detail)
+        if identity in self._reported_auto_load_errors:
+            return
+        self._reported_auto_load_errors.add(identity)
         self._on_event(
             ConversationErrorEvent(
                 source="environment",
                 code=code,
-                detail=redact_url_credentials_in_text(detail),
+                detail=safe_detail,
             )
         )
 
@@ -1329,6 +1339,12 @@ class LocalConversation(BaseConversation):
                     # auto-loaded one must not prevent the conversation from
                     # starting.
                     if not auto_loaded:
+                        if type(exc) is PluginFetchError:
+                            raise PluginFetchError(
+                                str(exc),
+                                source=spec.source,
+                                conversation_id=self.id,
+                            ) from exc
                         raise
                     logger.warning(
                         "Failed to load plugin '%s'; continuing without it",

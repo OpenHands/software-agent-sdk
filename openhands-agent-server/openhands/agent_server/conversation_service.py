@@ -110,8 +110,13 @@ from openhands.sdk.credential import (
     CredentialBindingError,
     VersionedCredentialBinding,
 )
+from openhands.sdk.errors import Unprocessable
 from openhands.sdk.event import MessageEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
+from openhands.sdk.extensions.fetch import (
+    ExtensionFetchError,
+    parse_extension_source,
+)
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.launch import LaunchedAgent, LaunchStoreError, LaunchStores, finalize
@@ -124,6 +129,7 @@ from openhands.sdk.tool.client_tool import register_client_tools
 from openhands.sdk.tool.registry import get_tool_module_qualnames, is_tool_available
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.pydantic_secrets import cipher_context, client_context
+from openhands.sdk.utils.redact import redact_url_credentials_in_text
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -349,6 +355,20 @@ logger = logging.getLogger(__name__)
 
 def _same_workspace(a: LocalWorkspace, b: LocalWorkspace) -> bool:
     return Path(a.working_dir).resolve() == Path(b.working_dir).resolve()
+
+
+def _reject_unparseable_plugin_sources(request: StartConversationRequest) -> None:
+    """Refuse a plugin source that cannot be parsed, before any record is stored."""
+    for plugin in request.plugins or []:
+        try:
+            parse_extension_source(plugin.source)
+        except ExtensionFetchError as exc:
+            raise Unprocessable(
+                {
+                    "code": "InvalidPluginSource",
+                    "message": redact_url_credentials_in_text(str(exc)),
+                }
+            ) from exc
 
 
 def _compose_conversation_info(
@@ -1648,6 +1668,7 @@ class ConversationService:
         """Start a local event_service and return its id."""
         if self._event_services is None:
             raise ServiceInactive()
+        _reject_unparseable_plugin_sources(request)
         conversation_id = request.conversation_id or uuid4()
         if self._has_conversation(conversation_id):
             async with self._conversation_lifecycle(conversation_id):

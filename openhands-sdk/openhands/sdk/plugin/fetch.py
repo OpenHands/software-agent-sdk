@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from uuid import UUID
 
+from openhands.sdk.errors import UpstreamFailed
 from openhands.sdk.extensions.fetch import (
     ExtensionFetchError,
     SourceType,
@@ -19,14 +21,49 @@ from openhands.sdk.extensions.fetch import (
 from openhands.sdk.git.cached_repo import GitHelper
 from openhands.sdk.plugin.paths import get_pinned_plugin_cache_path
 from openhands.sdk.utils.path import get_user_persistence_dir
+from openhands.sdk.utils.redact import (
+    redact_url_credentials,
+    redact_url_credentials_in_text,
+)
 
 
 DEFAULT_CACHE_DIR = get_user_persistence_dir() / "cache" / "plugins"
 _FULL_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 
 
-class PluginFetchError(Exception):
-    """Raised when fetching a plugin fails."""
+class PluginFetchError(UpstreamFailed):
+    """A plugin source could not be fetched.
+
+    A single string still constructs the error. ``str(exc)`` is the log line.
+    ``detail`` is what a client is shown: ``code`` is ``PluginFetchError``,
+    and any URL credentials in ``message`` or ``source`` are removed.
+    ``${VAR}`` placeholders in ``source`` are kept.
+    """
+
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        source: str | None = None,
+        conversation_id: UUID | None = None,
+    ) -> None:
+        safe_message = redact_url_credentials_in_text(message)
+        safe_source = (
+            redact_url_credentials(source, preserve_placeholders=True)
+            if source
+            else None
+        )
+        detail: dict[str, object] = {
+            "code": "PluginFetchError",
+            "message": safe_message,
+        }
+        if safe_source is not None:
+            detail["source"] = safe_source
+        if conversation_id is not None:
+            detail["conversation_id"] = str(conversation_id)
+        super().__init__(detail, message=safe_message)
+        self.source = safe_source
+        self.conversation_id = conversation_id
 
 
 def _cached_pinned_plugin(
