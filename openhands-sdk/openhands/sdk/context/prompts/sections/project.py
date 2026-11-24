@@ -260,10 +260,6 @@ class WorkerTroubleshootingSection(_StaticTextSection):
         TroubleshootingSection.body,
         ("or the user reports", "or the user reports"),
         ("in your response to the user", "in your report"),
-        (
-            "\n* When you run into any major issue while executing a plan from the user, please don't try to directly work around it. Instead, propose a new plan and confirm with the user before proceeding.",
-            "",
-        ),
     )
 
 
