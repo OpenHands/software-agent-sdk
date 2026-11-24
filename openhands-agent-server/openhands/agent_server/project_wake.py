@@ -1,0 +1,708 @@
+"""Messages one conversation sends another, and the coordinator's wake-up.
+
+:func:`project_sender_line` holds a project member's
+``sender_conversation_id`` to its project and writes the line its message
+opens with. :func:`notify_coordinator` wakes a project's coordinator when one of its
+conversations finishes a run the coordinator asked for.
+
+The coordinator gets the member's final message, not its events: one user
+message that records the member as ``sender`` and opens with
+:func:`~openhands.agent_server.project_prompts.update_line`. A member the
+coordinator started that stops on the user instead (confirmation, error,
+stuck) sends :func:`~openhands.agent_server.project_prompts.stop_line`, and a
+pause is saved for awareness (:func:`notify_coordinator_of_stop`). An update
+to a coordinator that waits for confirmation is saved without a run, since a
+run would approve its pending actions. The coordinator reads more with
+``read_worker``.
+
+:func:`reconcile_coordinator_updates` catches up after a restart: a member
+whose coordinator-started turn ended while no update reached the coordinator
+(the server stopped first, or every delivery attempt failed) is delivered
+then, from its event log.
+"""
+
+import asyncio
+import weakref
+from collections.abc import Iterator
+from datetime import datetime
+from itertools import islice
+from typing import TYPE_CHECKING
+from uuid import UUID
+
+from openhands.agent_server.exceptions import (
+    ConversationRunLimitExceeded,
+    ServiceInactive,
+)
+from openhands.agent_server.experimental_features import feature_enabled_now
+from openhands.agent_server.message_sender import (
+    SenderError,
+)
+from openhands.agent_server.persistence import PersistedProjects
+from openhands.agent_server.project_prompts import (
+    SenderRole,
+    card_line,
+    paused_line,
+    sender_line,
+    stop_line,
+    update_line,
+    update_text,
+    user_message_line,
+    user_turn_line,
+)
+from openhands.agent_server.project_turns import (
+    TurnOutcome,
+    describe_action,
+    starts_turn,
+)
+from openhands.sdk import Message, TextContent
+from openhands.sdk.conversation.resolution import EARLIER_REQUESTS_KEPT
+from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.conversation.title_utils import extract_message_text
+from openhands.sdk.conversation.types import (
+    ASK_TAG_KEY,
+    CONVERSATION_SENDER_PREFIX,
+    HELD_FOR_USER_STATUSES,
+    PROJECT_TAG_KEY,
+    RESOLVED_TAG_KEY,
+    TURN_TAG_KEY,
+    conversation_sender,
+)
+from openhands.sdk.event import ActionEvent, Event, MessageEvent
+from openhands.sdk.event.ask_user import ANSWER_HEADER_PREFIX, PendingAsk
+from openhands.sdk.logger import get_logger
+from openhands.sdk.tool.builtins.finish import FinishAction
+
+
+if TYPE_CHECKING:
+    from openhands.agent_server.conversation_service import ConversationService
+    from openhands.agent_server.event_service import EventService
+
+
+logger = get_logger(__name__)
+
+_DELIVERY_ATTEMPTS = 3
+_DELIVERY_RETRY_SECONDS = (1.0, 5.0)
+# Runs waiting for a free slot, kept so they are not garbage collected.
+_waiting_runs: set[asyncio.Task] = set()
+
+
+async def _load_projects(service: "ConversationService") -> PersistedProjects | None:
+    """The server's projects; ``None`` when it keeps none or has no stores."""
+    if service.stores is None:
+        return None
+    return await asyncio.to_thread(service.stores.projects.load)
+
+
+async def _coordinator_id(
+    service: "ConversationService", project_hex: str
+) -> UUID | None:
+    try:
+        persisted = await _load_projects(service)
+    except OSError:
+        logger.warning("Projects read failed; sender named as a member")
+        return None
+    if persisted is None:
+        return None
+    project = next((p for p in persisted.projects if p.id.hex == project_hex), None)
+    return project.coordinator_conversation_id if project else None
+
+
+async def project_sender_line(
+    service: "ConversationService", sender_id: UUID, target_tags: dict[str, str]
+) -> str | None:
+    """The line a message from a project member opens with, or ``None`` when
+    the sender is in no project (the generic sender line applies).
+
+    Called beside :func:`~openhands.agent_server.message_sender.sender_message_line`,
+    which checks the sender exists and is not the target.
+
+    Raises :class:`SenderError` when the target is not in the sender's
+    project: a project's conversations only reach their own project.
+    """
+    sender = await service.get_conversation(sender_id)
+    if sender is None:
+        return None
+    # Only a real project member (Projects on, project exists) is held to its
+    # project; any other ``project`` tag is ordinary client metadata.
+    project = await service.projects.member_of(sender.tags)
+    if project is None:
+        return None
+    target = await service.projects.member_of(target_tags)
+    if target is None or target.id != project.id:
+        raise SenderError("Sender is not a conversation of this project")
+    coordinator = project.coordinator_conversation_id == sender_id
+    role: SenderRole = "coordinator" if coordinator else "worker"
+    return sender_line(sender.title, sender_id, role=role)
+
+
+async def _coordinator(
+    service: "ConversationService", member_id: UUID, project_hex: str
+) -> tuple[UUID, "EventService"] | None:
+    """The coordinator a member's news goes to, when there is one to tell."""
+    persisted = await _load_projects(service)
+    if persisted is None:
+        return None
+    project = next((p for p in persisted.projects if p.id.hex == project_hex), None)
+    coordinator_id = project.coordinator_conversation_id if project else None
+    if coordinator_id is None or coordinator_id == member_id:
+        return None
+    coordinator = await service.get_event_service(coordinator_id)
+    if (
+        coordinator is None
+        or coordinator.stored.tags.get(PROJECT_TAG_KEY) != project_hex
+    ):
+        return None
+    return coordinator_id, coordinator
+
+
+async def _deliver(
+    coordinator_id: UUID,
+    coordinator: "EventService",
+    member_id: UUID,
+    content: list[TextContent],
+    *,
+    run: bool,
+) -> None:
+    """Save a message in the coordinator and, with ``run``, run it.
+
+    A coordinator that waits for confirmation keeps the message for its next
+    run. When every run slot is taken, a background task waits for one
+    instead of leaving the update unread. A failed save is retried before the
+    update is given up.
+    """
+    message = Message(role="user", content=list(content))
+    run = run and not await _waits_for_confirmation(coordinator)
+    for attempt in range(_DELIVERY_ATTEMPTS):
+        last = attempt == _DELIVERY_ATTEMPTS - 1
+        try:
+            await coordinator.send_message(
+                message,
+                run=run,
+                sender=conversation_sender(member_id),
+                keep_goal_loop=True,
+            )
+            return
+        except ConversationRunLimitExceeded:
+            _run_when_free(coordinator_id, coordinator)
+            return
+        except ServiceInactive:
+            raise
+        except Exception:
+            if last:
+                raise
+        delay = _DELIVERY_RETRY_SECONDS[min(attempt, len(_DELIVERY_RETRY_SECONDS) - 1)]
+        logger.info(
+            "Delivering to coordinator %s failed; retrying in %.0fs",
+            coordinator_id,
+            delay,
+        )
+        await asyncio.sleep(delay)
+
+
+async def _waits_for_confirmation(service: "EventService") -> bool:
+    """Whether a run would approve the conversation's pending actions.
+
+    A server delivery saves its message without a run then; the user decides
+    on the actions first. An unlocked read, so a confirmation that arrives
+    just after it is not seen.
+    """
+    state = await service.get_state()
+    return (
+        state.execution_status == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+    )
+
+
+def _run_when_free(coordinator_id: UUID, coordinator: "EventService") -> None:
+    """Run the coordinator for a saved update once a run slot frees."""
+
+    async def wait_and_run() -> None:
+        try:
+            await coordinator.run_saved_message_when_free()
+        except ValueError as exc:
+            logger.warning(
+                "Coordinator %s did not run for an update: %s",
+                coordinator_id,
+                exc,
+            )
+        except Exception:
+            logger.warning(
+                "Coordinator %s did not run for an update",
+                coordinator_id,
+                exc_info=True,
+            )
+
+    logger.info("Coordinator %s got an update; waiting for a run slot", coordinator_id)
+    task = asyncio.create_task(wait_and_run())
+    _waiting_runs.add(task)
+    task.add_done_callback(_waiting_runs.discard)
+
+
+async def notify_coordinator(
+    service: "ConversationService",
+    member_id: UUID,
+    project_hex: str,
+    turn: TurnOutcome,
+    text: str | None,
+    turn_sender: str | None,
+) -> bool:
+    """Deliver a member's final message to its project's coordinator.
+
+    A turn the coordinator started (its message, or the task message of a
+    worker it started) wakes the coordinator: it waits for that reply. A turn
+    the user started in the member is delivered without a run, for the
+    coordinator to know on its next turn; the user already saw the reply.
+    A turn another conversation started is not delivered, so an update the
+    coordinator answered never starts another round.
+
+    Returns whether a message was saved. Nothing is sent when the project or
+    its coordinator is gone, when the coordinator is the member itself, or
+    when the coordinator left the project.
+    """
+    by_user = turn_sender is None
+    if not by_user and not str(turn_sender).startswith(CONVERSATION_SENDER_PREFIX):
+        return False
+    found = await _coordinator(service, member_id, project_hex)
+    if found is None:
+        return False
+    coordinator_id, coordinator = found
+    if not by_user and turn_sender != conversation_sender(coordinator_id):
+        return False
+    member = await service.get_conversation(member_id)
+    title = member.title if member else None
+    asked = turn == "asking"
+    card = None
+    if asked and not by_user:
+        member_events = await service.get_event_service(member_id)
+        if member_events is not None:
+            card = await asyncio.to_thread(member_events.pending_ask)
+    if by_user:
+        line = user_turn_line(title, member_id, asked=asked)
+    elif card is not None:
+        line = card_line(title, member_id)
+    else:
+        line = update_line(title, member_id, asked=asked)
+    await _deliver(
+        coordinator_id,
+        coordinator,
+        member_id,
+        [TextContent(text=line), TextContent(text=update_text(text))],
+        run=not by_user,
+    )
+    return True
+
+
+async def notify_coordinator_of_stop(
+    service: "ConversationService",
+    member_id: UUID,
+    project_hex: str,
+    status: str,
+    text: str | None,
+    turn_sender: str | None,
+) -> bool:
+    """Tell the coordinator that a member it started stopped on the user.
+
+    Only for a turn the coordinator started; the user sees their own turns
+    stop. Waiting for confirmation, an error or stuck wakes the coordinator so
+    it can tell the user what the member waits on. A pause is the user's
+    own act, so it is saved for the coordinator's awareness without a run.
+    Nothing is sent while the server shuts down.
+    Returns whether a message was saved.
+    """
+    if status not in HELD_FOR_USER_STATUSES or turn_sender is None:
+        return False
+    found = await _coordinator(service, member_id, project_hex)
+    if found is None:
+        return False
+    coordinator_id, coordinator = found
+    if turn_sender != conversation_sender(coordinator_id):
+        return False
+    member = await service.get_conversation(member_id)
+    title = member.title if member else None
+    member_service = await service.get_event_service(member_id)
+    if member_service is None or member_service._closing:
+        # The server is going down; the catch-up after it starts again
+        # delivers this, with the status the member comes back in.
+        return False
+    paused = status == "paused"
+    line = (
+        paused_line(title, member_id)
+        if paused
+        else stop_line(title, member_id, status=status)
+    )
+    await _deliver(
+        coordinator_id,
+        coordinator,
+        member_id,
+        [TextContent(text=line), TextContent(text=update_text(text))],
+        run=not paused,
+    )
+    return True
+
+
+async def relay_user_message(
+    service: "ConversationService",
+    member_id: UUID,
+    project_hex: str,
+    text: str,
+) -> bool:
+    """Copy a message the user wrote in a member to the project's coordinator.
+
+    The copy is saved without running the coordinator: it is for the
+    coordinator to know what the user asked where, on its next turn, and
+    waking it for every message would only tempt it to forward the message
+    back. Returns whether a copy was saved.
+    """
+    if not text.strip():
+        return False
+    found = await _coordinator(service, member_id, project_hex)
+    if found is None:
+        return False
+    coordinator_id, coordinator = found
+    member = await service.get_conversation(member_id)
+    await _deliver(
+        coordinator_id,
+        coordinator,
+        member_id,
+        [
+            TextContent(
+                text=user_message_line(member.title if member else None, member_id)
+            ),
+            TextContent(text=update_text(text)),
+        ],
+        run=False,
+    )
+    return True
+
+
+async def pass_on_answer(
+    service: "ConversationService",
+    coordinator_id: UUID,
+    project_hex: str,
+    closed_by: str,
+    picked: str | None,
+    words: str | None,
+) -> bool:
+    """Record the user's answer to a coordinator's card in the member it asks for.
+
+    A coordinator passes on a member's question with its own card, naming the
+    member in ``for_conversation``. When the user answers that card, by a tap
+    (``picked``, the option's label, and ``words``) or by writing in the chat
+    (``words``), the server gives the member the user's answer and runs it:
+    on its ``ask_user`` card when it asked on one, otherwise as an answer to
+    the question its last turn asked (the ``ask`` tag). The answer is the
+    user's, so it closes the member's question, which nothing the coordinator
+    says could do. ``closed_by`` is the user's event that answered the
+    coordinator's card.
+
+    Nothing happens when that card asked for no member, the member left the
+    project, or the member's question was already answered, so passing the
+    same answer twice is harmless. Returns whether the answer was passed on.
+    """
+    if await _coordinator_id(service, project_hex) != coordinator_id:
+        return False
+    coordinator = await service.get_event_service(coordinator_id)
+    if coordinator is None:
+        return False
+    card = await asyncio.to_thread(coordinator.pending_ask, closed_by)
+    if card is None or card.for_conversation is None:
+        return False
+    try:
+        member_id = UUID(card.for_conversation)
+    except ValueError:
+        logger.info("Card for %r names no conversation", card.for_conversation)
+        return False
+    if member_id == coordinator_id:
+        return False
+    member = await service.get_event_service(member_id)
+    if member is None or member.stored.tags.get(PROJECT_TAG_KEY) != project_hex:
+        return False
+    # The answer closes the member's question only once its message is saved,
+    # so two passes of one answer must not both find the question pending.
+    async with _passing_lock():
+        question = await asyncio.to_thread(member.pending_ask)
+        if question is None:
+            # The member's open question must be the one the card passed on:
+            # a turn started after the card means the user, or the
+            # coordinator, already went on with the member.
+            turn_start = await latest_turn_start(member)
+            if turn_start is not None and _later(turn_start.timestamp, card.asked_at):
+                return False
+            return await _answer_open_question(
+                service, member, coordinator_id, picked, words
+            )
+        if _later(question.asked_at, card.asked_at):
+            # The member asked again after the card; this answer is not for
+            # its new question.
+            return False
+        index, text = _matched_answer(question, picked, words)
+        try:
+            await member.answer_ask(
+                question.ask_id,
+                index,
+                text,
+                sender=conversation_sender(coordinator_id),
+            )
+        except ValueError:
+            # Answered in the meantime, by the user in the member.
+            return False
+    return True
+
+
+def _later(timestamp: str, than: str) -> bool:
+    """Whether one event timestamp is later than another."""
+    return datetime.fromisoformat(timestamp) > datetime.fromisoformat(than)
+
+
+_passing_answers: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _passing_lock() -> asyncio.Lock:
+    """One lock per event loop for :func:`pass_on_answer` (tests run many)."""
+    loop = asyncio.get_running_loop()
+    lock = _passing_answers.get(loop)
+    if lock is None:
+        lock = _passing_answers[loop] = asyncio.Lock()
+    return lock
+
+
+async def _answer_open_question(
+    service: "ConversationService",
+    member: "EventService",
+    coordinator_id: UUID,
+    picked: str | None,
+    words: str | None,
+) -> bool:
+    """Give a member the user's answer to the question its last turn asked
+    without a card. The message carries the answer header, so the board
+    counts it as the user's answer."""
+    tags = dict(member.stored.tags)
+    if tags.get(TURN_TAG_KEY) != "asking" or RESOLVED_TAG_KEY in tags:
+        return False
+    answer = " — ".join(
+        part for part in ((picked or "").strip(), (words or "").strip()) if part
+    )
+    if not answer:
+        return False
+    question = tags.get(ASK_TAG_KEY) or "your last question"
+    # Close the question first: a second pass of the same answer then finds
+    # nothing to answer.
+    try:
+        await service.projects.set_conversation_tag(
+            member.stored.id, TURN_TAG_KEY, None, expected="asking"
+        )
+    except ValueError:
+        return False
+    await service.projects.set_conversation_tag(member.stored.id, ASK_TAG_KEY, None)
+    text = f'{ANSWER_HEADER_PREFIX}: "{question}"]\n{answer}'
+    await member.send_message(
+        Message(role="user", content=[TextContent(text=text)]),
+        run=not await _waits_for_confirmation(member),
+        sender=conversation_sender(coordinator_id),
+        keep_goal_loop=True,
+    )
+    return True
+
+
+def _matched_answer(
+    question: PendingAsk, picked: str | None, words: str | None
+) -> tuple[int | None, str | None]:
+    """The member's option the user picked, and the rest as words.
+
+    The coordinator may word its options differently; a label it kept picks
+    the member's option, any other is passed on as words.
+    """
+    words = (words or "").strip() or None
+    picked = (picked or "").strip() or None
+    if picked is None:
+        return None, words
+    key = picked.casefold()
+    for i, label in enumerate(question.option_labels):
+        if label.strip().casefold() == key:
+            return i, words
+    return None, " — ".join(part for part in (picked, words) if part)
+
+
+_ENDED = HELD_FOR_USER_STATUSES | {ConversationExecutionStatus.FINISHED.value}
+
+
+def _first_turn_start(events: Iterator[Event]) -> MessageEvent | None:
+    start = next((e for e in events if starts_turn(e)), None)
+    return start if isinstance(start, MessageEvent) else None
+
+
+async def latest_turn_start(event_service: "EventService") -> MessageEvent | None:
+    """The latest user message that started a turn, read back only to it."""
+    return await event_service.scan_events(_first_turn_start)
+
+
+async def conversation_context(
+    event_service: "EventService",
+) -> tuple[str | None, list[str]]:
+    """The conversation's first message and the requests between it and the
+    current turn, oldest first, for the resolution judge."""
+    task_event = await event_service.scan_events(_first_turn_start, newest_first=False)
+
+    def latest_starts(events: Iterator[Event]) -> list[MessageEvent]:
+        # Newest first: the current turn's message, then the ones before it.
+        starts = (e for e in events if starts_turn(e))
+        return [
+            e
+            for e in islice(starts, EARLIER_REQUESTS_KEPT + 1)
+            if isinstance(e, MessageEvent)
+        ]
+
+    turns = (await event_service.scan_events(latest_starts))[1:]
+    earlier = [
+        text
+        for e in reversed(turns)
+        if task_event is not None
+        and e.id != task_event.id
+        and (text := extract_message_text(e))
+    ]
+    task = extract_message_text(task_event) if task_event is not None else None
+    return task, earlier
+
+
+def _final_text(event: Event) -> str | None:
+    if isinstance(event, MessageEvent):
+        return extract_message_text(event)
+    if isinstance(event, ActionEvent):
+        if isinstance(event.action, FinishAction):
+            return event.action.message
+        return describe_action(event)
+    return None
+
+
+async def _reconcile_member(
+    service: "ConversationService",
+    project_hex: str,
+    coordinator_id: UUID,
+    coordinator: "EventService",
+    member_id: UUID,
+    status: str,
+    tags: dict[str, str],
+) -> bool:
+    member = await service.get_event_service(member_id)
+    if member is None:
+        return False
+    start = await latest_turn_start(member)
+    if start is None or start.sender != conversation_sender(coordinator_id):
+        return False
+
+    def turn_output(events: Iterator[Event]) -> tuple[Event | None, str | None]:
+        """The agent's last message or action of this turn, and the latest
+        output with text, reading back no further than the turn's start."""
+        last: Event | None = None
+        for event in events:
+            if event.id == start.id:
+                break
+            if event.source != "agent" or not isinstance(
+                event, (MessageEvent, ActionEvent)
+            ):
+                continue
+            last = last or event
+            if text := _final_text(event):
+                return last, text
+        return last, None
+
+    last, text = await member.scan_events(turn_output)
+    if last is None:
+        return False
+
+    # Delivered when the coordinator holds a message from the member saved
+    # after the member's last output of this turn.
+    def delivered(events: Iterator[Event]) -> bool:
+        for event in events:
+            if event.timestamp < last.timestamp:
+                return False
+            if (
+                isinstance(event, MessageEvent)
+                and event.source == "user"
+                and event.sender == conversation_sender(member_id)
+            ):
+                return True
+        return False
+
+    if await coordinator.scan_events(delivered):
+        return False
+    logger.info(
+        "Delivering a missed update from %s to coordinator %s",
+        member_id,
+        coordinator_id,
+    )
+    if status == ConversationExecutionStatus.FINISHED.value:
+        turn: TurnOutcome = (
+            "asking" if tags.get(TURN_TAG_KEY) == "asking" else "finished"
+        )
+        return await notify_coordinator(
+            service, member_id, project_hex, turn, text, start.sender
+        )
+    if status == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION.value:
+        text = _final_text(last) or text
+    return await notify_coordinator_of_stop(
+        service, member_id, project_hex, status, text, start.sender
+    )
+
+
+async def reconcile_coordinator_updates(service: "ConversationService") -> int:
+    """Deliver updates a coordinator should have had but never got.
+
+    For each project member whose latest turn the coordinator started and
+    that has ended (finished, or stopped on the user) with no message from
+    it in the coordinator since its last output, the update is delivered now,
+    as it would have been when the turn ended. Turns the user started are
+    not replayed: the user saw those. A resolved member is skipped: its work
+    is done and the board shows it. Members are picked from the catalog, so
+    only those that may owe an update are loaded. Returns how many were
+    delivered.
+    """
+    stores = service.stores
+    if stores is None or not await feature_enabled_now("projects", stores.settings):
+        return 0
+    persisted = await _load_projects(service)
+    if persisted is None:
+        return 0
+    delivered = 0
+    for project in persisted.projects:
+        coordinator_id = project.coordinator_conversation_id
+        if coordinator_id is None:
+            continue
+        project_hex = project.id.hex
+        members = await service.list_tagged_conversations(PROJECT_TAG_KEY, project_hex)
+        # Decide from the catalog first: only an ended, unresolved member can
+        # owe an update, and only those are loaded.
+        owing = [
+            (stored, status)
+            for stored, execution_status in members
+            if stored.id != coordinator_id
+            and RESOLVED_TAG_KEY not in stored.tags
+            and (status := str(getattr(execution_status, "value", execution_status)))
+            in _ENDED
+        ]
+        if not owing:
+            continue
+        target = await _coordinator(service, owing[0][0].id, project_hex)
+        if target is None:
+            continue
+        for stored, status in owing:
+            try:
+                if await _reconcile_member(
+                    service,
+                    project_hex,
+                    target[0],
+                    target[1],
+                    stored.id,
+                    status,
+                    dict(stored.tags),
+                ):
+                    delivered += 1
+            except Exception:
+                logger.warning(
+                    "Catching up on %s for coordinator %s failed",
+                    stored.id,
+                    coordinator_id,
+                    exc_info=True,
+                )
+    return delivered

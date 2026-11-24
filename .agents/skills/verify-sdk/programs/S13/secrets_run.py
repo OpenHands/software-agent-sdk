@@ -14,6 +14,8 @@ value and records the Authorization header; `/broken` answers 500).
   models     mask_secrets_in_model on nested values and image data.
   async      arun() with a LookupSecret served by the running event loop
              itself, which registers another secret while answering.
+  thinking   a text reply whose thinking block and reasoning_content quote a
+             secret, and a reasoning-only reply that does; run() and arun().
 """
 
 import asyncio
@@ -32,7 +34,13 @@ from sdk_verify import emit, make_llm, run_paths
 
 from openhands.sdk import Agent, AgentContext, Conversation, Tool
 from openhands.sdk.event import MessageEvent, ObservationEvent, SystemPromptEvent
-from openhands.sdk.llm import ImageContent, TextContent
+from openhands.sdk.llm import (
+    ImageContent,
+    Message,
+    RedactedThinkingBlock,
+    TextContent,
+    ThinkingBlock,
+)
 from openhands.sdk.secret import (
     LookupSecret,
     SecretSource,
@@ -400,8 +408,77 @@ async def async_case(first_step: dict) -> dict:
     return out
 
 
+# --- thinking: a text reply's thinking block and reasoning_content -------------
+def thinking_case(use_arun: bool, name: str) -> dict:
+    """Two scripted replies that quote the secret where a model reasons: a
+    reasoning-only reply (nudged), then a text reply."""
+    from openhands.sdk.testing import TestLLM
+
+    replies = [
+        Message(role="assistant", reasoning_content="first I recall think-tok-s13"),
+        Message(
+            role="assistant",
+            content=[TextContent(text="The token is think-tok-s13.")],
+            reasoning_content="I will quote think-tok-s13",
+            thinking_blocks=[
+                ThinkingBlock(
+                    thinking="The user wants think-tok-s13 repeated",
+                    signature="sig-s13",
+                ),
+                RedactedThinkingBlock(data="opaque-s13"),
+            ],
+        ),
+    ]
+    c = Conversation(
+        agent=Agent(llm=TestLLM.from_messages(replies, usage_id="agent"), tools=[]),
+        workspace=str(ws),
+        persistence_dir=str(paths["conversations"] / name),
+        visualizer=None,
+        secrets={"THINK_TOKEN": "think-tok-s13"},
+    )
+    c.send_message("Repeat the token.")
+    if use_arun:
+        asyncio.run(asyncio.wait_for(c.arun(), timeout=90))
+    else:
+        c.run()
+    seen = [
+        e.llm_message
+        for e in c.state.events
+        if isinstance(e, MessageEvent) and e.source == "agent"
+    ]
+    final = seen[-1] if seen else None
+    blocks = list(final.thinking_blocks) if final else []
+    signed = [b for b in blocks if isinstance(b, ThinkingBlock)]
+    redacted = [b for b in blocks if isinstance(b, RedactedThinkingBlock)]
+    persisted = "".join(
+        p.read_text() for p in Path(c.state.persistence_dir).rglob("*.json")
+    )
+    case = {
+        "status": c.state.execution_status.value,
+        "agent_messages": len(seen),
+        "reasoning_only": seen[0].reasoning_content if seen else None,
+        "text": "".join(getattr(x, "text", "") for x in final.content)
+        if final
+        else None,
+        "reasoning_content": final.reasoning_content if final else None,
+        "thinking": [b.thinking for b in signed],
+        "signatures": [b.signature for b in signed],
+        "redacted_data": [b.data for b in redacted],
+        "persisted_leaks": "think-tok-s13" in persisted,
+        "persisted_masked_thinking": f"The user wants {HIDDEN} repeated" in persisted,
+        "persisted_masked_reasoning": f"I will quote {HIDDEN}" in persisted,
+    }
+    c.close()
+    return case
+
+
 if MODE == "sync":
     sync_part()
+elif MODE == "thinking":
+    result["thinking"] = {
+        "run": thinking_case(False, "thinking-run"),
+        "arun": thinking_case(True, "thinking-arun"),
+    }
 else:
     result["async"] = {
         # the lookup first happens while masking an agent message

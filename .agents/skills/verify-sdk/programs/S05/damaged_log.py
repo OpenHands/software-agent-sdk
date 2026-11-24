@@ -29,11 +29,20 @@ else:
     target.unlink()
 try:
     conversation = open_conversation(record, llm=make_llm([]))
-    after = len(conversation.state.events)
+    events = list(conversation.state.events)
+    # The log reads a damaged file as an error-event stand-in in its place.
+    stand_ins = sum(
+        1
+        for e in events
+        if type(e).__name__ == "ConversationErrorEvent"
+        and getattr(e, "code", None) == "UnreadableEventFile"
+    )
+    after = len(events) - stand_ins
     conversation.close()
     error = None
 except Exception as exc:
     after = None
+    stand_ins = None
     error = f"{type(exc).__name__}: {exc}"[:300]
 
 emit(
@@ -43,6 +52,7 @@ emit(
         "damaged": target.name,
         "events_before": before,
         "events_after": after,
+        "stand_ins": stand_ins,
         "lost_beyond_damaged": None if after is None else before - 1 - after,
         "reopen_error": error,
     }

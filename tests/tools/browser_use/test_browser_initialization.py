@@ -1,5 +1,6 @@
 """Tests for browser tool executor initialization and timeout handling."""
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -10,6 +11,28 @@ from openhands.tools.utils.timeout import TimeoutError
 
 class TestBrowserInitialization:
     """Test browser tool executor initialization."""
+
+    def test_explicit_executable_path_skips_auto_detection(self, tmp_path: Path):
+        """Test that an explicit browser path has the highest priority."""
+        explicit_path = tmp_path / "custom-chrome.exe"
+        explicit_path.touch()
+        mock_server = MagicMock()
+
+        with (
+            patch.object(
+                BrowserToolExecutor,
+                "_ensure_chromium_available",
+                side_effect=AssertionError("auto detection should not run"),
+            ) as mock_detection,
+            patch(
+                "openhands.tools.browser_use.impl.CustomBrowserUseServer",
+                return_value=mock_server,
+            ),
+        ):
+            executor = BrowserToolExecutor(executable_path=str(explicit_path))
+
+        mock_detection.assert_not_called()
+        assert executor._config["executable_path"] == str(explicit_path)
 
     def test_initialization_timeout_handling(self):
         """Test that initialization timeout is handled properly."""

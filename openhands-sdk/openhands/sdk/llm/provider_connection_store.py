@@ -26,7 +26,7 @@ import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Annotated, Final
 
 from filelock import FileLock, Timeout
 from pydantic import (
@@ -34,12 +34,16 @@ from pydantic import (
     ConfigDict,
     Field,
     SecretStr,
-    field_serializer,
-    field_validator,
+    ValidationError,
 )
 
+from openhands.sdk.errors import Invalid, LockTimeout, Unprocessable
 from openhands.sdk.logger import get_logger
-from openhands.sdk.utils.pydantic_secrets import is_redacted_secret, serialize_secret
+from openhands.sdk.utils.pydantic_secrets import (
+    SecretField,
+    cipher_context,
+    client_context,
+)
 
 
 if TYPE_CHECKING:
@@ -65,16 +69,17 @@ class ProviderConnectionLimitExceeded(Exception):
     """Raised when creating a connection would exceed the configured limit."""
 
 
-class ProviderConnectionNotFound(ValueError):
+class ProviderConnectionNotFound(Unprocessable):
     """A referenced provider connection id does not exist.
 
     Raised by :meth:`LLMProfileStore.load` when a profile points at a connection
     that has been deleted and the profile has no usable inline key to fall back
     on.
 
-    Subclasses :class:`ValueError` so every ``load()`` caller degrades sensibly
-    even without a dedicated ``except``. The profile-activation and settings
-    endpoints (via ``store_errors``) map it to 422, and the OpenAI-compatible
+    An :class:`~openhands.sdk.errors.Unprocessable` (so also a
+    :class:`ValueError`) so every ``load()`` caller degrades sensibly even
+    without a dedicated ``except``. The agent server answers it with 422 from
+    the domain error table, and the OpenAI-compatible
     gateway's ``except ValueError`` turns it into a 400 instead of an opaque
     500. The agent-profile launch path already funnels load failures through
     its resolver's ``ValueError`` handling; that path can't actually hit a
@@ -89,46 +94,15 @@ class ProviderConnection(BaseModel):
     id: str = Field(..., min_length=1, max_length=128)
     display_name: str = Field(..., min_length=1, max_length=128)
     provider: str = Field(default="custom", min_length=1, max_length=128)
-    api_key: SecretStr | None = None
+    # A stored key that cannot be decrypted fails the load instead of reading
+    # as unset: a wrong-cipher read-modify-write would otherwise rewrite the
+    # collection with api_key=null and destroy the stored ciphertext.
+    api_key: Annotated[SecretStr | None, SecretField(undecryptable="raise")] = None
     base_url: str | None = Field(default=None, max_length=2048)
     created_at: int = Field(..., description="Unix epoch seconds.")
     updated_at: int = Field(..., description="Unix epoch seconds.")
 
     model_config = ConfigDict(populate_by_name=True)
-
-    @field_validator("api_key", mode="before")
-    @classmethod
-    def _validate_api_key(cls, v: str | SecretStr | None, info) -> SecretStr | None:
-        # Provider connections use a strict decryption path: a Fernet-encrypted key
-        # that cannot be decrypted raises instead of silently becoming None.  A
-        # wrong-cipher read→modify→write would otherwise rewrite the collection
-        # with api_key=null, permanently destroying the stored ciphertext.
-        from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX
-
-        if v is None:
-            return None
-        secret_value = v.get_secret_value() if isinstance(v, SecretStr) else v
-        if (
-            not secret_value
-            or not secret_value.strip()
-            or is_redacted_secret(secret_value)
-        ):
-            return None
-        cipher = (info.context or {}).get("cipher")
-        if cipher is not None and secret_value.startswith(FERNET_TOKEN_PREFIX):
-            decrypted = cipher.decrypt(secret_value)
-            if decrypted is None:
-                raise ValueError(
-                    "api_key is encrypted but cannot be decrypted with the current "
-                    "cipher. Verify that OH_SECRET_KEY matches the key used when "
-                    "this connection was saved."
-                )
-            return decrypted
-        return v if isinstance(v, SecretStr) else SecretStr(secret_value)
-
-    @field_serializer("api_key", when_used="always")
-    def _serialize_api_key(self, v: SecretStr | None, info):
-        return serialize_secret(v, info)
 
     def api_key_value(self) -> str | None:
         """Return the plaintext key, or ``None`` when unset/empty."""
@@ -171,8 +145,12 @@ class ProviderConnectionStore:
             logger.error(
                 f"[Provider Connections] Failed to acquire lock within {timeout}s"
             )
-            raise TimeoutError(
-                f"Provider connection store lock acquisition timed out after {timeout}s"
+            raise LockTimeout(
+                "Profile store is busy. Please retry.",
+                message=(
+                    "Provider connection store lock acquisition timed out after "
+                    f"{timeout}s"
+                ),
             )
 
     def _read(self, *, cipher: Cipher | None) -> PersistedProviderConnections:
@@ -187,30 +165,28 @@ class ProviderConnectionStore:
         try:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as e:
-            raise ValueError(f"Provider connections file is unreadable: {e}") from e
+            raise Invalid(f"Provider connections file is unreadable: {e}") from e
         if not isinstance(raw, dict):
-            raise ValueError("Provider connections file must contain a JSON object")
+            raise Invalid("Provider connections file must contain a JSON object")
         version = raw.get("schema_version", PROVIDER_CONNECTIONS_SCHEMA_VERSION)
         if not isinstance(version, int):
-            raise ValueError("schema_version must be an integer")
+            raise Invalid("schema_version must be an integer")
         if version > PROVIDER_CONNECTIONS_SCHEMA_VERSION:
-            raise ValueError(
+            raise Invalid(
                 f"schema_version {version} is newer than supported "
                 f"{PROVIDER_CONNECTIONS_SCHEMA_VERSION}"
             )
         raw["schema_version"] = PROVIDER_CONNECTIONS_SCHEMA_VERSION
-        context = {"cipher": cipher} if cipher else None
-        return PersistedProviderConnections.model_validate(raw, context=context)
+        context = cipher_context(cipher)
+        try:
+            return PersistedProviderConnections.model_validate(raw, context=context)
+        except ValidationError as e:
+            raise Invalid(str(e)) from e
 
     def _write(
         self, persisted: PersistedProviderConnections, *, cipher: Cipher | None
     ) -> None:
-        context: dict[str, Any] = {}
-        if cipher is not None:
-            context["cipher"] = cipher
-            context["expose_secrets"] = "encrypted"
-        else:
-            context["expose_secrets"] = True
+        context = cipher_context(cipher) if cipher else client_context("plaintext")
         data = persisted.model_dump(mode="json", context=context)
         payload = json.dumps(data, indent=2)
         with tempfile.NamedTemporaryFile(
@@ -241,13 +217,11 @@ class ProviderConnectionStore:
         self, connection: ProviderConnection, *, cipher: Cipher | None = None
     ) -> ProviderConnection:
         if not CONNECTION_ID_REGEX.match(connection.id):
-            raise ValueError(f"Invalid provider connection id: {connection.id!r}")
+            raise Invalid(f"Invalid provider connection id: {connection.id!r}")
         with self._acquire_lock():
             persisted = self._read(cipher=cipher)
             if any(c.id == connection.id for c in persisted.connections):
-                raise ValueError(
-                    f"Provider connection {connection.id!r} already exists"
-                )
+                raise Invalid(f"Provider connection {connection.id!r} already exists")
             if len(persisted.connections) >= MAX_PROVIDER_CONNECTIONS:
                 raise ProviderConnectionLimitExceeded(
                     f"Provider connection limit reached ({MAX_PROVIDER_CONNECTIONS})."

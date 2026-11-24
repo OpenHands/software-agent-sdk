@@ -56,9 +56,11 @@ conversation = Conversation(
     workspace=str(paths["workspace"]),
     persistence_dir=str(BASE),
     callbacks=[
-        lambda e: lookups_at_observation.append(len(lookups))
-        if isinstance(e, ObservationEvent)
-        else None
+        lambda e: (
+            lookups_at_observation.append(len(lookups))
+            if isinstance(e, ObservationEvent)
+            else None
+        )
     ],
     visualizer=None,
 )

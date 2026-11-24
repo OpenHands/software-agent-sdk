@@ -87,6 +87,24 @@ export interface Success {
   message?: string;
 }
 
+export interface ModelRouterSelection {
+  mode: 'auto' | 'manual';
+  manual_route_name?: string | null;
+}
+
+export interface ModelRouteInfo {
+  name: string;
+  model?: string | null;
+  label?: string | null;
+}
+
+export interface ModelRouterStatus {
+  enabled: boolean;
+  selection?: ModelRouterSelection | null;
+  last_route_name?: string | null;
+  routes: ModelRouteInfo[];
+}
+
 export interface EventPage {
   items: Event[];
   next_page_id?: string;

@@ -73,6 +73,8 @@ class TomConsultExecutor(
 
             from tom_swe.tom_agent import create_tom_agent
 
+            from openhands.tools.tom_consult.llm_client import TomLLMClient
+
             self._tom_agent = create_tom_agent(
                 file_store=cast(Any, self.file_store),
                 enable_rag=self.enable_rag,
@@ -80,6 +82,9 @@ class TomConsultExecutor(
                 api_key=self.api_key,
                 api_base=self.api_base,
             )
+            client = TomLLMClient(self._tom_agent.llm_client.config)
+            self._tom_agent.llm_client = client
+            self._tom_agent.tom_analyzer.llm_client = client
         logger.info("Tom agent initialized successfully")
         return self._tom_agent
 

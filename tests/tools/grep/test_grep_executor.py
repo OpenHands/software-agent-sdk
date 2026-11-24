@@ -103,6 +103,28 @@ def test_grep_executor_include_filter():
         assert observation.matches[0].endswith(".py")
 
 
+@pytest.mark.parametrize("backend", ["ripgrep", "grep", "python"])
+def test_grep_executor_brace_include_filter(monkeypatch, tmp_path, backend):
+    available = {
+        "ripgrep": _check_ripgrep_available(),
+        "grep": _check_grep_available(),
+        "python": True,
+    }
+    if not available[backend]:
+        pytest.skip(f"{backend} backend not available")
+    monkeypatch.setattr(
+        grep_impl, "_check_ripgrep_available", lambda: backend == "ripgrep"
+    )
+    monkeypatch.setattr(grep_impl, "_check_grep_available", lambda: backend == "grep")
+    for name in ("a.ts", "b.tsx", "c.py"):
+        (tmp_path / name).write_text("needle\n")
+
+    executor = GrepExecutor(working_dir=str(tmp_path))
+    observation = executor(GrepAction(pattern="needle", include="*.{ts,tsx}"))
+
+    assert {Path(match).name for match in observation.matches} == {"a.ts", "b.tsx"}
+
+
 def test_grep_executor_custom_path():
     """Test search in custom directory."""
     with tempfile.TemporaryDirectory() as temp_dir:

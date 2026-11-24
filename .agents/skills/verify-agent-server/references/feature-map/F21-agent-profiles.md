@@ -60,6 +60,7 @@ Routes: `GET /api/agent-profiles`, `GET /api/agent-profiles/{name}`,
 - `F21.dangling-llm-report`: how materialize reports a dangling LLM reference must match what the server's seed code documents: the documented `dangling_llm_profile_ref` field (the one the launch's 422 carries) is in the materialize body, or the documentation stops promising it.
 - `F21.ts-payload-types`: the TypeScript client's exported `AgentProfileSummary`, `AgentProfileDiagnostics`, `OpenHandsAgentProfile` and `ACPAgentProfile` types accept the payloads the server sends, as its generated contract does: every field the server sends is declared and every required field is sent.
 - `F21.json-suffix-identity`: saving a name that ends in `.json` twice must keep one `id` and bump `revision`, like any other name, and deleting it while active must move the pointer off it (to `default`) (or the name must be refused with 422 and nothing stored).
+- `F21.sandbox-metadata`: both profile kinds take an optional `sandbox: {"spec_id": "..."}` (a sandbox spec the provisioning host offers): it is stored and served back by GET, absent means `null`, an empty or missing `spec_id`, an extra key or a non-object is 422 and saves nothing; it never enters the resolved launch (materialize gives the same `resolved_settings` as the same profile without it), and a conversation still starts from such a profile on a server that does not provision sandboxes.
 
 ## How to get to it (agent POV)
 
@@ -74,7 +75,9 @@ Routes: `GET /api/agent-profiles`, `GET /api/agent-profiles/{name}`,
   `POST /api/agent-profiles/{name}/rename` (`{"new_name": ...}`),
   `POST /api/agent-profiles/{profile_id}/activate` (the uuid, not the name),
   `POST /api/agent-profiles/{name}/materialize` (no body or `{}` for the
-  stored profile, `{"profile": {...}}` for a draft). Every recipe below
+  stored profile, `{"profile": {...}}` for a draft). A profile body may
+  carry `sandbox: {"spec_id": ...}` (`ProfileSandboxSettings`, the
+  same name in the TypeScript client). Every recipe below
   drives these routes directly.
 - REST (other families, used here as second views or setup):
   `GET /api/settings` and `PATCH /api/settings` (`active_agent_profile_id`,
@@ -132,9 +135,9 @@ Preconditions:
   restarts the run twice (with `OH_ACP_SKILL_SOURCING=openhands_managed`,
   then with `--reset-config`). `F21.store-busy`, `F21.launch-store-busy`
   and `F21.busy-blocks-server` hold the store lock for about 30 seconds
-  each. The three known-bug bullets come last, then
-  `F21.json-suffix-identity`, which activates its own profile and ends by
-  deleting it, so the run is left with `default` active.
+  each. `F21.busy-blocks-server`, `F21.dangling-llm-report` and
+  `F21.ts-payload-types` come last, then `F21.json-suffix-identity`,
+  which activates its own profile and ends by deleting it, so the run is left with `default` active.
 
 ```sh
 control-agent-server llm preset deepseek
@@ -238,7 +241,7 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
     --check name eq qa-f21-coder --check message eq "Agent profile 'qa-f21-coder' saved" --save F21.save-create/save
   CODER=$(control-agent-server api GET /api/agent-profiles/qa-f21-coder --expect 200 \
     --check name eq qa-f21-coder --check profile.name eq qa-f21-coder --check profile.id ne 11111111-1111-4111-8111-111111111111 \
-    --check profile.revision eq 0 --check profile.schema_version eq 3 --check profile.agent_kind eq openhands \
+    --check profile.revision eq 0 --check profile.schema_version eq 4 --check profile.agent_kind eq openhands \
     --check profile.llm_profile_ref eq deepseek-pro --check profile.tools len-eq 0 --check profile.mcp_server_refs len-eq 0 \
     --check profile.system_message_suffix eq 'QA F21 suffix' --check profile.agent eq CodeActAgent \
     --save F21.save-create/get --field profile.id)
@@ -700,6 +703,60 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
   the text), and the stored profile is unchanged. An unknown key and a
   32769-character value (the limit is 32768) are 422, and the conversation
   count does not move.
+- **Sandbox metadata (`F21.sandbox-metadata`).** Self-contained: an LLM
+  profile of its own (no key, never called), an OpenHands and an ACP
+  profile with a sandbox spec, a twin without one, the refused shapes, two
+  previews and a conversation start; everything it creates is deleted at
+  the end.
+  ```sh
+  SBX_SPEC=registry.example/agent-server:qa-f21
+  control-agent-server llm set --profile qa-f21-sbx-llm --model openai/qa-f21-sbx --base-url http://127.0.0.1:9/v1 \
+    --no-api-key --no-validate --no-activate --num-retries 0
+  control-agent-server api POST /api/agent-profiles/qa-f21-sbx --expect 201 \
+    --json "{\"llm_profile_ref\": \"qa-f21-sbx-llm\", \"tools\": [], \"sandbox\": {\"spec_id\": \"$SBX_SPEC\"}}"
+  SBX=$(control-agent-server api GET /api/agent-profiles/qa-f21-sbx --check profile.sandbox.spec_id eq "$SBX_SPEC" \
+    --save F21.sandbox-metadata/get --field profile.id)
+  control-agent-server state cat home/.openhands/agent-profiles/qa-f21-sbx.json --check sandbox.spec_id eq "$SBX_SPEC"
+  control-agent-server api POST /api/agent-profiles/qa-f21-sbx-acp --expect 201 \
+    --json "{\"agent_kind\": \"acp\", \"acp_server\": \"codex\", \"sandbox\": {\"spec_id\": \"$SBX_SPEC\"}}"
+  control-agent-server api GET /api/agent-profiles/qa-f21-sbx-acp --check profile.agent_kind eq acp \
+    --check profile.sandbox.spec_id eq "$SBX_SPEC" --save F21.sandbox-metadata/acp
+  control-agent-server api POST /api/agent-profiles/qa-f21-nosbx --expect 201 --json '{"llm_profile_ref": "qa-f21-sbx-llm", "tools": []}'
+  control-agent-server api GET /api/agent-profiles/qa-f21-nosbx --check profile.sandbox eq null
+  control-agent-server api POST /api/agent-profiles/qa-f21-sbx-bad --json '{"llm_profile_ref": "qa-f21-sbx-llm", "sandbox": {"spec_id": ""}}' \
+    --expect 422 --check detail.0.type eq string_too_short --check detail.0.loc contains spec_id --save F21.sandbox-metadata/empty-spec
+  control-agent-server api POST /api/agent-profiles/qa-f21-sbx-bad --json '{"llm_profile_ref": "qa-f21-sbx-llm", "sandbox": {}}' \
+    --expect 422 --check detail.0.type eq missing --check detail.0.loc contains spec_id
+  control-agent-server api POST /api/agent-profiles/qa-f21-sbx-bad --json '{"llm_profile_ref": "qa-f21-sbx-llm", "sandbox": {"spec_id": "img", "size": "large"}}' \
+    --expect 422 --check detail.0.type eq extra_forbidden --check detail.0.loc contains size
+  control-agent-server api POST /api/agent-profiles/qa-f21-sbx-bad --json '{"llm_profile_ref": "qa-f21-sbx-llm", "sandbox": "img"}' \
+    --expect 422 --check detail.0.type eq model_type --check detail.0.loc contains sandbox
+  control-agent-server api GET /api/agent-profiles/qa-f21-sbx-bad --expect 404
+  control-agent-server state ls 'home/.openhands/agent-profiles/qa-f21-sbx-bad*' --expect-count 0
+  SBX_DIR="$AGENT_SERVER_VERIFY_RUN/fixtures/qa-f21-sbx"
+  mkdir -p "$SBX_DIR"
+  control-agent-server api POST /api/agent-profiles/qa-f21-sbx/materialize --expect 200 --quiet --check valid eq true \
+    --check resolved_settings.llm.model eq openai/qa-f21-sbx --raw-out "$SBX_DIR/with.json" --save F21.sandbox-metadata/materialize
+  control-agent-server api POST /api/agent-profiles/qa-f21-nosbx/materialize --expect 200 --quiet --check valid eq true \
+    --raw-out "$SBX_DIR/without.json"
+  jq -e -s --arg spec "$SBX_SPEC" '[.[] | .resolved_settings | del(.agent_context.current_datetime)] | (.[0] == .[1]) and ((.[0] | tostring | contains($spec)) | not)' \
+    "$SBX_DIR/with.json" "$SBX_DIR/without.json"
+  SBX_CONV=$(control-agent-server api POST /api/conversations \
+    --json "{\"workspace\": {\"working_dir\": \"$SBX_DIR\"}, \"agent_profile_id\": \"$SBX\", \"autotitle\": false}" \
+    --expect 201 --check launched_agent_profile.agent_profile_id eq "$SBX" --check agent.llm.model eq openai/qa-f21-sbx \
+    --check execution_status eq idle --save F21.sandbox-metadata/conversation --field id)
+  control-agent-server api DELETE "/api/conversations/$SBX_CONV" --expect 200
+  control-agent-server api DELETE /api/agent-profiles/qa-f21-sbx --expect 200
+  control-agent-server api DELETE /api/agent-profiles/qa-f21-sbx-acp --expect 200
+  control-agent-server api DELETE /api/agent-profiles/qa-f21-nosbx --expect 200
+  control-agent-server api DELETE /api/profiles/qa-f21-sbx-llm --expect 200
+  ```
+  GET and the stored file carry the spec id on both kinds and `null` on
+  the twin; the four bad shapes are 422 at `sandbox` or `spec_id` and leave
+  no file. The two previews are valid and their `resolved_settings` are
+  identical (the preview's clock aside) and never mention the spec; the
+  conversation starts `idle` from the profile on this local server, which
+  provisions no sandbox.
 - **TypeScript client (`F21.ts-client`).** Every `AgentProfilesClient`
   method from the built client (built here when missing), plus the same
   client reached through `AgentServerClient.agentProfiles`.
@@ -927,7 +984,7 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
   (`valid` false, `llm_profile_resolved` false, an `errors` entry) and does
   not name `dangling_llm_profile_ref`, which only the launch's 422 carries
   (#5871).
-- **TypeScript payload types (`F21.ts-payload-types`), known bug.** The
+- **TypeScript payload types (`F21.ts-payload-types`).** The
   client's hand-written types in `clients/typescript/src/models/agent-profile.ts`
   against what the server sends: a list summary, an OpenHands and an ACP
   profile read back with GET, and a materialize report. Each payload's keys
@@ -950,11 +1007,14 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
   SUMMARY=$(jq -c '.profiles[0] | with_entries(.value = true)' "$D/list.json")
   OPENHANDS=$(jq -c '.profile | with_entries(.value = true)' "$D/openhands.json")
   ACPKEYS=$(jq -c '.profile | with_entries(.value = true)' "$D/acp.json")
+  test "$(jq -c '[.profile | has("sandbox")]' "$D/openhands.json" "$D/acp.json" | paste -sd,)" = '[true],[true]'
+  CONTRACT_OPENHANDS=$(jq -c '.profile | del(.sandbox) | with_entries(.value = true)' "$D/openhands.json")
+  CONTRACT_ACP=$(jq -c '.profile | del(.sandbox) | with_entries(.value = true)' "$D/acp.json")
   DIAG=$(jq -c 'with_entries(.value = true)' "$D/diagnostics.json")
   DIST="$PWD/clients/typescript/dist"
   printf '%s\n' "import type { AgentProfileInfo, OpenHandsAgentProfile, AcpAgentProfile, AgentProfileDiagnostics } from '$DIST/generated/agent-server-schema.js';" \
     "import type { Shape } from './shape.js';" "export const summary: Shape<AgentProfileInfo> = $SUMMARY;" \
-    "export const openhands: Shape<OpenHandsAgentProfile> = $OPENHANDS;" "export const acp: Shape<AcpAgentProfile> = $ACPKEYS;" \
+    "export const openhands: Shape<OpenHandsAgentProfile> = $CONTRACT_OPENHANDS;" "export const acp: Shape<AcpAgentProfile> = $CONTRACT_ACP;" \
     "export const diagnostics: Shape<AgentProfileDiagnostics> = $DIAG;" > "$D/contract.ts"
   printf '%s\n' "import type { AgentProfileSummary, OpenHandsAgentProfile, ACPAgentProfile, AgentProfileDiagnostics } from '$DIST/index.js';" \
     "import type { Shape } from './shape.js';" "export const summary: Shape<AgentProfileSummary> = $SUMMARY;" \
@@ -962,7 +1022,7 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
     "export const diagnostics: Shape<AgentProfileDiagnostics> = $DIAG;" > "$D/exported.ts"
   TSC="clients/typescript/node_modules/.bin/tsc --noEmit --strict --skipLibCheck --target es2020 --module esnext --moduleResolution bundler"
   $TSC "$D/contract.ts"
-  $TSC "$D/exported.ts" | control-agent-server assert --check . not-contains 'error TS'  # bug: value contains TS2353 && value contains public_skills && value contains 'Shape<OpenHandsAgentProfile>' && value contains 'Shape<AgentProfileDiagnostics>'
+  $TSC "$D/exported.ts" | control-agent-server assert --check . not-contains 'error TS'
   ```
   Expected: both files type-check, so a TypeScript consumer (Agent
   Canvas's profile editor) can read every field the server sends under its
@@ -972,13 +1032,18 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
   `disabled_skills`, `meta_profile_ref` and
   `enable_classify_and_switch_llm_tool` (and no `skills`, which a save
   refuses with 422 `extra_forbidden`), and `ACPAgentProfile` declares
-  `acp_startup_timeout`. The client's unit test
+  `acp_startup_timeout`. Both profile kinds also carry `sandbox` (`null`
+  when unset, `F21.sandbox-metadata`), which the exported types declare;
+  the generated contract is built from the published server schema and may
+  not list it yet, so `contract.ts` checks every other key. The client's unit test
   `agent-server-contract-types.test.ts` pins the same key sets against the
-  generated contract. A later `public_skills` field is now present in live
-  OpenHands profiles and materialize reports and in the generated contract,
-  but absent from both exported types. The generated positive control still
-  passes; the exported types fail with TS2353 naming `public_skills`
-  ([OpenHands/software-agent-sdk#6183](https://github.com/OpenHands/software-agent-sdk/issues/6183)).
+  generated contract. `public_skills` is declared on `OpenHandsAgentProfile` and `ACPAgentProfile`,
+  and `acp_effort` (which the server's ACP profile carries) on both the
+  generated `AcpAgentProfile` and the exported `ACPAgentProfile`. The
+  generated contract is regenerated only from the pinned release image, so
+  a field the server adds after the last release fails `contract.ts` with
+  `TS2353 ... does not exist` until the next release regenerates it; the
+  client's key-parity test requires the exported type to change with it.
 - **`.json` names keep their identity (`F21.json-suffix-identity`).**
   The store strips a trailing `.json` from the file name and from the
   profile's `name`, so `x.json` and `x` are one profile.
@@ -1046,10 +1111,10 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
 - A profile file that is valid JSON but not a valid profile is listed
   (summaries read raw JSON) yet is 400 on GET. Through other families'
   routes the same profile is a deliberate 500 `Could not load agent
-  profile` on `POST /api/conversations`, and an unhandled 500 on
-  `GET /api/settings/secrets?agent_profile_id=` (F18), which also answers
-  500 instead of 503 while the store is busy: it loads the profile outside
-  the store error mapping.
+  profile` on `POST /api/conversations`, and the same 400 `Failed to load
+  profile` on `GET /api/settings/secrets?agent_profile_id=`, which also
+  answers 503 `Profile store is busy` while the store is busy
+  (`F18.secret-scope-profile-errors`).
 - 5xx responses (the busy 503) carry `detail: "Internal Server Error"` and
   the real message in `exception`; 4xx carry `detail` directly.
 - A launched run uses `acp_skill_sourcing` `native` unless told otherwise,
