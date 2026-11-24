@@ -306,6 +306,7 @@ class EventService:
     _gateway_run_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
     _active_gateway_runs: int = field(default=0, init=False)
     _callback_wrapper: AsyncCallbackWrapper | None = field(default=None, init=False)
+    _error_events_emitted: int = field(default=0, init=False)
     _lease: ConversationLease | None = field(default=None, init=False)
     _lease_generation: int | None = field(default=None, init=False)
     _lease_task: asyncio.Task | None = field(default=None, init=False)
@@ -884,6 +885,10 @@ class EventService:
                 state.transition(
                     ConversationExecutionStatus.ERROR, "run failed outside the run loop"
                 )
+
+    def _count_error_event(self, event: Event) -> None:
+        if isinstance(event, ConversationErrorEvent):
+            self._error_events_emitted += 1
 
     def _publish_error_event_sync(self, exc: BaseException) -> None:
         """Emit a ConversationErrorEvent so the UI sees the failure detail.
@@ -1495,7 +1500,7 @@ class EventService:
             plugins=self.stored.plugins,
             persistence_dir=str(self.conversations_dir),
             conversation_id=self.stored.id,
-            callbacks=[self._callback_wrapper],
+            callbacks=[self._count_error_event, self._callback_wrapper],
             token_callbacks=([_token_streaming_callback] if streaming_enabled else []),
             stream_callbacks=[_publish_stream_progress],
             max_iteration_per_run=self.stored.max_iterations,
@@ -1773,6 +1778,7 @@ class EventService:
 
             async def _run_and_publish():
                 nonlocal worker
+                error_events_before = self._error_events_emitted
                 try:
                     # Prefer the native async path when available so the event
                     # loop is free during LLM I/O.  Fall back to thread-pool
@@ -1822,10 +1828,14 @@ class EventService:
                     # _publish_state_update() surfaces the failure instead of a
                     # misleading non-error state.
                     #
-                    # Also surface the detail to the UI (issue #16686). A
-                    # ConversationRunError means run()/arun() already emitted its
-                    # own event, so skip it there to avoid duplicating the error.
-                    if not isinstance(exc, ConversationRunError):
+                    # Also surface the detail to the UI (issue #16686), unless
+                    # the run already emitted its own ConversationErrorEvent:
+                    # run()/arun() do so before raising ConversationRunError, and
+                    # ACPAgent.init_state does so before re-raising.
+                    if (
+                        not isinstance(exc, ConversationRunError)
+                        and self._error_events_emitted == error_events_before
+                    ):
                         await self.run_state_op(self._publish_error_event_sync, exc)
                     await self.run_state_op(self._mark_error_status_sync)
                 finally:
