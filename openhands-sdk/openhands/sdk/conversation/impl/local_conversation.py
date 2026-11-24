@@ -279,6 +279,7 @@ class LocalConversation(BaseConversation):
     _mcp_startup_budget: float | None
     _late_mcp_lock: threading.Lock
     _late_mcp_ready: list[threading.Event]
+    _failed_mcp_servers: set[str]
     _mcp_config_from_parent: bool
     _llm_call_context: LLMCallContext
 
@@ -402,6 +403,7 @@ class LocalConversation(BaseConversation):
         self._cleanup_initiated = False
         self._late_mcp_lock = threading.Lock()
         self._late_mcp_ready = []
+        self._failed_mcp_servers = set()
         self._cleanup_complete = False
         self._arun_task = None
         self._cancel_token = None
@@ -1724,6 +1726,7 @@ class LocalConversation(BaseConversation):
             try:
                 tools.extend(future.result())
             except Exception as exc:
+                self._failed_mcp_servers.add(name)
                 logger.warning(
                     "MCP server startup failed for %s; continuing without its "
                     "tools: %s",
@@ -1771,6 +1774,7 @@ class LocalConversation(BaseConversation):
             try:
                 tools = started.result()
             except Exception as exc:
+                self._failed_mcp_servers.add(name)
                 logger.warning(
                     "MCP server startup failed for %s; continuing without its "
                     "tools: %s",
@@ -1830,8 +1834,10 @@ class LocalConversation(BaseConversation):
         """Add modern MCP servers to this conversation without legacy session reuse.
 
         Raises:
-            ValueError: The servers cannot be added (SSE transport, a name the
-                agent already has, or an agent without OpenHands MCP support).
+            ValueError: The servers cannot be added (SSE transport, the name of
+                a server that is running or starting, or an agent without
+                OpenHands MCP support). A configured server whose startup failed
+                can be added again; that retries it with the given config.
             MCPServerStartError: A server failed to start; nothing is added and
                 the servers already started are closed. ``server_name`` names
                 it and the original error is the ``__cause__``.
@@ -1848,7 +1854,7 @@ class LocalConversation(BaseConversation):
                 )
 
         with self._state:
-            duplicates = mcp_config.keys() & self.agent.mcp_config.keys()
+            duplicates = self._running_mcp_servers() & mcp_config.keys()
             if duplicates:
                 raise ValueError(f"MCP server already exists: {sorted(duplicates)}")
             agent_ready = self._agent_ready
@@ -1876,7 +1882,7 @@ class LocalConversation(BaseConversation):
                     ) from exc
 
         with self._state:
-            duplicates = mcp_config.keys() & self.agent.mcp_config.keys()
+            duplicates = self._running_mcp_servers() & mcp_config.keys()
             if duplicates:
                 self._close_runtime_tools(runtime_tools)
                 raise ValueError(f"MCP server already exists: {sorted(duplicates)}")
@@ -1889,11 +1895,21 @@ class LocalConversation(BaseConversation):
                 self._close_runtime_tools(runtime_tools)
                 raise
             self.agent = self._state.agent = updated_agent
+            self._failed_mcp_servers.difference_update(mcp_config)
             if started:
                 self._state.runtime_mcp_servers = [
                     *self._state.runtime_mcp_servers,
-                    *mcp_config,
+                    *(
+                        n
+                        for n in mcp_config
+                        if n not in self._state.runtime_mcp_servers
+                    ),
                 ]
+
+    def _running_mcp_servers(self) -> set[str]:
+        """Configured servers, minus those whose startup failed: adding one of
+        those again retries it with the given config."""
+        return self.agent.mcp_config.keys() - self._failed_mcp_servers
 
     def _mcp_start_failure_reason(self, exc: Exception) -> str:
         """One line saying why a server did not start, without its secrets."""
