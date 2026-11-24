@@ -783,6 +783,7 @@ KID=$(control-agent-server api POST /api/conversations \
 
 ## Gotchas
 
+- Rotating a secret with `POST /api/conversations/{id}/secrets` (`F08.secrets-override`) does not keep both values masked: after the update, output that prints the new value shows it in cleartext, and once the new value has been exported the old value is no longer masked either; both reach the persisted events. `F08.secrets-override` asserts only that the next command gets the new value. The SDK twin is `S13.secret-registry` (its rotated-secret bullet carries the same known failure) ([#7002](https://github.com/OpenHands/software-agent-sdk/issues/7002), open; fix proposed in [#7003](https://github.com/OpenHands/software-agent-sdk/pull/7003)).
 - `respond_to_confirmation` with `accept: true` is exactly a run request: it
   needs a run slot (429 when full), it is a no-op on a running conversation,
   and with nothing pending it simply resumes the agent. `accept: false` with

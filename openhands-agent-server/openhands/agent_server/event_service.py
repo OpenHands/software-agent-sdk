@@ -3,14 +3,14 @@ import contextvars
 import threading
 import time
 import traceback
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext, suppress
 from dataclasses import dataclass, field
 from datetime import datetime
 from functools import partial
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, TypeVar, cast
 from uuid import UUID, uuid4
 
 from pydantic import ValidationError
@@ -92,7 +92,11 @@ from openhands.sdk.event import (
     ReactionEvent,
     StreamingDeltaEvent,
 )
-from openhands.sdk.event.ask_user import AskUserAnswerEvent, find_pending_ask_back
+from openhands.sdk.event.ask_user import (
+    AskUserAnswerEvent,
+    PendingAsk,
+    find_pending_ask_back,
+)
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.conversation_state import (
     FULL_STATE_KEY,
@@ -125,6 +129,8 @@ MCP_STARTUP_BUDGET_SECONDS = 1.0
 
 
 logger = get_logger(__name__)
+
+_T = TypeVar("_T")
 _GIT_INIT_LOCK = threading.Lock()
 
 
@@ -738,6 +744,32 @@ class EventService:
 
         return EventPage(items=items, next_page_id=next_page_id)
 
+    def _scan_sync(
+        self, take: Callable[[Iterator[Event]], _T], newest_first: bool
+    ) -> _T:
+        events = self._events_for_read()
+        total = len(events)
+        indices = range(total - 1, -1, -1) if newest_first else range(total)
+        return take(
+            event
+            for i in indices
+            if (event := self._get_searchable_event(events, i)) is not None
+        )
+
+    async def scan_events(
+        self,
+        take: Callable[[Iterator[Event]], _T],
+        *,
+        newest_first: bool = True,
+    ) -> _T:
+        """``take`` applied to the event log, read lazily in log order.
+
+        Unlike :meth:`search_events`, whose page keeps reading until it has
+        ``limit + 1`` matches, the read ends when ``take`` stops iterating, so
+        a caller that wants the latest match reads only back to it.
+        """
+        return await asyncio.to_thread(self._scan_sync, take, newest_first)
+
     async def search_events(
         self,
         page_id: str | None = None,
@@ -950,17 +982,21 @@ class EventService:
         *,
         run_slot: RunSlot | None = None,
         sender: str | None = None,
+        keep_goal_loop: bool = False,
     ):
         """Append a message and, with ``run``, start a run to handle it.
 
         ``sender`` is recorded on the saved event; see
         :data:`openhands.sdk.conversation.types.CONVERSATION_SENDER_PREFIX`.
+
+        ``keep_goal_loop`` leaves an active ``/goal`` loop running, for
+        messages the server delivers rather than the user writes.
         """
         if not self._conversation:
             raise ServiceInactive()
         # A normal user message supersedes any active /goal loop in this
         # conversation. The goal loop's own messages pass _from_goal_loop=True.
-        if not _from_goal_loop:
+        if not (_from_goal_loop or keep_goal_loop):
             await self.stop_goal_loop()
         explicit_interrupt_generation = self._explicit_interrupt_generation
         if _from_goal_loop and sender is None:
@@ -1037,6 +1073,23 @@ class EventService:
                         self._rerun_requested = True
                 except ValueError:
                     pass
+
+    async def run_saved_message_when_free(self) -> None:
+        """Run for a message already saved, waiting for a free run slot.
+
+        For server deliveries that :meth:`send_message` saved but could not run
+        because every slot was taken (``ConversationRunLimitExceeded``): the
+        sender was told nothing and nobody would retry, so this waits for
+        capacity instead. A run that started meanwhile takes the message or is
+        re-armed for it.
+        """
+        if not self._conversation:
+            raise ServiceInactive()
+        with await RunSlot.acquire(self._run_semaphore, wait=True) as run_slot:
+            try:
+                await self.run(run_slot=run_slot)
+            except ConversationAlreadyRunning:
+                self._rerun_requested = True
 
     def _mark_running_acp_prompt_superseded_sync(self) -> tuple[bool, bool]:
         """Mark the currently running ACP prompt superseded if needed.
@@ -2230,8 +2283,15 @@ class EventService:
         ask_id: str,
         option_index: int | None = None,
         text: str | None = None,
+        *,
+        sender: str | None = None,
     ) -> AskUserAnswerEvent:
         """Record the user's answer to a pending ``ask_user`` question and run.
+
+        ``sender`` is recorded on the message that carries the answer: a
+        project's coordinator, when the user answered there, on its card
+        (see :func:`~openhands.agent_server.project_wake.pass_on_answer`).
+        The answer is the user's either way.
 
         Raises:
             ValueError: The question is not pending, or the answer is invalid.
@@ -2241,8 +2301,33 @@ class EventService:
         answer, message = await self.run_state_op(
             self._conversation.answer_ask, ask_id, option_index, text
         )
-        await self.send_message(message, run=True)
+        await self.send_message(
+            message,
+            run=True,
+            sender=sender,
+            keep_goal_loop=sender is not None,
+        )
         return answer
+
+    def pending_ask(self, before: str | None = None) -> PendingAsk | None:
+        """The agent's unanswered ``ask_user`` question, from the event log.
+
+        With ``before``, the question that was pending just before that event
+        (the user's message or answer that closed it). Reads the log back
+        from the end only as far as the question or the user's latest message,
+        without the state lock, as :meth:`_get_agent_final_response_sync` does.
+        """
+        if not self._conversation:
+            raise ServiceInactive()
+        state = self._conversation._state
+        if before is None:
+            return find_pending_ask_back(state.walk_back())
+        walk = state.walk_back(until=before)
+        if not any(event.id == before for event in walk):
+            return None  # not on the active branch
+        events = state.events.walk_back(before)
+        next(events)  # ``before`` itself
+        return find_pending_ask_back(events)
 
     async def reject_pending_actions(self, reason: str):
         """Reject all pending actions and publish updated state."""
@@ -2637,6 +2722,13 @@ class EventService:
     def idle_seconds(self) -> float:
         """Seconds since the last recorded activity."""
         return time.monotonic() - self._last_active_monotonic
+
+    async def subscribe_internal(self, subscriber: Subscriber[Event]) -> UUID:
+        """:meth:`subscribe_to_events` for the server's own subscriber, which
+        does not keep the conversation from idle eviction."""
+        subscriber_id = await self.subscribe_to_events(subscriber)
+        self._internal_subscriber_ids.add(subscriber_id)
+        return subscriber_id
 
     def mark_subscription_baseline(self) -> None:
         """Snapshot the current (internal) subscribers; later ones are external."""

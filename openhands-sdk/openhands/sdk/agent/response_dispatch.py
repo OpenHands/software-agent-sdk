@@ -268,7 +268,7 @@ class ResponseDispatchMixin:
         *,
         mask_secrets: bool = True,
     ) -> None:
-        """Handle LLM response with text content — finishes conversation."""
+        """Emit text and finish unless the provider explicitly continues the turn."""
         self._emit_message_event(
             message,
             llm_response,
@@ -278,6 +278,8 @@ class ResponseDispatchMixin:
             mask_secrets=mask_secrets,
         )
         self._maybe_emit_vllm_tokens(llm_response, on_event)
+        if llm_response.continues_turn:
+            return
         logger.debug("LLM produced a message response - awaits user input")
         state.transition(
             ConversationExecutionStatus.FINISHED, "agent replied with a message"

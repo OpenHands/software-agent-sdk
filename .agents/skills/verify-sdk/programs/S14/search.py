@@ -41,6 +41,13 @@ search_steps = [
     ("grep_many", "grep", {"pattern": "needle", "path": "{ws}/many"}),
     ("grep_secret", "grep", {"pattern": SECRET}),
 ]
+# Patterns with a directory part, kept out of the rg-vs-Python comparison
+# below. The program runs in the workspace, so the second one searches a path
+# that is not the process's cwd, which ripgrep resolves against (#7052).
+dir_steps = [
+    ("glob_dir", "glob", {"pattern": "src/**/*.py"}),
+    ("glob_dir_in_path", "glob", {"pattern": "pkg/*.py", "path": "{ws}/src"}),
+]
 patch = f"*** Begin Patch\n*** Add File: added.txt\n+token {SECRET}\n*** End Patch"
 tools = [
     Tool(name=GlobTool.name),
@@ -50,7 +57,8 @@ tools = [
 
 
 def run(with_patch: bool) -> dict:
-    script = [{"tool": tool, "args": args} for _, tool, args in search_steps]
+    steps = search_steps + dir_steps
+    script = [{"tool": tool, "args": args} for _, tool, args in steps]
     if with_patch:
         script.append({"tool": "apply_patch", "args": {"patch": patch}})
     script.append({"finish": "done"})
@@ -62,7 +70,7 @@ def run(with_patch: bool) -> dict:
     ]
     conversation.close()
     out = {}
-    names = [n for n, _, _ in search_steps] + (["patch"] if with_patch else [])
+    names = [n for n, _, _ in steps] + (["patch"] if with_patch else [])
     for name, obs in zip(names, observations):
         found = getattr(obs, "files", None) or getattr(obs, "matches", None) or []
         out[name] = {
@@ -102,6 +110,7 @@ emit(
             with_rg[n]["truncated"] == without_rg[n]["truncated"]
             for n, _, _ in search_steps
         ),
+        "cwd_is_workspace": os.path.realpath(os.getcwd()) == os.path.realpath(ws),
         "newest_first": with_rg["glob_py"]["files"][:1] == ["src/pkg/new.py"],
         "added_file": (ws / "added.txt").read_text(),
         "secret_in_observations": secret_seen,

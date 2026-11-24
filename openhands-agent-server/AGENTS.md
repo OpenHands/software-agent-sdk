@@ -135,6 +135,10 @@ All REST contract breaks need a deprecation notice and a runway of
 **5 minor releases** before removing the old contract or making an
 incompatible replacement mandatory.
 
+Routes left out of the OpenAPI schema (`include_in_schema=False`, such as the
+experimental Projects routes) are not part of this surface: they are
+experimental and carry no runway.
+
 ### Deprecating an endpoint
 
 When deprecating a REST endpoint:

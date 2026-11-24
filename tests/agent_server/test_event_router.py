@@ -158,14 +158,21 @@ class TestSendMessageFromAnotherConversation:
 
     @staticmethod
     def _with_conversations(client, mock_event_service, conversations):
+        mock_event_service.stored = SimpleNamespace(tags={})
         client.app.dependency_overrides[get_event_service] = lambda: mock_event_service
 
         async def get_conversation(conversation_id):
             return conversations.get(conversation_id)
 
+        async def member_of(tags):
+            return None
+
         update_test_context(
             client.app,
-            conversation_service=SimpleNamespace(get_conversation=get_conversation),
+            conversation_service=SimpleNamespace(
+                get_conversation=get_conversation,
+                projects=SimpleNamespace(member_of=member_of),
+            ),
         )
 
     def test_records_the_sender_and_opens_with_its_header(
@@ -175,7 +182,7 @@ class TestSendMessageFromAnotherConversation:
         self._with_conversations(
             client,
             mock_event_service,
-            {sender_id: SimpleNamespace(title="Release [notes]")},
+            {sender_id: SimpleNamespace(title="Release [notes]", tags={})},
         )
 
         response = self._post(client, sample_conversation_id, sender_id, run=True)
@@ -211,7 +218,7 @@ class TestSendMessageFromAnotherConversation:
         self._with_conversations(
             client,
             mock_event_service,
-            {sample_conversation_id: SimpleNamespace(title="Me")},
+            {sample_conversation_id: SimpleNamespace(title="Me", tags={})},
         )
 
         response = self._post(client, sample_conversation_id, sample_conversation_id)

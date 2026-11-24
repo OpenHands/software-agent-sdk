@@ -189,3 +189,25 @@ def install_test_context(
     )
     install_server_context(app, context)
     return context
+
+
+@pytest.fixture(autouse=True)
+def _projects_feature_on(request, monkeypatch):
+    """Projects is an experimental feature, off by default, and the tests here
+    run the shipped default. A Projects test file marks itself ``projects_on``
+    (``pytestmark``) to run with it on; ``projects_off`` on one of its tests
+    keeps that test at the default."""
+    if not request.node.get_closest_marker(
+        "projects_on"
+    ) or request.node.get_closest_marker("projects_off"):
+        return
+    from openhands.agent_server import experimental_features
+
+    original = experimental_features.is_enabled
+
+    def projects_on_unless_stored(features, key: str) -> bool:
+        if key == experimental_features.PROJECTS.key and key not in features:
+            return True
+        return original(features, key)
+
+    monkeypatch.setattr(experimental_features, "is_enabled", projects_on_unless_stored)

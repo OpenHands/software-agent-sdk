@@ -104,7 +104,7 @@ Preconditions:
     --check ask_prompt_tokens_delta eq 100 \
     --check ask_cost_delta eq 0.05 --check ask_warnings len-eq 0 --check ask_seconds lt 1.5
   ```
-  Expected: the fork's cost (0.05) is billed, no warning, and `ask_agent` returns as soon as the fork answers. Before #6646, the client bridge routed every fork-session update to a branch that kept only message chunks, so the `usage_update` was dropped and each call waited out the 2 s usage timeout.
+  Expected: the fork's cost (0.05) is billed, no warning, and `ask_agent` returns as soon as the fork answers: the client bridge records the fork session's `usage_update` as well as its message chunks, so the call does not wait out the 2 s usage timeout.
 - **Resume a persisted session (`S21.session-resume`, `S21.model-selection`).** A conversation with `persistence_dir` runs a turn and closes. The program then reopens it by id with a new `ACPAgent` (a new subprocess). A third agent carries `acp_resume_session_id` with no saved state, and a fourth an id the server has forgotten.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
