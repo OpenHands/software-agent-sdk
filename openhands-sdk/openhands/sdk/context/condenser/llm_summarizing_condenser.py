@@ -349,6 +349,19 @@ class LLMSummarizingCondenser(RollingCondenser):
         # Find actual forgetting_end: smallest manipulation index >= naive_end
         forgetting_end = view.manipulation_indices.find_next(naive_end)
 
+        # An atomic tool loop that starts inside keep_first and runs past naive_end
+        # rounds both bounds to the same index. Start at the loop's own boundary
+        # instead; otherwise this view can never be condensed.
+        if forgetting_start == forgetting_end and naive_end > protected_prefix:
+            floor = system_idx + 1 if system_idx is not None else 0
+            earlier = [
+                idx
+                for idx in view.manipulation_indices
+                if floor <= idx < protected_prefix
+            ]
+            if earlier:
+                forgetting_start = max(earlier)
+
         # Extract events to forget using boundary-aware indices
         forgotten_events = view[forgetting_start:forgetting_end]
 
