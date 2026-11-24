@@ -225,14 +225,17 @@ class TestHookExecutor:
 
         child_pid = int(pid_file.read_text())
         try:
-            os.kill(child_pid, 0)
-            child_alive = True
-        except ProcessLookupError:
-            child_alive = False
+            # A killed child can remain as a zombie until its parent reaps it.
+            child_state = subprocess.run(
+                ["ps", "-o", "stat=", "-p", str(child_pid)],
+                capture_output=True,
+                text=True,
+                check=False,
+            ).stdout.strip()
         finally:
             with contextlib.suppress(ProcessLookupError):
                 os.kill(child_pid, signal.SIGKILL)
-        assert not child_alive
+        assert not child_state or child_state.startswith("Z")
 
 
 class TestAsyncHookExecution:

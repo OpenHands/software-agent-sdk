@@ -115,22 +115,19 @@ If the matching manifest is already in GHCR, the wait step exits immediately.
 
 ### Step 5: Version Bump PRs (Automated)
 
-After successful PyPI publication, the workflow will automatically create PRs to update SDK versions in downstream repositories:
+After successful PyPI publication, PRs that update the SDK version are opened downstream:
 
-- **[automation](https://github.com/OpenHands/automation)** - Updates `openhands-sdk` and `openhands-workspace` versions. Opened with a `fix:` title so the repo's release-please cuts a patch release, publishing an `openhands-automation` build pinned to this SDK (which the agent-canvas `sdk-version-sync` check requires).
-- **TypeScript client (`clients/typescript`)** - Normally a no-op: the release PR already pins the client. It only opens a PR in this repository if the client is behind the release. It waits for the exact GHCR image and release `openapi.json`, updates `config.agentServerImage`, regenerates the checked-in transport types, and includes an API-change summary.
+- **[automation](https://github.com/OpenHands/automation)** - Opens its own PR with its `bump-pins` workflow (a caller of the reusable workflow in [`OpenHands/release-actions`](https://github.com/OpenHands/release-actions#bumping-pins-on-upstream-releases)), from the rolling `bump-pins` branch. This repository only dispatches that workflow so the PR opens right away; automation also runs it every hour. The PR updates `openhands-sdk` and `openhands-workspace` and is titled `fix: bump SDK to X.Y.Z`, so the repo's release-please cuts a patch release, publishing an `openhands-automation` build pinned to this SDK.
+- **[Agent Canvas](https://github.com/OpenHands/OpenHands)** - Opens its own pins PR the same way once that `openhands-automation` release is on PyPI: its agent-server pin follows the SDK version the pinned automation release requires. Nothing is opened there at SDK release time.
+- **enterprise** - Opened by `version-bump-prs.yml` with branch name `bump-sdk-X.Y.Z`.
+- **TypeScript client (`clients/typescript`)** - Normally a no-op: the release PR already pins the client. It only opens a PR in this repository (branch `bump-agent-server-X.Y.Z`) if the client is behind the release. It waits for the exact GHCR image and release `openapi.json`, updates `config.agentServerImage`, regenerates the checked-in transport types, and includes an API-change summary.
 
-These PRs will:
-- Be created automatically with branch name `bump-sdk-X.Y.Z` (`bump-agent-server-X.Y.Z` for typescript-client)
-- Include links back to the SDK release
-- Include generated Agent Server contract changes for the exact released
-  version rather than only changing the image tag
-- Need to be reviewed and merged by maintainers
+These PRs need to be reviewed and merged by maintainers.
 
 ### Step 6: Post-Release Tasks
 
 - [ ] Merge the release PR to main
-- [ ] Review and merge the auto-created version bump PRs in automation and the TypeScript client (merging the automation PR triggers its release-please release PR; merge that too to publish the pinned `openhands-automation`)
+- [ ] Review and merge the auto-created version bump PRs in automation and the TypeScript client (merging the automation PR triggers its release-please release PR; merge that too to publish the pinned `openhands-automation`, which in turn makes Agent Canvas open its pins PR)
 - [ ] Announce the release
 
 ## Manual Publication Recovery

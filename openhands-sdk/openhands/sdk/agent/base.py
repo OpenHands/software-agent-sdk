@@ -16,6 +16,7 @@ from pydantic import (
     ConfigDict,
     Field,
     PrivateAttr,
+    SerializeAsAny,
     field_validator,
     model_validator,
 )
@@ -77,11 +78,16 @@ _BUILTIN_PROMPT_DIR = os.path.realpath(
 
 # Built-in ``system_prompt_filename`` values are back-compat sentinels (the .j2 files
 # were removed) that select a registry preset. ``system_prompt_planning.j2`` keeps its
-# historical name so ``get_planning_agent`` needs no change. Any other filename -- or a
-# subclass's own ``prompt_dir`` -- falls through to the Jinja escape hatch.
+# historical name so ``get_planning_agent`` needs no change. The project roles select
+# their presets the same way. Any other filename -- or a subclass's own ``prompt_dir``
+# -- falls through to the Jinja escape hatch.
+PROJECT_COORDINATOR_PROMPT = "system_prompt_project_coordinator.j2"
+PROJECT_WORKER_PROMPT = "system_prompt_project_worker.j2"
 _PRESET_BY_FILENAME: dict[str, PromptPreset] = {
     "system_prompt.j2": PromptPreset.DEFAULT,
     "system_prompt_planning.j2": PromptPreset.PLANNING,
+    PROJECT_COORDINATOR_PROMPT: PromptPreset.PROJECT_COORDINATOR,
+    PROJECT_WORKER_PROMPT: PromptPreset.PROJECT_WORKER,
 }
 
 
@@ -112,7 +118,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         arbitrary_types_allowed=True,
     )
 
-    llm: LLM = Field(
+    llm: SerializeAsAny[LLM] = Field(
         ...,
         description="LLM configuration for the agent.",
         examples=[
@@ -254,6 +260,11 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             and data["security_policy_filename"] is None
         ):
             data["security_policy_filename"] = ""
+        llm = data.get("llm")
+        if isinstance(llm, dict) and "llms_for_routing" in llm:
+            from openhands.sdk.llm.router import RouterLLM
+
+            data["llm"] = RouterLLM.model_validate_router(llm)
         has_inline = data.get("system_prompt") is not None
         has_custom_filename = (
             "system_prompt_filename" in data
@@ -460,6 +471,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         available_skills_prompt: str | None = None
         custom_suffix: str | None = None
         memory_context: str | None = None
+        project_context: str | None = None
         secret_infos: tuple[SecretInfo, ...] = ()
 
         if agent_context is not None:
@@ -478,6 +490,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             available_skills_prompt = data.available_skills_prompt or None
             custom_suffix = agent_context.system_message_suffix or None
             memory_context = agent_context.memory_context or None
+            project_context = agent_context.project_context or None
             secret_infos = tuple(
                 SecretInfo(
                     name=info["name"] or "",
@@ -514,6 +527,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             available_skills_prompt=available_skills_prompt,
             custom_suffix=custom_suffix,
             memory_context=memory_context,
+            project_context=project_context,
             secret_infos=secret_infos,
         )
 

@@ -11,7 +11,7 @@ import pytest_asyncio
 
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import ConversationService
-from openhands.agent_server.event_service import ConversationRunLimitExceeded
+from openhands.agent_server.exceptions import ConversationRunLimitExceeded
 from openhands.agent_server.openai.service import _run_agent
 from openhands.sdk import LLM, Agent, Message, TextContent
 from openhands.sdk.conversation.request import StartConversationRequest
@@ -233,7 +233,7 @@ async def test_creation_reservations_are_atomic_and_released_on_failure(
     entered = 0
     release = asyncio.Event()
 
-    async def initialize(*args):
+    async def initialize(*args, **kwargs):
         nonlocal entered
         entered += 1
         await release.wait()

@@ -27,14 +27,23 @@ from openhands.agent_server.mcp_oauth_store import (
     create_settings_backed_mcp_tool_provider,
 )
 from openhands.agent_server.persistence import (
+    FileSettingsStore,
     PersistedSettings,
-    get_settings_store,
-    reset_stores,
+    ServerStores,
 )
 from openhands.sdk.mcp.config import MCPServer, coerce_mcp_config, dump_mcp_config
 from openhands.sdk.mcp.exceptions import MCPError, MCPTimeoutError
 from openhands.sdk.mcp.oauth import MCPOAuth
 from openhands.sdk.mcp.utils import create_mcp_tools
+
+
+def _settings_store(config: Config) -> FileSettingsStore:
+    """The settings store of a server running with ``config``.
+
+    Each call builds one over the same file with the same cipher, as a server
+    (re)initialisation does.
+    """
+    return ServerStores.from_config(config).settings
 
 
 def _find_free_port() -> int:
@@ -131,107 +140,101 @@ def protected_oauth_mcp_server(oauth_provider: InMemoryOAuthProvider):
 async def test_mcp_oauth_token_store_persists_values_in_settings(
     tmp_path: Path,
 ):
-    reset_stores()
-    try:
-        config = Config(
-            session_api_keys=[],
-            conversations_path=tmp_path / "conversations",
-            secret_key=SecretStr("mcp-oauth-test-key"),
-        )
-        settings = PersistedSettings()
-        settings.agent_settings = settings.agent_settings.model_copy(
-            update={
-                "mcp_config": coerce_mcp_config(
-                    {
-                        "superhuman": {
-                            "url": "https://mcp.example.com/mcp",
-                            "auth": {
-                                "strategy": "oauth2",
-                                "authentication": {
-                                    "type": "oauth",
-                                    "client_auth_method": "none",
-                                },
+    config = Config(
+        session_api_keys=[],
+        conversations_path=tmp_path / "conversations",
+        secret_key=SecretStr("mcp-oauth-test-key"),
+    )
+    settings = PersistedSettings()
+    settings.agent_settings = settings.agent_settings.model_copy(
+        update={
+            "mcp_config": coerce_mcp_config(
+                {
+                    "superhuman": {
+                        "url": "https://mcp.example.com/mcp",
+                        "auth": {
+                            "strategy": "oauth2",
+                            "authentication": {
+                                "type": "oauth",
+                                "client_auth_method": "none",
                             },
-                        }
+                        },
                     }
-                )
-            }
-        )
-        settings_store = get_settings_store(config)
-        settings_store.save(settings)
-        create_settings_backed_mcp_tool_provider(config)
-
-        key = "https://mcp.example.com/mcp/tokens"
-        client_info_key = "https://mcp.example.com/mcp/client_info"
-        token_expiry_key = "https://mcp.example.com/mcp/token_expiry"
-        value = {
-            "access_token": "super-secret-token",
-            "refresh_token": "refresh-token",
+                }
+            )
         }
-        client_info = {
-            "redirect_uris": ["http://127.0.0.1:64801/callback"],
-            "client_id": "superhuman-client",
-            "client_secret": "superhuman-client-secret",
-        }
-        token_expiry = {"expires_at": 12345.0}
+    )
+    settings_store = _settings_store(config)
+    settings_store.save(settings)
+    create_settings_backed_mcp_tool_provider(config, _settings_store(config))
 
-        store = MCPSettingsOAuthTokenStore()
-        await store.put(key=key, value=value, collection="mcp-oauth-token")
-        await store.put(
+    key = "https://mcp.example.com/mcp/tokens"
+    client_info_key = "https://mcp.example.com/mcp/client_info"
+    token_expiry_key = "https://mcp.example.com/mcp/token_expiry"
+    value = {
+        "access_token": "super-secret-token",
+        "refresh_token": "refresh-token",
+    }
+    client_info = {
+        "redirect_uris": ["http://127.0.0.1:64801/callback"],
+        "client_id": "superhuman-client",
+        "client_secret": "superhuman-client-secret",
+    }
+    token_expiry = {"expires_at": 12345.0}
+
+    store = MCPSettingsOAuthTokenStore(_settings_store(config))
+    await store.put(key=key, value=value, collection="mcp-oauth-token")
+    await store.put(
+        key=client_info_key,
+        value=client_info,
+        collection="mcp-oauth-client-info",
+    )
+    await store.put(
+        key=token_expiry_key,
+        value=token_expiry,
+        collection="mcp-oauth-token-expiry",
+    )
+
+    reloaded_store = MCPSettingsOAuthTokenStore(_settings_store(config))
+    assert (await reloaded_store.get(key=key, collection="mcp-oauth-token")) == value
+    assert (
+        await reloaded_store.get(
             key=client_info_key,
-            value=client_info,
             collection="mcp-oauth-client-info",
         )
-        await store.put(
+    ) == client_info
+    assert (
+        await reloaded_store.get(
             key=token_expiry_key,
-            value=token_expiry,
             collection="mcp-oauth-token-expiry",
         )
+    ) == token_expiry
 
-        reloaded_store = MCPSettingsOAuthTokenStore()
-        assert (
-            await reloaded_store.get(key=key, collection="mcp-oauth-token")
-        ) == value
-        assert (
-            await reloaded_store.get(
-                key=client_info_key,
-                collection="mcp-oauth-client-info",
-            )
-        ) == client_info
-        assert (
-            await reloaded_store.get(
-                key=token_expiry_key,
-                collection="mcp-oauth-token-expiry",
-            )
-        ) == token_expiry
+    on_disk_text = (settings_store.persistence_dir / "settings.json").read_text()
+    assert "super-secret-token" not in on_disk_text
+    assert "refresh-token" not in on_disk_text
+    assert "superhuman-client-secret" not in on_disk_text
 
-        on_disk_text = (settings_store.persistence_dir / "settings.json").read_text()
-        assert "super-secret-token" not in on_disk_text
-        assert "refresh-token" not in on_disk_text
-        assert "superhuman-client-secret" not in on_disk_text
+    on_disk = json.loads(on_disk_text)
+    stored_state = on_disk["agent_settings"]["mcp_config"]["superhuman"]["auth"][
+        "state"
+    ]
+    stored_value = stored_state["tokens"]
+    assert stored_value["access_token"].startswith("gAAAA")
+    assert stored_value["refresh_token"].startswith("gAAAA")
+    assert stored_state["client_info"]["client_secret"].startswith("gAAAA")
+    assert stored_state["token_expires_at"] == 12345.0
 
-        on_disk = json.loads(on_disk_text)
-        stored_state = on_disk["agent_settings"]["mcp_config"]["superhuman"]["auth"][
-            "state"
-        ]
-        stored_value = stored_state["tokens"]
-        assert stored_value["access_token"].startswith("gAAAA")
-        assert stored_value["refresh_token"].startswith("gAAAA")
-        assert stored_state["client_info"]["client_secret"].startswith("gAAAA")
-        assert stored_state["token_expires_at"] == 12345.0
-
-        loaded = settings_store.load()
-        assert loaded is not None
-        server = dump_mcp_config(loaded.agent_settings.mcp_config)["superhuman"]
-        auth = server["auth"]
-        assert isinstance(auth, dict)
-        assert auth["state"] == {
-            "tokens": value,
-            "client_info": client_info,
-            "token_expires_at": 12345.0,
-        }
-    finally:
-        reset_stores()
+    loaded = settings_store.load()
+    assert loaded is not None
+    server = dump_mcp_config(loaded.agent_settings.mcp_config)["superhuman"]
+    auth = server["auth"]
+    assert isinstance(auth, dict)
+    assert auth["state"] == {
+        "tokens": value,
+        "client_info": client_info,
+        "token_expires_at": 12345.0,
+    }
 
 
 def test_oauth_mcp_connection_persists_and_reuses_settings_state(
@@ -247,127 +250,121 @@ def test_oauth_mcp_connection_persists_and_reuses_settings_state(
     reuses the persisted state.
     """
 
-    reset_stores()
     _HeadlessOAuth.redirect_count = 0
-    try:
-        config = Config(
-            session_api_keys=[],
-            conversations_path=tmp_path / "conversations",
-            secret_key=SecretStr("mcp-oauth-e2e-test-key"),
-        )
-        mcp_config = coerce_mcp_config(
-            {
-                "mail": {
-                    "url": protected_oauth_mcp_server,
-                    "transport": "http",
-                    "auth": {
-                        "strategy": "oauth2",
-                        "authentication": {
-                            "type": "oauth",
-                            "client_auth_method": "none",
-                            "scopes": ["mail.read"],
-                        },
+    config = Config(
+        session_api_keys=[],
+        conversations_path=tmp_path / "conversations",
+        secret_key=SecretStr("mcp-oauth-e2e-test-key"),
+    )
+    mcp_config = coerce_mcp_config(
+        {
+            "mail": {
+                "url": protected_oauth_mcp_server,
+                "transport": "http",
+                "auth": {
+                    "strategy": "oauth2",
+                    "authentication": {
+                        "type": "oauth",
+                        "client_auth_method": "none",
+                        "scopes": ["mail.read"],
                     },
-                }
+                },
             }
+        }
+    )
+    settings = PersistedSettings()
+    settings.agent_settings = settings.agent_settings.model_copy(
+        update={"mcp_config": mcp_config}
+    )
+    settings_store = _settings_store(config)
+    settings_store.save(settings)
+    tool_provider = create_settings_backed_mcp_tool_provider(
+        config, _settings_store(config)
+    )
+
+    with create_mcp_tools(
+        mcp_config,
+        timeout=10.0,
+        mcp_oauth_token_storage=MCPSettingsOAuthTokenStore(_settings_store(config)),
+        mcp_oauth_class=_HeadlessOAuth,
+    ) as client:
+        tool = next(tool for tool in client.tools if tool.name == "read_subject")
+        assert tool.executor is not None
+        observation = tool.executor(
+            tool.action_from_arguments({"subject": "Quarterly Plan"})
         )
-        settings = PersistedSettings()
-        settings.agent_settings = settings.agent_settings.model_copy(
-            update={"mcp_config": mcp_config}
+        assert "OAuth mail subject: Quarterly Plan" in observation.text
+
+    assert _HeadlessOAuth.redirect_count == 1
+    on_disk_text = (settings_store.persistence_dir / "settings.json").read_text()
+    assert "test_access_token_" not in on_disk_text
+    assert "test_refresh_token_" not in on_disk_text
+
+    reloaded = settings_store.load()
+    assert reloaded is not None
+    persisted_mcp_config = reloaded.agent_settings.mcp_config
+    server = dump_mcp_config(persisted_mcp_config)["mail"]
+    auth = server["auth"]
+    assert isinstance(auth, dict)
+    state = auth["state"]
+    assert isinstance(state, dict)
+    tokens = state["tokens"]
+    assert isinstance(tokens, dict)
+    access_token = tokens["access_token"]
+    refresh_token = tokens["refresh_token"]
+    assert isinstance(access_token, str)
+    assert isinstance(refresh_token, str)
+    assert access_token.startswith("test_access_token_")
+    assert refresh_token.startswith("test_refresh_token_")
+    client_info = state["client_info"]
+    assert isinstance(client_info, dict)
+    assert client_info["client_id"]
+
+    with tool_provider.create_tools(
+        persisted_mcp_config,
+        timeout=10.0,
+    ) as client:
+        tool = next(tool for tool in client.tools if tool.name == "read_subject")
+        assert tool.executor is not None
+        observation = tool.executor(
+            tool.action_from_arguments({"subject": "Follow-up"})
         )
-        settings_store = get_settings_store(config)
-        settings_store.save(settings)
-        tool_provider = create_settings_backed_mcp_tool_provider(config)
-
-        with create_mcp_tools(
-            mcp_config,
-            timeout=10.0,
-            mcp_oauth_token_storage=MCPSettingsOAuthTokenStore(),
-            mcp_oauth_class=_HeadlessOAuth,
-        ) as client:
-            tool = next(tool for tool in client.tools if tool.name == "read_subject")
-            assert tool.executor is not None
-            observation = tool.executor(
-                tool.action_from_arguments({"subject": "Quarterly Plan"})
-            )
-            assert "OAuth mail subject: Quarterly Plan" in observation.text
-
-        assert _HeadlessOAuth.redirect_count == 1
-        on_disk_text = (settings_store.persistence_dir / "settings.json").read_text()
-        assert "test_access_token_" not in on_disk_text
-        assert "test_refresh_token_" not in on_disk_text
-
-        reloaded = settings_store.load()
-        assert reloaded is not None
-        persisted_mcp_config = reloaded.agent_settings.mcp_config
-        server = dump_mcp_config(persisted_mcp_config)["mail"]
-        auth = server["auth"]
-        assert isinstance(auth, dict)
-        state = auth["state"]
-        assert isinstance(state, dict)
-        tokens = state["tokens"]
-        assert isinstance(tokens, dict)
-        access_token = tokens["access_token"]
-        refresh_token = tokens["refresh_token"]
-        assert isinstance(access_token, str)
-        assert isinstance(refresh_token, str)
-        assert access_token.startswith("test_access_token_")
-        assert refresh_token.startswith("test_refresh_token_")
-        client_info = state["client_info"]
-        assert isinstance(client_info, dict)
-        assert client_info["client_id"]
-
-        with tool_provider.create_tools(
-            persisted_mcp_config,
-            timeout=10.0,
-        ) as client:
-            tool = next(tool for tool in client.tools if tool.name == "read_subject")
-            assert tool.executor is not None
-            observation = tool.executor(
-                tool.action_from_arguments({"subject": "Follow-up"})
-            )
-            assert "OAuth mail subject: Follow-up" in observation.text
-    finally:
-        reset_stores()
+        assert "OAuth mail subject: Follow-up" in observation.text
 
 
 @pytest.mark.asyncio
 async def test_mcp_oauth_token_storage_does_not_attach_to_non_oauth_server(
     tmp_path: Path,
 ):
-    reset_stores()
-    try:
-        config = Config(
-            session_api_keys=[],
-            conversations_path=tmp_path / "conversations",
-            secret_key=SecretStr("mcp-oauth-test-key"),
-        )
-        settings = PersistedSettings()
-        settings.agent_settings = settings.agent_settings.model_copy(
-            update={
-                "mcp_config": coerce_mcp_config(
-                    {"plain": {"url": "https://mcp.example.com/mcp"}}
-                )
-            }
-        )
-        settings_store = get_settings_store(config)
-        settings_store.save(settings)
+    config = Config(
+        session_api_keys=[],
+        conversations_path=tmp_path / "conversations",
+        secret_key=SecretStr("mcp-oauth-test-key"),
+    )
+    settings = PersistedSettings()
+    settings.agent_settings = settings.agent_settings.model_copy(
+        update={
+            "mcp_config": coerce_mcp_config(
+                {"plain": {"url": "https://mcp.example.com/mcp"}}
+            )
+        }
+    )
+    settings_store = _settings_store(config)
+    settings_store.save(settings)
 
-        create_settings_backed_mcp_tool_provider(config)
-        store = MCPSettingsOAuthTokenStore()
+    create_settings_backed_mcp_tool_provider(config, _settings_store(config))
+    store = MCPSettingsOAuthTokenStore(_settings_store(config))
 
-        await store.put(
-            key="https://mcp.example.com/mcp/tokens",
-            value={"access_token": "super-secret-token"},
-            collection="mcp-oauth-token",
-        )
+    await store.put(
+        key="https://mcp.example.com/mcp/tokens",
+        value={"access_token": "super-secret-token"},
+        collection="mcp-oauth-token",
+    )
 
-        loaded = settings_store.load()
-        assert loaded is not None
-        server = dump_mcp_config(loaded.agent_settings.mcp_config)["plain"]
-        assert "auth" not in server
-    finally:
-        reset_stores()
+    loaded = settings_store.load()
+    assert loaded is not None
+    server = dump_mcp_config(loaded.agent_settings.mcp_config)["plain"]
+    assert "auth" not in server
 
 
 def test_settings_backed_provider_forwards_on_tools_reconciled():
@@ -377,7 +374,7 @@ def test_settings_backed_provider_forwards_on_tools_reconciled():
     to attach on_tools_reconciled to the returned client after the fact --
     missing any notification that arrived during the initial connect.
     """
-    provider = SettingsBackedMCPToolProvider()
+    provider = SettingsBackedMCPToolProvider(settings_store=_settings_store(Config()))
     config = coerce_mcp_config({"fake": {"command": "true"}})
 
     def callback(client, tools):
@@ -411,107 +408,97 @@ def _inline_oauth_server(access_token: str):
 async def test_mcp_oauth_token_store_serves_inline_state_for_servers_absent_from_settings(  # noqa: E501
     tmp_path: Path,
 ):
-    reset_stores()
-    try:
-        # Arrange: the sandbox settings store knows no MCP servers at all.
-        config = Config(
-            session_api_keys=[],
-            conversations_path=tmp_path / "conversations",
-            secret_key=SecretStr("mcp-oauth-test-key"),
-        )
-        settings_store = get_settings_store(config)
-        settings_store.save(PersistedSettings())
-        store = MCPSettingsOAuthTokenStore(
-            seed_mcp_config=_inline_oauth_server("agent-access-token"),
-            cipher=config.cipher,
-        )
-        key = "https://mcp.example.com/mcp/tokens"
+    # Arrange: the sandbox settings store knows no MCP servers at all.
+    config = Config(
+        session_api_keys=[],
+        conversations_path=tmp_path / "conversations",
+        secret_key=SecretStr("mcp-oauth-test-key"),
+    )
+    settings_store = _settings_store(config)
+    settings_store.save(PersistedSettings())
+    store = MCPSettingsOAuthTokenStore(
+        _settings_store(config),
+        seed_mcp_config=_inline_oauth_server("agent-access-token"),
+        cipher=config.cipher,
+    )
+    key = "https://mcp.example.com/mcp/tokens"
 
-        # Act
-        initial = await store.get(key=key, collection="mcp-oauth-token")
-        await store.put(
-            key=key,
-            value={"access_token": "refreshed-access-token"},
-            collection="mcp-oauth-token",
-        )
-        refreshed = await store.get(key=key, collection="mcp-oauth-token")
-        deleted = await store.delete(key=key, collection="mcp-oauth-token")
+    # Act
+    initial = await store.get(key=key, collection="mcp-oauth-token")
+    await store.put(
+        key=key,
+        value={"access_token": "refreshed-access-token"},
+        collection="mcp-oauth-token",
+    )
+    refreshed = await store.get(key=key, collection="mcp-oauth-token")
+    deleted = await store.delete(key=key, collection="mcp-oauth-token")
 
-        # Assert: served from the inline state, refreshed in memory, never
-        # written into settings.
-        assert initial == {"access_token": "agent-access-token"}
-        assert refreshed == {"access_token": "refreshed-access-token"}
-        assert deleted is True
-        assert await store.get(key=key, collection="mcp-oauth-token") is None
-        loaded = settings_store.load()
-        assert loaded is not None
-        assert not loaded.agent_settings.mcp_config
-    finally:
-        reset_stores()
+    # Assert: served from the inline state, refreshed in memory, never
+    # written into settings.
+    assert initial == {"access_token": "agent-access-token"}
+    assert refreshed == {"access_token": "refreshed-access-token"}
+    assert deleted is True
+    assert await store.get(key=key, collection="mcp-oauth-token") is None
+    loaded = settings_store.load()
+    assert loaded is not None
+    assert not loaded.agent_settings.mcp_config
 
 
 @pytest.mark.asyncio
 async def test_mcp_oauth_token_store_prefers_settings_over_inline_state(
     tmp_path: Path,
 ):
-    reset_stores()
-    try:
-        # Arrange: the same server exists in settings with its own tokens.
-        config = Config(
-            session_api_keys=[],
-            conversations_path=tmp_path / "conversations",
-            secret_key=SecretStr("mcp-oauth-test-key"),
-        )
-        settings = PersistedSettings()
-        settings.agent_settings = settings.agent_settings.model_copy(
-            update={"mcp_config": _inline_oauth_server("settings-access-token")}
-        )
-        get_settings_store(config).save(settings)
-        store = MCPSettingsOAuthTokenStore(
-            seed_mcp_config=_inline_oauth_server("agent-access-token"),
-            cipher=config.cipher,
-        )
+    # Arrange: the same server exists in settings with its own tokens.
+    config = Config(
+        session_api_keys=[],
+        conversations_path=tmp_path / "conversations",
+        secret_key=SecretStr("mcp-oauth-test-key"),
+    )
+    settings = PersistedSettings()
+    settings.agent_settings = settings.agent_settings.model_copy(
+        update={"mcp_config": _inline_oauth_server("settings-access-token")}
+    )
+    _settings_store(config).save(settings)
+    store = MCPSettingsOAuthTokenStore(
+        _settings_store(config),
+        seed_mcp_config=_inline_oauth_server("agent-access-token"),
+        cipher=config.cipher,
+    )
 
-        # Act
-        value = await store.get(
-            key="https://mcp.example.com/mcp/tokens", collection="mcp-oauth-token"
-        )
+    # Act
+    value = await store.get(
+        key="https://mcp.example.com/mcp/tokens", collection="mcp-oauth-token"
+    )
 
-        # Assert
-        assert value == {"access_token": "settings-access-token"}
-    finally:
-        reset_stores()
+    # Assert
+    assert value == {"access_token": "settings-access-token"}
 
 
 @pytest.mark.asyncio
 async def test_settings_backed_provider_seeds_token_store_from_agent_mcp_config(
     tmp_path: Path,
 ):
-    reset_stores()
-    try:
-        # Arrange
-        config = Config(
-            session_api_keys=[],
-            conversations_path=tmp_path / "conversations",
-            secret_key=SecretStr("mcp-oauth-test-key"),
-        )
-        get_settings_store(config).save(PersistedSettings())
-        provider = create_settings_backed_mcp_tool_provider(config)
-        mcp_config = _inline_oauth_server("agent-access-token")
+    # Arrange
+    config = Config(
+        session_api_keys=[],
+        conversations_path=tmp_path / "conversations",
+        secret_key=SecretStr("mcp-oauth-test-key"),
+    )
+    _settings_store(config).save(PersistedSettings())
+    provider = create_settings_backed_mcp_tool_provider(config, _settings_store(config))
+    mcp_config = _inline_oauth_server("agent-access-token")
 
-        # Act
-        with patch(
-            "openhands.agent_server.mcp_oauth_store.create_mcp_tools"
-        ) as mock_create:
-            provider.create_tools(mcp_config)
+    # Act
+    with patch(
+        "openhands.agent_server.mcp_oauth_store.create_mcp_tools"
+    ) as mock_create:
+        provider.create_tools(mcp_config)
 
-        # Assert: the store handed to FastMCP already knows the agent's tokens.
-        storage = mock_create.call_args.kwargs["mcp_oauth_token_storage"]
-        assert await storage.get(
-            key="https://mcp.example.com/mcp/tokens", collection="mcp-oauth-token"
-        ) == {"access_token": "agent-access-token"}
-    finally:
-        reset_stores()
+    # Assert: the store handed to FastMCP already knows the agent's tokens.
+    storage = mock_create.call_args.kwargs["mcp_oauth_token_storage"]
+    assert await storage.get(
+        key="https://mcp.example.com/mcp/tokens", collection="mcp-oauth-token"
+    ) == {"access_token": "agent-access-token"}
 
 
 def _hosted_config(tmp_path: Path) -> Config:
@@ -534,140 +521,128 @@ def _hosted_config(tmp_path: Path) -> Config:
 async def test_settings_backed_provider_writes_refreshed_inline_state_back_to_the_app_server(  # noqa: E501
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    reset_stores()
-    try:
-        # Arrange: the server is inline only, as a hosted conversation passes it.
-        config = _hosted_config(tmp_path)
-        get_settings_store(config).save(PersistedSettings())
-        posted: list[dict] = []
+    # Arrange: the server is inline only, as a hosted conversation passes it.
+    config = _hosted_config(tmp_path)
+    _settings_store(config).save(PersistedSettings())
+    posted: list[dict] = []
 
-        def fake_post(url, *, json, headers, timeout):
-            posted.append({"url": url, "json": json, "headers": headers})
-            return httpx.Response(200, request=httpx.Request("POST", url))
+    def fake_post(url, *, json, headers, timeout):
+        posted.append({"url": url, "json": json, "headers": headers})
+        return httpx.Response(200, request=httpx.Request("POST", url))
 
-        monkeypatch.setattr(httpx, "post", fake_post)
-        provider = create_settings_backed_mcp_tool_provider(config)
-        with patch(
-            "openhands.agent_server.mcp_oauth_store.create_mcp_tools"
-        ) as mock_create:
-            provider.create_tools(_inline_oauth_server("agent-access-token"))
-        storage = mock_create.call_args.kwargs["mcp_oauth_token_storage"]
+    monkeypatch.setattr(httpx, "post", fake_post)
+    provider = create_settings_backed_mcp_tool_provider(config, _settings_store(config))
+    with patch(
+        "openhands.agent_server.mcp_oauth_store.create_mcp_tools"
+    ) as mock_create:
+        provider.create_tools(_inline_oauth_server("agent-access-token"))
+    storage = mock_create.call_args.kwargs["mcp_oauth_token_storage"]
 
-        # Act: FastMCP stores a refreshed token and its expiry.
-        await storage.put(
-            key="https://mcp.example.com/mcp/tokens",
-            value={
+    # Act: FastMCP stores a refreshed token and its expiry.
+    await storage.put(
+        key="https://mcp.example.com/mcp/tokens",
+        value={
+            "access_token": "refreshed-access-token",
+            "refresh_token": "rotated-refresh-token",
+        },
+        collection="mcp-oauth-token",
+    )
+    await storage.put(
+        key="https://mcp.example.com/mcp/token_expiry",
+        value={"expires_at": 1234.0},
+        collection="mcp-oauth-token-expiry",
+    )
+
+    # Assert: each write posts the whole state to the app server.
+    assert [entry["url"] for entry in posted] == [
+        "https://app.example/api/v1/webhooks/mcp-oauth-state"
+    ] * 2
+    assert posted[-1]["headers"] == {
+        "X-Trace": "on",
+        "X-Session-API-Key": "sandbox-session-key",
+    }
+    assert posted[-1]["json"] == {
+        "server_url": "https://mcp.example.com/mcp",
+        "oauth_state": {
+            "tokens": {
                 "access_token": "refreshed-access-token",
                 "refresh_token": "rotated-refresh-token",
             },
-            collection="mcp-oauth-token",
-        )
-        await storage.put(
-            key="https://mcp.example.com/mcp/token_expiry",
-            value={"expires_at": 1234.0},
-            collection="mcp-oauth-token-expiry",
-        )
-
-        # Assert: each write posts the whole state to the app server.
-        assert [entry["url"] for entry in posted] == [
-            "https://app.example/api/v1/webhooks/mcp-oauth-state"
-        ] * 2
-        assert posted[-1]["headers"] == {
-            "X-Trace": "on",
-            "X-Session-API-Key": "sandbox-session-key",
-        }
-        assert posted[-1]["json"] == {
-            "server_url": "https://mcp.example.com/mcp",
-            "oauth_state": {
-                "tokens": {
-                    "access_token": "refreshed-access-token",
-                    "refresh_token": "rotated-refresh-token",
-                },
-                "token_expires_at": 1234.0,
-            },
-        }
-    finally:
-        reset_stores()
+            "token_expires_at": 1234.0,
+        },
+    }
 
 
 @pytest.mark.asyncio
 async def test_mcp_oauth_token_store_does_not_write_back_settings_backed_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    reset_stores()
-    try:
-        # Arrange: the same server lives in this agent server's own settings.
-        config = _hosted_config(tmp_path)
-        settings = PersistedSettings()
-        settings.agent_settings = settings.agent_settings.model_copy(
-            update={"mcp_config": _inline_oauth_server("settings-access-token")}
-        )
-        get_settings_store(config).save(settings)
-        posted: list[str] = []
-        monkeypatch.setattr(
-            httpx, "post", lambda url, **kwargs: posted.append(url) or None
-        )
-        store = MCPSettingsOAuthTokenStore(
-            seed_mcp_config=_inline_oauth_server("agent-access-token"),
-            cipher=config.cipher,
-            write_back_webhooks=config.webhooks,
-            session_api_key="sandbox-session-key",
-        )
-        key = "https://mcp.example.com/mcp/tokens"
+    # Arrange: the same server lives in this agent server's own settings.
+    config = _hosted_config(tmp_path)
+    settings = PersistedSettings()
+    settings.agent_settings = settings.agent_settings.model_copy(
+        update={"mcp_config": _inline_oauth_server("settings-access-token")}
+    )
+    _settings_store(config).save(settings)
+    posted: list[str] = []
+    monkeypatch.setattr(httpx, "post", lambda url, **kwargs: posted.append(url) or None)
+    store = MCPSettingsOAuthTokenStore(
+        _settings_store(config),
+        seed_mcp_config=_inline_oauth_server("agent-access-token"),
+        cipher=config.cipher,
+        write_back_webhooks=config.webhooks,
+        session_api_key="sandbox-session-key",
+    )
+    key = "https://mcp.example.com/mcp/tokens"
 
-        # Act
-        await store.put(
-            key=key,
-            value={"access_token": "refreshed-access-token"},
-            collection="mcp-oauth-token",
-        )
+    # Act
+    await store.put(
+        key=key,
+        value={"access_token": "refreshed-access-token"},
+        collection="mcp-oauth-token",
+    )
 
-        # Assert: persisted locally, nothing sent to the app server.
-        assert posted == []
-        assert await store.get(key=key, collection="mcp-oauth-token") == {
-            "access_token": "refreshed-access-token"
-        }
-    finally:
-        reset_stores()
+    # Assert: persisted locally, nothing sent to the app server.
+    assert posted == []
+    assert await store.get(key=key, collection="mcp-oauth-token") == {
+        "access_token": "refreshed-access-token"
+    }
 
 
 @pytest.mark.asyncio
 async def test_mcp_oauth_token_store_keeps_refreshed_inline_state_when_write_back_fails(  # noqa: E501
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    reset_stores()
-    try:
-        # Arrange: the app server cannot be reached.
-        config = _hosted_config(tmp_path)
-        get_settings_store(config).save(PersistedSettings())
+    # Arrange: the app server cannot be reached.
+    config = _hosted_config(tmp_path)
+    _settings_store(config).save(PersistedSettings())
 
-        def failing_post(url, **kwargs):
-            raise httpx.ConnectError(
-                "app server unreachable", request=httpx.Request("POST", url)
-            )
-
-        monkeypatch.setattr(httpx, "post", failing_post)
-        store = MCPSettingsOAuthTokenStore(
-            seed_mcp_config=_inline_oauth_server("agent-access-token"),
-            cipher=config.cipher,
-            write_back_webhooks=config.webhooks,
-            session_api_key="sandbox-session-key",
-        )
-        key = "https://mcp.example.com/mcp/tokens"
-
-        # Act
-        await store.put(
-            key=key,
-            value={"access_token": "refreshed-access-token"},
-            collection="mcp-oauth-token",
+    def failing_post(url, **kwargs):
+        raise httpx.ConnectError(
+            "app server unreachable", request=httpx.Request("POST", url)
         )
 
-        # Assert: the conversation keeps using the refreshed token.
-        assert await store.get(key=key, collection="mcp-oauth-token") == {
-            "access_token": "refreshed-access-token"
-        }
-    finally:
-        reset_stores()
+    monkeypatch.setattr(httpx, "post", failing_post)
+    store = MCPSettingsOAuthTokenStore(
+        _settings_store(config),
+        seed_mcp_config=_inline_oauth_server("agent-access-token"),
+        cipher=config.cipher,
+        write_back_webhooks=config.webhooks,
+        session_api_key="sandbox-session-key",
+    )
+    key = "https://mcp.example.com/mcp/tokens"
+
+    # Act
+    await store.put(
+        key=key,
+        value={"access_token": "refreshed-access-token"},
+        collection="mcp-oauth-token",
+    )
+
+    # Assert: the conversation keeps using the refreshed token.
+    assert await store.get(key=key, collection="mcp-oauth-token") == {
+        "access_token": "refreshed-access-token"
+    }
 
 
 @pytest.fixture
@@ -687,67 +662,61 @@ def write_backs(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
 async def test_mcp_oauth_token_store_does_not_write_back_state_without_tokens(
     tmp_path: Path, write_backs: list[dict]
 ):
-    reset_stores()
-    try:
-        # Arrange
-        config = _hosted_config(tmp_path)
-        get_settings_store(config).save(PersistedSettings())
-        store = MCPSettingsOAuthTokenStore(
-            seed_mcp_config=_inline_oauth_server("agent-access-token"),
-            cipher=config.cipher,
-            write_back_webhooks=config.webhooks,
-            session_api_key="sandbox-session-key",
-        )
+    # Arrange
+    config = _hosted_config(tmp_path)
+    _settings_store(config).save(PersistedSettings())
+    store = MCPSettingsOAuthTokenStore(
+        _settings_store(config),
+        seed_mcp_config=_inline_oauth_server("agent-access-token"),
+        cipher=config.cipher,
+        write_back_webhooks=config.webhooks,
+        session_api_key="sandbox-session-key",
+    )
 
-        # Act: FastMCP drops the stored tokens and registers a new client.
-        await store.delete(
-            key="https://mcp.example.com/mcp/tokens", collection="mcp-oauth-token"
-        )
-        await store.put(
-            key="https://mcp.example.com/mcp/client_info",
-            value={
-                "client_id": "loopback-client",
-                "redirect_uris": ["http://localhost:4321/callback"],
-            },
-            collection="mcp-oauth-client-info",
-        )
+    # Act: FastMCP drops the stored tokens and registers a new client.
+    await store.delete(
+        key="https://mcp.example.com/mcp/tokens", collection="mcp-oauth-token"
+    )
+    await store.put(
+        key="https://mcp.example.com/mcp/client_info",
+        value={
+            "client_id": "loopback-client",
+            "redirect_uris": ["http://localhost:4321/callback"],
+        },
+        collection="mcp-oauth-client-info",
+    )
 
-        # Assert: nothing replaces the credentials the app server holds.
-        assert write_backs == []
-    finally:
-        reset_stores()
+    # Assert: nothing replaces the credentials the app server holds.
+    assert write_backs == []
 
 
 @pytest.mark.asyncio
 async def test_mcp_oauth_token_store_does_not_write_back_a_client_it_registered(
     tmp_path: Path, write_backs: list[dict]
 ):
-    reset_stores()
-    try:
-        # Arrange: the inline state has tokens but no client registration.
-        config = _hosted_config(tmp_path)
-        get_settings_store(config).save(PersistedSettings())
-        store = MCPSettingsOAuthTokenStore(
-            seed_mcp_config=_inline_oauth_server("agent-access-token"),
-            cipher=config.cipher,
-            write_back_webhooks=config.webhooks,
-            session_api_key="sandbox-session-key",
-        )
+    # Arrange: the inline state has tokens but no client registration.
+    config = _hosted_config(tmp_path)
+    _settings_store(config).save(PersistedSettings())
+    store = MCPSettingsOAuthTokenStore(
+        _settings_store(config),
+        seed_mcp_config=_inline_oauth_server("agent-access-token"),
+        cipher=config.cipher,
+        write_back_webhooks=config.webhooks,
+        session_api_key="sandbox-session-key",
+    )
 
-        # Act: FastMCP registers a loopback client while keeping the tokens.
-        await store.put(
-            key="https://mcp.example.com/mcp/client_info",
-            value={
-                "client_id": "loopback-client",
-                "redirect_uris": ["http://localhost:4321/callback"],
-            },
-            collection="mcp-oauth-client-info",
-        )
+    # Act: FastMCP registers a loopback client while keeping the tokens.
+    await store.put(
+        key="https://mcp.example.com/mcp/client_info",
+        value={
+            "client_id": "loopback-client",
+            "redirect_uris": ["http://localhost:4321/callback"],
+        },
+        collection="mcp-oauth-client-info",
+    )
 
-        # Assert
-        assert write_backs == []
-    finally:
-        reset_stores()
+    # Assert
+    assert write_backs == []
 
 
 def _installed_client(oauth_provider: InMemoryOAuthProvider) -> dict[str, Any]:
@@ -815,31 +784,27 @@ def test_settings_backed_provider_keeps_stored_state_when_refresh_fails(
     installed client never registered, and on the 400 drops the stored state,
     registers a new client and opens a browser.
     """
-    reset_stores()
     opened: list[str] = []
     monkeypatch.setattr(webbrowser, "open", lambda url, *_, **__: opened.append(url))
-    try:
-        # Arrange: the server no longer accepts the stored refresh token.
-        config = _hosted_config(tmp_path)
-        get_settings_store(config).save(PersistedSettings())
-        client_info = _installed_client(oauth_provider)
-        mcp_config = _expired_inline_oauth_server(
-            protected_oauth_mcp_server, client_info, "revoked-refresh-token"
-        )
-        provider = create_settings_backed_mcp_tool_provider(config)
+    # Arrange: the server no longer accepts the stored refresh token.
+    config = _hosted_config(tmp_path)
+    _settings_store(config).save(PersistedSettings())
+    client_info = _installed_client(oauth_provider)
+    mcp_config = _expired_inline_oauth_server(
+        protected_oauth_mcp_server, client_info, "revoked-refresh-token"
+    )
+    provider = create_settings_backed_mcp_tool_provider(config, _settings_store(config))
 
-        # Act
-        with pytest.raises(MCPError) as exc_info:
-            provider.create_tools(mcp_config, timeout=5.0)
+    # Act
+    with pytest.raises(MCPError) as exc_info:
+        provider.create_tools(mcp_config, timeout=5.0)
 
-        # Assert: no browser or callback wait, no new client, and nothing
-        # posted over the credentials the app server holds.
-        assert not isinstance(exc_info.value, MCPTimeoutError)
-        assert opened == []
-        assert list(oauth_provider.clients) == ["installed-client"]
-        assert write_backs == []
-    finally:
-        reset_stores()
+    # Assert: no browser or callback wait, no new client, and nothing
+    # posted over the credentials the app server holds.
+    assert not isinstance(exc_info.value, MCPTimeoutError)
+    assert opened == []
+    assert list(oauth_provider.clients) == ["installed-client"]
+    assert write_backs == []
 
 
 def test_settings_backed_provider_does_not_write_back_a_client_it_registers(
@@ -853,28 +818,24 @@ def test_settings_backed_provider_does_not_write_back_a_client_it_registers(
     FastMCP registers a loopback client before it asks for authorization;
     that client must not reach the app server.
     """
-    reset_stores()
     opened: list[str] = []
     monkeypatch.setattr(webbrowser, "open", lambda url, *_, **__: opened.append(url))
-    try:
-        # Arrange
-        config = _hosted_config(tmp_path)
-        get_settings_store(config).save(PersistedSettings())
-        mcp_config = _expired_inline_oauth_server(
-            protected_oauth_mcp_server, None, "stored-refresh-token"
-        )
-        provider = create_settings_backed_mcp_tool_provider(config)
+    # Arrange
+    config = _hosted_config(tmp_path)
+    _settings_store(config).save(PersistedSettings())
+    mcp_config = _expired_inline_oauth_server(
+        protected_oauth_mcp_server, None, "stored-refresh-token"
+    )
+    provider = create_settings_backed_mcp_tool_provider(config, _settings_store(config))
 
-        # Act
-        with pytest.raises(MCPError) as exc_info:
-            provider.create_tools(mcp_config, timeout=5.0)
+    # Act
+    with pytest.raises(MCPError) as exc_info:
+        provider.create_tools(mcp_config, timeout=5.0)
 
-        # Assert
-        assert not isinstance(exc_info.value, MCPTimeoutError)
-        assert opened == []
-        assert write_backs == []
-    finally:
-        reset_stores()
+    # Assert
+    assert not isinstance(exc_info.value, MCPTimeoutError)
+    assert opened == []
+    assert write_backs == []
 
 
 def test_settings_backed_provider_writes_back_tokens_refreshed_on_connect(
@@ -883,36 +844,32 @@ def test_settings_backed_provider_writes_back_tokens_refreshed_on_connect(
     protected_oauth_mcp_server: str,
     write_backs: list[dict],
 ):
-    reset_stores()
-    try:
-        # Arrange: an expired access token and a refresh token the server issued.
-        config = _hosted_config(tmp_path)
-        get_settings_store(config).save(PersistedSettings())
-        client_info = _installed_client(oauth_provider)
-        oauth_provider.refresh_tokens["issued-refresh-token"] = RefreshToken(
-            token="issued-refresh-token",
-            client_id="installed-client",
-            scopes=["mail.read"],
-        )
-        mcp_config = _expired_inline_oauth_server(
-            protected_oauth_mcp_server, client_info, "issued-refresh-token"
-        )
-        provider = create_settings_backed_mcp_tool_provider(config)
+    # Arrange: an expired access token and a refresh token the server issued.
+    config = _hosted_config(tmp_path)
+    _settings_store(config).save(PersistedSettings())
+    client_info = _installed_client(oauth_provider)
+    oauth_provider.refresh_tokens["issued-refresh-token"] = RefreshToken(
+        token="issued-refresh-token",
+        client_id="installed-client",
+        scopes=["mail.read"],
+    )
+    mcp_config = _expired_inline_oauth_server(
+        protected_oauth_mcp_server, client_info, "issued-refresh-token"
+    )
+    provider = create_settings_backed_mcp_tool_provider(config, _settings_store(config))
 
-        # Act
-        with provider.create_tools(mcp_config, timeout=10.0) as client:
-            tool_names = [tool.name for tool in client.tools]
+    # Act
+    with provider.create_tools(mcp_config, timeout=10.0) as client:
+        tool_names = [tool.name for tool in client.tools]
 
-        # Assert: connected with the rotated tokens, which went back to the
-        # app server along with the client and the new expiry.
-        assert "read_subject" in tool_names
-        state = write_backs[-1]["oauth_state"]
-        assert state["tokens"]["refresh_token"] in oauth_provider.refresh_tokens
-        assert state["tokens"]["refresh_token"] != "issued-refresh-token"
-        assert state["client_info"]["client_id"] == "installed-client"
-        assert state["token_expires_at"] > time.time()
-    finally:
-        reset_stores()
+    # Assert: connected with the rotated tokens, which went back to the
+    # app server along with the client and the new expiry.
+    assert "read_subject" in tool_names
+    state = write_backs[-1]["oauth_state"]
+    assert state["tokens"]["refresh_token"] in oauth_provider.refresh_tokens
+    assert state["tokens"]["refresh_token"] != "issued-refresh-token"
+    assert state["client_info"]["client_id"] == "installed-client"
+    assert state["token_expires_at"] > time.time()
 
 
 @pytest.mark.parametrize("stored_client", [True, False])
@@ -925,34 +882,30 @@ def test_settings_backed_provider_writes_back_tokens_refreshed_for_a_static_clie
 ):
     """FastMCP rewrites a static client's registration with a loopback
     redirect URI on every connect; its refreshed tokens still go back."""
-    reset_stores()
-    try:
-        # Arrange
-        config = _hosted_config(tmp_path)
-        get_settings_store(config).save(PersistedSettings())
-        client_info = _installed_client(oauth_provider)
-        oauth_provider.refresh_tokens["issued-refresh-token"] = RefreshToken(
-            token="issued-refresh-token",
-            client_id="installed-client",
-            scopes=["mail.read"],
-        )
-        mcp_config = _expired_inline_oauth_server(
-            protected_oauth_mcp_server,
-            client_info if stored_client else None,
-            "issued-refresh-token",
-            static_client_id="installed-client",
-        )
-        provider = create_settings_backed_mcp_tool_provider(config)
+    # Arrange
+    config = _hosted_config(tmp_path)
+    _settings_store(config).save(PersistedSettings())
+    client_info = _installed_client(oauth_provider)
+    oauth_provider.refresh_tokens["issued-refresh-token"] = RefreshToken(
+        token="issued-refresh-token",
+        client_id="installed-client",
+        scopes=["mail.read"],
+    )
+    mcp_config = _expired_inline_oauth_server(
+        protected_oauth_mcp_server,
+        client_info if stored_client else None,
+        "issued-refresh-token",
+        static_client_id="installed-client",
+    )
+    provider = create_settings_backed_mcp_tool_provider(config, _settings_store(config))
 
-        # Act
-        with provider.create_tools(mcp_config, timeout=10.0) as client:
-            tool_names = [tool.name for tool in client.tools]
+    # Act
+    with provider.create_tools(mcp_config, timeout=10.0) as client:
+        tool_names = [tool.name for tool in client.tools]
 
-        # Assert
-        assert "read_subject" in tool_names
-        state = write_backs[-1]["oauth_state"]
-        assert state["tokens"]["refresh_token"] in oauth_provider.refresh_tokens
-        assert state["tokens"]["refresh_token"] != "issued-refresh-token"
-        assert state["client_info"]["client_id"] == "installed-client"
-    finally:
-        reset_stores()
+    # Assert
+    assert "read_subject" in tool_names
+    state = write_backs[-1]["oauth_state"]
+    assert state["tokens"]["refresh_token"] in oauth_provider.refresh_tokens
+    assert state["tokens"]["refresh_token"] != "issued-refresh-token"
+    assert state["client_info"]["client_id"] == "installed-client"

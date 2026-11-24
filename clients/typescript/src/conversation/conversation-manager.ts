@@ -3,9 +3,12 @@
  */
 
 import { HttpClient } from '../client/http-client';
+import { ConversationClient } from '../client/conversation-client';
 import { AgentProfilesClient } from '../client/agent-profiles-client';
 import { FileClient } from '../client/file-client';
+import { GitClient } from '../client/git-client';
 import { HooksClient } from '../client/hooks-client';
+import { InitClient } from '../client/init-client';
 import { LLMMetadataClient } from '../client/llm-client';
 import { MCPClient } from '../client/mcp-client';
 import { ProfilesClient } from '../client/profiles-client';
@@ -30,7 +33,14 @@ import {
   CreateACPConversationRequest,
   UpdateConversationRequest,
 } from '../models/conversation';
-import { AgentBase, ConversationExecutionStatus, ConversationID, Success } from '../types/base';
+import {
+  AgentBase,
+  ConversationExecutionStatus,
+  ConversationID,
+  ModelRouterSelection,
+  ModelRouterStatus,
+  Success,
+} from '../types/base';
 
 export class ACPConversationNamespace {
   constructor(private readonly manager: ConversationManager) {}
@@ -95,6 +105,8 @@ export class ConversationManager {
   public readonly shared: SharedClient;
   public readonly hooks: HooksClient;
   public readonly mcp: MCPClient;
+  public readonly git: GitClient;
+  public readonly init: InitClient;
   public readonly acp: ACPConversationNamespace;
 
   constructor(options: ConversationManagerOptions) {
@@ -127,6 +139,8 @@ export class ConversationManager {
     this.shared = new SharedClient(clientOptions);
     this.hooks = new HooksClient(clientOptions);
     this.mcp = new MCPClient(clientOptions);
+    this.git = new GitClient(clientOptions);
+    this.init = new InitClient(clientOptions);
     this.acp = new ACPConversationNamespace(this);
   }
 
@@ -163,10 +177,9 @@ export class ConversationManager {
   async getConversations(
     conversationIds: ConversationID[]
   ): Promise<Array<ConversationInfo | null>> {
-    const response = await this.client.get<Array<ConversationInfo | null>>('/api/conversations', {
-      params: { ids: conversationIds },
-    });
-    return response.data;
+    return new ConversationClient({ host: this.host, apiKey: this.apiKey }).getConversations(
+      conversationIds
+    );
   }
 
   /**
@@ -295,13 +308,9 @@ export class ConversationManager {
   async getACPConversations(
     conversationIds: ConversationID[]
   ): Promise<Array<ACPConversationInfo | null>> {
-    const response = await this.client.get<Array<ACPConversationInfo | null>>(
-      '/api/conversations',
-      {
-        params: { ids: conversationIds },
-      }
+    return new ConversationClient({ host: this.host, apiKey: this.apiKey }).getConversations(
+      conversationIds
     );
-    return response.data;
   }
 
   /**
@@ -377,6 +386,66 @@ export class ConversationManager {
     await this.client.post<Success>(`/api/conversations/${conversationId}/switch_profile`, {
       profile_name: profileName,
     });
+  }
+
+  /**
+   * Return model-router state for a conversation.
+   */
+  async getModelRouter(conversationId: ConversationID): Promise<ModelRouterStatus> {
+    const response = await this.client.get<ModelRouterStatus>(
+      `/api/conversations/${conversationId}/model_router`
+    );
+    return response.data;
+  }
+
+  /**
+   * Add a saved LLM profile as a route to the conversation's model router.
+   */
+  async addModelRouterRoute(
+    conversationId: ConversationID,
+    profileName: string,
+    routeName?: string,
+    baseRouteName = 'default'
+  ): Promise<ModelRouterStatus> {
+    const response = await this.client.post<ModelRouterStatus>(
+      `/api/conversations/${conversationId}/model_router/routes`,
+      { profile_name: profileName, route_name: routeName, base_route_name: baseRouteName }
+    );
+    return response.data;
+  }
+
+  /**
+   * Update route selection for a RouterLLM-backed conversation.
+   */
+  async updateModelRouter(
+    conversationId: ConversationID,
+    selection: ModelRouterSelection
+  ): Promise<ModelRouterStatus> {
+    const response = await this.client.patch<ModelRouterStatus>(
+      `/api/conversations/${conversationId}/model_router`,
+      { selection }
+    );
+    return response.data;
+  }
+
+  /**
+   * Switch a RouterLLM-backed conversation to a manual route.
+   */
+  async switchModelRouter(
+    conversationId: ConversationID,
+    routeName: string
+  ): Promise<ModelRouterStatus> {
+    return this.updateModelRouter(conversationId, {
+      mode: 'manual',
+      manual_route_name: routeName,
+    });
+  }
+
+  /**
+   * Return a RouterLLM-backed conversation to automatic routing.
+   */
+  async resumeAutoModelRouting(conversationId: ConversationID): Promise<ModelRouterStatus> {
+    return this.updateModelRouter(conversationId, { mode: 'auto' });
   }
 
   /**

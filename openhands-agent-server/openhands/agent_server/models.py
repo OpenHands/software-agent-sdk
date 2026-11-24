@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC
 from datetime import datetime
 from enum import Enum, StrEnum
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, field_validator
@@ -23,12 +23,15 @@ from openhands.sdk.conversation.secret_registry import SecretRegistry
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.types import ConversationTags
 from openhands.sdk.event.base import Event
+from openhands.sdk.event.reaction import ReactionEmoji
+from openhands.sdk.event.types import EventID
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm.message import (  # re-export
     ImageContent as ImageContent,
     TextContent as TextContent,
 )
 from openhands.sdk.llm.utils.metrics import MetricsSnapshot
+from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.profiles.agent_profile import (
     LaunchedAgentProfile as LaunchedAgentProfile,
 )
@@ -404,9 +407,22 @@ class ConversationInfo(_ConversationInfoBase):
     )
 
 
+class BrokenConversationInfo(BaseModel):
+    id: UUID
+    title: str | None = None
+    created_at: datetime
+    updated_at: datetime
+    tags: dict[str, str] = Field(default_factory=dict)
+    reason: Literal["metadata", "state"]
+
+
 class ConversationPage(BaseModel):
     items: list[ConversationInfo]
     next_page_id: str | None = None
+    broken_items: list[BrokenConversationInfo] = Field(
+        default_factory=list,
+        description="Unreadable conversations in this page of unfiltered results.",
+    )
 
 
 INCLUDE_SKILLS_PARAM_TITLE = (
@@ -460,6 +476,33 @@ def trim_conversation_response_skills(info: ConversationInfo) -> ConversationInf
     return info.model_copy(update={"agent": trimmed_agent})
 
 
+class ReactionRequest(BaseModel):
+    """Payload to add or remove the user's emoji reaction on a message."""
+
+    emoji: ReactionEmoji = Field(description="The emoji, as a shortcode.")
+    target_event_id: EventID | None = Field(
+        default=None,
+        description="The message to react to; the agent's latest when left out.",
+    )
+    removed: bool = Field(default=False, description="True to remove the reaction.")
+
+
+class AskUserAnswerRequest(BaseModel):
+    """The user's answer to the agent's pending ``ask_user`` question."""
+
+    ask_id: EventID = Field(
+        description="Id of the agent's `ask_user` call (its ActionEvent) answered."
+    )
+    option_index: int | None = Field(
+        default=None, ge=0, description="The option picked, counted from 0."
+    )
+    text: str | None = Field(
+        default=None,
+        max_length=10_000,
+        description="The user's own words, instead of an option or with one.",
+    )
+
+
 class ConfirmationResponseRequest(BaseModel):
     """Payload to accept or reject a pending action."""
 
@@ -478,6 +521,34 @@ class FileUploadResult(Success):
 class EventPage(OpenHandsModel):
     items: list[Event]
     next_page_id: str | None = None
+
+
+class AddModelRouterRouteRequest(BaseModel):
+    """Payload to add a saved LLM profile as a model-router route."""
+
+    profile_name: str = Field(description="Saved LLM profile to install as a route.")
+    route_name: str | None = Field(
+        default=None,
+        description=(
+            "Optional route name to add to the model router. Defaults to profile_name."
+        ),
+    )
+    base_route_name: str = Field(
+        default="default",
+        description=(
+            "Route name assigned to the conversation's current LLM when it must be "
+            "wrapped in a model router."
+        ),
+    )
+
+
+class AddMCPServersRequest(BaseModel):
+    """Payload to add modern MCP servers to a running conversation."""
+
+    mcp_servers: dict[str, MCPServer] = Field(
+        default_factory=dict,
+        description="MCP servers to add to this conversation by server name.",
+    )
 
 
 class UpdateSecretsRequest(BaseModel):

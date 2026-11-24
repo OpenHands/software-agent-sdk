@@ -275,7 +275,11 @@ elif mode == "fallback":
         # Profiles are resolved lazily: fb2 is saved after the primary is built.
         store.save("fb1", fake_llm(fb1, "fb1", **PRICE), include_secrets=True)
         llm = primary_with(p, ["fb1", "fb2"])
-        store.save("fb2", fake_llm(fb2, "fb2", **PRICE), include_secrets=True)
+        store.save(
+            "fb2",
+            fake_llm(fb2, "fb2", model="openai/gpt-4.1-mini", **PRICE),
+            include_secrets=True,
+        )
         first, err = attempt(lambda: llm.completion(HI))
         out["transient"] = {
             "text": text_of(first) if first else None,
@@ -284,11 +288,14 @@ elif mode == "fallback":
             "fallback1_requests": len(fb1.requests),
             "fallback2_requests": len(fb2.requests),
             "primary_cost": round(llm.metrics.accumulated_cost, 4),
+            "cost_models": [c.model for c in llm.metrics.costs],
         }
         second, err = attempt(lambda: llm.completion(HI))
         out["next_call"] = {
             "text": text_of(second) if second else None,
             "primary_requests": len(p.requests),
+            "primary_cost": round(llm.metrics.accumulated_cost, 4),
+            "cost_models": [c.model for c in llm.metrics.costs],
         }
 
     with (
@@ -357,6 +364,37 @@ elif mode == "fallback":
         llm = primary_with(p, ["fb-async"])
         r, err = attempt(lambda: asyncio.run(llm.acompletion(HI)))
         out["async"] = {"text": text_of(r) if r else None, "error": err}
+
+    # In a conversation the fallback's usage lands under the caller's usage_id.
+    with (
+        FakeProvider([rate_limited]) as p,
+        FakeProvider([{"finish": "finished on the fallback"}]) as fb,
+    ):
+        store.save(
+            "fb-conv",
+            fake_llm(fb, "fb-conv", model="openai/gpt-4.1-mini", **PRICE),
+            include_secrets=True,
+        )
+        conversation = Conversation(
+            agent=Agent(llm=primary_with(p, ["fb-conv"]), tools=[]),
+            workspace=WORKSPACE,
+            visualizer=None,
+        )
+        conversation.send_message("Finish.")
+        conversation.run()
+        usage = conversation.conversation_stats.usage_to_metrics
+        out["in_conversation"] = {
+            "status": conversation.state.execution_status.value,
+            "fallback_requests": len(fb.requests),
+            "usage_ids": sorted(usage),
+            "primary_cost": round(usage["primary"].accumulated_cost, 4)
+            if "primary" in usage
+            else None,
+            "cost_models": [c.model for c in usage["primary"].costs]
+            if "primary" in usage
+            else None,
+        }
+        conversation.close()
 
 else:
     raise SystemExit(f"unknown mode {mode}")

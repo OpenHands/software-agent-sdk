@@ -25,6 +25,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import threading
 import time
 import uuid
@@ -38,20 +39,21 @@ from collections.abc import (
 )
 from concurrent.futures import Future
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple
+from typing import TYPE_CHECKING, Annotated, Any, Final, Literal, NamedTuple
 
 from acp.client.connection import ClientSideConnection
 from acp.exceptions import RequestError as ACPRequestError
-from acp.helpers import image_block, text_block
 from acp.meta import AGENT_METHODS
 from acp.schema import (
     AcpMcpServer,
     AgentMessageChunk,
     AgentThoughtChunk,
     AllowedOutcome,
+    ConnectMcpResponse,
     CreateElicitationResponse,
     CreateTerminalResponse,
     DeclineElicitationResponse,
+    DisconnectMcpResponse,
     ElicitationMode,
     EnvVariable,
     HttpHeader,
@@ -81,10 +83,7 @@ from acp.utils import request_model
 from pydantic import (
     Field,
     PrivateAttr,
-    SecretStr,
     ValidationError,
-    ValidationInfo,
-    field_serializer,
     field_validator,
 )
 
@@ -147,10 +146,7 @@ from openhands.sdk.settings.acp_providers import (
 from openhands.sdk.tool import Tool  # noqa: TC002
 from openhands.sdk.tool.builtins.finish import FinishAction, FinishObservation
 from openhands.sdk.utils import maybe_truncate
-from openhands.sdk.utils.pydantic_secrets import (
-    serialize_secret,
-    validate_secret,
-)
+from openhands.sdk.utils.pydantic_secrets import SecretField
 from openhands.sdk.utils.redact import redact_text_secrets
 
 
@@ -184,6 +180,8 @@ _ACP_PROMPT_MAX_RETRIES: int = int(os.environ.get("ACP_PROMPT_MAX_RETRIES", "3")
 _ACP_CANCEL_DRAIN_TIMEOUT: float = float(
     os.environ.get("ACP_CANCEL_DRAIN_TIMEOUT", "2.0")
 )
+_ACP_POSIX_PROCESS_GROUPS = os.name == "posix"
+_ACP_PROCESS_GROUP_GRACE = 0.5
 
 _ACP_AUTH_TIMEOUT: float = float(os.environ.get("ACP_AUTH_TIMEOUT", "30.0"))
 _ACP_NPX_CACHE_WARM_TIMEOUT: float = float(
@@ -986,9 +984,8 @@ async def _reapply_session_model_on_resume(
     persisted mechanism hint when that response omits the model block.
 
     Gated on runtime-switch support (skip only known providers that don't); a
-    server that rejects the call is tolerated (logged) — like the
-    ``load_session`` fallback — so resume can't break and the session keeps the
-    server default until the next switch.
+    server that rejects the model-setting call is tolerated (logged), so the
+    resumed session keeps the server default until the next switch.
 
     Returns the model id the resumed live session now runs (see
     :func:`_apply_acp_model`), or ``None`` when there is nothing to reapply, the
@@ -1079,13 +1076,13 @@ def _image_url_to_acp_block(url: str) -> ImageContentBlock | None:
         try:
             header, data = url.split(",", 1)
             mime_type = header.split(":", 1)[1].split(";", 1)[0]
-            return image_block(data=data, mime_type=mime_type)
+            return ImageContentBlock(data=data, mime_type=mime_type)
         except (ValueError, IndexError):
             logger.warning("Failed to parse data URI for ACP image block")
             return None
     # Plain URL — pass as uri with a generic MIME type; the ACP server
     # can fetch and detect the actual type.
-    return image_block(data="", mime_type="image/png", uri=url)
+    return ImageContentBlock(data="", mime_type="image/png", uri=url)
 
 
 def _mask_json_value(value: Any, mask: Callable[[str], str]) -> Any:
@@ -1594,6 +1591,10 @@ class _OpenHandsACPBridge:
                     self._fork_accumulated_text.append(
                         self._mask_value(update.content.text)
                     )
+            elif isinstance(update, UsageUpdate):
+                # ask_agent() waits for this to bill the fork's cost; without
+                # it every call stalls until the usage-update timeout.
+                self._store_usage_update(session_id, update)
             return
 
         if isinstance(update, AgentMessageChunk):
@@ -1615,13 +1616,7 @@ class _OpenHandsACPBridge:
             if isinstance(update.content, TextContentBlock):
                 self.accumulated_thoughts.append(self._mask_value(update.content.text))
         elif isinstance(update, UsageUpdate):
-            # Store the update for step()/ask_agent() to process in one place.
-            self._context_window = update.size
-            self._context_window_by_session[session_id] = update.size
-            self._turn_usage_updates[session_id] = update
-            event = self._usage_received.get(session_id)
-            if event is not None:
-                event.set()
+            self._store_usage_update(session_id, update)
         elif isinstance(update, ToolCallStart):
             self._emit_text_segment()
             entry = {
@@ -1693,6 +1688,18 @@ class _OpenHandsACPBridge:
             self._maybe_signal_activity()
         else:
             logger.debug("ACP session update: %s", type(update).__name__)
+
+    def _store_usage_update(self, session_id: str, update: UsageUpdate) -> None:
+        """Keep a usage update for step()/ask_agent() and release its waiter."""
+        if session_id != self._fork_session_id:
+            # The fork's window is not the main session's; only the main
+            # session's size feeds the conversation-wide context window.
+            self._context_window = update.size
+        self._context_window_by_session[session_id] = update.size
+        self._turn_usage_updates[session_id] = update
+        event = self._usage_received.get(session_id)
+        if event is not None:
+            event.set()
 
     def segment_text(self) -> str:
         """Text said since the last emitted segment (the whole turn if none)."""
@@ -1870,6 +1877,41 @@ class _OpenHandsACPBridge:
     ) -> KillTerminalResponse | None:
         raise NotImplementedError("ACP server handles terminal operations")
 
+    # MCP-over-ACP methods — part of the unstable ``Client`` protocol in
+    # agent-client-protocol 1.0.0. The bridge never proxies MCP servers to the
+    # ACP server, so these are defensive stubs.
+    async def connect_mcp(
+        self,
+        server_id: str,
+        **kwargs: Any,  # noqa: ARG002
+    ) -> ConnectMcpResponse:
+        raise NotImplementedError("ACP server manages its own MCP connections")
+
+    async def disconnect_mcp(
+        self,
+        connection_id: str,
+        **kwargs: Any,  # noqa: ARG002
+    ) -> DisconnectMcpResponse:
+        raise NotImplementedError("ACP server manages its own MCP connections")
+
+    async def mcp_message(
+        self,
+        connection_id: str,  # noqa: ARG002
+        method: str,  # noqa: ARG002
+        params: dict[str, Any] | None = None,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002
+    ) -> Any:
+        raise NotImplementedError("ACP server manages its own MCP connections")
+
+    async def notify_mcp(
+        self,
+        connection_id: str,  # noqa: ARG002
+        method: str,  # noqa: ARG002
+        params: dict[str, Any] | None = None,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002
+    ) -> None:
+        raise NotImplementedError("ACP server manages its own MCP connections")
+
     async def ext_method(
         self,
         method: str,  # noqa: ARG002
@@ -1981,7 +2023,7 @@ class ACPAgent(AgentBase):
             "the server keeps its own."
         ),
     )
-    acp_resume_session_id: str | None = Field(
+    acp_resume_session_id: Annotated[str | None, SecretField()] = Field(
         default=None,
         description=(
             "Optional explicit ACP session id to resume. When set, takes "
@@ -1990,55 +2032,15 @@ class ACPAgent(AgentBase):
             "for environments where the per-conversation filesystem (and "
             "therefore ``base_state.json``) does not survive across restarts "
             "(e.g. cloud sandbox recycles), but the id has been mirrored "
-            "into durable storage elsewhere. Falls back to a fresh session "
-            "if the server cannot load the id. Treated as a secret on the "
-            "wire — possession of the id is enough to resume the underlying "
-            "ACP session, so default serialization redacts it; pass "
+            "into durable storage elsewhere. If the server cannot load the "
+            "id, startup fails without replacing the session. Treated as a "
+            "secret on the wire — possession of the id is enough to resume "
+            "the underlying ACP session, so default serialization redacts it; pass "
             "``expose_secrets='plaintext'`` (trusted backend) or "
             "``expose_secrets='encrypted'`` plus a cipher (frontend round-"
             "trip) when the value must cross a serialization boundary."
         ),
     )
-
-    @field_serializer("acp_resume_session_id", when_used="always")
-    def _serialize_acp_resume_session_id(self, value: str | None, info):
-        """Mask ``acp_resume_session_id`` via :func:`serialize_secret`.
-
-        Default ``model_dump`` / ``model_dump_json`` redacts the id so it
-        cannot leak into logs, trace exports, or PR review attachments.
-        Trusted backend callers opt into plaintext via Pydantic's context
-        (``expose_secrets='plaintext'``); frontend round-trips use the
-        ``"encrypted"`` mode with a cipher in the context.
-        """
-        if value is None:
-            return None
-        return serialize_secret(SecretStr(value), info)
-
-    @field_validator("acp_resume_session_id", mode="before")
-    @classmethod
-    def _validate_acp_resume_session_id(
-        cls, value: Any, info: ValidationInfo
-    ) -> str | None:
-        """Reverse :meth:`_serialize_acp_resume_session_id` on load.
-
-        Without this validator, ``model_validate_json`` of a previously
-        serialized agent would put garbage in ``acp_resume_session_id``:
-
-        - Default-redacted dumps would reload as the literal ``"**********"``
-          sentinel — calling ``session/load`` with that fails server-side and
-          we fall back to a fresh session every time, defeating the whole
-          point of the durable mirror.
-        - Encrypted dumps (frontend round-trip) would reload as the raw
-          Fernet ciphertext — same failure mode, plus the ciphertext sits
-          in ``state.agent_state`` on disk.
-
-        :func:`validate_secret` returns ``None`` for empty/redacted values
-        and decrypts when a cipher is present in the validation context.
-        We unwrap the returned ``SecretStr`` so the field's runtime type
-        stays ``str | None`` (the rest of the SDK reads it directly).
-        """
-        secret = validate_secret(value, info)
-        return secret.get_secret_value() if secret is not None else None
 
     acp_file_secrets: list[ACPFileSecretSpec] = Field(
         default_factory=lambda: list(default_acp_file_secrets()),
@@ -2105,6 +2107,7 @@ class ACPAgent(AgentBase):
     _conn: ClientSideConnection | None = PrivateAttr(default=None)
     _session_id: str | None = PrivateAttr(default=None)
     _process: Any = PrivateAttr(default=None)  # asyncio subprocess
+    _process_group_id: int | None = PrivateAttr(default=None)
     _client: Any = PrivateAttr(default=None)  # _OpenHandsACPBridge
     _filtered_reader: Any = PrivateAttr(default=None)  # StreamReader
     _stdout_filter_task: Any = PrivateAttr(default=None)  # asyncio.Task
@@ -2257,6 +2260,11 @@ class ACPAgent(AgentBase):
             elapsed: Wall-clock seconds for this prompt round-trip (optional).
             usage_update: The synchronized ACP UsageUpdate for this turn, if any.
         """
+        # The conversation's session for the sentinel LLM: its registry opened
+        # it, so this resolves on the portal thread as well as on the caller's.
+        session = self.llm.session_for()
+        metrics = session.metrics
+
         # -- Cost recording ---------------------------------------------------
         # claude-agent-acp, codex-acp: report cost via UsageUpdate notification
         # gemini-cli: does not send UsageUpdate (cost derived from tokens below)
@@ -2265,7 +2273,7 @@ class ACPAgent(AgentBase):
             last_cost = self._client._last_cost_by_session.get(session_id, 0.0)
             delta = usage_update.cost.amount - last_cost
             if delta > 0:
-                self.llm.metrics.add_cost(delta)
+                metrics.add_cost(delta)
                 cost_recorded = True
             self._client._last_cost_by_session[session_id] = usage_update.cost.amount
             self._client._last_cost = usage_update.cost.amount
@@ -2275,7 +2283,7 @@ class ACPAgent(AgentBase):
             _extract_token_usage(response)
         )
         if input_tokens or output_tokens:
-            self.llm.metrics.add_token_usage(
+            metrics.add_token_usage(
                 prompt_tokens=input_tokens,
                 completion_tokens=output_tokens,
                 cache_read_tokens=cache_read,
@@ -2296,7 +2304,7 @@ class ACPAgent(AgentBase):
                 self.acp_model, input_tokens, output_tokens
             )
             if cost > 0:
-                self.llm.metrics.add_cost(cost)
+                metrics.add_cost(cost)
 
         if not cost_recorded and not input_tokens and not output_tokens:
             # gemini-cli currently returns response.usage=None and
@@ -2308,13 +2316,9 @@ class ACPAgent(AgentBase):
             )
 
         if elapsed is not None:
-            self.llm.metrics.add_response_latency(elapsed, session_id)
+            metrics.add_response_latency(elapsed, session_id)
 
-        if self.llm.telemetry._stats_update_callback is not None:
-            try:
-                self.llm.telemetry._stats_update_callback()
-            except Exception:
-                logger.debug("Stats update callback failed", exc_info=True)
+        session.telemetry.notify_stats_update()
 
     # -- Capability helpers ------------------------------------------------
 
@@ -2551,7 +2555,9 @@ class ACPAgent(AgentBase):
             # exception, which still propagates to preserve the existing
             # cleanup/re-raise contract that run()/arun() rely on.
             try:
-                state.execution_status = ConversationExecutionStatus.ERROR
+                state.transition(
+                    ConversationExecutionStatus.ERROR, "ACP agent failed to start"
+                )
                 on_event(
                     ConversationErrorEvent(
                         source="agent",
@@ -2565,8 +2571,8 @@ class ACPAgent(AgentBase):
 
         self._register_atexit_cleanup(replace=True)
 
-        # A successful resume keeps the prior id; cwd mismatch and load_session
-        # failure both fall back to ``new_session``, which mints a fresh one.
+        # A successful resume keeps the prior id; cwd mismatch falls back to
+        # ``new_session``, which mints a fresh one.
         # The session-id comparison is the only authoritative signal — the
         # decision happens inside ``_start_acp_server`` and isn't otherwise
         # observable here.
@@ -3258,8 +3264,7 @@ class ACPAgent(AgentBase):
         # always lands in the same ``working_dir``). We therefore assume
         # cwd-compatibility and let the ACP server's own ``session/load``
         # validation be the last line of defence: a server-side cwd mismatch
-        # returns an ``ACPRequestError``, already caught below and falling back
-        # to ``new_session`` — the same recovery path as a forgotten id.
+        # returns an ``ACPRequestError`` and aborts startup.
         fs_session_id: str | None = state.agent_state.get("acp_session_id")
         fs_session_cwd: str | None = state.agent_state.get("acp_session_cwd")
         if self.acp_resume_session_id and self.acp_resume_session_id != fs_session_id:
@@ -3300,6 +3305,10 @@ class ACPAgent(AgentBase):
             # filtering reader that skips non-JSON-RPC lines some
             # ACP servers (e.g. claude-code-acp v0.1.x) write to
             # stdout.
+            start_new_session = _ACP_POSIX_PROCESS_GROUPS
+            spawn_kwargs: dict[str, Any] = (
+                {"start_new_session": True} if start_new_session else {}
+            )
             process = await asyncio.create_subprocess_exec(
                 command,
                 *args,
@@ -3308,6 +3317,12 @@ class ACPAgent(AgentBase):
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
                 limit=_STREAM_READER_LIMIT,
+                **spawn_kwargs,
+            )
+            self._process = process
+            pid = process.pid
+            self._process_group_id = (
+                pid if start_new_session and isinstance(pid, int) else None
             )
             assert process.stdin is not None
             assert process.stdout is not None
@@ -3336,7 +3351,6 @@ class ACPAgent(AgentBase):
             # The "session initialized" gating keys off _session_id (assigned
             # last, on full success), so an early _conn here does not make the
             # agent look ready before _init completes.
-            self._process = process
             self._conn = conn
             self._filtered_reader = filtered_reader
             self._stdout_filter_task = stdout_filter_task
@@ -3454,15 +3468,8 @@ class ACPAgent(AgentBase):
                     else:
                         _warn_auth_selection_failure(auth_methods, env, auth_provider)
 
-            # Resume the prior ACP session if we have its id.  If the server
-            # has forgotten it (state wiped, new host, etc.) fall through to
-            # new_session so the conversation still starts cleanly.
-            #
-            # We only swallow ACPRequestError here: that is the protocol-level
-            # "I don't know this session" signal and is recoverable by
-            # starting fresh.  Transport failures (broken pipe, EOF, timeout,
-            # subprocess crash) propagate — there is no working connection to
-            # fall back on, and the outer init_state handler cleans up.
+            # A new ACP session does not inherit the provider's conversation
+            # history, so a failed resume must not silently replace it.
             session_id: str | None = None
             reported_model_id: str | None = None
             available_models: list[ACPModelInfo] | None = None
@@ -3506,11 +3513,19 @@ class ACPAgent(AgentBase):
                         working_dir,
                     )
                 except ACPRequestError as e:
-                    logger.warning(
-                        "ACP load_session(%s) failed (%s); starting a fresh session",
-                        _fingerprint_session_id(prior_session_id),
-                        e,
+                    # ``data`` is folded into the message: clients that only
+                    # show ``str(exc)`` would otherwise lose the real cause.
+                    # Providers often echo the id, which must not leak.
+                    provider_error = _acp_error_detail(e).replace(
+                        prior_session_id, _fingerprint_session_id(prior_session_id)
                     )
+                    raise ACPRequestError(
+                        e.code,
+                        "Could not resume the existing ACP session, so the agent "
+                        "would not see the earlier conversation. No new session "
+                        "was started. Fix the provider error and try again, or "
+                        "start a new conversation. Provider error: " + provider_error,
+                    ) from e
 
             # Track whether ``acp_model`` was actually pushed to the server so
             # ``current_model_id`` below can stay honest: a caller override that
@@ -3901,7 +3916,7 @@ class ACPAgent(AgentBase):
         blocks: list[TextContentBlock | ImageContentBlock] = []
         for content in message.content:
             if isinstance(content, TextContent) and content.text.strip():
-                blocks.append(text_block(content.text))
+                blocks.append(TextContentBlock(text=content.text))
             elif isinstance(content, ImageContent):
                 for url in content.image_urls:
                     acp_block = _image_url_to_acp_block(url)
@@ -3911,7 +3926,7 @@ class ACPAgent(AgentBase):
             self._suffix_install_state == "pending_first_prompt"
             and self._installed_suffix
         ):
-            blocks.append(text_block(self._installed_suffix))
+            blocks.append(TextContentBlock(text=self._installed_suffix))
             # NOTE: do NOT flip ``_suffix_install_state`` here.  If the
             # caller (step/astep) is cancelled or fails before the ACP
             # server persists this first turn (more likely on the async
@@ -4134,7 +4149,7 @@ class ACPAgent(AgentBase):
                 tool_call_id=tc_id,
             )
         )
-        state.execution_status = ConversationExecutionStatus.FINISHED
+        state.transition(ConversationExecutionStatus.FINISHED, "ACP turn finished")
 
     def _emit_turn_timeout(
         self,
@@ -4168,7 +4183,7 @@ class ACPAgent(AgentBase):
         # Close any tool cards left in flight from the timed-out attempt.
         self._cancel_inflight_tool_calls()
         on_event(MessageEvent(source="agent", llm_message=error_message))
-        state.execution_status = ConversationExecutionStatus.ERROR
+        state.transition(ConversationExecutionStatus.ERROR, "ACP prompt timed out")
 
     def _emit_turn_error(
         self,
@@ -4213,7 +4228,7 @@ class ACPAgent(AgentBase):
                 detail=error_detail,
             )
         )
-        state.execution_status = ConversationExecutionStatus.ERROR
+        state.transition(ConversationExecutionStatus.ERROR, "ACP turn failed")
 
     def _finalize_successful_turn_guarded(
         self,
@@ -4319,7 +4334,9 @@ class ACPAgent(AgentBase):
                     break
         if prompt_blocks is None:
             logger.warning("No user message found; finishing conversation")
-            state.execution_status = ConversationExecutionStatus.FINISHED
+            state.transition(
+                ConversationExecutionStatus.FINISHED, "no user message to prompt"
+            )
             return
 
         self._reset_client_for_turn(
@@ -4497,7 +4514,9 @@ class ACPAgent(AgentBase):
                         break
         if prompt_blocks is None:
             logger.warning("No user message found; finishing conversation")
-            state.execution_status = ConversationExecutionStatus.FINISHED
+            state.transition(
+                ConversationExecutionStatus.FINISHED, "no user message to prompt"
+            )
             return
 
         self._reset_client_for_turn(
@@ -4706,7 +4725,7 @@ class ACPAgent(AgentBase):
                 usage_sync = client.prepare_usage_sync(fork_session_id)
                 response = await conn.prompt(
                     session_id=fork_session_id,
-                    prompt=[text_block(question)],
+                    prompt=[TextContentBlock(text=question)],
                 )
                 if client.get_turn_usage_update(fork_session_id) is None:
                     try:
@@ -4859,9 +4878,12 @@ class ACPAgent(AgentBase):
         # authoritative current model is persisted by
         # :meth:`LocalConversation.switch_acp_model` via an agent ``model_copy``.
         self.llm.model = model
-        self.llm.metrics.model_name = model
-        if self.llm.metrics.accumulated_token_usage is not None:
-            self.llm.metrics.accumulated_token_usage.model = model
+        # Both ledgers carry the model name: the LLM's own and the one the
+        # conversation keeps for it (the same object outside a conversation).
+        for metrics in (self.llm.metrics, self.llm.session_for().metrics):
+            metrics.model_name = model
+            if metrics.accumulated_token_usage is not None:
+                metrics.accumulated_token_usage.model = model
         # Refresh the surfaced model state so the chip/picker
         # (``ConversationInfo.current_model_id``) reflects the switch instead
         # of the stale session-start value. ``_current_model_id`` is a
@@ -4978,21 +5000,35 @@ class ACPAgent(AgentBase):
 
         process = self._process
         if process is not None:
+            group_id = self._process_group_id
             try:
-                if process.returncode is None or not isinstance(
-                    process.returncode, int
-                ):
-                    process.terminate()
+                if group_id is not None:
+                    group_signalled = self._signal_process_group(
+                        process, group_id, signal.SIGTERM
+                    )
+                else:
+                    group_signalled = False
+                    if not isinstance(process.returncode, int):
+                        process.terminate()
                 if self._executor is not None:
                     self._executor.run_async(
                         self._wait_for_process,
                         process,
                         timeout=5.0,
                     )
+                if (
+                    group_id is not None
+                    and group_signalled
+                    and not self._wait_for_process_group_exit(process, group_id)
+                ):
+                    raise TimeoutError("ACP process group did not exit after SIGTERM")
             except Exception as e:
                 logger.debug("Error terminating ACP process: %s", e)
                 try:
-                    process.kill()
+                    if group_id is None:
+                        process.kill()
+                    elif self._signal_process_group(process, group_id, signal.SIGKILL):
+                        self._wait_for_process_group_exit(process, group_id)
                     if self._executor is not None:
                         self._executor.run_async(
                             self._wait_for_process,
@@ -5002,6 +5038,7 @@ class ACPAgent(AgentBase):
                 except Exception as kill_error:
                     logger.debug("Error killing ACP process: %s", kill_error)
             self._process = None
+            self._process_group_id = None
 
         for task_name, task in (
             ("stdout filter task", self._stdout_filter_task),
@@ -5033,6 +5070,37 @@ class ACPAgent(AgentBase):
                 failures["ACP executor"] = e
             self._executor = None
         return failures
+
+    @staticmethod
+    def _signal_process_group(
+        process: asyncio.subprocess.Process, group_id: int, sig: int
+    ) -> bool:
+        if group_id <= 1 or group_id == os.getpgrp():
+            return False
+        try:
+            leader_group = os.getpgid(group_id)
+        except ProcessLookupError:
+            # Descendants retain their PGID after the leader has been reaped.
+            pass
+        else:
+            if leader_group != group_id or process.returncode is not None:
+                return False
+        try:
+            os.killpg(group_id, sig)
+        except ProcessLookupError:
+            return False
+        return True
+
+    def _wait_for_process_group_exit(
+        self, process: asyncio.subprocess.Process, group_id: int
+    ) -> bool:
+        deadline = time.monotonic() + _ACP_PROCESS_GROUP_GRACE
+        while self._signal_process_group(process, group_id, 0):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            time.sleep(min(0.05, remaining))
+        return True
 
     @staticmethod
     async def _wait_for_process(process: asyncio.subprocess.Process) -> None:

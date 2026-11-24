@@ -50,13 +50,13 @@ For condenser tests, use the `condenser-test` label instead.
 
 ```bash
 # Run all tests
-uv run python tests/integration/run_infer.py --llm-config '{"model": "litellm_proxy/anthropic/claude-sonnet-4-5-20250929"}'
+uv run python -m tests.integration.run_infer --llm-config '{"model": "litellm_proxy/anthropic/claude-sonnet-4-5-20250929"}'
 
 # Run a specific test
-uv run python tests/integration/run_infer.py --llm-config '{"model": "litellm_proxy/anthropic/claude-sonnet-4-5-20250929"}' --eval-ids t01_fix_simple_typo
+uv run python -m tests.integration.run_infer --llm-config '{"model": "litellm_proxy/anthropic/claude-sonnet-4-5-20250929"}' --eval-ids t01_fix_simple_typo
 
 # Run only condenser tests
-uv run python tests/integration/run_infer.py --llm-config '{"model": "litellm_proxy/anthropic/claude-opus-4-5", "extended_thinking": true}' --test-type condenser
+uv run python -m tests.integration.run_infer --llm-config '{"model": "litellm_proxy/anthropic/claude-opus-4-5", "extended_thinking": true}' --test-type condenser
 ```
 
 ## Automated Testing with GitHub Actions

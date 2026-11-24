@@ -8,12 +8,31 @@ until the user turns it on. Unknown keys are refused, so
 To add a feature, append an :class:`ExperimentalFeatureDefinition` to
 ``EXPERIMENTAL_FEATURES`` and read it where it takes effect with
 :func:`is_enabled`.
+
+The tools a feature gives the agent are chosen when a conversation starts
+(:func:`experimental_feature_tools`), so they follow the switch for
+conversations started after it; a route that checks the switch follows it at
+once. Child conversations reuse their parent's agent and tools.
+
+A Docker runtime's server has its own, empty settings: the host passes it the
+user's switches in ``OH_RUNTIME_EXPERIMENTAL_FEATURES`` and checks the live
+ones itself before forwarding a request (see :func:`host_experimental_features`).
 """
 
+import json
+import os
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
+
+from openhands.sdk.event.ask_user import ASK_USER_TOOL_NAME
+from openhands.sdk.tool.spec import Tool
+
+
+if TYPE_CHECKING:
+    from openhands.agent_server.persistence import SettingsStore
 
 
 @dataclass(frozen=True)
@@ -36,7 +55,78 @@ class ExperimentalFeatureUpdate(BaseModel):
     enabled: bool
 
 
-EXPERIMENTAL_FEATURES: list[ExperimentalFeatureDefinition] = []
+CONVERSATION_REACTIONS = ExperimentalFeatureDefinition(
+    key="conversation_reactions",
+    label="Conversation reactions",
+    description=(
+        "The agent can put an emoji reaction on your messages, for example 👀 "
+        "when it starts on something before it answers, and you can react to "
+        "its messages. Applies to conversations started after you turn it on."
+    ),
+)
+
+ASK_USER = ExperimentalFeatureDefinition(
+    key="ask_user",
+    label="Decision cards",
+    description=(
+        "When a choice is yours to make, the agent can ask you one question "
+        "with a few options and a recommendation, shown as a card you answer "
+        "in one tap or in your own words. Applies to conversations started "
+        "after you turn it on."
+    ),
+)
+
+CONVERSATION_MENTIONS = ExperimentalFeatureDefinition(
+    key="conversation_mentions",
+    label="Conversation mentions",
+    description=(
+        "The agent can find your other conversations by title, read one you "
+        "point it at, and link to them in its answers. Applies to "
+        "conversations started after you turn it on."
+    ),
+)
+
+MESSAGE_EDITS = ExperimentalFeatureDefinition(
+    key="message_edits",
+    label="Message edits",
+    description=(
+        "The agent can edit its earlier messages when they got answered or "
+        "became wrong: it strikes the outdated part and adds a short note, and "
+        "the message shows as edited. Applies to conversations started after "
+        "you turn it on."
+    ),
+)
+
+# Read by clients only: the agent server gives this feature no tools or routes.
+FACTORIES = ExperimentalFeatureDefinition(
+    key="factories",
+    label="Factories",
+    description=(
+        "Shows Factories in the sidebar: named groups of automations that "
+        "together run a software development process. Needs an automation "
+        "service that supports factories."
+    ),
+)
+
+PROJECTS = ExperimentalFeatureDefinition(
+    key="projects",
+    label="Projects",
+    description=(
+        "Group conversations into projects: a coordinator conversation hands "
+        "work to other conversations, hears back from them, and keeps project "
+        "files and memory. Turned off, the projects API is unavailable and project "
+        "tools refuse to run; existing projects are kept."
+    ),
+)
+
+EXPERIMENTAL_FEATURES: list[ExperimentalFeatureDefinition] = [
+    CONVERSATION_REACTIONS,
+    ASK_USER,
+    CONVERSATION_MENTIONS,
+    MESSAGE_EDITS,
+    FACTORIES,
+    PROJECTS,
+]
 
 
 def find_experimental_feature(key: str) -> ExperimentalFeatureDefinition | None:
@@ -59,3 +149,67 @@ def experimental_feature_flags(
         )
         for f in EXPERIMENTAL_FEATURES
     ]
+
+
+def experimental_feature_tools(features: Mapping[str, bool]) -> list[Tool]:
+    """Tools to add to an OpenHands agent for the features that are on."""
+    tools: list[Tool] = []
+    if is_enabled(features, CONVERSATION_REACTIONS.key):
+        # Tool names as registered by openhands.tools.reaction.
+        tools += [Tool(name="react"), Tool(name="unreact")]
+    if is_enabled(features, ASK_USER.key):
+        # Registered by openhands.tools.ask_user.
+        tools.append(Tool(name=ASK_USER_TOOL_NAME))
+    if is_enabled(features, CONVERSATION_MENTIONS.key):
+        # Tool names as registered by openhands.tools.conversation_mentions.
+        tools += [Tool(name="find_conversations"), Tool(name="read_conversation")]
+    if is_enabled(features, MESSAGE_EDITS.key):
+        # Tool name as registered by openhands.tools.message_edit.
+        tools.append(Tool(name="edit_message"))
+    return tools
+
+
+async def feature_enabled_now(key: str, settings_store: "SettingsStore | None") -> bool:
+    """Whether the user has ``key`` on right now (host switches in a runtime).
+
+    For server behavior that follows the switch at once, such as a route or a
+    wake-up. An unreadable settings file, or no store, counts as off.
+    """
+    host_features = host_experimental_features()
+    if host_features is not None:
+        return is_enabled(host_features, key)
+    if settings_store is None:
+        return False
+    from openhands.agent_server.persistence import run_store
+
+    try:
+        features = await run_store(settings_store.experimental_features)
+    except (PermissionError, OSError):
+        return False
+    return is_enabled(features, key)
+
+
+RUNTIME_EXPERIMENTAL_FEATURES_ENV = "OH_RUNTIME_EXPERIMENTAL_FEATURES"
+
+
+def host_experimental_features() -> dict[str, bool] | None:
+    """The host's switches, in a Docker runtime's server; None elsewhere.
+
+    The host sets them when it starts the runtime's container, so they pick
+    the tools of the conversations started there. A route that follows a
+    switch at once is checked by the host before it forwards the request.
+    """
+    raw = os.getenv(RUNTIME_EXPERIMENTAL_FEATURES_ENV)
+    if raw is None:
+        return None
+    try:
+        parsed = json.loads(raw) if raw else {}
+    except ValueError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {
+        key: value
+        for key, value in parsed.items()
+        if find_experimental_feature(key) is not None and isinstance(value, bool)
+    }
