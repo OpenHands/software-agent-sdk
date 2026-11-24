@@ -4,6 +4,7 @@ import importlib
 import json
 import logging
 import os
+import re
 from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, suppress
@@ -129,7 +130,6 @@ from openhands.sdk.tool.client_tool import register_client_tools
 from openhands.sdk.tool.registry import get_tool_module_qualnames, is_tool_available
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.pydantic_secrets import cipher_context, client_context
-from openhands.sdk.utils.redact import redact_url_credentials_in_text
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -357,18 +357,48 @@ def _same_workspace(a: LocalWorkspace, b: LocalWorkspace) -> bool:
     return Path(a.working_dir).resolve() == Path(b.working_dir).resolve()
 
 
+INVALID_PLUGIN_SOURCE_MESSAGE = (
+    "Invalid plugin source. Expected a git URL, github:owner/repo, or a local path."
+)
+_PLUGIN_SOURCE_PLACEHOLDER_RE = re.compile(r"\$\{[a-zA-Z_][a-zA-Z0-9_]*(?::-[^}]*)?\}")
+# A normal git URL, used only to see whether a ${VAR} template could parse
+# once it is filled. It is not a fetch and it is not shown to the client.
+_PLUGIN_SOURCE_SHAPE = "https://example.com/plugin.git"
+
+
+def _plugin_source_is_usable(source: str) -> bool:
+    """Whether create can accept this source without knowing secret values.
+
+    A literal that ``parse_extension_source`` rejects is not usable. A
+    ``${VAR}`` template is usable when the raw text already parses, or when
+    substituting each placeholder with a normal git URL makes it parse. The
+    real value may arrive later through ``POST /{id}/secrets``.
+    """
+    try:
+        parse_extension_source(source)
+        return True
+    except ExtensionFetchError:
+        if _PLUGIN_SOURCE_PLACEHOLDER_RE.search(source) is None:
+            return False
+    shaped = _PLUGIN_SOURCE_PLACEHOLDER_RE.sub(_PLUGIN_SOURCE_SHAPE, source)
+    try:
+        parse_extension_source(shaped)
+    except ExtensionFetchError:
+        return False
+    return True
+
+
 def _reject_unparseable_plugin_sources(request: StartConversationRequest) -> None:
-    """Refuse a plugin source that cannot be parsed, before any record is stored."""
+    """Refuse a literal plugin source that cannot be parsed, before storage."""
     for plugin in request.plugins or []:
-        try:
-            parse_extension_source(plugin.source)
-        except ExtensionFetchError as exc:
-            raise Unprocessable(
-                {
-                    "code": "InvalidPluginSource",
-                    "message": redact_url_credentials_in_text(str(exc)),
-                }
-            ) from exc
+        if _plugin_source_is_usable(plugin.source):
+            continue
+        raise Unprocessable(
+            {
+                "code": "InvalidPluginSource",
+                "message": INVALID_PLUGIN_SOURCE_MESSAGE,
+            }
+        )
 
 
 def _compose_conversation_info(
@@ -1668,7 +1698,6 @@ class ConversationService:
         """Start a local event_service and return its id."""
         if self._event_services is None:
             raise ServiceInactive()
-        _reject_unparseable_plugin_sources(request)
         conversation_id = request.conversation_id or uuid4()
         if self._has_conversation(conversation_id):
             async with self._conversation_lifecycle(conversation_id):
@@ -1694,6 +1723,10 @@ class ConversationService:
         gateway_run: bool = False,
         project_role: ProjectRole | None = None,
     ) -> tuple[ConversationInfo, bool]:
+        # Reusing an existing id skips this check. A retry of a stored
+        # conversation must not be rejected because the repeated body still
+        # carries plugins, including a template that is filled in later.
+        _reject_unparseable_plugin_sources(request)
         # The link is immutable after creation, so cycles beyond self-parent are
         # impossible; allowing reparenting would require a real ancestor walk.
         if request.parent_conversation_id is not None:

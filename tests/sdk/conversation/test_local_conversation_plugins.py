@@ -687,7 +687,8 @@ class TestLocalConversationPlugins:
         ]
         assert [error.code for error in errors] == ["MarketplaceLoadError"]
         assert "'private'" in errors[0].detail
-        assert "****@127.0.0.1:9/catalog.git" in errors[0].detail
+        assert "https://127.0.0.1:9/catalog.git" in errors[0].detail
+        assert "****@" not in errors[0].detail
         assert "s3cr3t-token" not in errors[0].detail
         assert conversation.state.execution_status != ConversationExecutionStatus.ERROR
         conversation.close()

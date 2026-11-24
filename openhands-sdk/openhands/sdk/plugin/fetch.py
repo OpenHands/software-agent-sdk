@@ -22,8 +22,8 @@ from openhands.sdk.git.cached_repo import GitHelper
 from openhands.sdk.plugin.paths import get_pinned_plugin_cache_path
 from openhands.sdk.utils.path import get_user_persistence_dir
 from openhands.sdk.utils.redact import (
-    redact_url_credentials,
-    redact_url_credentials_in_text,
+    public_url_locator,
+    redact_urls_for_client_text,
 )
 
 
@@ -31,13 +31,21 @@ DEFAULT_CACHE_DIR = get_user_persistence_dir() / "cache" / "plugins"
 _FULL_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 
 
+PLUGIN_FETCH_CLIENT_MESSAGE = (
+    "The plugin could not be fetched. Set a ${VAR} with "
+    "POST /{conversation_id}/secrets and retry this send, retry after the "
+    "source recovers, or start a new conversation to change the source."
+)
+
+
 class PluginFetchError(UpstreamFailed):
     """A plugin source could not be fetched.
 
-    A single string still constructs the error. ``str(exc)`` is the log line.
-    ``detail`` is what a client is shown: ``code`` is ``PluginFetchError``,
-    and any URL credentials in ``message`` or ``source`` are removed.
-    ``${VAR}`` placeholders in ``source`` are kept.
+    A single string still constructs the error. ``str(exc)`` stays that
+    operational line for logs and callers that already match on it, with URL
+    userinfo, query, and fragment removed. ``detail`` is what a REST client
+    is shown: a fixed ``message``, ``code`` ``PluginFetchError``, and a
+    locator taken only from the original ``source``.
     """
 
     def __init__(
@@ -47,21 +55,17 @@ class PluginFetchError(UpstreamFailed):
         source: str | None = None,
         conversation_id: UUID | None = None,
     ) -> None:
-        safe_message = redact_url_credentials_in_text(message)
-        safe_source = (
-            redact_url_credentials(source, preserve_placeholders=True)
-            if source
-            else None
-        )
+        log_message = redact_urls_for_client_text(message)
+        safe_source = public_url_locator(source) if source else None
         detail: dict[str, object] = {
             "code": "PluginFetchError",
-            "message": safe_message,
+            "message": PLUGIN_FETCH_CLIENT_MESSAGE,
         }
         if safe_source is not None:
             detail["source"] = safe_source
         if conversation_id is not None:
             detail["conversation_id"] = str(conversation_id)
-        super().__init__(detail, message=safe_message)
+        super().__init__(detail, message=log_message)
         self.source = safe_source
         self.conversation_id = conversation_id
 

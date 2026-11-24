@@ -366,8 +366,10 @@ async def start_conversation(
 ) -> ConversationInfo:
     """Start a conversation in the local environment.
 
-    An unparseable ``plugins[].source`` is rejected with 422 before the
-    conversation is stored. Plugin sources cannot be changed afterwards.
+    A ``plugins[].source`` that cannot be parsed, and is not a ``${VAR}``
+    template that can become a valid source, is rejected with 422 before the
+    conversation is stored. Reusing an existing conversation id does not
+    recheck plugins. Plugin sources cannot be changed afterwards.
     If a source uses ``${VAR}``, set it with
     ``POST /{conversation_id}/secrets`` and send again. If the source was
     down, retry the send once it recovers. To use a different source, start

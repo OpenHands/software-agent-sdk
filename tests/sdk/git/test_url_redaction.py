@@ -15,6 +15,7 @@ from openhands.sdk.git.utils import (
 )  # re-exported for compat
 from openhands.sdk.plugin.types import PluginSource, ResolvedPluginSource
 from openhands.sdk.utils.redact import (
+    public_url_locator,
     redact_url_credentials as redact_url_credentials_central,
 )
 
@@ -392,3 +393,38 @@ def test_get_git_repository_metadata():
         "head_commit": "abc123",
         "branch": "feature-x",
     }
+
+
+class TestPublicUrlLocator:
+    """Client-facing locators drop every place a secret can sit in a URL."""
+
+    def test_strips_userinfo_query_and_fragment(self):
+        secret = "s3cr3t-token"
+        locator = public_url_locator(
+            f"https://user:{secret}@127.0.0.1:9/plugin.git?token={secret}#{secret}"
+        )
+        assert locator == "https://127.0.0.1:9/plugin.git"
+        assert secret not in (locator or "")
+
+    def test_strips_placeholder_userinfo_instead_of_preserving_it(self):
+        assert (
+            public_url_locator("https://x-access-token:${TOKEN}@git.example.com/p.git")
+            == "https://git.example.com/p.git"
+        )
+
+    def test_keeps_a_normal_source(self):
+        assert (
+            public_url_locator("https://github.com/owner/repo.git")
+            == "https://github.com/owner/repo.git"
+        )
+        assert public_url_locator("github:owner/repo") == "github:owner/repo"
+        assert (
+            public_url_locator("git@github.com:owner/repo.git")
+            == "git@github.com:owner/repo.git"
+        )
+
+    def test_omits_userinfo_that_cannot_be_separated(self):
+        assert public_url_locator("file://user:s3cr3t@/tmp/plugin.git") is None
+
+    def test_keeps_a_file_url_without_userinfo(self):
+        assert public_url_locator("file:///tmp/plugin.git") == "file:///tmp/plugin.git"
