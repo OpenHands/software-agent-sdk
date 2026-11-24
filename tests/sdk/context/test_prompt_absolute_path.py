@@ -2,13 +2,101 @@
 
 import os
 import tempfile
+from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
+from jinja2 import FileSystemBytecodeCache, TemplateSyntaxError
+from jinja2.bccache import bc_magic
 from pydantic import SecretStr
 
 from openhands.sdk.agent.agent import Agent
+from openhands.sdk.context.prompts import prompt
 from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.llm import LLM
+
+
+@pytest.fixture
+def isolated_prompt_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[Path]:
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "state"))
+    prompt._get_env.cache_clear()
+    prompt._get_template.cache_clear()
+    yield tmp_path / "state" / "cache" / "jinja"
+    prompt._get_env.cache_clear()
+    prompt._get_template.cache_clear()
+
+
+def test_render_template_syntax_error(
+    tmp_path: Path, isolated_prompt_cache: Path
+) -> None:
+    template = tmp_path / "broken.j2"
+    template.write_text("{% if %}", encoding="utf-8")
+    with pytest.raises(TemplateSyntaxError) as exc_info:
+        render_template(str(tmp_path), template.name)
+    assert str(template) in str(exc_info.value)
+    assert isinstance(exc_info.value.__cause__, TemplateSyntaxError)
+
+
+def test_render_template_decode_error(
+    tmp_path: Path, isolated_prompt_cache: Path
+) -> None:
+    template = tmp_path / "broken.j2"
+    template.write_bytes(b"\xff")
+    with pytest.raises(UnicodeDecodeError):
+        render_template(str(tmp_path), template.name)
+
+
+@pytest.mark.parametrize("payload", [b"", b"invalid pickle"])
+def test_render_template_with_corrupt_cache(
+    tmp_path: Path, isolated_prompt_cache: Path, payload: bytes
+) -> None:
+    template = tmp_path / "template.j2"
+    template.write_text("Hello {{ name }}", encoding="utf-8")
+    assert render_template(str(tmp_path), template.name, name="First") == "Hello First"
+    cache_file = next(isolated_prompt_cache.glob("*.cache"))
+    cache_file.write_bytes(bc_magic + payload)
+    prompt._get_env.cache_clear()
+    prompt._get_template.cache_clear()
+    assert (
+        render_template(str(tmp_path), template.name, name="Second") == "Hello Second"
+    )
+
+
+@pytest.mark.parametrize("create_environment_first", [False, True])
+def test_render_template_with_unavailable_cache(
+    tmp_path: Path, isolated_prompt_cache: Path, create_environment_first: bool
+) -> None:
+    if create_environment_first:
+        prompt._get_env(str(tmp_path))
+        isolated_prompt_cache.rmdir()
+    else:
+        isolated_prompt_cache.parent.mkdir(parents=True)
+    isolated_prompt_cache.write_text("not a directory", encoding="utf-8")
+    for name in ["first.j2", "second.j2"]:
+        (tmp_path / name).write_text("Hello {{ name }}", encoding="utf-8")
+        assert render_template(str(tmp_path), name, name="World") == "Hello World"
+
+
+@pytest.mark.parametrize("operation", ["load_bytecode", "dump_bytecode"])
+def test_render_template_disables_failed_cache(
+    tmp_path: Path,
+    isolated_prompt_cache: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    calls = []
+
+    def fail_cache(*args: object) -> None:
+        calls.append(None)
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(FileSystemBytecodeCache, operation, fail_cache)
+    for name in ["first.j2", "second.j2"]:
+        (tmp_path / name).write_text("Hello {{ name }}", encoding="utf-8")
+        assert render_template(str(tmp_path), name, name="World") == "Hello World"
+    assert len(calls) == 1
 
 
 def test_render_template_with_relative_path():
