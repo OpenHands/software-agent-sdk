@@ -73,11 +73,9 @@ def fast_activity_signal_interval(monkeypatch: pytest.MonkeyPatch) -> float:
     to wait out a single pulse.
 
     ``ACTIVITY_SIGNAL_INTERVAL`` is the pre-existing ACP/stream activity
-    throttle that event_service.py already imports; the candidate patch's
-    run-level heartbeat reuses it rather than adding a new constant. It
-    exists on both pristine main and the patched tree, so this monkeypatch
-    needs no ``raising=False`` guard and never errors at fixture setup on
-    either tree.
+    throttle in event_service.py; the run-level heartbeat (#7105) reuses it
+    rather than adding a new constant, so this monkeypatch needs no
+    ``raising=False`` guard.
     """
     interval = TASK_DISPATCH_IDLE_HEARTBEAT.fast_activity_signal_interval_s
     monkeypatch.setattr(event_service_module, "ACTIVITY_SIGNAL_INTERVAL", interval)
@@ -118,11 +116,12 @@ async def test_server_info_idle_time_stays_low_while_real_task_child_is_held(
     fast_activity_signal_interval: float,
 ):
     """Hold a real Task child's LLM call open; /server_info's idle_time must
-    stay under budget both while held and once the run has finished.
+    stay under budget while the child is held, then rise above budget again
+    once the run has genuinely finished.
 
-    On pristine main (no run-level heartbeat) the mid-hold sample grows past
-    the budget because nothing refreshes the idle clock while the child is
-    the only thing doing work.
+    Without a run-level heartbeat, the mid-hold sample grows past the budget
+    instead, because nothing refreshes the idle clock while the child is the
+    only thing doing work.
     """
     budget = TASK_DISPATCH_IDLE_HEARTBEAT
     workspace = str(tmp_path / "ws")
@@ -189,7 +188,8 @@ async def test_server_info_idle_time_stays_low_while_real_task_child_is_held(
     # just refresh idle_time at the moment of completion: sleep the same
     # hold window again with nothing in flight and confirm idle_time climbs
     # back up. A leaked heartbeat task (still pulsing after the run ended)
-    # would keep this low forever and this assertion would never fail.
+    # would keep idle_time pinned below the budget here, which is exactly
+    # what would make the assertion below fail.
     await asyncio.sleep(budget.hold_sample_s)
     after_completion = (await client.get("/server_info")).json()["idle_time"]
     assert after_completion >= budget.idle_time_threshold_s, (
