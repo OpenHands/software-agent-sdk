@@ -114,6 +114,22 @@ class LeaseContentionBudget:
     settle_timeout_s: float = 5.0
 
 
+@dataclass(frozen=True, slots=True)
+class TaskDispatchIdleHeartbeatBudget:
+    # How long the test holds a real Task child's single LLM call on a gate
+    # before sampling /server_info and releasing it. idle_time is truncated
+    # to whole seconds server-side, so this clears idle_time_threshold_s by
+    # a full second of jitter margin -- not an exact-equality race.
+    hold_sample_s: float = 2.8
+    # /server_info idle_time (seconds, truncated) must stay under this while
+    # the child is held and once the run has finished. #5384: without a
+    # run-level heartbeat, idle_time grows for the whole hold instead.
+    idle_time_threshold_s: float = 1.5
+    # Heartbeat pulse interval under test (shared with the ACP/stream
+    # activity throttle); shrunk so hold_sample_s only needs one pulse.
+    fast_activity_signal_interval_s: float = 0.2
+
+
 PARALLEL_SUBAGENTS = ParallelSubagentBudget()
 CONCURRENT_CONVERSATIONS = ConcurrentConversationsBudget()
 LONG_RUNNING_COMMAND = LongRunningCommandBudget()
@@ -123,3 +139,4 @@ SLOW_WEBSOCKET_CONSUMER = SlowWebsocketConsumerBudget()
 WEBSOCKET_RECONNECT_STORM = WebsocketReconnectStormBudget()
 HIGH_VOLUME_BASH_OUTPUT = HighVolumeBashOutputBudget()
 LEASE_CONTENTION = LeaseContentionBudget()
+TASK_DISPATCH_IDLE_HEARTBEAT = TaskDispatchIdleHeartbeatBudget()
