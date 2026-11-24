@@ -194,6 +194,11 @@ _ACP_PROMPT_RETRY_DELAYS: tuple[float, ...] = (5.0, 15.0, 30.0)  # seconds
 # Exception types that indicate transient connection issues worth retrying
 _RETRIABLE_CONNECTION_ERRORS = (OSError, ConnectionError, BrokenPipeError, EOFError)
 
+# Startup stages that run before any credential or session reaches the server,
+# so relaunching after a stall or transport drop there cannot duplicate state.
+_ACP_STARTUP_RETRY_STAGES: frozenset[str] = frozenset({"initialize"})
+_ACP_STARTUP_RETRIABLE_ERRORS = (TimeoutError, ConnectionError, EOFError)
+
 # ``npm run`` exports package/lifecycle configuration into descendants. ACP
 # providers launched through ``npx`` must not inherit that context, otherwise npm
 # can try to resolve against the parent package instead of the requested one.
@@ -1999,6 +2004,9 @@ class ACPAgent(AgentBase):
             "new_session()/load_session(). Unlike acp_prompt_timeout, this "
             "is a hard deadline rather than an idle deadline, since startup "
             "has no intermediate progress signal to reset it against. "
+            "A stall or dropped connection before the server answers "
+            "initialize is retried once with a fresh subprocess, so startup "
+            "can take up to twice this value before failing. "
             "Prevents an indefinite hang when the ACP server blocks on "
             "authentication (e.g. an expired token) without ever raising."
         ),
@@ -2173,6 +2181,7 @@ class ACPAgent(AgentBase):
     _skills_root: Path | None = PrivateAttr(default=None)
     _additional_directories_supported: bool = PrivateAttr(default=False)
     _restart_session_on_next_turn: bool = PrivateAttr(default=False)
+    _startup_stage: str | None = PrivateAttr(default=None)
     # Stream identity for the turn in flight; see stream_context.py. Held on
     # the agent rather than threaded through the finalizers because the ACP
     # turn already resolves through four of them.
@@ -2534,7 +2543,7 @@ class ACPAgent(AgentBase):
         self._resumed_existing_session = bool(prior_session_id)
 
         try:
-            self._start_acp_server(state)
+            self._start_acp_server_with_retry(state)
         except Exception as e:
             logger.error("Failed to start ACP server: %s", e)
             try:
@@ -3159,14 +3168,41 @@ class ACPAgent(AgentBase):
         return failures
 
     def _startup_timeout_message(self) -> str:
+        provider = detect_acp_provider_by_command(self.acp_command)
+        server = (
+            self.acp_server
+            or (provider.key if provider is not None else None)
+            or os.path.basename(self.acp_command[0])
+        )
         return (
             f"ACP startup timed out after {self.acp_startup_timeout:.0f}s "
+            f"during {self._startup_stage or 'startup'} (server: {server}) "
             "waiting for the ACP server to spawn, authenticate, and "
             "create/load a session"
         )
 
+    def _start_acp_server_with_retry(self, state: ConversationState) -> None:
+        """Start the ACP server, relaunching once after a pre-session failure."""
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        try:
+            self._start_acp_server(state)
+        except _ACP_STARTUP_RETRIABLE_ERRORS as e:
+            if self._startup_stage not in _ACP_STARTUP_RETRY_STAGES:
+                raise
+            logger.warning(
+                "ACP startup failed during %s; retrying once with a fresh "
+                "subprocess: %s",
+                self._startup_stage,
+                e,
+            )
+            self._cleanup()
+            self._executor = AsyncExecutor()
+            self._start_acp_server(state)
+
     def _start_acp_server(self, state: ConversationState) -> None:
         """Start the ACP subprocess and initialize the session."""
+        self._startup_stage = None
         client = _OpenHandsACPBridge()
         self._client = client
         # Bind the secret masker for the conversation's lifetime. It's derived
@@ -3305,6 +3341,7 @@ class ACPAgent(AgentBase):
             # filtering reader that skips non-JSON-RPC lines some
             # ACP servers (e.g. claude-code-acp v0.1.x) write to
             # stdout.
+            self._startup_stage = "spawn"
             start_new_session = _ACP_POSIX_PROCESS_GROUPS
             spawn_kwargs: dict[str, Any] = (
                 {"start_new_session": True} if start_new_session else {}
@@ -3357,6 +3394,7 @@ class ACPAgent(AgentBase):
             self._stderr_log_task = stderr_log_task
 
             # Initialize the protocol and discover server identity
+            self._startup_stage = "initialize"
             init_response = await conn.initialize(protocol_version=1)
             agent_name = ""
             agent_version = ""
@@ -3420,6 +3458,7 @@ class ACPAgent(AgentBase):
                             base_url = env.get(base_url_var)
                             if base_url:
                                 auth_kwargs["gateway"] = {"baseUrl": base_url}
+                    self._startup_stage = "authenticate"
                     try:
                         await asyncio.wait_for(
                             conn.authenticate(method_id=method_id, **auth_kwargs),
@@ -3482,6 +3521,7 @@ class ACPAgent(AgentBase):
                     effort_state = observed
 
             if prior_session_id is not None:
+                self._startup_stage = "session/load"
                 try:
                     load_response = await conn.load_session(
                         cwd=working_dir,
@@ -3541,6 +3581,7 @@ class ACPAgent(AgentBase):
                 session_meta = build_session_model_meta(
                     agent_name, self.acp_model, self.acp_effort
                 )
+                self._startup_stage = "session/new"
                 response = await conn.new_session(
                     cwd=working_dir,
                     additional_directories=self._skill_directories(),
@@ -3563,6 +3604,7 @@ class ACPAgent(AgentBase):
                 # applies the model (#3654) — via set_config_option for
                 # configOptions-based servers, else set_session_model; _meta is
                 # kept only as backward-compat for older claude CLIs.
+                self._startup_stage = "session/configure"
                 applied_model = await _maybe_set_session_model(
                     conn,
                     agent_name,
@@ -3584,6 +3626,7 @@ class ACPAgent(AgentBase):
                 # session would run on the server default while serialized state
                 # claims the switched model. ``_model_via_config_option`` was set
                 # from the load_session response above.
+                self._startup_stage = "session/configure"
                 applied_model = await _reapply_session_model_on_resume(
                     conn,
                     agent_name,
