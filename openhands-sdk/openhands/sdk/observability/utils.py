@@ -1,6 +1,11 @@
-import os
+from __future__ import annotations
 
-from openhands.sdk.event import ActionEvent
+import os
+from typing import TYPE_CHECKING
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.event import ActionEvent
 
 
 def get_env(key: str) -> str | None:

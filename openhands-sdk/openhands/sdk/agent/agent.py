@@ -92,6 +92,7 @@ if TYPE_CHECKING:
     from openhands.sdk.llm.llm import LLMCallContext
     from openhands.sdk.tool import ToolDefinition
 from openhands.sdk.mcp.tool import MCPToolDefinition
+from openhands.sdk.observability.trajectory_capture import active_capture
 from openhands.sdk.tool.builtins import (
     FinishAction,
     FinishTool,
@@ -102,6 +103,24 @@ from openhands.sdk.tool.builtins.vision_inspect import VISION_INSPECT_TOOL_NAME
 
 logger = get_logger(__name__)
 maybe_init_laminar()
+
+
+def _link_model_events(
+    on_event: ConversationCallbackType, response: LLMResponse
+) -> ConversationCallbackType:
+    capture = active_capture()
+    attempt_id = response._trajectory_attempt_id
+    if capture is None or attempt_id is None:
+        return on_event
+
+    def emit(event: Event) -> None:
+        if isinstance(event, (ActionEvent, MessageEvent)):
+            capture.append(
+                "model_event", {"event_id": event.id, "attempt_id": attempt_id}
+            )
+        on_event(event)
+
+    return emit
 
 
 def _tool_has_summary_param(tool: ToolDefinition) -> bool:
@@ -1034,6 +1053,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
 
         # LLMResponse already contains the converted message and metrics snapshot
         message: Message = llm_response.message
+        on_event = _link_model_events(on_event, llm_response)
         response_type = classify_response(message)
 
         match response_type:
@@ -1257,6 +1277,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             raise e
 
         message: Message = llm_response.message
+        on_event = _link_model_events(on_event, llm_response)
         response_type = classify_response(message)
         if response_type is not LLMResponseType.TOOL_CALLS:
             # Resolve outside the event loop and state lock. A lookup may call
@@ -1523,6 +1544,8 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             tool_input=tool_call,
             tool_output=error_event.to_llm_message(),
         )
+        if (capture := active_capture()) is not None:
+            capture.append_tool_result(tc_event.id, "error", error_event)
         on_event(error_event)
 
     def _get_action_event(

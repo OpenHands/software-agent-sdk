@@ -110,6 +110,7 @@ from openhands.sdk.io import LocalFileStore
 from openhands.sdk.llm.streaming import LLMStreamChunk
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.mcp.utils import MCPToolProvider
+from openhands.sdk.observability.trajectory_capture import use_admission
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
 from openhands.sdk.utils.async_utils import AsyncCallbackWrapper
@@ -1770,6 +1771,15 @@ class EventService:
                 self._maybe_end_run_session()
 
             run_generation = self._explicit_interrupt_generation
+            admission = (
+                conversation._admit_trajectory_run()
+                if isinstance(conversation, LocalConversation)
+                else None
+            )
+
+            def run_sync() -> None:
+                with use_admission(admission):
+                    conversation.run()
 
             async def _run_and_publish():
                 nonlocal worker
@@ -1799,11 +1809,10 @@ class EventService:
                     if self._explicit_interrupt_generation != run_generation:
                         return
                     if has_native_arun:
-                        await conversation.arun()
+                        with use_admission(admission):
+                            await conversation.arun()
                     else:
-                        worker = loop.run_in_executor(
-                            self._run_executor, conversation.run
-                        )
+                        worker = loop.run_in_executor(self._run_executor, run_sync)
                         worker.add_done_callback(settle)
                         await asyncio.shield(worker)
                 except Exception as exc:
