@@ -57,6 +57,12 @@ MALFORMED_HISTORY_PATTERNS: Final[list[str]] = [
     ),
     # Moonshot / Kimi variant
     "must be followed by tool messages responding to each 'tool_call_id'",
+    # OpenAI-compatible (OpenAI, DeepSeek): a tool result with no matching
+    # tool call before it (unmatched, duplicate id, or out-of-order results).
+    (
+        "messages with role 'tool' must be a response to a preceding message "
+        "with 'tool_calls'"
+    ),
     # OpenAI-compatible providers may reject replayed assistant tool calls whose
     # arguments are not valid JSON.
     "failed to parse tool call arguments as json",

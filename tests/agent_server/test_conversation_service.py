@@ -4,7 +4,9 @@ import socket
 import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -21,14 +23,14 @@ from openhands.agent_server.conversation_lease import (
 from openhands.agent_server.conversation_service import (
     AutoTitleSubscriber,
     ConversationService,
-    UnavailableAgentTool,
     _compose_conversation_info,
     _ConversationRecord,
     _create_conversation_worktree,
     _get_worktree_start_point,
     _plan_conversation_worktree,
 )
-from openhands.agent_server.event_service import EventService, ServiceInactive
+from openhands.agent_server.event_service import EventService
+from openhands.agent_server.exceptions import ServiceInactive, UnavailableAgentTool
 from openhands.agent_server.models import (
     ConversationInfo,
     ConversationPage,
@@ -128,6 +130,28 @@ def sample_stored_conversation():
         created_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
         updated_at=datetime(2025, 1, 1, 12, 30, 0, tzinfo=UTC),
     )
+
+
+def test_conversation_info_takes_tags_from_the_metadata(sample_stored_conversation):
+    """A tag PATCH saves ``meta.json`` before the state, which waits for its lock.
+
+    Until the state catches up, the conversation still shows the new tags.
+    """
+    stored = sample_stored_conversation.model_copy(
+        update={"tags": {"project": "p1", "resolved": "user"}}
+    )
+    state = ConversationState(
+        id=stored.id,
+        agent=_sample_agent(),
+        workspace=stored.workspace,
+        execution_status=ConversationExecutionStatus.RUNNING,
+        confirmation_policy=stored.confirmation_policy,
+        tags={"project": "p1"},
+    )
+
+    info = _compose_conversation_info(stored, state)
+
+    assert info.tags == {"project": "p1", "resolved": "user"}
 
 
 @pytest.mark.asyncio
@@ -1005,9 +1029,13 @@ async def test_prepare_for_sandbox_pause_blocks_new_hydration(
 
             finish_close.set()
             await asyncio.wait_for(pause_task, timeout=1)
-            assert service._event_services == {}
-            assert not hydration_entered.is_set()
+            # The pause must have closed the pre-existing service. A hydration
+            # that resumed the moment the pause released the lifecycle gate may
+            # already have added its own service, so assert on the closed one
+            # rather than on the dict being empty.
+            assert existing_id not in service._event_services
             assert await asyncio.wait_for(hydration_task, timeout=1) is hydrated
+            assert service._event_services[conversation_id] is hydrated
     finally:
         finish_close.set()
         await service.__aexit__(None, None, None)
@@ -1323,6 +1351,31 @@ async def test_search_refreshes_cached_info_on_metadata_only_update(
         assert page.items[0].title == "Generated Title"
         assert service._event_services is not None
         assert set(service._event_services) == {conversation_id}
+
+
+@pytest.mark.asyncio
+async def test_search_refreshes_cached_info_on_a_tags_only_update(
+    persisted_conversation,
+):
+    """New tags in meta.json show on a cached row before the state is saved."""
+    conversations_dir, conversation_id = persisted_conversation
+
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        runtime = await service.get_event_service(conversation_id)
+        assert runtime is not None
+
+        initial = await service.search_conversations()
+        assert initial.items[0].tags == {}
+        assert service._conversation_records[conversation_id].cached_info is not None
+
+        # Change only the tags in meta.json; base_state.json is untouched.
+        runtime.stored = runtime.stored.model_copy(
+            update={"tags": {"resolved": "user"}}
+        )
+        await runtime.save_meta()
+
+        page = await service.search_conversations()
+        assert page.items[0].tags == {"resolved": "user"}
 
 
 @pytest.mark.asyncio
@@ -2972,8 +3025,8 @@ class TestConversationServiceUpdateConversation:
     ):
         """Test that tag updates hold the ConversationState lock."""
         mock_service = AsyncMock(spec=EventService)
-        mock_service.stored = sample_stored_conversation
         mock_service.run_state_op.side_effect = asyncio.to_thread
+        mock_service.stored = sample_stored_conversation
         _adopt_saved_meta(mock_service)
         mock_state = ConversationState(
             id=sample_stored_conversation.id,
@@ -3008,8 +3061,8 @@ class TestConversationServiceUpdateConversation:
     ):
         """Waiting on the state lock must not stall unrelated async work."""
         mock_service = AsyncMock(spec=EventService)
-        mock_service.stored = sample_stored_conversation
         mock_service.run_state_op.side_effect = asyncio.to_thread
+        mock_service.stored = sample_stored_conversation
         _adopt_saved_meta(mock_service)
         state = ConversationState(
             id=sample_stored_conversation.id,
@@ -3071,6 +3124,63 @@ class TestConversationServiceUpdateConversation:
         )
 
     @pytest.mark.asyncio
+    async def test_update_conversation_tags_wait_leaves_default_executor_free(
+        self, conversation_service, sample_stored_conversation
+    ):
+        """A run holds the state lock across whole tool steps. A tag PATCH
+        waiting on it must not park a default-executor thread: event reads of
+        every conversation need that pool."""
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(ThreadPoolExecutor(max_workers=1))
+        state_executor = ThreadPoolExecutor(max_workers=1)
+        mock_service = AsyncMock(spec=EventService)
+        mock_service.run_state_op.side_effect = partial(
+            loop.run_in_executor, state_executor
+        )
+        mock_service.stored = sample_stored_conversation
+        _adopt_saved_meta(mock_service)
+        state = ConversationState(
+            id=sample_stored_conversation.id,
+            agent=_sample_agent(),
+            workspace=sample_stored_conversation.workspace,
+            execution_status=ConversationExecutionStatus.RUNNING,
+            confirmation_policy=sample_stored_conversation.confirmation_policy,
+        )
+        mock_service.get_state.return_value = state
+        conversation_id = sample_stored_conversation.id
+        conversation_service._event_services[conversation_id] = mock_service
+        held, release = threading.Event(), threading.Event()
+
+        def hold_state_lock() -> None:
+            with state:
+                held.set()
+                release.wait()
+
+        holder = threading.Thread(target=hold_state_lock)
+        holder.start()
+        assert held.wait(timeout=1.0)
+        with patch.object(
+            conversation_service, "_notify_conversation_webhooks", new=AsyncMock()
+        ):
+            update = asyncio.create_task(
+                conversation_service.update_conversation(
+                    conversation_id, UpdateConversationRequest(tags={"env": "prod"})
+                )
+            )
+            try:
+                await asyncio.sleep(0.05)
+                free = await asyncio.wait_for(
+                    loop.run_in_executor(None, lambda: "free"), timeout=2
+                )
+                assert free == "free"
+            finally:
+                release.set()
+                holder.join()
+            assert await asyncio.wait_for(update, timeout=2)
+        state_executor.shutdown()
+        assert state.tags == {"env": "prod"}
+
+    @pytest.mark.asyncio
     async def test_update_conversation_not_found(self, conversation_service):
         """Test updating a non-existent conversation returns False."""
         non_existent_id = uuid4()
@@ -3097,8 +3207,8 @@ class TestConversationServiceUpdateConversation:
         """Test that updating a conversation triggers webhook notifications."""
         # Create mock event service
         mock_service = AsyncMock(spec=EventService)
-        mock_service.stored = sample_stored_conversation
         mock_service.run_state_op.side_effect = asyncio.to_thread
+        mock_service.stored = sample_stored_conversation
         _adopt_saved_meta(mock_service)
         mock_state = ConversationState(
             id=sample_stored_conversation.id,
@@ -3146,8 +3256,8 @@ class TestConversationServiceUpdateConversation:
             updated_at=datetime(2025, 1, 1, 12, 30, 0, tzinfo=UTC),
         )
         mock_service = AsyncMock(spec=EventService)
-        mock_service.stored = stored_conversation
         mock_service.run_state_op.side_effect = asyncio.to_thread
+        mock_service.stored = stored_conversation
         _adopt_saved_meta(mock_service)
         mock_state = ConversationState(
             id=stored_conversation.id,
@@ -4563,6 +4673,79 @@ class TestConversationSearchScaling:
             (target / "base_state.json").write_text(state.model_dump_json())
             ids.append(conversation_id)
         return ids
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("filename", "payload", "expected_title"),
+        [
+            ("meta.json", '{"truncated":', None),
+            ("meta.json", '{"title":"Recoverable title"}', "Recoverable title"),
+            ("base_state.json", '{"truncated":', "Fork from earlier message"),
+        ],
+    )
+    async def test_broken_conversation_can_be_listed_and_deleted(
+        self, tmp_path, filename, payload, expected_title
+    ):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        conversations_dir = tmp_path / "conversations"
+        healthy, damaged = self._seed(conversations_dir, 2, workspace)
+        broken_dir = conversations_dir / damaged.hex
+        if filename == "base_state.json":
+            metadata_path = broken_dir / "meta.json"
+            metadata = json.loads(metadata_path.read_text())
+            metadata["title"] = "Fork from earlier message"
+            metadata_path.write_text(json.dumps(metadata))
+        (broken_dir / filename).write_text(payload)
+
+        async with ConversationService(conversations_dir=conversations_dir) as svc:
+            page = await svc.search_conversations(limit=1)
+            broken = page.broken_items[0]
+            assert broken.id == damaged
+            assert broken.reason == ("metadata" if filename == "meta.json" else "state")
+            assert broken.title == expected_title
+            assert page.next_page_id == healthy.hex
+            assert [
+                item.id
+                for item in (
+                    await svc.search_conversations(page_id=page.next_page_id)
+                ).items
+            ] == [healthy]
+            assert await svc.batch_get_conversations([damaged, healthy]) == [
+                None,
+                await svc.get_conversation(healthy),
+            ]
+            assert await svc.delete_conversation(damaged)
+            assert not broken_dir.exists()
+            assert workspace.exists()
+            assert (conversations_dir / healthy.hex).exists()
+            remaining = await svc.search_conversations()
+            assert [item.id for item in remaining.items] == [healthy]
+            assert not remaining.broken_items
+
+    @pytest.mark.asyncio
+    async def test_search_rechecks_a_state_file_after_it_changes(self, tmp_path):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        conversations_dir = tmp_path / "conversations"
+        (conversation_id,) = self._seed(conversations_dir, 1, workspace)
+        state_path = conversations_dir / conversation_id.hex / "base_state.json"
+        original_state = state_path.read_text()
+
+        async with ConversationService(conversations_dir=conversations_dir) as svc:
+            assert [item.id for item in (await svc.search_conversations()).items] == [
+                conversation_id
+            ]
+
+            state_path.write_text('{"execution_status":"idle","agent":null}')
+            page = await svc.search_conversations()
+            assert [item.id for item in page.broken_items] == [conversation_id]
+            assert not page.items
+
+            state_path.write_text(original_state)
+            page = await svc.search_conversations()
+            assert [item.id for item in page.items] == [conversation_id]
+            assert not page.broken_items
 
     @pytest.mark.asyncio
     async def test_filtered_search_loads_state_only_for_the_page(self, tmp_path):

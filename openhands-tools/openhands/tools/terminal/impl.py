@@ -54,10 +54,18 @@ _TMUX_POOL_RECOVERY_MESSAGE = (
 _TMUX_RECOVERABLE_ERROR_MARKERS = (
     "no server running",
     "server exited unexpectedly",
+    # The server is still alive but has no sessions left (the persistent shell
+    # exited and took the session with it before the server noticed). tmux
+    # cannot resolve the pane target, so it reports "no current target".
+    "no current target",
     "can't find session",
     "can't find pane",
     "could not find window_id",
     "could not find pane_id",
+    # tmux reports this when a command's target pane is already gone and
+    # the server has no current session/window/pane context to fall back
+    # to (e.g. a server that briefly outlives its last session).
+    "no current target",
 )
 
 logger = get_logger(__name__)

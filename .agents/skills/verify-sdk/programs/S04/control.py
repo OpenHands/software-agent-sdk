@@ -18,6 +18,7 @@ import sys
 import threading
 import time
 
+from pydantic import Field
 from S01.sleeper import TIMELINE  # registers "SleeperTool"
 from sdk_verify import emit, run_paths, script_messages
 
@@ -46,10 +47,13 @@ def sleeper(label: str, seconds: float = 0.6) -> dict:
 
 
 class SlowLLM(TestLLM):
-    """A scripted model that takes `delay` seconds per call (sync and async)."""
+    """A scripted model that takes `delay` seconds per call (sync and async).
+
+    The agent's `llm` is serialized as its own class (SerializeAsAny, #6789), so
+    the event is kept out of the persisted state."""
 
     delay: float = 0.0
-    in_flight: threading.Event | None = None
+    in_flight: threading.Event | None = Field(default=None, exclude=True)
 
     def completion(self, *args, **kwargs):
         if self.in_flight is not None:

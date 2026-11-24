@@ -165,7 +165,7 @@ def test_settings_saved_before_experimental_features_load_with_none_on():
 
 
 @pytest.mark.asyncio
-async def test_features_are_listed_and_off(client):
+async def test_every_feature_is_listed_and_off(client):
     response = await client.get("/api/settings/experimental")
 
     assert [(f["key"], f["enabled"]) for f in response.json()] == [
@@ -173,19 +173,21 @@ async def test_features_are_listed_and_off(client):
         ("ask_user", False),
         ("conversation_mentions", False),
         ("message_edits", False),
+        ("factories", False),
+        ("projects", False),
     ]
 
 
 def test_feature_tools_follow_the_flags():
     assert experimental_feature_tools({}) == []
+    assert [t.name for t in experimental_feature_tools({"ask_user": True})] == [
+        "ask_user"
+    ]
     assert [
         t.name for t in experimental_feature_tools({"conversation_reactions": True})
     ] == [
         "react",
         "unreact",
-    ]
-    assert [t.name for t in experimental_feature_tools({"ask_user": True})] == [
-        "ask_user"
     ]
     assert [
         t.name for t in experimental_feature_tools({"conversation_mentions": True})
@@ -200,6 +202,8 @@ def test_feature_tools_follow_the_flags():
     assert [t.name for t in experimental_feature_tools({"message_edits": True})] == [
         "edit_message"
     ]
+    # A client-only feature gives the agent nothing.
+    assert experimental_feature_tools({"factories": True}) == []
 
 
 def _runtime() -> LaunchRuntime:
@@ -300,3 +304,37 @@ async def test_a_runtime_takes_its_tools_from_the_host_switches(tmp_path, monkey
         agent = event_service.get_conversation().agent
 
     assert [t.name for t in agent.tools] == ["react", "unreact"]
+
+
+def test_a_flag_check_reads_the_settings_file_only_when_it_changed(tmp_path):
+    """Item 5 of the Projects design review: a flag check is one stat."""
+    from unittest.mock import patch
+
+    from openhands.agent_server.persistence import FileSettingsStore
+
+    store = FileSettingsStore(tmp_path)
+    assert store.experimental_features() == {}
+    store.update(
+        lambda s: s.model_copy(update={"experimental_features": {"projects": True}})
+    )
+
+    with patch.object(
+        FileSettingsStore, "load", autospec=True, side_effect=FileSettingsStore.load
+    ) as load:
+        assert store.experimental_features() == {"projects": True}
+        assert store.experimental_features() == {"projects": True}
+        assert load.call_count == 1
+
+        # A change, here or by another process, shows on the next check.
+        store.update(
+            lambda s: s.model_copy(
+                update={"experimental_features": {"projects": False}}
+            )
+        )
+        load.reset_mock()
+        assert store.experimental_features() == {"projects": False}
+        assert load.call_count == 1
+
+    # Callers get a copy: changing it does not change the cache.
+    store.experimental_features()["projects"] = True
+    assert store.experimental_features() == {"projects": False}

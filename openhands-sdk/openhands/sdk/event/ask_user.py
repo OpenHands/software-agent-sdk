@@ -26,7 +26,7 @@ a question: only the user can answer it. A ``/goal`` loop stops when the agent
 asks, rather than sending its next round over the question.
 """
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Final
 
@@ -90,6 +90,12 @@ class PendingAsk:
     question: str
     option_labels: tuple[str, ...]
     recommended: int | None
+    asked_at: str
+    """The timestamp of the question's ``ask_user`` call."""
+    for_conversation: str | None = None
+    """The conversation this question asks on behalf of, when a project's
+    coordinator passes on a member's question; the user's answer goes there
+    too."""
 
 
 def is_from_user(event: Event) -> bool:
@@ -122,12 +128,24 @@ def _as_pending(action_event: ActionEvent) -> PendingAsk | None:
     recommended = data.get("recommended")
     if not isinstance(recommended, int) or not 0 <= recommended < len(labels):
         recommended = None
+    for_conversation = data.get("for_conversation")
     return PendingAsk(
         ask_id=action_event.id,
         question=question,
         option_labels=labels,
         recommended=recommended,
+        asked_at=action_event.timestamp,
+        for_conversation=for_conversation
+        if isinstance(for_conversation, str) and for_conversation.strip()
+        else None,
     )
+
+
+def pending_ask_from_action(action_event: ActionEvent) -> PendingAsk | None:
+    """The question an ``ask_user`` call asks, whether or not it is answered."""
+    if action_event.tool_name != ASK_USER_TOOL_NAME:
+        return None
+    return _as_pending(action_event)
 
 
 def find_pending_ask(events: Sequence[Event]) -> PendingAsk | None:
@@ -136,9 +154,31 @@ def find_pending_ask(events: Sequence[Event]) -> PendingAsk | None:
     Args:
         events: The conversation's events, oldest first (its active branch).
     """
+    return find_pending_ask_back(reversed(events))
+
+
+def find_pending_ask_back(events_newest_first: Iterable[Event]) -> PendingAsk | None:
+    """:func:`find_pending_ask` over the events newest first, in one pass.
+
+    It stops at the user's latest message or at the question, so a caller that
+    walks the log back lazily (``state.walk_back()``) reads only that far.
+    """
     asked_action_id: EventID | None = None
-    for event in reversed(events):
+    # The message saved after a tap's answer closes the question, also when
+    # the server delivers it for a project's coordinator, whose card the user
+    # answered: that message carries the coordinator as its ``sender``.
+    message_after = False
+    for event in events_newest_first:
+        if asked_action_id is not None:
+            # The question's call comes before its observation.
+            if isinstance(event, ActionEvent) and event.id == asked_action_id:
+                return _as_pending(event)
+            continue
         if is_from_user(event):
+            return None
+        if isinstance(event, MessageEvent) and event.source == "user":
+            message_after = True
+        elif isinstance(event, AskUserAnswerEvent) and message_after:
             return None
         if (
             isinstance(event, ObservationEvent)
@@ -146,12 +186,6 @@ def find_pending_ask(events: Sequence[Event]) -> PendingAsk | None:
             and not event.observation.is_error
         ):
             asked_action_id = event.action_id
-            break
-    if asked_action_id is None:
-        return None
-    for event in reversed(events):
-        if isinstance(event, ActionEvent) and event.id == asked_action_id:
-            return _as_pending(event)
     return None
 
 

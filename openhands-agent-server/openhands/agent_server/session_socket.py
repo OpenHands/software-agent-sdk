@@ -20,11 +20,9 @@ from pydantic import ValidationError
 
 from openhands.agent_server import sockets
 from openhands.agent_server.config import Config
-from openhands.agent_server.conversation_service import (
-    ConversationService,
-    CredentialBindingActivationRequired,
-)
+from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_config, get_conversation_service
+from openhands.agent_server.exceptions import CredentialBindingActivationRequired
 from openhands.agent_server.pub_sub import MaxSubscribersError, Subscriber
 from openhands.agent_server.session_protocol import (
     MAX_FRAME_BYTES,

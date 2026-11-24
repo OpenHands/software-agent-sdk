@@ -159,13 +159,13 @@ class ParallelToolExecutor:
             return tools.get(ae.tool_name) if tools else None
 
         if len(action_events) == 1 or self._max_workers == 1:
-            # Not asyncio's default executor: arun() holds the conversation
+            # Not the shared default executor: arun() holds the conversation
             # state lock across this await, and callers waiting on that lock
-            # can take every default-executor thread. A tool queued behind
-            # them would never start, so the lock would never be released.
-            pool = ThreadPoolExecutor(
-                max_workers=1, thread_name_prefix="aexecute_batch"
-            )
+            # (state snapshots, send_message) park default-executor threads.
+            # Once they fill it, the tool never starts and the lock is never
+            # released. Shut down without waiting so an interrupt that cancels
+            # this await does not block the event loop on the tool thread.
+            pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="aexecute_seq")
             try:
                 return [
                     await self._arun_safe(
@@ -179,8 +179,6 @@ class ParallelToolExecutor:
                     for action in action_events
                 ]
             finally:
-                # No wait: an interrupt cancels the await above while the tool
-                # thread still runs, and waiting would block the event loop.
                 pool.shutdown(wait=False)
 
         with ThreadPoolExecutor(

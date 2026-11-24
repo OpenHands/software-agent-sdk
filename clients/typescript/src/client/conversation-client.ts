@@ -1,6 +1,12 @@
 import { HttpClient, HttpError } from './http-client';
 import { getCachedAgentServerInfo } from './agent-server-compatibility';
-import { ConversationExecutionStatus, LLM, Success } from '../types/base';
+import {
+  ConversationExecutionStatus,
+  LLM,
+  ModelRouterSelection,
+  ModelRouterStatus,
+  Success,
+} from '../types/base';
 import type {
   AgentResponseResult,
   AskAgentResponse,
@@ -495,6 +501,48 @@ export class ConversationClient {
 
   async switchLLM(conversationId: string, llm: LLM): Promise<void> {
     await this.client.post<Success>(`/api/conversations/${conversationId}/switch_llm`, { llm });
+  }
+
+  async getModelRouter(conversationId: string): Promise<ModelRouterStatus> {
+    const response = await this.client.get<ModelRouterStatus>(
+      `/api/conversations/${conversationId}/model_router`
+    );
+    return response.data;
+  }
+
+  async addModelRouterRoute(
+    conversationId: string,
+    profileName: string,
+    routeName?: string,
+    baseRouteName = 'default'
+  ): Promise<ModelRouterStatus> {
+    const response = await this.client.post<ModelRouterStatus>(
+      `/api/conversations/${conversationId}/model_router/routes`,
+      { profile_name: profileName, route_name: routeName, base_route_name: baseRouteName }
+    );
+    return response.data;
+  }
+
+  async updateModelRouter(
+    conversationId: string,
+    selection: ModelRouterSelection
+  ): Promise<ModelRouterStatus> {
+    const response = await this.client.patch<ModelRouterStatus>(
+      `/api/conversations/${conversationId}/model_router`,
+      { selection }
+    );
+    return response.data;
+  }
+
+  async switchModelRouter(conversationId: string, routeName: string): Promise<ModelRouterStatus> {
+    return this.updateModelRouter(conversationId, {
+      mode: 'manual',
+      manual_route_name: routeName,
+    });
+  }
+
+  async resumeAutoModelRouting(conversationId: string): Promise<ModelRouterStatus> {
+    return this.updateModelRouter(conversationId, { mode: 'auto' });
   }
 
   /**

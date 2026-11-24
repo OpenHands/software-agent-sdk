@@ -21,6 +21,71 @@ ConversationID = uuid.UUID
 TAG_KEY_PATTERN = re.compile(r"^[a-z0-9]+$")
 TAG_VALUE_MAX_LENGTH = 256
 
+GOAL_LOOP_SENDER = "goal"
+"""``sender`` of the messages a ``/goal`` loop sends its own conversation: the
+goal and each round's follow-up. They continue the user's turn; they are not
+the user's words."""
+
+PROJECT_TAG_KEY = "project"
+"""Tag whose value is the id (hex) of the agent-server project a conversation
+belongs to. The workers a project's coordinator starts get it too."""
+
+PROJECTS_OFF_DETAIL = "Projects are turned off"
+"""Detail of the 404 every ``/api/projects`` route answers while the user has
+the Projects feature off; project tools recognize it."""
+
+RESOLVED_TAG_KEY = "resolved"
+"""Tag marking a conversation's work as done: ``user`` when the user resolved
+it, ``auto`` when the server judged that nothing is left for the user (see
+:data:`RESOLVE_NOTE_TAG_KEY`). The next message the
+conversation gets removes it, whoever sent it."""
+
+TURN_TAG_KEY = "turn"
+"""Tag recording how the agent's last turn ended: ``asking`` when its final
+message waits on the user, ``finished`` otherwise. The next message the
+conversation gets removes it, whoever sent it, with one exception: a message
+from another conversation (the coordinator, a worker) leaves ``asking`` in
+place, since only the user's answer closes the question. The coordinator
+passing on the user's answer counts as the user's."""
+
+ASK_TAG_KEY = "ask"
+"""Tag holding the question a conversation's agent stopped on, in one short
+line, while ``turn`` is ``asking``. Removed together with ``turn``."""
+
+ASK_MAX_LENGTH = 200
+"""Longest ``ask``; a longer question is cut and ends with an ellipsis."""
+
+RESOLVE_NOTE_TAG_KEY = "resolvenote"
+"""Why the server resolved a conversation (``resolved=auto``), in one short
+line: the judge's probability that nothing is left for the user and what it
+thinks the user owes (``0.93 nothing``), or a critic score
+(``0.95 critic``). Removed with ``resolved``."""
+
+BOARD_TAG_KEYS = frozenset(
+    {RESOLVED_TAG_KEY, RESOLVE_NOTE_TAG_KEY, TURN_TAG_KEY, ASK_TAG_KEY}
+)
+"""Tags that describe one conversation's state, so children do not copy them."""
+
+PULL_REQUESTS_TAG_KEY = "prs"
+"""Tag listing the GitHub pull requests a project conversation's agent opened,
+as comma-separated ``owner/repo#number`` refs, oldest first. Refs that do not
+fit in a tag value drop off the front. The server writes it for project
+members; a new user message keeps it."""
+
+CONVERSATION_SENDER_PREFIX = "conversation:"
+"""Prefix of a user message's ``sender`` when another conversation sent it: a
+parent delivering a child's task, or a project coordinator steering a worker.
+The rest is the sending conversation's id (hex). A ``sender`` of ``None`` means
+the user wrote the message."""
+
+
+HELD_FOR_USER_STATUSES = frozenset(
+    {"waiting_for_confirmation", "paused", "error", "stuck"}
+)
+"""Execution statuses in which a conversation waits on the user. Project
+boards show them as needs-you."""
+
+
 CONVERSATION_MENTION_SCHEME = "conversation:"
 """Link scheme of a conversation mention: ``[Title](conversation:<id hex>)``.
 UIs render such a link as a way to open that conversation; anywhere else it
@@ -40,6 +105,11 @@ def conversation_mention(title: str | None, conversation_id: uuid.UUID | str) ->
     text = re.sub(r"[\s\"\[\]()\\`]+", " ", title or "").strip()
     text = text[:_MENTION_TITLE_MAX].strip() or "untitled conversation"
     return f"[{text}]({CONVERSATION_MENTION_SCHEME}{hex_id})"
+
+
+def conversation_sender(conversation_id: uuid.UUID) -> str:
+    """The ``sender`` recorded on a message another conversation sent."""
+    return f"{CONVERSATION_SENDER_PREFIX}{conversation_id.hex}"
 
 
 def _validate_tags(v: dict[str, str] | None) -> dict[str, str]:

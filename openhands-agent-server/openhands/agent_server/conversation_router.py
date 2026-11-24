@@ -19,11 +19,7 @@ from openhands.agent_server._secrets_exposure import (
     decrypt_incoming_llm_secrets,
 )
 from openhands.agent_server.conversation_registry import ConversationRegistry
-from openhands.agent_server.conversation_service import (
-    ConversationService,
-    InvalidParentConversation,
-    UnavailableAgentTool,
-)
+from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import (
     get_cipher,
     get_conversation_registry,
@@ -31,11 +27,19 @@ from openhands.agent_server.dependencies import (
     get_llm_profile_store,
 )
 from openhands.agent_server.errors import error_responses
-from openhands.agent_server.event_service import CondensationUnavailable
+from openhands.agent_server.exceptions import (
+    CondensationUnavailable,
+    ConversationAlreadyRunning,
+    GoalAlreadyRunning,
+    InvalidParentConversation,
+    UnavailableAgentTool,
+)
 from openhands.agent_server.launch import launch_error
+from openhands.agent_server.message_sender import SenderError
 from openhands.agent_server.models import (
     INCLUDE_SKILLS_PARAM_TITLE,
     AddMCPServersRequest,
+    AddModelRouterRouteRequest,
     AgentResponseResult,
     AskAgentRequest,
     AskAgentResponse,
@@ -60,6 +64,7 @@ from openhands.agent_server.persistence import run_store
 from openhands.sdk import LLM
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.types import (
+    PROJECT_TAG_KEY,
     ConversationObservabilityMetadata,
     ConversationObservabilitySpanName,
     ConversationObservabilityTags,
@@ -73,6 +78,11 @@ from openhands.sdk.errors import (
     UpstreamTimeout,
 )
 from openhands.sdk.launch import AgentLaunchError, LaunchStoreError
+from openhands.sdk.llm import (
+    ModelRouterStatus,
+    ModelRouterUpdateRequest,
+    RouterLLM,
+)
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.marketplace.registry import (
     MarketplaceNotFoundError,
@@ -161,6 +171,19 @@ def _with_runtime_info(
     return conversation.model_copy(
         update={"runtime_info": registry.runtime_info(conversation.id)}
     )
+
+
+async def _refuse_project_member(
+    service: ConversationService, tags: dict[str, str] | None
+) -> None:
+    """A client cannot start a project's conversation: only the project's
+    coordinator does. A ``project`` tag naming no project (or with Projects
+    off) is an ordinary tag."""
+    if tags and await service.projects.member_of(tags) is not None:
+        raise Unprocessable(
+            "A project's conversations are started by its coordinator; "
+            f"leave out the '{PROJECT_TAG_KEY}' tag"
+        )
 
 
 @conversation_catalog_router.get("/search", include_in_schema=False)
@@ -339,6 +362,7 @@ async def start_conversation(
     """Start a conversation in the local environment."""
     if request.conversation_runtime not in (None, "local"):
         raise Unprocessable("This server only runs local conversations")
+    await _refuse_project_member(conversation_service, request.tags)
     request = _request_with_observability_headers(
         request,
         span_name=x_openhands_observability_span_name,
@@ -352,7 +376,7 @@ async def start_conversation(
         raise launch_error(e) from e
     except ClientToolRegistrationError as e:
         raise Unprocessable(str(e)) from e
-    except (InvalidParentConversation, UnavailableAgentTool) as e:
+    except (InvalidParentConversation, UnavailableAgentTool, SenderError) as e:
         raise Unprocessable(str(e)) from e
     response.status_code = status.HTTP_201_CREATED if is_new else status.HTTP_200_OK
     if not include_skills:
@@ -429,11 +453,11 @@ async def run_conversation(
 
     try:
         await event_service.run()
+    except ConversationAlreadyRunning:
+        raise Conflict(
+            "Conversation already running. Wait for completion or pause first."
+        )
     except ValueError as e:
-        if str(e) == "conversation_already_running":
-            raise Conflict(
-                "Conversation already running. Wait for completion or pause first."
-            )
         raise Invalid(str(e))
 
     return Success()
@@ -468,11 +492,10 @@ async def start_goal_in_conversation(
         await event_service.start_goal_loop(
             request.objective, max_iterations=request.max_iterations
         )
+    except (ConversationAlreadyRunning, GoalAlreadyRunning):
+        raise Conflict("Conversation run or goal loop already running.")
     except ValueError as e:
-        message = str(e)
-        if message in ("conversation_already_running", "goal_already_running"):
-            raise Conflict("Conversation run or goal loop already running.")
-        raise Invalid(message)
+        raise Invalid(str(e))
 
     return Success()
 
@@ -518,11 +541,10 @@ async def resume_goal_in_conversation(
 
     try:
         await event_service.resume_goal_loop()
+    except (ConversationAlreadyRunning, GoalAlreadyRunning):
+        raise Conflict("Conversation run or goal loop already running.")
     except ValueError as e:
-        message = str(e)
-        if message in ("conversation_already_running", "goal_already_running"):
-            raise Conflict("Conversation run or goal loop already running.")
-        raise Invalid(message)
+        raise Invalid(str(e))
 
     return Success()
 
@@ -685,6 +707,90 @@ async def switch_conversation_llm(
     return Success()
 
 
+def _model_router_status(llm: LLM) -> ModelRouterStatus:
+    if not isinstance(llm, RouterLLM):
+        return ModelRouterStatus(enabled=False)
+    return llm.status()
+
+
+@conversation_router.get(
+    "/{conversation_id}/model_router",
+    response_model=ModelRouterStatus,
+    responses=error_responses({NotFound: "Conversation not found"}),
+)
+async def get_conversation_model_router(
+    conversation_id: UUID,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> ModelRouterStatus:
+    """Return model-router state for the conversation's active LLM."""
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise NotFound()
+    return _model_router_status(event_service.get_conversation().agent.llm)
+
+
+@conversation_router.post(
+    "/{conversation_id}/model_router/routes",
+    response_model=ModelRouterStatus,
+    responses=error_responses(
+        {
+            Invalid: "Conversation cannot add this model router route",
+            NotFound: "Conversation or profile not found",
+        }
+    ),
+)
+async def add_conversation_model_router_route(
+    conversation_id: UUID,
+    route_request: AddModelRouterRouteRequest,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> ModelRouterStatus:
+    """Add a saved LLM profile as a conversation model-router route."""
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise NotFound()
+    route_name = route_request.route_name or route_request.profile_name
+    try:
+        await event_service.add_model_router_route(
+            route_request.profile_name,
+            route_name=route_name,
+            base_route_name=route_request.base_route_name,
+        )
+    except FileNotFoundError:
+        raise NotFound(f"Profile '{route_request.profile_name}' not found")
+    except ValueError as e:
+        raise Invalid(str(e))
+    return _model_router_status(event_service.get_conversation().agent.llm)
+
+
+@conversation_router.patch(
+    "/{conversation_id}/model_router",
+    response_model=ModelRouterStatus,
+    responses=error_responses(
+        {
+            Invalid: (
+                "Conversation is not backed by a model router or route name is invalid"
+            ),
+            NotFound: "Conversation not found",
+        }
+    ),
+)
+async def update_conversation_model_router(
+    conversation_id: UUID,
+    request: ModelRouterUpdateRequest,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> ModelRouterStatus:
+    """Update model-router selection for the conversation's active LLM."""
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise NotFound()
+    conversation = event_service.get_conversation()
+    try:
+        conversation.update_model_router_selection(request.selection)
+    except ValueError as e:
+        raise Invalid(str(e))
+    return _model_router_status(conversation.agent.llm)
+
+
 @conversation_router.post(
     "/{conversation_id}/load_plugin",
     responses=error_responses(
@@ -801,9 +907,17 @@ async def update_conversation(
 ) -> Success:
     """Update conversation metadata.
 
-    This endpoint allows updating conversation details like title.
+    This endpoint allows updating conversation details like title. ``tags``
+    replaces the whole set. With Projects on, a member of a project (its
+    ``project`` tag names an existing project) keeps the tags the server owns:
+    ``project``, ``turn``, ``ask``, ``resolved`` and ``resolvenote``. Resolve
+    or reopen it with the project routes ``.../resolve`` and ``.../reopen``.
+    Tags that would make a conversation a member answer 422: only a project's
+    coordinator starts its conversations.
     """
-    updated = await conversation_service.update_conversation(conversation_id, request)
+    updated = await conversation_service.projects.update_conversation_from_client(
+        conversation_id, request
+    )
     if not updated:
         raise NotFound()
     return Success()
@@ -873,6 +987,7 @@ async def fork_conversation(
     Calling ``run`` on the fork resumes from the copied state, meaning
     the agent has full event memory of the source conversation.
     """
+    await _refuse_project_member(conversation_service, request.tags)
     try:
         info = await conversation_service.fork_conversation(
             conversation_id,
@@ -904,6 +1019,7 @@ async def fork_conversation(
         **error_responses(
             {
                 NotFound: "Parent conversation not found",
+                Conflict: "Parent is a project member, not its coordinator",
                 RateLimited: "Server conversation run capacity is full",
             }
         ),
@@ -919,8 +1035,10 @@ async def start_child_conversation(
 
     The child inherits the parent's configuration and workspace (optionally
     isolated in a git worktree), is linked via ``parent_conversation_id`` and
-    receives ``task`` as its first user message. This is the default launcher
-    behind the ``start_child_conversation`` tool.
+    receives ``task`` as its first user message. When the parent belongs to a
+    project, the child runs the project's worker agent profile, or the
+    user's active one, instead of a copy of the parent's agent. This is the
+    default launcher behind the ``start_child_conversation`` tool.
     """
     try:
         result = await conversation_service.start_child_conversation(

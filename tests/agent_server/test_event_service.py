@@ -25,12 +25,11 @@ from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.errors import status_for
 from openhands.agent_server.event_router import run_gateway_message
 from openhands.agent_server.event_service import (
-    CondensationUnavailable,
     EventService,
     RunSlot,
-    ServiceInactive,
     _log_emit_failure,
 )
+from openhands.agent_server.exceptions import CondensationUnavailable, ServiceInactive
 from openhands.agent_server.file_router import _create_zip_from_directory
 from openhands.agent_server.models import (
     ConfirmationResponseRequest,
@@ -944,6 +943,28 @@ class TestEventServiceSendMessage:
             )
             # Verify run was NOT called since run=False
             assert mock_loop.run_in_executor.call_count == 1  # Only send_message call
+
+    @pytest.mark.asyncio
+    async def test_send_message_records_sender(self, event_service):
+        """A sender is passed on to the conversation, which saves it."""
+        conversation = MagicMock()
+        conversation.send_message = MagicMock()
+        event_service._conversation = conversation
+        message = Message(role="user", content=[])
+
+        with patch("asyncio.get_running_loop") as mock_get_loop:
+            mock_loop = MagicMock()
+            mock_get_loop.return_value = mock_loop
+            mock_loop.run_in_executor.side_effect = lambda *args: self._mock_executor()
+
+            await event_service.send_message(
+                message, run=False, sender="conversation:abc"
+            )
+
+        (_, send, sent), _ = mock_loop.run_in_executor.call_args
+        assert sent is message
+        assert send.func is conversation.send_message
+        assert send.keywords == {"sender": "conversation:abc"}
 
     @pytest.mark.asyncio
     async def test_send_message_with_run_true_agent_already_running(
@@ -2812,6 +2833,53 @@ class TestEventServiceConcurrentSubscriptions:
 
         conversation._state = state
         return conversation
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "wait_on_state_lock",
+        [
+            pytest.param(
+                lambda service: service._get_execution_status(), id="execution-status"
+            ),
+            pytest.param(
+                lambda service: service.subscribe_to_events(AsyncMock()),
+                id="websocket-subscribe",
+            ),
+        ],
+    )
+    async def test_state_lock_waiters_leave_default_executor_free(
+        self, event_service, mock_conversation_with_real_lock, wait_on_state_lock
+    ):
+        """A run holds the state lock across whole tool steps. Requests waiting
+        on it must not park default-executor threads: lock-free work (event
+        reads of every conversation, tool calls) needs that pool."""
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(ThreadPoolExecutor(max_workers=1))
+        event_service._conversation = mock_conversation_with_real_lock
+        event_service._state_executor = ThreadPoolExecutor(max_workers=2)
+        lock = mock_conversation_with_real_lock._state._lock
+        held, release = threading.Event(), threading.Event()
+
+        def hold_lock():
+            with lock:
+                held.set()
+                release.wait()
+
+        holder = threading.Thread(target=hold_lock)
+        holder.start()
+        held.wait()
+        waiter = asyncio.create_task(wait_on_state_lock(event_service))
+        try:
+            await asyncio.sleep(0.05)
+            free = await asyncio.wait_for(
+                loop.run_in_executor(None, lambda: "free"), timeout=2
+            )
+            assert free == "free"
+        finally:
+            release.set()
+            holder.join()
+        await asyncio.wait_for(waiter, timeout=2)
+        event_service._state_executor.shutdown()
 
     @pytest.mark.asyncio
     async def test_initial_state_leaves_out_skill_bodies(
