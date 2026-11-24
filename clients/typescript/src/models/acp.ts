@@ -145,6 +145,7 @@ export const ACP_SETTINGS_KEYS: readonly string[] = [
   'acp_args',
   'acp_env',
   'acp_model',
+  'acp_effort',
   'acp_session_mode',
   'acp_prompt_timeout',
   'acp_server',

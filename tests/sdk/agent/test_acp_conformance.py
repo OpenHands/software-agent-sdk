@@ -1,6 +1,6 @@
 """Live, credential-free conformance probes for the built-in ACP providers.
 
-For each entry in ``ACP_PROVIDERS``, launches ``info.default_command``
+For each npm-installable entry, launches ``info.default_command``
 verbatim (through ``npx``) with a bogus credential and an isolated data dir,
 then asserts what the live server reports back rather than what the registry
 assumes it reports. Every historical drift this catches (#3772, #3654,
@@ -191,7 +191,10 @@ def _launch(agent: ACPAgent, tmp_path: Path) -> ConversationState:
 
 
 @requires_npx
-@pytest.mark.parametrize("provider_key", list(ACP_PROVIDERS))
+# Live CI installs only npm-backed ACP providers. Native launchers such as
+# Antigravity require an opt-in, externally installed binary and interactive
+# credentials; do not download them in the default conformance job.
+@pytest.mark.parametrize("provider_key", list(ACP_INSTALL_CATALOG))
 def test_acp_conformance_probe(
     provider_key: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

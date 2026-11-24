@@ -18,6 +18,12 @@ from openhands.sdk.event.llm_convertible import (
     SystemPromptEvent,
     UserRejectObservation,
 )
+from openhands.sdk.event.message_edit import MessageEditEvent
+from openhands.sdk.event.reaction import (
+    REACTION_EMOJI,
+    ReactionEmoji,
+    ReactionEvent,
+)
 from openhands.sdk.event.resume_transcript import (
     RESUME_CONTEXT_MARKER,
     render_resume_transcript,
@@ -44,6 +50,10 @@ __all__ = [
     "RejectionSource",
     "InterruptEvent",
     "PauseEvent",
+    "MessageEditEvent",
+    "ReactionEvent",
+    "ReactionEmoji",
+    "REACTION_EMOJI",
     "StreamingDeltaEvent",
     "Condensation",
     "CondensationRequest",

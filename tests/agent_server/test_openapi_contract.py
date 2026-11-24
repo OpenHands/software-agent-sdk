@@ -276,3 +276,11 @@ def test_weak_schema_allowlist_is_an_exact_ratchet() -> None:
             today=dt.date(2025, 1, 2),
         )[0]
     )
+
+
+def test_experimental_projects_routes_stay_out_of_the_schema():
+    """Projects is experimental: its routes work but are not part of the
+    public REST surface, so they carry no deprecation runway yet."""
+    paths = build_public_openapi()["paths"]
+
+    assert not [path for path in paths if path.startswith("/api/projects")]

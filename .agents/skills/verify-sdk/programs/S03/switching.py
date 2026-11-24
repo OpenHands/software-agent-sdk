@@ -7,9 +7,12 @@ model served each step. Profiles go to the run's default store
 Usage: switching.py MODE
   profile        conversation.switch_profile, persistence, stats, missing profile
   llm-object     conversation.switch_llm, registry reuse, condensers, ask_agent
+  shared-llm     one LLM object in two conversations: usage stays per conversation
+  switch-usage   condenser and ask_agent usage in the stats after switch_llm
   tool           the switch_llm tool (sync run, or `tool-async` for arun)
   route          route_task_to_model with structured classes and errors
   route-direct   route_task_to_model with a direct prompt template
+  route-router   route_task_to_model on a RouterLLM agent: pins a route
 """
 
 import asyncio
@@ -179,6 +182,107 @@ elif mode == "llm-object":
         out["independent_condenser_model"] = conversation.agent.condenser.llm.model
         conversation.close()
 
+elif mode == "shared-llm":
+    # One LLM object serves two conversations: each conversation's stats count
+    # its own calls, the LLM object counts all of them.
+    def cost_and_calls(metrics) -> dict:
+        return {
+            "cost": round(metrics.accumulated_cost, 4),
+            "calls": len(metrics.costs),
+        }
+
+    with FakeProvider([{"finish": "one"}, {"finish": "two"}, {"finish": "three"}]) as a:
+        llm = fake_llm(a, "agent", "openai/gpt-4o-mini")
+        first = Conversation(
+            agent=Agent(llm=llm, tools=[]), workspace=WORKSPACE, visualizer=None
+        )
+        second = Conversation(
+            agent=Agent(llm=llm, tools=[]), workspace=WORKSPACE, visualizer=None
+        )
+        first.send_message("First conversation.")
+        first.run()
+        after_first = cost_and_calls(llm.metrics)
+        for text in ("Second conversation.", "Second conversation again."):
+            second.send_message(text)
+            second.run()
+        out |= {
+            "requests": len(a.requests),
+            "llm_after_first": after_first,
+            "first": cost_and_calls(first.conversation_stats.usage_to_metrics["agent"]),
+            "second": cost_and_calls(
+                second.conversation_stats.usage_to_metrics["agent"]
+            ),
+            "llm": cost_and_calls(llm.metrics),
+            "first_combined_cost": round(
+                first.conversation_stats.get_combined_metrics().accumulated_cost, 4
+            ),
+            "second_combined_cost": round(
+                second.conversation_stats.get_combined_metrics().accumulated_cost, 4
+            ),
+            "statuses": [
+                first.state.execution_status.value,
+                second.state.execution_status.value,
+            ],
+        }
+        first.close()
+        second.close()
+
+elif mode == "switch-usage":
+    from openhands.sdk.context.condenser import LLMSummarizingCondenser
+
+    def stats(conversation) -> dict:
+        return {
+            usage_id: {
+                "cost": round(m.accumulated_cost, 4),
+                "calls": len(m.costs),
+                "models": sorted({c.model for c in m.costs}),
+            }
+            for usage_id, m in conversation.conversation_stats.usage_to_metrics.items()
+        }
+
+    with (
+        FakeProvider([{"finish": "from A"}, {"text": "A answers"}]) as a,
+        FakeProvider(
+            [
+                {"finish": "from B"},
+                {"text": "B answers"},
+                {"text": "Summary written by B."},
+            ]
+        ) as b,
+    ):
+        agent_llm = fake_llm(a, "agent", "openai/gpt-4o-mini")
+        condenser = LLMSummarizingCondenser(
+            llm=agent_llm.model_copy(update={"usage_id": "condenser"}),
+            max_size=80,
+            keep_first=2,
+        )
+        conversation = Conversation(
+            agent=Agent(llm=agent_llm, tools=[], condenser=condenser),
+            workspace=WORKSPACE,
+            visualizer=None,
+        )
+        conversation.send_message("First task.")
+        conversation.run()
+        conversation.ask_agent("Which model are you?")
+        before = stats(conversation)
+        conversation.switch_llm(fake_llm(b, "other", "openai/gpt-4.1-mini"))
+        conversation.send_message("Second task.")
+        conversation.run()
+        side = conversation.ask_agent("And now?")
+        conversation.condense()
+        out |= {
+            "requests": {"a": len(a.requests), "b": len(b.requests)},
+            "side_answer": side,
+            "before_switch": before,
+            "after_switch": stats(conversation),
+            "combined_cost": round(
+                conversation.conversation_stats.get_combined_metrics().accumulated_cost,
+                4,
+            ),
+            "status": conversation.state.execution_status.value,
+        }
+        conversation.close()
+
 elif mode in ("tool", "tool-async"):
     with (
         FakeProvider(
@@ -341,6 +445,83 @@ elif mode in ("route", "route-direct"):
                 observations(conversation)[0] if observations(conversation) else None
             )
             conversation.close()
+
+elif mode == "route-router":
+    # The agent LLM is a RouterLLM: the classifier picks one of the router's
+    # route names (or a unique underlying model) and the tool pins that route,
+    # keeping the router as the conversation LLM.
+    from openhands.sdk.llm import RouterLLM
+    from openhands.sdk.llm.meta_profile_store import MetaProfile, MetaProfileClass
+
+    route = {"tool": "route_task_to_model", "args": {}}
+
+    def router_run(reply: str) -> dict:
+        with (
+            FakeProvider([route, {"finish": "gave up"}]) as planner,
+            FakeProvider([{"text": reply}]) as classifier,
+            FakeProvider([{"finish": "done on strong"}]) as strong,
+        ):
+            store.save(
+                "classifier",
+                fake_llm(classifier, "classifier", "openai/gpt-4o-mini"),
+                include_secrets=True,
+            )
+            router = RouterLLM(
+                usage_id="router",
+                llms_for_routing={
+                    "planner": fake_llm(planner, "route-planner", "openai/gpt-4o-mini"),
+                    "strong": fake_llm(strong, "route-strong", "openai/gpt-4.1"),
+                },
+            )
+            meta = MetaProfile(
+                classifier_model="classifier",
+                classes=[
+                    MetaProfileClass(description="hard debugging", model="strong")
+                ],
+            )
+            agent = Agent(
+                llm=router,
+                tools=[
+                    Tool(
+                        name="ClassifyAndSwitchLLMTool",
+                        params={
+                            "active_meta_profile": "router",
+                            "meta_profile": meta.model_dump(mode="json"),
+                        },
+                    )
+                ],
+            )
+            conversation = Conversation(
+                agent=agent, workspace=WORKSPACE, visualizer=None
+            )
+            conversation.send_message("Debug this hard failure on the right route.")
+            conversation.run()
+            prompt = (
+                json.dumps(classifier.requests[0]["body"])
+                if classifier.requests
+                else ""
+            )
+            llm = conversation.agent.llm
+            row = {
+                "status": conversation.state.execution_status.value,
+                "agent_llm": type(llm).__name__,
+                "selection": llm.status().selection.model_dump(mode="json")
+                if isinstance(llm, RouterLLM)
+                else None,
+                "requests": {
+                    "planner": len(planner.requests),
+                    "classifier": len(classifier.requests),
+                    "strong": len(strong.requests),
+                },
+                "classifier_saw_routes": "- planner" in prompt and "- strong" in prompt,
+                "observation": (observations(conversation) or [None])[0],
+            }
+            conversation.close()
+            return row
+
+    out["by_route"] = router_run('{"route": "strong", "reason": "hard"}')
+    out["by_model"] = router_run('{"model": "openai/gpt-4.1"}')
+    out["unknown"] = router_run('{"route": "nonexistent"}')
 
 else:
     raise SystemExit(f"unknown mode {mode}")

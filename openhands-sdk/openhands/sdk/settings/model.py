@@ -24,11 +24,8 @@ from pydantic import (
     Discriminator,
     Field,
     SecretStr,
-    SerializationInfo,
     Tag,
     TypeAdapter,
-    ValidationInfo,
-    field_serializer,
     field_validator,
     model_validator,
 )
@@ -65,10 +62,7 @@ from openhands.sdk.tool.defaults import (
     merge_duplicate_tools,
     resolve_tool_specs,
 )
-from openhands.sdk.utils.pydantic_secrets import (
-    serialize_secret,
-    validate_secret,
-)
+from openhands.sdk.utils.pydantic_secrets import SecretField, client_context
 from openhands.sdk.workspace import LocalWorkspace
 
 from .acp_providers import (
@@ -318,7 +312,6 @@ class LLMSummarizingCondenserSettings(CondenserSettings):
         from openhands.sdk.context.condenser import LLMSummarizingCondenser
 
         condenser_llm = llm.model_copy(update={"usage_id": "condenser"})
-        condenser_llm.reset_metrics()
         condenser_kwargs = self.model_dump(
             exclude={"enabled", "condenser_kind"},
             exclude_none=True,
@@ -471,7 +464,9 @@ class VerificationSettings(BaseModel):
             ).model_dump()
         },
     )
-    critic_api_key: str | SecretStr | None = Field(
+    critic_api_key: Annotated[
+        str | SecretStr | None, SecretField(serialized_as=Any)
+    ] = Field(
         default=None,
         description=(
             "API key used to authenticate with the critic service. "
@@ -487,43 +482,19 @@ class VerificationSettings(BaseModel):
         },
     )
 
-    @field_validator("critic_api_key")
-    @classmethod
-    def _validate_critic_api_key(
-        cls, v: str | SecretStr | None, info: ValidationInfo
-    ) -> SecretStr | None:
-        return validate_secret(v, info)
-
-    @field_serializer("critic_api_key", when_used="always")
-    def _serialize_critic_api_key(
-        self, v: SecretStr | None, info: SerializationInfo
-    ) -> Any:
-        return serialize_secret(v, info)
-
 
 class ACPVerificationSettings(BaseModel):
     """The server-wide part of :class:`VerificationSettings`."""
 
-    critic_api_key: str | SecretStr | None = Field(
+    critic_api_key: Annotated[
+        str | SecretStr | None, SecretField(serialized_as=Any)
+    ] = Field(
         default=None,
         description=(
             "API key used to authenticate with the critic service. ACP agents "
             "run no critic; the key is kept for OpenHands profiles on this server."
         ),
     )
-
-    @field_validator("critic_api_key")
-    @classmethod
-    def _validate_critic_api_key(
-        cls, v: str | SecretStr | None, info: ValidationInfo
-    ) -> SecretStr | None:
-        return validate_secret(v, info)
-
-    @field_serializer("critic_api_key", when_used="always")
-    def _serialize_critic_api_key(
-        self, v: SecretStr | None, info: SerializationInfo
-    ) -> Any:
-        return serialize_secret(v, info)
 
 
 def _default_llm_settings() -> LLM:
@@ -590,7 +561,7 @@ class AgentSettingsBase(BaseModel):
         :meth:`OpenHandsAgentSettings.from_persisted`.
 
         When loading an encrypted persisted mapping, pass the same validation
-        context used to write it (for example ``{"cipher": cipher}``) so
+        context used to write it (for example ``cipher_context(cipher)``) so
         secret-bearing fields can be decrypted. An already-validated instance
         of this concrete variant is returned unchanged, preserving its secrets
         without a lossy serialization round trip.
@@ -609,7 +580,7 @@ class AgentSettingsBase(BaseModel):
         if isinstance(data, cls):
             return data
         if isinstance(data, BaseModel):
-            data = data.model_dump(mode="json", context={"expose_secrets": "plaintext"})
+            data = data.model_dump(mode="json", context=client_context("plaintext"))
         payload = _migrate_agent_settings_payload(data, persisted=True)
         return cls.model_validate(payload, context=context)
 
@@ -1493,12 +1464,19 @@ class ConversationSettings(BaseModel):
 
 
 ACPServerKind = Literal[
-    "claude-code", "codex", "gemini-cli", "kimi-code", "pi", "opencode", "custom"
+    "claude-code",
+    "codex",
+    "gemini-cli",
+    "antigravity",
+    "kimi-code",
+    "pi",
+    "opencode",
+    "custom",
 ]
 """Known ACP backend servers the GUI can pick from.
 
 ``custom`` means the user supplies the raw ``acp_command`` themselves;
-the other choices map to a default npx command stored in
+the other choices map to a default ACP launch command stored in
 :data:`~openhands.sdk.settings.acp_providers.ACP_PROVIDERS`.
 """
 
@@ -1889,13 +1867,33 @@ class ACPAgentSettings(AgentSettingsBase):
             "for configOptions-based servers (codex, claude), else "
             "set_session_model. Codex and Claude also accept "
             "``'<model>/<effort>'`` (e.g. ``'gpt-5.5/high'`` or "
-            "``'opus[1m]/high'``) to set reasoning effort. Leave blank to let "
-            "the server pick its default."
+            "``'opus[1m]/high'``); prefer ``acp_effort``, which wins over the "
+            "suffix. Leave blank to let the server pick its default."
         ),
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="ACP model",
                 prominence=SettingProminence.CRITICAL,
+            ).model_dump(),
+            SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
+                key="acp",
+                label="ACP (Agent Client Protocol)",
+                variant="acp",
+            ).model_dump(),
+        },
+    )
+    acp_effort: str | None = Field(
+        default=None,
+        description=(
+            "Reasoning effort for the ACP server to use (e.g. ``'high'``), "
+            "applied after the model through the session's reasoning-effort "
+            "option. Ignored when the model offers no effort setting. Leave "
+            "blank to let the server pick its default."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="ACP reasoning effort",
+                prominence=SettingProminence.MAJOR,
             ).model_dump(),
             SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
                 key="acp",
@@ -2186,6 +2184,7 @@ class ACPAgentSettings(AgentSettingsBase):
             acp_server=self.acp_server,
             acp_args=list(self.acp_args),
             acp_model=self.acp_model,
+            acp_effort=self.acp_effort,
             acp_session_mode=self.acp_session_mode,
             acp_prompt_timeout=self.acp_prompt_timeout,
             acp_startup_timeout=self.acp_startup_timeout,
@@ -2352,7 +2351,9 @@ def apply_agent_settings_diff(
     base_settings = validate_agent_settings(base, context=context, persisted=True)
     if not diff:
         return base_settings
-    merge_base = base_settings.model_dump(mode="json", context={"expose_secrets": True})
+    merge_base = base_settings.model_dump(
+        mode="json", context=client_context("plaintext")
+    )
     new_kind = diff.get("agent_kind")
     if new_kind and new_kind != base_settings.agent_kind:
         merge_base = {"agent_kind": new_kind, **_server_wide_settings(merge_base)}
@@ -2568,14 +2569,6 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
         )
 
     return SettingsSchema(model_name=model.__name__, sections=sections)
-
-
-def _nested_model_type(annotation: Any) -> type[BaseModel] | None:
-    candidates = _nested_model_types(annotation)
-    if len(candidates) != 1:
-        return None
-
-    return candidates[0]
 
 
 def _nested_model_types(annotation: Any) -> tuple[type[BaseModel], ...]:
