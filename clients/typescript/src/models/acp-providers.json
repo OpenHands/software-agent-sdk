@@ -1,4 +1,27 @@
 {
+  "antigravity": {
+    "agent_name_patterns": [
+      "antigravity"
+    ],
+    "api_key_env_var": "GEMINI_API_KEY",
+    "base_url_env_var": null,
+    "binary_name": "agy",
+    "data_dir_env_var": "HOME",
+    "default_command": [
+      "agy",
+      "acp"
+    ],
+    "default_session_mode": "default",
+    "display_name": "Google Antigravity",
+    "effort_config_id": null,
+    "effort_levels": [],
+    "env_conflicts": [],
+    "file_secrets": [],
+    "key": "antigravity",
+    "session_meta_key": null,
+    "supports_runtime_model_switch": true,
+    "supports_set_session_model": true
+  },
   "claude-code": {
     "agent_name_patterns": [
       "claude-agent"

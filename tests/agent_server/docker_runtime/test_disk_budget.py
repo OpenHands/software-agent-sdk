@@ -12,19 +12,19 @@ from openhands.agent_server.docker_runtime.registry import (
     ConversationContainer,
     DockerConversationRegistry,
 )
+from openhands.agent_server.persistence import ServerStores
 from openhands.agent_server.storage import reclaimer as reclaimer_module, selectors
 
 
 def registry(tmp_path, monkeypatch) -> DockerConversationRegistry:
     monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "persistence"))
-    return DockerConversationRegistry(
-        Config(
-            conversations_path=tmp_path / "conversations",
-            workspace_path=tmp_path / "workspaces",
-            secret_key=SecretStr("outer-key"),
-            conversation_storage_disk_budget=0.8,
-        )
+    config = Config(
+        conversations_path=tmp_path / "conversations",
+        workspace_path=tmp_path / "workspaces",
+        secret_key=SecretStr("outer-key"),
+        conversation_storage_disk_budget=0.8,
     )
+    return DockerConversationRegistry(config, ServerStores.from_config(config))
 
 
 def git(repo: Path, *args: str) -> None:
@@ -227,12 +227,11 @@ async def test_disk_budget_loop_runs_only_when_configured(tmp_path, monkeypatch)
     assert runtime.reclaimer._maintenance is None
 
     monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "persistence"))
-    unset = DockerConversationRegistry(
-        Config(
-            conversations_path=tmp_path / "conversations",
-            secret_key=SecretStr("outer-key"),
-        )
+    config = Config(
+        conversations_path=tmp_path / "conversations",
+        secret_key=SecretStr("outer-key"),
     )
+    unset = DockerConversationRegistry(config, ServerStores.from_config(config))
     monkeypatch.setattr(unset, "cleanup_stale_containers", lambda: None)
     await unset.start()
     assert unset.reclaimer._maintenance is None

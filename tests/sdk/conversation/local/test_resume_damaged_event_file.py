@@ -1,4 +1,4 @@
-"""A conversation reopens over an empty or corrupt saved event file (#6649)."""
+"""Verify conversation recovery across damaged event files."""
 
 import uuid
 from pathlib import Path
@@ -34,8 +34,12 @@ def _open(tmp_path: Path, cid: uuid.UUID, replies: list[str]) -> LocalConversati
     return conversation
 
 
-@pytest.mark.parametrize("damage", ["{not json", ""])
-def test_conversation_resumes_over_damaged_event_file(tmp_path: Path, damage: str):
+@pytest.mark.parametrize(
+    "damage", ["{not json", "", None], ids=["corrupt", "empty", "missing"]
+)
+def test_conversation_resumes_over_damaged_event_file(
+    tmp_path: Path, damage: str | None
+):
     cid = uuid.uuid4()
     persist_dir = tmp_path / "persist"
     first = _open(tmp_path, cid, ["first answer", "second answer"])
@@ -48,17 +52,23 @@ def test_conversation_resumes_over_damaged_event_file(tmp_path: Path, damage: st
 
     files = sorted(persist_dir.rglob("events/event-*.json"))
     assert len(files) == len(ids_before)
-    damaged = files[len(files) // 2]
-    damaged.write_text(damage)
-    damaged_id = ids_before[len(files) // 2]
+    damaged_index = len(files) // 2
+    damaged = files[damaged_index]
+    expected_ids = ids_before.copy()
+    if damage is None:
+        damaged.unlink()
+        del expected_ids[damaged_index]
+    else:
+        damaged.write_text(damage)
 
     resumed = _open(tmp_path, cid, ["third answer"])
     try:
         events_after = list(resumed.state.events)
-        assert [e.id for e in events_after] == ids_before
-        stand_in = events_after[ids_before.index(damaged_id)]
-        assert isinstance(stand_in, ConversationErrorEvent)
-        assert stand_in.code == UNREADABLE_EVENT_FILE_CODE
+        assert [e.id for e in events_after] == expected_ids
+        if damage is not None:
+            stand_in = events_after[damaged_index]
+            assert isinstance(stand_in, ConversationErrorEvent)
+            assert stand_in.code == UNREADABLE_EVENT_FILE_CODE
 
         # The resumed conversation keeps working and persists new events.
         resumed.send_message("third")

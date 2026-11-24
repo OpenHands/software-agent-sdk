@@ -1,8 +1,11 @@
 """Tests for how LocalConversation wires MCP servers into a running agent."""
 
+import asyncio
 import logging
 import sys
+import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, cast
 
@@ -11,6 +14,7 @@ import pytest
 from pydantic import SecretStr
 
 from openhands.sdk import LLM, Agent
+from openhands.sdk.conversation import ConversationExecutionStatus
 from openhands.sdk.conversation.impl import local_conversation
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.event import ObservationEvent
@@ -18,7 +22,7 @@ from openhands.sdk.llm import Message, MessageToolCall, TextContent
 from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.config import MCPServer, coerce_mcp_config
 from openhands.sdk.mcp.definition import MCPToolObservation
-from openhands.sdk.mcp.exceptions import MCPError
+from openhands.sdk.mcp.exceptions import MCPError, MCPServerStartError
 from openhands.sdk.mcp.tool import MCPToolDefinition
 from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.testing import TestLLM
@@ -86,6 +90,199 @@ def test_disabling_every_server_skips_the_mcp_connection(tmp_path: Path) -> None
     conversation._ensure_agent_ready()
 
     assert provider.calls == []
+    conversation.close()
+
+
+def _mcp_tool(client: EmptyMCPClient, name: str) -> MCPToolDefinition:
+    return MCPToolDefinition.create(
+        mcp_tool=mcp_types.Tool(
+            name=name,
+            description=name,
+            input_schema={"type": "object", "properties": {}},
+        ),
+        mcp_client=cast(MCPClient, client),
+    )[0]
+
+
+def test_add_mcp_servers_registers_modern_runtime_tools(tmp_path: Path) -> None:
+    client = EmptyMCPClient()
+    client.tools = [_mcp_tool(client, "fetch")]
+    provider = RecordingMCPToolProvider(client)
+    conversation = LocalConversation(
+        agent=Agent(
+            llm=LLM(model="test-model", api_key=SecretStr("test-key")),
+            tools=[],
+            include_default_tools=[],
+        ),
+        workspace=str(tmp_path),
+        visualizer=None,
+        mcp_tool_provider=provider,
+    )
+    conversation._ensure_agent_ready()
+
+    conversation.add_mcp_servers({"docs": MCPServer(command="true")})
+
+    assert [set(call) for call in provider.calls] == [{"docs"}]
+    assert "docs" in conversation.agent.mcp_config
+    assert _mcp_tool_names(conversation) == {"docs_fetch"}
+    conversation.close()
+
+
+def test_add_mcp_servers_rejects_sse_transport(tmp_path: Path) -> None:
+    provider = RecordingMCPToolProvider()
+    conversation = LocalConversation(
+        agent=Agent(
+            llm=LLM(model="test-model", api_key=SecretStr("test-key")),
+            tools=[],
+            include_default_tools=[],
+        ),
+        workspace=str(tmp_path),
+        visualizer=None,
+        mcp_tool_provider=provider,
+    )
+    conversation._ensure_agent_ready()
+
+    with pytest.raises(ValueError, match="SSE transport"):
+        conversation.add_mcp_servers(
+            {"events": MCPServer(url="http://example.test/sse", transport="sse")}
+        )
+
+    assert provider.calls == []
+    assert conversation.agent.mcp_config == {}
+    conversation.close()
+
+
+@pytest.mark.parametrize(
+    ("command", "reason"),
+    [
+        # Exits at once, so the connection closes during the handshake.
+        (sys.executable, "Connection closed"),
+        ("/nonexistent/qa-missing-bin", "No such file or directory"),
+    ],
+    ids=["exits-at-once", "missing-executable"],
+)
+def test_add_mcp_servers_names_a_server_that_fails_to_start(
+    tmp_path: Path, command: str, reason: str
+) -> None:
+    conversation = LocalConversation(
+        agent=Agent(
+            llm=LLM(model="test-model", api_key=SecretStr("test-key")),
+            tools=[],
+            include_default_tools=[],
+        ),
+        workspace=str(tmp_path),
+        visualizer=None,
+    )
+    conversation._ensure_agent_ready()
+    server = MCPServer(command=command, args=["-c", "pass"])
+
+    with pytest.raises(MCPServerStartError) as raised:
+        conversation.add_mcp_servers({"dies": server})
+
+    assert isinstance(raised.value, MCPError)
+    assert raised.value.server_name == "dies"
+    assert str(raised.value).startswith("Could not start MCP server dies: ")
+    assert reason in str(raised.value)
+    assert conversation.agent.mcp_config == {}
+    conversation.close()
+
+
+class ClosingMCPClient(EmptyMCPClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.closed = 0
+
+    def sync_close(self) -> None:
+        self.closed += 1
+
+
+class FailingSecondMCPToolProvider(RecordingMCPToolProvider):
+    """Starts the first server, then fails with an error quoting a secret."""
+
+    def __init__(self, error: str) -> None:
+        self.started = ClosingMCPClient()
+        self.started.tools = [_mcp_tool(self.started, "fetch")]
+        super().__init__(self.started)
+        self.error = error
+
+    def create_tools(
+        self,
+        mcp_config: dict[str, MCPServer],
+        timeout: float = 30.0,
+        *,
+        on_tools_changed: Any = None,
+        on_tools_reconciled: Any = None,
+    ) -> MCPClient:
+        if self.calls:
+            self.calls.append(mcp_config)
+            raise RuntimeError(self.error)
+        return super().create_tools(
+            mcp_config,
+            timeout,
+            on_tools_changed=on_tools_changed,
+            on_tools_reconciled=on_tools_reconciled,
+        )
+
+
+def test_add_mcp_servers_start_failure_closes_started_servers_and_masks_secrets(
+    tmp_path: Path,
+) -> None:
+    provider = FailingSecondMCPToolProvider(
+        "refused https://mcp.example/?token=qa-secret-value"
+    )
+    conversation = LocalConversation(
+        agent=Agent(
+            llm=LLM(model="test-model", api_key=SecretStr("test-key")),
+            tools=[],
+            include_default_tools=[],
+        ),
+        workspace=str(tmp_path),
+        visualizer=None,
+        mcp_tool_provider=provider,
+        secrets={"MCP_TOKEN": "qa-secret-value"},
+    )
+    conversation._ensure_agent_ready()
+
+    with pytest.raises(MCPServerStartError) as raised:
+        conversation.add_mcp_servers(
+            {
+                "first": MCPServer(command="true"),
+                "second": MCPServer(url="https://mcp.example/?token=${MCP_TOKEN}"),
+            }
+        )
+
+    assert raised.value.server_name == "second"
+    assert "qa-secret-value" not in str(raised.value)
+    assert [set(call) for call in provider.calls] == [{"first"}, {"second"}]
+    assert provider.started.closed == 1
+    assert conversation.agent.mcp_config == {}
+    assert _mcp_tool_names(conversation) == set()
+    conversation.close()
+
+
+def test_add_mcp_servers_accepts_running_conversation(tmp_path: Path) -> None:
+    client = EmptyMCPClient()
+    client.tools = [_mcp_tool(client, "fetch")]
+    provider = RecordingMCPToolProvider(client)
+    conversation = LocalConversation(
+        agent=Agent(
+            llm=LLM(model="test-model", api_key=SecretStr("test-key")),
+            tools=[],
+            include_default_tools=[],
+        ),
+        workspace=str(tmp_path),
+        visualizer=None,
+        mcp_tool_provider=provider,
+    )
+    conversation._ensure_agent_ready()
+    conversation.state.transition(ConversationExecutionStatus.RUNNING, "test")
+
+    conversation.add_mcp_servers({"docs": MCPServer(command="true")})
+
+    assert [set(call) for call in provider.calls] == [{"docs"}]
+    assert conversation.state.execution_status == ConversationExecutionStatus.RUNNING
+    assert "docs" in conversation.agent.mcp_config
+    assert _mcp_tool_names(conversation) == {"docs_fetch"}
     conversation.close()
 
 
@@ -263,7 +460,12 @@ def _slow_fetch_server(delay: float) -> dict[str, Any]:
 
 
 def _mcp_conversation(
-    tmp_path: Path, servers: dict[str, Any], llm: LLM | None = None
+    tmp_path: Path,
+    servers: dict[str, Any],
+    llm: LLM | None = None,
+    *,
+    mcp_startup_budget: float | None = None,
+    mcp_tool_provider: MCPToolProvider | None = None,
 ) -> LocalConversation:
     return LocalConversation(
         agent=Agent(
@@ -274,7 +476,114 @@ def _mcp_conversation(
         ),
         workspace=str(tmp_path),
         visualizer=None,
+        mcp_startup_budget=mcp_startup_budget,
+        mcp_tool_provider=mcp_tool_provider,
     )
+
+
+def _wait_until(condition: Any, timeout: float = 20) -> None:
+    deadline = time.monotonic() + timeout
+    while not condition() and time.monotonic() < deadline:
+        time.sleep(0.05)
+
+
+def test_startup_budget_starts_the_agent_before_a_slow_mcp_server(
+    tmp_path: Path,
+) -> None:
+    # A model litellm knows locally, so agent init makes no model-info requests.
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"))
+    conversation = _mcp_conversation(
+        tmp_path, {"slow": _slow_fetch_server(6)}, llm, mcp_startup_budget=0.5
+    )
+
+    started = time.monotonic()
+    conversation._ensure_agent_ready()
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 5
+    assert _mcp_tool_names(conversation) == set()
+    _wait_until(lambda: _mcp_tool_names(conversation))
+    assert _mcp_tool_names(conversation) == {"fetch"}
+    conversation.close()
+
+
+class BlockedMCPToolProvider:
+    """Finishes starting only when the test releases it."""
+
+    def __init__(self) -> None:
+        self.release = threading.Event()
+        self.client = EmptyMCPClient()
+        self.client.tools = list(
+            MCPToolDefinition.create(
+                mcp_types.Tool(name="late_tool", input_schema={"type": "object"}),
+                cast(MCPClient, self.client),
+            )
+        )
+
+    def create_tools(self, mcp_config, timeout=30.0, **kwargs) -> MCPClient:
+        self.release.wait(10)
+        return cast(MCPClient, self.client)
+
+
+def test_late_mcp_tools_are_closed_when_the_conversation_closed_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider = BlockedMCPToolProvider()
+    conversation = _mcp_conversation(
+        tmp_path,
+        {"blocked": {"command": "unused"}},
+        mcp_startup_budget=0.1,
+        mcp_tool_provider=cast(MCPToolProvider, provider),
+    )
+    closed: list[Any] = []
+    monkeypatch.setattr(
+        conversation, "_close_runtime_tools", lambda tools: closed.extend(tools)
+    )
+    conversation._ensure_agent_ready()
+
+    conversation.close()
+    provider.release.set()
+    _wait_until(lambda: closed)
+
+    assert [tool.name for tool in closed] == ["late_tool"]
+    assert _mcp_tool_names(conversation) == set()
+
+
+@pytest.mark.parametrize("use_arun", [False, True])
+def test_first_step_waits_for_mcp_servers_that_missed_the_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, use_arun: bool
+) -> None:
+    provider = BlockedMCPToolProvider()
+    conversation = _mcp_conversation(
+        tmp_path,
+        {"blocked": {"command": "unused"}},
+        mcp_startup_budget=0.1,
+        mcp_tool_provider=cast(MCPToolProvider, provider),
+    )
+    tools_at_first_step: list[set[str]] = []
+
+    def step(self, conversation, *args, **kwargs) -> None:
+        tools_at_first_step.append(_mcp_tool_names(conversation))
+        conversation.state.transition(
+            ConversationExecutionStatus.FINISHED, reason="test"
+        )
+
+    async def astep(self, conversation, *args, **kwargs) -> None:
+        step(self, conversation)
+
+    monkeypatch.setattr(Agent, "step", step)
+    monkeypatch.setattr(Agent, "astep", astep)
+    conversation.send_message("hello")
+    threading.Timer(0.5, provider.release.set).start()
+    try:
+        if use_arun:
+            asyncio.run(conversation.arun())
+        else:
+            conversation.run()
+    finally:
+        conversation.close()
+
+    assert tools_at_first_step == [{"late_tool"}]
 
 
 def _mcp_tool_names(conversation: LocalConversation) -> set[str]:
@@ -431,3 +740,131 @@ def test_single_enabled_mcp_server_keeps_unprefixed_tool_names(
 
     assert _mcp_tool_names(conversation) == {"fetch"}
     conversation.close()
+
+
+def _persisted_mcp_conversation(
+    tmp_path: Path, servers: dict[str, Any], llm: LLM | None = None
+) -> LocalConversation:
+    return LocalConversation(
+        agent=Agent(
+            llm=llm or LLM(model="test-model", api_key=SecretStr("test-key")),
+            tools=[],
+            include_default_tools=[],
+            mcp_config=coerce_mcp_config(servers),
+        ),
+        workspace=str(tmp_path / "workspace"),
+        persistence_dir=str(tmp_path / "conversations"),
+        conversation_id=PERSISTED_CONVERSATION_ID,
+        delete_on_close=False,
+        visualizer=None,
+    )
+
+
+PERSISTED_CONVERSATION_ID = uuid.UUID("6927a000-0000-4000-8000-000000006927")
+
+
+def test_runtime_added_mcp_tools_keep_their_names_after_reopen(
+    tmp_path: Path,
+) -> None:
+    conversation = _persisted_mcp_conversation(tmp_path, {})
+    conversation._ensure_agent_ready()
+    conversation.add_mcp_servers({"docs": MCPServer.model_validate(FETCH_SERVER)})
+    assert _mcp_tool_names(conversation) == {"docs_fetch"}
+    conversation.close()
+
+    llm = TestLLM.from_messages(
+        [
+            Message(
+                role="assistant",
+                content=[TextContent(text="")],
+                tool_calls=[
+                    MessageToolCall(
+                        id="call-1",
+                        name="docs_fetch",
+                        arguments='{"url": "https://example.com"}',
+                        origin="completion",
+                    )
+                ],
+            ),
+            Message(role="assistant", content=[TextContent(text="done")]),
+        ]
+    )
+    reopened = _persisted_mcp_conversation(tmp_path, {"docs": FETCH_SERVER}, llm)
+    reopened.send_message("Fetch https://example.com again")
+    reopened.run()
+
+    assert _mcp_tool_names(reopened) == {"docs_fetch"}
+    observations = [
+        event.observation
+        for event in reopened.state.events
+        if isinstance(event, ObservationEvent) and event.tool_name == "docs_fetch"
+    ]
+    assert len(observations) == 1
+    assert isinstance(observations[0], MCPToolObservation)
+    assert not observations[0].is_error
+    reopened.close()
+
+
+def test_configured_mcp_server_keeps_its_names_next_to_a_runtime_addition(
+    tmp_path: Path,
+) -> None:
+    conversation = _persisted_mcp_conversation(tmp_path, {"base": FETCH_SERVER})
+    conversation._ensure_agent_ready()
+    assert _mcp_tool_names(conversation) == {"fetch"}
+    conversation.add_mcp_servers({"docs": MCPServer.model_validate(FETCH_SERVER)})
+    assert _mcp_tool_names(conversation) == {"fetch", "docs_fetch"}
+    conversation.close()
+
+    reopened = _persisted_mcp_conversation(
+        tmp_path, {"base": FETCH_SERVER, "docs": FETCH_SERVER}
+    )
+    reopened._ensure_agent_ready()
+
+    assert _mcp_tool_names(reopened) == {"fetch", "docs_fetch"}
+    reopened.close()
+
+
+def test_mcp_server_added_before_a_reopened_agent_starts_keeps_old_names(
+    tmp_path: Path,
+) -> None:
+    conversation = _persisted_mcp_conversation(tmp_path, {"base": FETCH_SERVER})
+    conversation._ensure_agent_ready()
+    assert _mcp_tool_names(conversation) == {"fetch"}
+    conversation.close()
+
+    reopened = _persisted_mcp_conversation(tmp_path, {"base": FETCH_SERVER})
+    reopened.add_mcp_servers({"docs": MCPServer.model_validate(FETCH_SERVER)})
+    reopened._ensure_agent_ready()
+
+    assert _mcp_tool_names(reopened) == {"fetch", "docs_fetch"}
+    reopened.close()
+
+
+def test_mcp_server_added_before_the_first_message_is_named_like_configured(
+    tmp_path: Path,
+) -> None:
+    conversation = _persisted_mcp_conversation(tmp_path, {})
+    conversation.add_mcp_servers({"docs": MCPServer.model_validate(FETCH_SERVER)})
+    conversation._ensure_agent_ready()
+    assert _mcp_tool_names(conversation) == {"fetch"}
+    conversation.close()
+
+    reopened = _persisted_mcp_conversation(tmp_path, {"docs": FETCH_SERVER})
+    reopened._ensure_agent_ready()
+
+    assert _mcp_tool_names(reopened) == {"fetch"}
+    reopened.close()
+
+
+def test_reopened_single_configured_mcp_server_stays_unprefixed(
+    tmp_path: Path,
+) -> None:
+    conversation = _persisted_mcp_conversation(tmp_path, {"docs": FETCH_SERVER})
+    conversation._ensure_agent_ready()
+    conversation.close()
+
+    reopened = _persisted_mcp_conversation(tmp_path, {"docs": FETCH_SERVER})
+    reopened._ensure_agent_ready()
+
+    assert _mcp_tool_names(reopened) == {"fetch"}
+    reopened.close()

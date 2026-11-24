@@ -14,7 +14,13 @@ from typing import TYPE_CHECKING, Any
 from openhands.sdk.agent.stream_context import StreamContext
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import MessageEvent
-from openhands.sdk.llm import LLMResponse, Message, TextContent
+from openhands.sdk.llm import (
+    LLMResponse,
+    Message,
+    RedactedThinkingBlock,
+    TextContent,
+    ThinkingBlock,
+)
 from openhands.sdk.logger import get_logger
 
 
@@ -26,12 +32,7 @@ if TYPE_CHECKING:
     )
     from openhands.sdk.critic.base import CriticBase, CriticResult
     from openhands.sdk.event import ActionEvent
-    from openhands.sdk.llm import (
-        MessageToolCall,
-        ReasoningItemModel,
-        RedactedThinkingBlock,
-        ThinkingBlock,
-    )
+    from openhands.sdk.llm import MessageToolCall, ReasoningItemModel
     from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 
 logger = get_logger(__name__)
@@ -267,7 +268,7 @@ class ResponseDispatchMixin:
         *,
         mask_secrets: bool = True,
     ) -> None:
-        """Handle LLM response with text content — finishes conversation."""
+        """Emit text and finish unless the provider explicitly continues the turn."""
         self._emit_message_event(
             message,
             llm_response,
@@ -277,6 +278,8 @@ class ResponseDispatchMixin:
             mask_secrets=mask_secrets,
         )
         self._maybe_emit_vllm_tokens(llm_response, on_event)
+        if llm_response.continues_turn:
+            return
         logger.debug("LLM produced a message response - awaits user input")
         state.transition(
             ConversationExecutionStatus.FINISHED, "agent replied with a message"
@@ -356,12 +359,22 @@ class ResponseDispatchMixin:
     def _mask_secrets(message: Message, conversation: LocalConversation) -> Message:
         """Return ``message`` with registered secret values masked in its text.
 
-        ``thinking_blocks`` and ``responses_reasoning_item`` are left alone:
-        they are signed provider payloads, and rewriting them invalidates the
-        signature replayed on the next request.
+        ``responses_reasoning_item`` is left alone: it is a signed provider
+        payload, and rewriting it invalidates the signature replayed on the
+        next request. ``thinking_blocks`` are masked because they are persisted
+        and rendered. A block whose text masking changed loses its signature,
+        so the provider does not reject a mismatched replay; an unchanged block
+        keeps it and is replayed as the provider signed it.
         """
         mask = conversation.state.secret_registry.mask_secrets_in_output
         reasoning = message.reasoning_content
+        masked_thinking_blocks: list[ThinkingBlock | RedactedThinkingBlock] = []
+        for tb in message.thinking_blocks:
+            if isinstance(tb, ThinkingBlock):
+                masked = mask(tb.thinking)
+                if masked != tb.thinking:
+                    tb = tb.model_copy(update={"thinking": masked, "signature": None})
+            masked_thinking_blocks.append(tb)
         return message.model_copy(
             update={
                 "content": [
@@ -371,6 +384,7 @@ class ResponseDispatchMixin:
                     for part in message.content
                 ],
                 "reasoning_content": mask(reasoning) if reasoning else reasoning,
+                "thinking_blocks": masked_thinking_blocks,
             }
         )
 

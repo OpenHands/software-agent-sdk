@@ -6,11 +6,12 @@ plugins a conversation would load on its own (user directories, the project's
 `.agents/plugins` and `.openhands/plugins`, and enabled installed plugins),
 installs plugins from a local path or a git source into the server's store,
 enables, disables, refreshes and uninstalls them, and reads the plugins-only
-catalog of the public extensions marketplace. Enabled installed plugins are
+catalog of the public extensions marketplace (empty and marked `disabled`
+when the operator sets `OH_PUBLIC_CATALOG_ENABLED=false`). Enabled installed plugins are
 merged into every new conversation on its first message: their hooks run and
 their commands activate.
 
-Source: `openhands-agent-server/openhands/agent_server/plugins_router.py`, `openhands-agent-server/openhands/agent_server/plugins_service.py`, `openhands-sdk/openhands/sdk/plugin/`, `openhands-sdk/openhands/sdk/extensions/`, `openhands-sdk/openhands/sdk/marketplace/`, `clients/typescript/src/client/plugins-client.ts`
+Source: `openhands-agent-server/openhands/agent_server/plugins_router.py`, `openhands-agent-server/openhands/agent_server/plugins_service.py`, `openhands-agent-server/openhands/agent_server/catalog.py`, `openhands-sdk/openhands/sdk/plugin/`, `openhands-sdk/openhands/sdk/extensions/`, `openhands-sdk/openhands/sdk/marketplace/`, `clients/typescript/src/client/plugins-client.ts`
 
 Needs: `llm`, `git`, `node`, `network`
 
@@ -43,11 +44,12 @@ Routes: `POST /api/plugins`, `POST /api/plugins/fetch`, `POST /api/plugins/insta
 - `F26.uninstall`: uninstall removes the directory and the record; the single view, the list and the ambient catalog no longer show it, and a second uninstall is 404.
 - `F26.conversation-ambient`: a new conversation loads an enabled installed plugin on its first message: its `UserPromptSubmit` hook runs (a `HookExecutionEvent`, also on the events socket), its command skill activates, and its skills show in the conversation.
 - `F26.conversation-disabled`: a conversation started after the plugin was disabled loads neither its hook nor its skills, while the user-directory plugins still load.
-- `F26.conversation-resume-disabled`: after a restart, an existing conversation drops a since-disabled plugin entirely, its command as well as its hook.
+- `F26.conversation-resume-disabled`: after a restart, an existing conversation drops a since-disabled plugin entirely: its command, skills and hook, and the MCP server its `.mcp.json` added.
 - `F26.restart-persist`: installed plugins, their records and their enabled flags survive a restart.
 - `F26.marketplace-local`: against a local stand-in for the extensions repository, `GET /api/plugins/marketplace` lists only `./plugins/` entries (local contents for local entries, attach coordinates for git entries) with a fresh `installed` flag; a repository without a manifest gives an empty catalog that is not cached.
 - `F26.marketplace-cache`: a non-empty catalog is served from a per-process cache (a new upstream entry appears only after a restart; the 5-minute TTL itself is not waited out), while `installed` stays fresh.
 - `F26.ts-client`: every `PluginsClient` method of the TypeScript client works against the server, and errors surface as `HttpError` with the status and detail.
+- `F26.marketplace-disabled`: with `OH_PUBLIC_CATALOG_ENABLED=false` the marketplace answers `disabled: true` and no plugins although the clone lists some (the default server answers `disabled: false` with them); installing from an explicit source still works, and an unrecognised value keeps the catalog on.
 - `F26.marketplace-public`: against the real `OpenHands/extensions` repository, the catalog lists exactly its `./plugins/` entries, with their contents.
 
 ## How to get to it (agent POV)
@@ -76,7 +78,9 @@ Routes: `POST /api/plugins`, `POST /api/plugins/fetch`, `POST /api/plugins/insta
   extensions clone at `$OH_PERSISTENCE_DIR/cache/skills/public-skills`
   (shared with the skills catalog, F25) and returns the `./plugins/` entries
   with attach coordinates (`source`, `ref`, `repo_path`), `installed`, and
-  `path`/`skills`/`files` when the entry is a directory of the clone.
+  `path`/`skills`/`files` when the entry is a directory of the clone, plus
+  `disabled` (`false` unless `OH_PUBLIC_CATALOG_ENABLED` is off, in which case
+  `plugins` is empty and nothing is fetched; `F26.marketplace-disabled`).
 - Conversations: `LocalConversation._ensure_plugins_loaded` merges enabled
   installed plugins, user-directory plugins and the workspace's project
   plugins into the agent on the first message or run. Second views:
@@ -90,13 +94,18 @@ Routes: `POST /api/plugins`, `POST /api/plugins/fetch`, `POST /api/plugins/insta
   `installPlugin`, `listInstalledPlugins`, `getInstalledPlugin`,
   `setPluginEnabled`, `uninstallPlugin`, `refreshPlugin` (also as
   `OpenHandsClient.plugins`); driven by `F26.ts-client`.
+  `PluginsClient.loadPluginForConversation(id, ref)` calls F09's
+  `load_plugin` route through a `ConversationClient` (driven by
+  `F34.load-plugin`).
 - Python SDK: no remote client for these routes; `openhands.sdk.plugin`
   (`install_plugin`, `list_installed_plugins`, `load_available_plugins`, ...)
   is the same code run in-process.
 - Configuration: `OH_PERSISTENCE_DIR` (store and caches) and `HOME`
   (`~/.agents/plugins`) are read at import, so set them before launch (the
   launcher makes both private to the run); `EXTENSIONS_REF` pins the public
-  repository ref.
+  repository ref. `OH_PUBLIC_CATALOG_ENABLED` (default on, read per request)
+  switches the marketplace off for both the plugins and the skills catalogs
+  (F25); the bullet launches a second server with `--env`.
 - Agent Canvas (context only): the plugins marketplace page installs and
   attaches plugins from the catalog.
 
@@ -672,9 +681,18 @@ Preconditions:
   ```sh
   control-agent-server api POST /api/plugins/install --json '{"source": "'"$PL"'", "force": true}' --expect 200
   control-agent-server api PATCH /api/plugins/installed/qa-f26-inst --json '{"enabled": true}' --expect 200
+  PMC=$(control-agent-server fixture plugin --name qa-f26-mcpplug --print-path)
+  MCPR=$(control-agent-server fixture mcp-server --name qa-f26-mcp | jq -c .mcp_server)
+  printf '{"mcpServers": {"qa-f26-mcp": %s}}\n' "$MCPR" > "$PMC/.mcp.json"
+  control-agent-server api POST /api/plugins/install --json '{"source": "'"$PMC"'", "force": true}' --expect 200 --check enabled eq true
   CIDR=$(control-agent-server conversation start --tools none --no-autotitle --prompt 'Reply with the single word: ok' --wait --timeout 240 --print-id)
   control-agent-server conversation events "$CIDR" --kinds HookExecutionEvent --contains QA_F26_INST_HOOK --expect-count 1
+  control-agent-server api GET "/api/conversations/$CIDR" --query include_skills=true --expect 200 --check agent.mcp_config.qa-f26-mcp.command exists \
+    --check agent.agent_context.skills contains '"name": "qa-f26-mcpplug-skill"' --quiet --save F26.conversation-resume-disabled/before
+  control-agent-server state cat base_state.json --conversation "$CIDR" --check ambient_plugin_mcp_servers contains qa-f26-mcp \
+    --check ambient_plugin_skills contains qa-f26-inst:qa-hello
   control-agent-server api PATCH /api/plugins/installed/qa-f26-inst --json '{"enabled": false}' --expect 200
+  control-agent-server api PATCH /api/plugins/installed/qa-f26-mcpplug --json '{"enabled": false}' --expect 200
   control-agent-server restart
   control-agent-server ws start "/sockets/events/$CIDR" --name qa-f26-resume --duration 300
   control-agent-server conversation send "$CIDR" --text '/qa-f26-inst:qa-hello' --wait --timeout 240
@@ -684,7 +702,11 @@ Preconditions:
   control-agent-server ws stop qa-f26-resume --kinds MessageEvent --contains '"activated_skills": ["qa-f26-inst:qa-hello"]' --expect-none \
     --save F26.conversation-resume-disabled/frames
   control-agent-server api GET "/api/conversations/$CIDR" --query include_skills=true --expect 200 \
-    --check agent.agent_context.skills not-contains qa-f26-inst --save F26.conversation-resume-disabled/conversation
+    --check agent.agent_context.skills not-contains qa-f26-inst --check agent.agent_context.skills not-contains qa-f26-mcpplug \
+    --check agent.mcp_config.qa-f26-mcp missing --save F26.conversation-resume-disabled/conversation
+  control-agent-server state cat base_state.json --conversation "$CIDR" --check ambient_plugin_mcp_servers len-eq 0 \
+    --check ambient_plugin_skills not-contains qa-f26-inst
+  control-agent-server api DELETE /api/plugins/installed/qa-f26-mcpplug --expect 200
   ```
   The conversation loaded the plugin before it was disabled (its hook ran
   for the prompt). Ambient plugins are not pinned to a conversation; on
@@ -697,8 +719,16 @@ Preconditions:
   into the agent persisted in `base_state.json`, so the conversation records
   their skill and MCP server names and drops them after successful discovery.
   A failed scan preserves the previous contributions and ownership record.
-  Read from source and not driven here: MCP servers follow the same path;
-  explicit replacement agents start with no inherited ownership, and legacy
+  A second plugin, `qa-f26-mcpplug`, adds the stdio MCP server `qa-f26-mcp`
+  through its `.mcp.json`: before the restart the conversation's
+  `agent.mcp_config` has it and `base_state.json` records it in
+  `ambient_plugin_mcp_servers` (with the skills in `ambient_plugin_skills`;
+  neither field is in the REST view); after the plugin is disabled and the
+  conversation resumes, `agent.mcp_config` no longer has it and both records
+  hold only what is still enabled. The drop happens when the conversation
+  loads its plugins on the first resumed message, which is why the recipe
+  sends one before it reads the agent. That plugin is uninstalled at the end.
+  Read from source and not driven here: explicit replacement agents start with no inherited ownership, and legacy
   conversations without a record retain unidentifiable contributions rather
   than deleting caller content by name. The command is sent here for the
   first time because a keyword skill activates once per conversation
@@ -727,7 +757,11 @@ Preconditions:
 - **Marketplace against a local stand-in (`F26.marketplace-local`).** Read
   the catalog while the stand-in has no manifest, then commit a manifest with
   a local plugin, a standalone skill and a plugin in another repository, read
-  it again, and install the local entry from its coordinates.
+  it again, and install the local entry from its coordinates. The entry in
+  another repository reads `installed: true` because `F26.install-git`
+  installed a plugin of that name.
+
+  Requires: `F26.install-git`
   ```sh
   control-agent-server api GET /api/plugins/marketplace --expect 200 --check plugins len-eq 0 --save F26.marketplace-local/no-manifest
   test -d "$PUB/.git"
@@ -837,6 +871,39 @@ Preconditions:
   lists the stand-in's three plugins, uninstall answers its message, and the
   errors reject with an `HttpError` whose `status` (and `detail`) are the
   server's. The server-side reads confirm the plugin is gone.
+- **Catalog switched off (`F26.marketplace-disabled`).** The run's catalog
+  is the default; a second server launched with
+  `OH_PUBLIC_CATALOG_ENABLED=false` gets its own clone of the stand-in, reads
+  the catalog, installs a plugin from that clone directly, and is restarted
+  with an unrecognised value.
+
+  Requires: `F26.marketplace-local`
+  ```sh
+  control-agent-server api GET /api/plugins/marketplace --expect 200 --check disabled eq false --check plugins len-ge 1 \
+    --check plugins.0.name eq qa-f26-pub --save F26.marketplace-disabled/default
+  NOCAT=$(control-agent-server launch --new --name f26-nocat --env OH_PUBLIC_CATALOG_ENABLED=false --print-run)
+  trap 'control-agent-server stop --run "$NOCAT" >/dev/null' EXIT
+  NOCAT_CLONE="$NOCAT/home/.openhands/cache/skills/public-skills"
+  git clone -q "$E" "$NOCAT_CLONE"
+  grep -q '"name": "qa-f26-pub"' "$NOCAT_CLONE/.plugin/marketplace.json"
+  control-agent-server api GET /api/plugins/marketplace --run "$NOCAT" --expect 200 --check disabled eq true --check plugins len-eq 0 \
+    --save F26.marketplace-disabled/disabled
+  control-agent-server api POST /api/plugins/install --run "$NOCAT" --json '{"source": "'"$NOCAT_CLONE/plugins/qa-f26-pub"'"}' --expect 200 \
+    --check name eq qa-f26-pub
+  control-agent-server api GET /api/plugins/installed/qa-f26-pub --run "$NOCAT" --expect 200 --check enabled eq true
+  control-agent-server api GET /api/plugins/marketplace --run "$NOCAT" --expect 200 --check disabled eq true --check plugins len-eq 0
+  control-agent-server restart --run "$NOCAT" --reset-config --env OH_PUBLIC_CATALOG_ENABLED=maybe
+  control-agent-server api GET /api/plugins/marketplace --run "$NOCAT" --expect 200 --check disabled eq false \
+    --check plugins.0.name eq qa-f26-pub --check plugins.0.installed eq true --save F26.marketplace-disabled/unrecognised
+  control-agent-server stop --run "$NOCAT"
+  ```
+  The default catalog says `disabled: false` and lists the stand-in's
+  plugins. With the switch off the same clone yields `{"plugins": [],
+  "disabled": true}`, so a client can tell "turned off" from "nothing to
+  install"; installing from an explicit source is not affected. After a
+  restart with `OH_PUBLIC_CATALOG_ENABLED=maybe` the server ignores the value,
+  keeps the catalog on, and lists the plugin as
+  installed.
 - **Public marketplace (`F26.marketplace-public`).** Remove the stand-in
   clone, restart, and read the catalog from the real `OpenHands/extensions`
   repository (network).

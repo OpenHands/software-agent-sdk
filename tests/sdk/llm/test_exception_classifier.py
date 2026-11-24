@@ -104,6 +104,22 @@ def test_looks_like_malformed_conversation_history_error_moonshot():
     assert is_context_window_exceeded(error) is False
 
 
+def test_looks_like_malformed_conversation_history_error_orphan_tool_message():
+    """DeepSeek's and OpenAI's wording for a tool result without its call."""
+    error = BadRequestError(
+        (
+            'DeepseekException - {"error":{"message":"Messages with role \'tool\' '
+            "must be a response to a preceding message with 'tool_calls' "
+            '(request_id: ddd8f0aa)","type":"invalid_request_error"}}'
+        ),
+        MODEL,
+        PROVIDER,
+    )
+
+    assert looks_like_malformed_conversation_history_error(error) is True
+    assert is_context_window_exceeded(error) is False
+
+
 def test_looks_like_malformed_conversation_history_error_openai_tool_json_parse():
     error = InternalServerError(
         (

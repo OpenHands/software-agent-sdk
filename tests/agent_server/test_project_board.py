@@ -1,0 +1,1409 @@
+"""Tests for the conversation-outcome tags a project board groups by."""
+
+import asyncio
+import json
+from collections.abc import AsyncIterator
+from pathlib import Path
+from typing import cast
+from uuid import UUID, uuid4
+
+import pytest
+
+from openhands.agent_server.conversation_service import ConversationService
+from openhands.agent_server.event_service import EventService
+from openhands.agent_server.models import (
+    StartConversationRequest,
+)
+from openhands.agent_server.persistence import PersistedProjects, ProjectItem
+from openhands.agent_server.project_board import (
+    ConversationOutcomeSubscriber,
+    merge_pull_requests,
+)
+from openhands.agent_server.project_service import RESERVED_TAG_KEYS
+from openhands.agent_server.project_turns import (
+    CardAnswered,
+    PullRequestsOpened,
+    TurnEnded,
+    TurnStarted,
+    TurnStopped,
+    TurnTracker,
+    UserWrote,
+    ask_line,
+)
+from openhands.agent_server.project_wake import conversation_context
+from openhands.sdk import LLM, Agent
+from openhands.sdk.conversation.resolution import (
+    ResolutionState,
+    ResolutionVerdict,
+    verdict_from_judgments,
+)
+from openhands.sdk.conversation.types import (
+    BOARD_TAG_KEYS,
+    GOAL_LOOP_SENDER,
+    PULL_REQUESTS_TAG_KEY,
+    TAG_VALUE_MAX_LENGTH,
+)
+from openhands.sdk.critic.result import CriticResult
+from openhands.sdk.event import (
+    ActionEvent,
+    ConversationStateUpdateEvent,
+    Event,
+    MessageEvent,
+    ObservationEvent,
+)
+from openhands.sdk.event.conversation_error import ConversationErrorEvent
+from openhands.sdk.event.conversation_state import FULL_STATE_KEY
+from openhands.sdk.llm import Message, MessageToolCall, TextContent
+from openhands.sdk.tool.builtins.finish import FinishAction
+from openhands.sdk.tool.builtins.think import ThinkAction
+from openhands.sdk.workspace import LocalWorkspace
+from openhands.tools.terminal import TerminalAction, TerminalObservation
+
+
+pytestmark = pytest.mark.projects_on
+
+
+# ask_line
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Done.\n\nShould I also update the docs?", "Should I also update the docs?"),
+        ("Fixed it.\n\n  Want   a PR?\n", "Want a PR?"),
+        ("", None),
+        ("  \n", None),
+        (None, None),
+    ],
+)
+def test_ask_line_is_the_end_of_the_reply(text, expected):
+    assert ask_line(text) == expected
+
+
+def test_a_long_ask_line_keeps_its_end():
+    line = ask_line("Should I " + "really " * 60 + "do it?")
+    assert line is not None and len(line) == 200
+    assert line.startswith("…") and line.endswith("do it?")
+
+
+# ConversationOutcomeSubscriber, with a recording set_tag
+
+
+class _Tags:
+    def __init__(self, tags: dict[str, str]):
+        self.tags = tags
+        self.calls: list[tuple[str, str | None, bool]] = []
+
+    async def set_tag(
+        self,
+        conversation_id: UUID,
+        key: str,
+        value: str | None,
+        *,
+        only_if_absent: bool = False,
+    ) -> dict[str, str]:
+        self.calls.append((key, value, only_if_absent))
+        if only_if_absent and key in self.tags:
+            return self.tags
+        if value is None:
+            self.tags.pop(key, None)
+        else:
+            self.tags[key] = value
+        return self.tags
+
+
+def _subscriber(store: _Tags) -> ConversationOutcomeSubscriber:
+    return ConversationOutcomeSubscriber(
+        conversation_id=uuid4(), tags=lambda: store.tags, set_tag=store.set_tag
+    )
+
+
+def _message(
+    source: str, text: str, score: float | None = None, sender: str | None = None
+) -> MessageEvent:
+    role = "user" if source == "user" else "assistant"
+    return MessageEvent(
+        source=source,  # type: ignore[arg-type]
+        sender=sender,
+        llm_message=Message(role=role, content=[TextContent(text=text)]),
+        critic_result=None
+        if score is None
+        else CriticResult(score=score, message=None),
+    )
+
+
+def _finish(text: str, score: float | None = None) -> ActionEvent:
+    return ActionEvent(
+        source="agent",
+        thought=[TextContent(text="")],
+        action=FinishAction(message=text),
+        tool_name="finish",
+        tool_call_id="finish-1",
+        tool_call=MessageToolCall(
+            id="finish-1",
+            name="finish",
+            arguments=json.dumps({"message": text}),
+            origin="completion",
+        ),
+        llm_response_id="resp-1",
+        critic_result=None
+        if score is None
+        else CriticResult(score=score, message=None),
+    )
+
+
+def _status(value: str, *, full: bool = False) -> ConversationStateUpdateEvent:
+    if full:
+        return ConversationStateUpdateEvent(
+            key=FULL_STATE_KEY, value={"execution_status": value}
+        )
+    return ConversationStateUpdateEvent(key="execution_status", value=value)
+
+
+async def _feed(subscriber: ConversationOutcomeSubscriber, *events) -> None:
+    for event in events:
+        await subscriber(event)
+    await subscriber.drain()
+
+
+@pytest.mark.asyncio
+async def test_finished_run_records_a_question():
+    store = _Tags({"project": "p1"})
+    asks = verdict_from_judgments({"handled": 1, "task_done": 1, "asks_user": 0.9})
+    subscriber = _judging(store, asks, [])
+
+    await _feed(
+        subscriber,
+        _message("user", "Fix the bug"),
+        _status("running"),
+        _message("agent", "Fixed. Should I also add a test?"),
+        _status("finished"),
+    )
+
+    assert store.tags == {
+        "project": "p1",
+        "turn": "asking",
+        "ask": "Fixed. Should I also add a test?",
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_question_mark_alone_does_not_ask():
+    """Only the judge says a reply waits on the user."""
+    store = _Tags({"project": "p1"})
+
+    await _feed(
+        _subscriber(store),
+        _message("agent", "Fixed. Should I also add a test?"),
+        _status("finished"),
+    )
+
+    assert store.tags == {"project": "p1", "turn": "finished"}
+
+
+@pytest.mark.asyncio
+async def test_confident_critic_resolves_without_overriding_the_user():
+    store = _Tags({"project": "p1"})
+    subscriber = _subscriber(store)
+
+    await _feed(subscriber, _finish("All done.", score=0.95), _status("finished"))
+    assert store.tags == {
+        "project": "p1",
+        "turn": "finished",
+        "resolved": "auto",
+        "resolvenote": "0.95 critic",
+    }
+
+    store.tags = {"project": "p1", "resolved": "user"}
+    store.calls.clear()
+    await _feed(subscriber, _finish("All done.", score=0.95), _status("finished"))
+    assert store.tags["resolved"] == "user"
+    assert not any(call[0] in ("resolved", "resolvenote") for call in store.calls)
+
+
+@pytest.mark.asyncio
+async def test_unsure_critic_does_not_resolve():
+    store = _Tags({"project": "p1"})
+
+    await _feed(
+        _subscriber(store), _finish("Done, I think.", score=0.89), _status("finished")
+    )
+
+    assert store.tags == {"project": "p1", "turn": "finished"}
+
+
+@pytest.mark.asyncio
+async def test_new_user_message_reopens_the_conversation():
+    store = _Tags(
+        {"project": "p1", "turn": "asking", "ask": "Add a test?", "resolved": "user"}
+    )
+
+    await _feed(_subscriber(store), _message("user", "Yes, please add it"))
+
+    assert store.tags == {"project": "p1"}
+
+
+@pytest.mark.asyncio
+async def test_initial_state_push_of_a_finished_conversation_changes_nothing():
+    store = _Tags({"project": "p1"})
+
+    await _feed(_subscriber(store), _status("finished", full=True))
+
+    assert store.calls == []
+
+
+@pytest.mark.asyncio
+async def test_status_updates_after_the_first_finish_change_nothing():
+    store = _Tags({"project": "p1"})
+    subscriber = _subscriber(store)
+    await _feed(subscriber, _message("agent", "Done."), _status("finished"))
+    calls = list(store.calls)
+
+    await _feed(subscriber, _status("finished"), _status("finished", full=True))
+
+    assert store.calls == calls
+
+
+@pytest.mark.asyncio
+async def test_conversations_outside_projects_are_left_alone():
+    store = _Tags({"other": "x"})
+
+    await _feed(
+        _subscriber(store),
+        _message("user", "Hi"),
+        _message("agent", "Hello! What do you need?"),
+        _status("finished"),
+    )
+
+    assert store.calls == []
+    assert store.tags == {"other": "x"}
+
+
+@pytest.mark.asyncio
+async def test_a_failing_tag_write_does_not_break_publishing():
+    async def broken(*_args, **_kwargs):
+        raise RuntimeError("disk full")
+
+    subscriber = ConversationOutcomeSubscriber(
+        conversation_id=uuid4(), tags=lambda: {"project": "p1"}, set_tag=broken
+    )
+
+    await _feed(subscriber, _message("agent", "Done."), _status("finished"))
+
+
+# ConversationService integration
+
+
+@pytest.fixture
+async def service(tmp_path, server_stores) -> AsyncIterator[ConversationService]:
+    async with ConversationService(
+        conversations_dir=tmp_path / "conversations", stores=server_stores
+    ) as service:
+        yield service
+
+
+async def _start(
+    service: ConversationService, tmp_path: Path, tags: dict[str, str]
+) -> UUID:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    info, _ = await service.start_conversation(
+        StartConversationRequest(
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+            workspace=LocalWorkspace(working_dir=str(workspace)),
+            tags=tags,
+        )
+    )
+    return info.id
+
+
+@pytest.mark.asyncio
+async def test_set_tag_only_if_absent(service, tmp_path):
+    cid = await _start(service, tmp_path, {"project": "p1", "resolved": "user"})
+
+    kept = await service.projects.set_conversation_tag(
+        cid, "resolved", "auto", only_if_absent=True
+    )
+    added = await service.projects.set_conversation_tag(
+        cid, "turn", "asking", only_if_absent=True
+    )
+
+    assert kept is not None and kept["resolved"] == "user"
+    assert added is not None and added["turn"] == "asking"
+
+
+@pytest.mark.asyncio
+async def test_finished_run_tags_a_live_conversation(service, tmp_path):
+    cid = await _start(service, tmp_path, {"project": "p1"})
+    event_service = await service.get_event_service(cid)
+    assert event_service is not None
+    subscriber = ConversationOutcomeSubscriber(
+        conversation_id=cid,
+        tags=lambda: event_service.stored.tags,
+        set_tag=service.projects.set_conversation_tag,
+    )
+
+    await _feed(subscriber, _message("agent", "Merged it."), _status("finished"))
+
+    info = await service.get_conversation(cid)
+    assert info is not None
+    assert info.tags == {"project": "p1", "turn": "finished"}
+
+
+def test_board_tag_keys():
+    assert BOARD_TAG_KEYS == {"resolved", "resolvenote", "turn", "ask"}
+
+
+async def _reopened_by_a_user_message(service: ConversationService, cid: UUID) -> bool:
+    event_service = await service.get_event_service(cid)
+    assert event_service is not None
+    # A user message published through the conversation's own pub/sub reaches
+    # the board, which reopens the conversation.
+    await event_service._pub_sub(_message("user", "One more thing"))
+
+    async def turn_cleared() -> bool:
+        info = await service.get_conversation(cid)
+        return info is not None and "turn" not in info.tags
+
+    for _ in range(100):
+        if await turn_cleared():
+            break
+        await asyncio.sleep(0.01)
+    return await turn_cleared()
+
+
+def _saved_project(service: ConversationService) -> str:
+    project = ProjectItem(name="P")
+    assert service.stores is not None
+    service.stores.projects.save(PersistedProjects(projects=[project]))
+    return project.id.hex
+
+
+@pytest.mark.asyncio
+async def test_service_watches_a_project_member(service, tmp_path):
+    p1 = _saved_project(service)
+    cid = await _start(service, tmp_path, {"project": p1, "turn": "asking"})
+
+    assert await _reopened_by_a_user_message(service, cid)
+
+
+@pytest.mark.asyncio
+async def test_a_project_tag_naming_no_project_gets_no_board(service, tmp_path):
+    """A client's own ``project`` tag, or a deleted project's, is an ordinary
+    tag: nothing watches the conversation or writes its tags."""
+    cid = await _start(service, tmp_path, {"project": "p1", "turn": "asking"})
+
+    assert cid not in service.projects._watched
+    assert not await _reopened_by_a_user_message(service, cid)
+
+
+@pytest.mark.asyncio
+async def test_a_conversation_that_joins_a_project_is_watched_from_then_on(
+    service, tmp_path
+):
+    p1 = _saved_project(service)
+    cid = await _start(service, tmp_path, {})
+    await service.projects.set_conversation_tag(cid, "project", p1)
+    await service.projects.set_conversation_tag(cid, "turn", "asking")
+    event_service = await service.get_event_service(cid)
+    assert event_service is not None
+
+    assert await _reopened_by_a_user_message(service, cid)
+    # The board is the server's own: it does not keep the conversation from
+    # idle eviction the way a client's websocket does.
+    assert not event_service.has_external_subscribers()
+
+
+@pytest.mark.asyncio
+async def test_a_rhetorical_question_mid_run_does_not_stick():
+    store = _Tags({"project": "p1"})
+
+    await _feed(
+        _subscriber(store),
+        _message("agent", "Why does this fail? Let me check the logs."),
+        _message("agent", "Is it the cache?"),
+        _finish("Fixed: the cache key was wrong."),
+        _status("finished"),
+    )
+
+    assert store.tags["turn"] == "finished"
+
+
+@pytest.mark.asyncio
+async def test_a_user_message_leaves_tags_outside_projects_alone():
+    store = _Tags({"resolved": "user", "other": "x"})
+
+    await _feed(_subscriber(store), _message("user", "One more thing"))
+
+    assert store.tags == {"resolved": "user", "other": "x"}
+
+
+def _projects_switch(on: bool):
+    async def enabled() -> bool:
+        return on
+
+    return enabled
+
+
+@pytest.mark.asyncio
+async def test_with_projects_off_a_member_run_records_nothing():
+    store = _Tags({"project": "p1"})
+    judged: list[object] = []
+
+    async def judge(state):
+        judged.append(state)
+        return None
+
+    subscriber = _subscriber(store)
+    subscriber.judge = judge
+    subscriber.is_member = _projects_switch(False)
+    await _feed(
+        subscriber,
+        _message("user", "Fix the test"),
+        _finish("Done. Should I also update the docs?"),
+        _status("finished"),
+    )
+
+    assert store.tags == {"project": "p1"}
+    assert judged == []
+
+
+@pytest.mark.asyncio
+async def test_with_projects_off_a_member_stays_resolved():
+    store = _Tags({"project": "p1", "resolved": "user"})
+    subscriber = _subscriber(store)
+    subscriber.is_member = _projects_switch(False)
+
+    await _feed(subscriber, _message("user", "One more thing"))
+
+    assert store.tags == {"project": "p1", "resolved": "user"}
+
+
+@pytest.mark.asyncio
+async def test_with_projects_on_a_member_is_reopened():
+    store = _Tags({"project": "p1", "resolved": "user"})
+    subscriber = _subscriber(store)
+    subscriber.is_member = _projects_switch(True)
+
+    await _feed(subscriber, _message("user", "One more thing"))
+
+    assert store.tags == {"project": "p1"}
+
+
+@pytest.mark.asyncio
+async def test_a_user_message_before_the_outcome_is_saved_still_reopens():
+    """The outcome of a finished run is written in the background; a message
+    that arrives before that write lands must still win."""
+    store = _Tags({"project": "p1"})
+    gate = asyncio.Event()
+
+    async def slow_set_tag(*args, **kwargs):
+        await gate.wait()
+        return await store.set_tag(*args, **kwargs)
+
+    subscriber = ConversationOutcomeSubscriber(
+        conversation_id=uuid4(), tags=lambda: store.tags, set_tag=slow_set_tag
+    )
+
+    await subscriber(_finish("All done.", score=0.95))
+    await subscriber(_status("finished"))
+    # The outcome write is still pending, so no board tag is visible yet.
+    await subscriber(_message("user", "Wait, one more thing"))
+    gate.set()
+    await subscriber.drain()
+
+    assert store.tags == {"project": "p1"}
+
+
+@pytest.mark.asyncio
+async def test_a_finished_member_reports_its_final_message():
+    store = _Tags({"project": "p1"})
+    reports: list[tuple[str, str, str | None, str | None]] = []
+
+    async def on_finished(project, turn, text, sender):
+        reports.append((project, turn, text, sender))
+
+    verdicts = [
+        verdict_from_judgments({"handled": 1, "task_done": 1, "asks_user": 0.9}),
+        verdict_from_judgments({"handled": 1, "task_done": 1}),
+    ]
+
+    async def judge(state: ResolutionState) -> ResolutionVerdict | None:
+        return verdicts.pop(0)
+
+    subscriber = ConversationOutcomeSubscriber(
+        conversation_id=uuid4(),
+        tags=lambda: store.tags,
+        set_tag=store.set_tag,
+        on_finished=on_finished,
+        judge=judge,
+    )
+
+    await _feed(
+        subscriber,
+        _message("user", "Pick a database", sender="conversation:cat"),
+        _finish("Which database?"),
+        _status("finished"),
+        _message("user", "Postgres"),
+        _finish("Done."),
+        _status("finished"),
+    )
+
+    assert reports == [
+        ("p1", "asking", "Which database?", "conversation:cat"),
+        ("p1", "finished", "Done.", None),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_slow_report_does_not_hold_up_the_board():
+    store = _Tags({"project": "p1"})
+    gate = asyncio.Event()
+
+    async def on_finished(*_args):
+        await gate.wait()
+
+    subscriber = ConversationOutcomeSubscriber(
+        conversation_id=uuid4(),
+        tags=lambda: store.tags,
+        set_tag=store.set_tag,
+        on_finished=on_finished,
+    )
+    await subscriber(_finish("Done."))
+    await subscriber(_status("finished"))
+    await subscriber(_message("user", "Thanks, one more thing"))
+    assert subscriber._tail is not None
+    await subscriber._tail
+
+    assert store.tags == {"project": "p1"}
+    gate.set()
+    await subscriber.drain()
+
+
+@pytest.mark.asyncio
+async def test_conversations_outside_projects_report_nothing():
+    reports: list = []
+
+    async def on_finished(*args):
+        reports.append(args)
+
+    subscriber = ConversationOutcomeSubscriber(
+        conversation_id=uuid4(),
+        tags=lambda: {},
+        set_tag=_Tags({}).set_tag,
+        on_finished=on_finished,
+    )
+    await _feed(subscriber, _finish("Done."), _status("finished"))
+
+    assert reports == []
+
+
+@pytest.mark.asyncio
+async def test_an_answered_turn_drops_a_stale_ask():
+    store = _Tags({"project": "p1", "ask": "Old question?"})
+
+    await _feed(_subscriber(store), _finish("All done."), _status("finished"))
+
+    assert store.tags == {"project": "p1", "turn": "finished"}
+
+
+@pytest.mark.asyncio
+async def test_the_users_messages_are_passed_on_in_order():
+    store = _Tags({"project": "p1"})
+    calls: list[tuple] = []
+
+    async def on_user_message(project, text):
+        calls.append(("user", project, text))
+
+    async def on_finished(project, turn, text, sender):
+        calls.append(("finished", project, text, sender))
+
+    subscriber = ConversationOutcomeSubscriber(
+        conversation_id=uuid4(),
+        tags=lambda: store.tags,
+        set_tag=store.set_tag,
+        on_finished=on_finished,
+        on_user_message=on_user_message,
+    )
+
+    await _feed(
+        subscriber,
+        _message("user", "Use Postgres"),
+        _finish("Done."),
+        _status("finished"),
+        _message("user", "From the Cat", sender="conversation:cat"),
+    )
+
+    assert calls == [
+        ("user", "p1", "Use Postgres"),
+        ("finished", "p1", "Done.", None),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_an_awareness_copy_neither_reopens_nor_starts_a_turn():
+    store = _Tags({"project": "p1", "turn": "asking", "ask": "Ship it?"})
+    finished: list = []
+
+    async def on_finished(*args):
+        finished.append(args)
+
+    subscriber = ConversationOutcomeSubscriber(
+        conversation_id=uuid4(),
+        tags=lambda: store.tags,
+        set_tag=store.set_tag,
+        on_finished=on_finished,
+    )
+    note = _message("user", "[Message from the user in x]", sender="conversation:abc")
+
+    await _feed(subscriber, note)
+
+    assert store.tags == {"project": "p1", "turn": "asking", "ask": "Ship it?"}
+    assert finished == []
+
+
+@pytest.mark.asyncio
+async def test_a_goal_loop_nudge_keeps_the_turn_starter_and_is_not_relayed():
+    store = _Tags({"project": "p1"})
+    calls: list = []
+
+    async def on_finished(project, turn, text, sender):
+        calls.append(("finished", sender))
+
+    async def on_user_message(project, text):
+        calls.append(("user", text))
+
+    subscriber = ConversationOutcomeSubscriber(
+        conversation_id=uuid4(),
+        tags=lambda: store.tags,
+        set_tag=store.set_tag,
+        on_finished=on_finished,
+        on_user_message=on_user_message,
+    )
+
+    await _feed(
+        subscriber,
+        _message("user", "Write the report", sender="conversation:cat"),
+        _message("user", "Keep going", sender=GOAL_LOOP_SENDER),
+        _finish("Report written."),
+        _status("finished"),
+    )
+
+    assert calls == [("finished", "conversation:cat")]
+
+
+def _action(tool: str, summary: str) -> ActionEvent:
+    return ActionEvent(
+        source="agent",
+        thought=[TextContent(text="")],
+        action=ThinkAction(thought="plan"),
+        tool_name=tool,
+        tool_call_id="call-1",
+        tool_call=MessageToolCall(
+            id="call-1", name=tool, arguments="{}", origin="completion"
+        ),
+        llm_response_id="resp-2",
+        summary=summary,
+    )
+
+
+def _stop_subscriber(store: _Tags, stops: list, lookup=None):
+    async def on_stopped(project, status, text, sender):
+        stops.append((project, status, text, sender))
+
+    return ConversationOutcomeSubscriber(
+        conversation_id=uuid4(),
+        tags=lambda: store.tags,
+        set_tag=store.set_tag,
+        on_stopped=on_stopped,
+        turn_sender_lookup=lookup,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_member_that_stops_on_the_user_reports_each_stop_once():
+    """Review S1: the coordinator heard only about finished runs, so a worker
+    waiting for approval or failing was invisible to it."""
+    store = _Tags({"project": "p1"})
+    stops: list = []
+    subscriber = _stop_subscriber(store, stops)
+
+    await _feed(
+        subscriber,
+        _message("user", "Deploy it", sender="conversation:cat"),
+        _action("terminal", "push the release tag"),
+        _status("waiting_for_confirmation"),
+        _status("waiting_for_confirmation", full=True),
+        _status("running"),
+        ConversationErrorEvent(source="environment", code="LLMError", detail="quota"),
+        _status("error"),
+    )
+
+    assert stops == [
+        (
+            "p1",
+            "waiting_for_confirmation",
+            "terminal: push the release tag",
+            "conversation:cat",
+        ),
+        ("p1", "error", "LLMError: quota", "conversation:cat"),
+    ]
+    # Stops leave the board's turn tags alone; the status shows them.
+    assert store.calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_conversation_already_stopped_when_watched_reports_nothing():
+    store = _Tags({"project": "p1"})
+    stops: list = []
+    subscriber = _stop_subscriber(store, stops)
+
+    await _feed(subscriber, _status("error", full=True), _status("paused"))
+
+    assert stops == []
+
+
+@pytest.mark.asyncio
+async def test_after_a_restart_the_turn_starter_is_read_from_the_log():
+    """Review S2: a subscriber that did not see the turn begin took the turn
+    for the user's, so the coordinator was never woken."""
+    store = _Tags({"project": "p1"})
+    stops: list = []
+    finishes: list = []
+
+    async def lookup():
+        return "conversation:cat"
+
+    async def on_finished(project, turn, text, sender):
+        finishes.append((turn, text, sender))
+
+    subscriber = _stop_subscriber(store, stops, lookup)
+    subscriber.on_finished = on_finished
+
+    await _feed(
+        subscriber,
+        _action("terminal", "rerun the build"),
+        _status("stuck"),
+        _status("running"),
+        _finish("Built."),
+        _status("finished"),
+    )
+
+    assert stops == [("p1", "stuck", None, "conversation:cat")]
+    assert finishes == [("finished", "Built.", "conversation:cat")]
+
+
+def _judging(store: _Tags, verdict: ResolutionVerdict | None, seen: list):
+    async def judge(state: ResolutionState) -> ResolutionVerdict | None:
+        seen.append(state)
+        return verdict
+
+    return ConversationOutcomeSubscriber(
+        conversation_id=uuid4(),
+        tags=lambda: store.tags,
+        set_tag=store.set_tag,
+        judge=judge,
+    )
+
+
+@pytest.mark.asyncio
+async def test_judge_resolves_when_nothing_is_left_for_the_user():
+    store = _Tags({"project": "p1"})
+    seen: list[ResolutionState] = []
+    verdict = ResolutionVerdict(probability=0.93, owed="nothing")
+
+    await _feed(
+        _judging(store, verdict, seen),
+        _message("user", "What does classify_turn do?"),
+        _status("running"),
+        _message("agent", "It reads the last paragraph for a question."),
+        _status("finished"),
+    )
+
+    assert store.tags == {
+        "project": "p1",
+        "turn": "finished",
+        "resolved": "auto",
+        "resolvenote": "0.93 nothing",
+    }
+    assert seen[0].request == "What does classify_turn do?"
+    assert seen[0].reply == "It reads the last paragraph for a question."
+
+
+@pytest.mark.parametrize(
+    "verdict",
+    [
+        verdict_from_judgments(
+            {"handled": 0.95, "task_done": 0.95, "reports_problem": 0.9}
+        ),
+        verdict_from_judgments({"handled": 0.95, "task_done": 0.6}),
+    ],
+)
+@pytest.mark.asyncio
+async def test_judge_leaves_open_when_the_user_owes_something(verdict):
+    store = _Tags({"project": "p1"})
+
+    # A confident critic does not override a judge that says no.
+    await _feed(
+        _judging(store, verdict, []),
+        _message("user", "Open a PR"),
+        _status("running"),
+        _finish("Opened PR #12.", score=0.97),
+        _status("finished"),
+    )
+
+    assert store.tags == {"project": "p1", "turn": "finished"}
+
+
+@pytest.mark.asyncio
+async def test_the_turn_shows_while_the_judge_thinks():
+    """E2E finding: the turn tag was written only after the judge answered,
+    so a slow judge left a finished conversation with no outcome at all."""
+    store = _Tags({"project": "p1"})
+    release = asyncio.Event()
+    verdict = verdict_from_judgments(
+        {"handled": 0.99, "task_done": 0.9, "asks_user": 0.97, "offers_choice": 0.9}
+    )
+
+    async def slow_judge(state: ResolutionState) -> ResolutionVerdict | None:
+        await release.wait()
+        return verdict
+
+    subscriber = ConversationOutcomeSubscriber(
+        conversation_id=uuid4(),
+        tags=lambda: store.tags,
+        set_tag=store.set_tag,
+        judge=slow_judge,
+    )
+    for event in (
+        _message("user", "Suggest two names for my cat"),
+        _status("running"),
+        _message("agent", "**Mochi** or **Juniper**.\n\nTell me which you prefer."),
+        _status("finished"),
+    ):
+        await subscriber(event)
+    for _ in range(50):
+        if "turn" in store.tags:
+            break
+        await asyncio.sleep(0.01)
+    assert store.tags == {"project": "p1", "turn": "finished"}
+
+    release.set()
+    await subscriber.drain()
+    assert store.tags == {
+        "project": "p1",
+        "turn": "asking",
+        "ask": "Tell me which you prefer.",
+    }
+
+
+@pytest.mark.asyncio
+async def test_judge_sends_a_question_without_a_question_mark_to_the_user():
+    store = _Tags({"project": "p1"})
+    verdict = verdict_from_judgments(
+        {"handled": 0.99, "task_done": 0.9, "asks_user": 0.97, "offers_choice": 0.9}
+    )
+
+    await _feed(
+        _judging(store, verdict, []),
+        _message("user", "Suggest two names for my cat"),
+        _status("running"),
+        _message("agent", "**Mochi** or **Juniper**.\n\nTell me which you prefer."),
+        _status("finished"),
+    )
+
+    assert store.tags == {
+        "project": "p1",
+        "turn": "asking",
+        "ask": "Tell me which you prefer.",
+    }
+
+
+@pytest.mark.asyncio
+async def test_judge_lets_a_pleasantry_question_resolve():
+    store = _Tags({"project": "p1"})
+    seen: list[ResolutionState] = []
+    verdict = verdict_from_judgments({"handled": 0.98, "task_done": 0.98})
+
+    await _feed(
+        _judging(store, verdict, seen),
+        _message("user", "What is 17 times 23?"),
+        _status("running"),
+        _message("agent", "391. Anything else?"),
+        _status("finished"),
+    )
+
+    assert len(seen) == 1
+    assert store.tags["turn"] == "finished"
+    assert "ask" not in store.tags
+    assert store.tags["resolved"] == "auto"
+
+
+@pytest.mark.asyncio
+async def test_unfinished_work_with_no_ask_is_neither_resolved_nor_needs_you():
+    store = _Tags({"project": "p1"})
+    verdict = verdict_from_judgments({"handled": 0.95, "task_done": 0.1})
+
+    await _feed(
+        _judging(store, verdict, []),
+        _message("user", "Step 1 of the migration, then step 2"),
+        _status("running"),
+        _message("agent", "Step 1 is done. I'll start step 2 next."),
+        _status("finished"),
+    )
+
+    assert verdict.owed == "unfinished"
+    assert store.tags == {"project": "p1", "turn": "finished"}
+
+
+@pytest.mark.asyncio
+async def test_without_a_verdict_a_confident_critic_still_resolves():
+    store = _Tags({"project": "p1"})
+
+    await _feed(
+        _judging(store, None, []),
+        _message("user", "Fix it"),
+        _status("running"),
+        _finish("All done.", score=0.95),
+        _status("finished"),
+    )
+
+    assert store.tags["resolved"] == "auto"
+    assert store.tags["resolvenote"] == "0.95 critic"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_judge_shows_the_turn_as_needs_you_and_never_resolves():
+    """Nobody read the reply, so it may hold a question: the user looks, and
+    even a confident critic does not resolve it."""
+    store = _Tags({"project": "p1"})
+
+    async def judge(state: ResolutionState) -> ResolutionVerdict | None:
+        raise TimeoutError("judge timed out")
+
+    subscriber = ConversationOutcomeSubscriber(
+        conversation_id=uuid4(),
+        tags=lambda: store.tags,
+        set_tag=store.set_tag,
+        judge=judge,
+    )
+
+    await _feed(
+        subscriber,
+        _message("user", "Fix it"),
+        _status("running"),
+        _finish("Fixed, but should I also bump the version?", score=0.95),
+        _status("finished"),
+    )
+
+    assert store.tags == {
+        "project": "p1",
+        "turn": "asking",
+        "ask": "Fixed, but should I also bump the version?",
+    }
+
+
+@pytest.mark.asyncio
+async def test_the_coordinator_is_never_judged_or_resolved():
+    store = _Tags({"project": "p1"})
+    seen: list[ResolutionState] = []
+    verdict = ResolutionVerdict(probability=0.99, owed="nothing")
+
+    async def judge(state: ResolutionState) -> ResolutionVerdict | None:
+        seen.append(state)
+        return verdict
+
+    async def is_coordinator() -> bool:
+        return True
+
+    subscriber = ConversationOutcomeSubscriber(
+        conversation_id=uuid4(),
+        tags=lambda: store.tags,
+        set_tag=store.set_tag,
+        judge=judge,
+        is_coordinator=is_coordinator,
+    )
+
+    await _feed(
+        subscriber,
+        _message("user", "Plan the release"),
+        _status("running"),
+        _finish("Two workers are on it.", score=0.95),
+        _status("finished"),
+    )
+
+    assert seen == []
+    assert store.tags == {"project": "p1", "turn": "finished"}
+
+
+@pytest.mark.asyncio
+async def test_a_user_message_clears_the_resolve_note():
+    store = _Tags(
+        {"project": "p1", "turn": "finished", "resolved": "auto", "resolvenote": "x"}
+    )
+
+    await _feed(_subscriber(store), _message("user", "Wait, one more thing"))
+
+    assert store.tags == {"project": "p1"}
+
+
+class _Log:
+    """The event scan an EventService offers, over a fixed list."""
+
+    def __init__(self, events: list[Event]):
+        self.events = events
+        self.read = 0
+
+    def _counted(self, events):
+        for event in events:
+            self.read += 1
+            yield event
+
+    async def scan_events(self, take, *, newest_first=True):
+        events = reversed(self.events) if newest_first else iter(self.events)
+        return take(self._counted(events))
+
+
+@pytest.mark.asyncio
+async def test_conversation_context_reads_the_task_and_earlier_requests():
+    log = _Log(
+        [
+            _message("user", "Write two haiku: rain, then snow"),
+            _message("user", "[Update from a conversation] x", sender=GOAL_LOOP_SENDER),
+            _message("user", "Make the rain one sadder"),
+            _message("user", "Now the snow one"),
+        ]
+    )
+
+    task, earlier = await conversation_context(cast(EventService, log))
+
+    assert task == "Write two haiku: rain, then snow"
+    assert earlier == ["Make the rain one sadder"]
+
+
+@pytest.mark.asyncio
+async def test_conversation_context_of_a_first_turn():
+    log = _Log([_message("user", "Only message")])
+
+    assert await conversation_context(cast(EventService, log)) == (
+        "Only message",
+        [],
+    )
+
+
+@pytest.mark.asyncio
+async def test_conversation_context_reads_only_the_ends_of_a_long_log():
+    events: list[Event] = []
+    for turn in range(10):
+        events.append(_message("user", f"request {turn}"))
+        events.extend(_message("agent", f"step {i}") for i in range(100))
+    log = _Log(events)
+
+    task, earlier = await conversation_context(cast(EventService, log))
+
+    assert task == "request 0"
+    assert earlier == [f"request {turn}" for turn in range(4, 9)]
+    # The task is the first event; from the end, the scan stops at the sixth
+    # turn back. The first four turns' work is never read.
+    assert log.read < 700
+
+
+@pytest.mark.asyncio
+async def test_a_needs_you_reply_shows_its_end_as_the_ask():
+    store = _Tags({"project": "p1"})
+    verdict = verdict_from_judgments(
+        {"handled": 1, "task_done": 1, "asks_to_check": 0.9}
+    )
+
+    await _feed(
+        _judging(store, verdict, []),
+        _message("user", "Fix it"),
+        _status("running"),
+        _message("agent", "Fixed on the branch. Closing out here."),
+        _status("finished"),
+    )
+
+    assert store.tags == {
+        "project": "p1",
+        "turn": "asking",
+        "ask": "Fixed on the branch. Closing out here.",
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_question_for_the_user_waits_for_the_user():
+    """Live F36.auto-resolve, 2026-11-18: a worker asked the user to pick in a
+    turn the coordinator started; the coordinator told it it was finished,
+    and the worker resolved itself. The question is the user's: it stays on
+    the board through the coordinator's messages until the user answers."""
+    store = _Tags({"project": "p1"})
+    asks = verdict_from_judgments({"handled": 1, "task_done": 1, "asks_user": 0.9})
+    subscriber = _judging(store, asks, [])
+
+    await _feed(
+        subscriber,
+        _message("user", "Suggest two cat names", sender="conversation:cat"),
+        _status("running"),
+        _message("agent", "Mochi or Juniper. Tell me which one you prefer."),
+        _status("finished"),
+    )
+    asked = {
+        "project": "p1",
+        "turn": "asking",
+        "ask": "Mochi or Juniper. Tell me which one you prefer.",
+    }
+    assert store.tags == asked
+
+    await _feed(
+        subscriber,
+        _message("user", "You're finished, thanks.", sender="conversation:cat"),
+        _status("running"),
+        _message("agent", "Understood."),
+        _status("finished"),
+    )
+    assert store.tags == asked
+
+    await _feed(subscriber, _message("user", "Mochi"), _status("running"))
+    assert store.tags == {"project": "p1"}
+
+
+@pytest.mark.asyncio
+async def test_the_users_answer_passed_on_by_the_coordinator_closes_the_question():
+    store = _Tags({"project": "p1", "turn": "asking", "ask": "Which name?"})
+    subscriber = _judging(store, None, [])
+
+    await _feed(
+        subscriber,
+        _message(
+            "user",
+            '[Answer to your question: "Which name?"]\nMochi',
+            sender="conversation:cat",
+        ),
+        _status("running"),
+    )
+
+    assert store.tags == {"project": "p1"}
+
+
+@pytest.mark.asyncio
+async def test_a_worker_that_resolved_itself_is_not_judged():
+    """The user says "merged", the worker reacts and resolves its own
+    conversation with resolve_conversation: no judge call, and its resolve
+    stands."""
+    store = _Tags({"project": "p1", "turn": "asking", "ask": "Merge it?"})
+    seen: list[ResolutionState] = []
+    subscriber = _judging(
+        store, ResolutionVerdict(probability=0.1, owed="review"), seen
+    )
+
+    await _feed(subscriber, _message("user", "merged"), _status("running"))
+    assert store.tags == {"project": "p1"}
+    # What the resolve route does for resolve_conversation, mid-turn.
+    store.tags.update({"resolved": "auto", "resolvenote": "agent"})
+    await _feed(subscriber, _finish("Great, thanks for merging!"), _status("finished"))
+
+    assert seen == []
+    assert store.tags == {
+        "project": "p1",
+        "turn": "finished",
+        "resolved": "auto",
+        "resolvenote": "agent",
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_user_message_does_not_wait_for_the_last_turns_judge():
+    """Live F36.resolved: a message to a resolved conversation reopened it only
+    after the previous turn's judge answered, 8 to 25 seconds later."""
+    store = _Tags({"project": "p1"})
+    release = asyncio.Event()
+
+    async def slow_judge(state: ResolutionState) -> ResolutionVerdict | None:
+        await release.wait()
+        return verdict_from_judgments({"handled": 1, "task_done": 1})
+
+    subscriber = ConversationOutcomeSubscriber(
+        conversation_id=uuid4(),
+        tags=lambda: store.tags,
+        set_tag=store.set_tag,
+        judge=slow_judge,
+    )
+    for event in (
+        _message("user", "Pick a colour"),
+        _status("running"),
+        _message("agent", "Blue."),
+        _status("finished"),
+    ):
+        await subscriber(event)
+    for _ in range(50):
+        if "turn" in store.tags:
+            break
+        await asyncio.sleep(0.01)
+    store.tags["resolved"] = "user"
+
+    await subscriber(_message("user", "Now pick a shape"))
+    for _ in range(50):
+        if "resolved" not in store.tags:
+            break
+        await asyncio.sleep(0.01)
+
+    assert "resolved" not in store.tags
+    assert not release.is_set()
+    await subscriber.drain()
+
+
+# TurnTracker: what the events say, with nothing acted on
+
+
+def _signals(tracker: TurnTracker, *events: Event) -> list:
+    return [signal for event in events for signal in tracker.observe(event)]
+
+
+def test_tracker_reads_a_turn_from_its_events():
+    tracker = TurnTracker()
+
+    signals = _signals(
+        tracker,
+        _message("user", "Pick a database.", sender="conversation:cat"),
+        _status("running"),
+        _action("terminal", "ls"),
+        _message("agent", "Postgres or SQLite?"),
+        _status("finished"),
+    )
+
+    assert signals == [
+        TurnStarted(by_user=False),
+        TurnEnded(
+            turn="finished",
+            ask=None,
+            score=None,
+            text="Postgres or SQLite?",
+            sender="conversation:cat",
+            sender_known=True,
+            judged=ResolutionState(
+                request="Pick a database.",
+                reply="Postgres or SQLite?",
+                actions=["terminal: ls"],
+            ),
+        ),
+    ]
+
+
+def test_tracker_tells_a_user_message_and_its_answer_to_a_card():
+    tracker = TurnTracker()
+    message = _message("user", "Use SQLite.")
+
+    assert tracker.observe(message) == [
+        TurnStarted(by_user=True),
+        CardAnswered(message.id, None, "Use SQLite."),
+        UserWrote("Use SQLite."),
+    ]
+
+
+def test_tracker_reports_a_stop_once_and_a_finish_it_never_saw_not_at_all():
+    tracker = TurnTracker()
+
+    assert _signals(tracker, _status("finished", full=True)) == []
+    signals = _signals(
+        tracker,
+        _action("terminal", "rm -rf build"),
+        _status("waiting_for_confirmation"),
+        _status("waiting_for_confirmation"),
+    )
+
+    assert signals == [
+        TurnStopped(
+            status="waiting_for_confirmation",
+            text="terminal: rm -rf build",
+            sender=None,
+            sender_known=False,
+        )
+    ]
+
+
+# Pull requests a member opened
+
+
+def _terminal(command: str, call_id: str) -> ActionEvent:
+    return ActionEvent(
+        source="agent",
+        thought=[TextContent(text="")],
+        action=TerminalAction(command=command),
+        tool_name="terminal",
+        tool_call_id=call_id,
+        tool_call=MessageToolCall(
+            id=call_id,
+            name="terminal",
+            arguments=json.dumps({"command": command}),
+            origin="completion",
+        ),
+        llm_response_id="resp-3",
+    )
+
+
+def _result(action: ActionEvent, text: str) -> ObservationEvent:
+    return ObservationEvent(
+        source="environment",
+        observation=TerminalObservation.from_text(text, command=None),
+        action_id=action.id,
+        tool_name=action.tool_name,
+        tool_call_id=action.tool_call_id,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_member_records_the_pull_requests_it_opens():
+    store = _Tags({"project": "p1"})
+    first = _terminal("gh pr create --fill", "c1")
+    viewed = _terminal("gh pr view 7", "c2")
+    second = _terminal("cd app && gh pr create -t Fix -b ''", "c3")
+
+    await _feed(
+        _subscriber(store),
+        first,
+        _result(first, "https://github.com/acme/app/pull/412\n"),
+        # Reading another pull request does not make it this one's.
+        viewed,
+        _result(viewed, "https://github.com/acme/app/pull/7"),
+        second,
+        _result(second, "https://github.com/acme/lib/pull/9"),
+        # The same URL again (a retry) is listed once.
+        first,
+        _result(first, "https://github.com/acme/app/pull/412"),
+    )
+
+    assert store.tags["prs"] == "acme/app#412,acme/lib#9"
+
+
+@pytest.mark.asyncio
+async def test_pull_requests_outside_projects_are_not_recorded():
+    store = _Tags({})
+    opened = _terminal("gh pr create --fill", "c1")
+    await _feed(
+        _subscriber(store), opened, _result(opened, "https://github.com/a/b/pull/1")
+    )
+    assert store.tags == {}
+
+
+def test_the_oldest_pull_requests_drop_off_a_full_tag():
+    refs = [f"acme/application#{n}" for n in range(1, 40)]
+    value = merge_pull_requests(None, refs)
+    assert len(value) <= TAG_VALUE_MAX_LENGTH
+    assert value.endswith("acme/application#39")
+    assert not value.startswith("acme/application#1,")
+
+
+def test_the_pull_requests_tag_is_server_owned():
+    assert PULL_REQUESTS_TAG_KEY in RESERVED_TAG_KEYS
+
+
+def test_tracker_tells_the_pull_requests_the_agent_opened():
+    opened = _terminal("gh pr create --fill", "c1")
+    signals = _signals(
+        TurnTracker(),
+        _message("agent", "Opening the PR now."),
+        opened,
+        _result(opened, "https://github.com/acme/app/pull/412"),
+    )
+
+    assert signals == [PullRequestsOpened(["acme/app#412"])]

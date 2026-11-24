@@ -9,6 +9,8 @@ from starlette.websockets import WebSocketDisconnect
 
 from openhands.agent_server import canvas_extensions_bridge_router as bridge_router
 from openhands.agent_server.api import add_domain_error_handler
+from openhands.agent_server.config import Config
+from tests.agent_server.conftest import install_test_context
 
 
 APP_NAME = "demo-app"
@@ -18,12 +20,14 @@ APP_NAME = "demo-app"
 def proxied(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, list[str]]:
     paths: list[str] = []
 
-    async def fake_http(request: Request, extension_name: str, path: str) -> Response:
+    async def fake_http(
+        request: Request, extension_name: str, path: str, config: Config
+    ) -> Response:
         paths.append(path)
         return Response(status_code=204)
 
     async def fake_websocket(
-        websocket: WebSocket, extension_name: str, path: str
+        websocket: WebSocket, extension_name: str, path: str, config: Config
     ) -> None:
         paths.append(path)
         await websocket.close(code=1011)
@@ -32,6 +36,7 @@ def proxied(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, list[str]]:
     monkeypatch.setattr(bridge_router, "proxy_app_backend_websocket", fake_websocket)
     app = FastAPI()
     add_domain_error_handler(app)
+    install_test_context(app)
     app.include_router(bridge_router.app_backend_bridge_router)
     return TestClient(app), paths
 

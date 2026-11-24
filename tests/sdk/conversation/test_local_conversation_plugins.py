@@ -1169,7 +1169,10 @@ class TestLocalConversationPlugins:
 
         conversation.close()
 
-    def test_load_plugin_binds_plugin_root_to_its_hooks(self, tmp_path: Path, mock_llm):
+    @pytest.mark.parametrize("load_twice", [False, True])
+    def test_load_plugin_binds_plugin_root_to_its_hooks(
+        self, tmp_path: Path, mock_llm, load_twice: bool
+    ):
         marketplace_dir = create_test_marketplace(
             tmp_path / "marketplace",
             plugins=[
@@ -1201,8 +1204,15 @@ class TestLocalConversationPlugins:
         )
 
         conversation.load_plugin("hook-plugin")
+        if load_twice:
+            conversation.load_plugin("hook-plugin@manual")
 
         assert conversation.state.hook_config is not None
+        assert [
+            [hook.command for hook in matcher.hooks]
+            for matcher in conversation.state.hook_config.user_prompt_submit
+        ] == [["echo plugin-hook"]]
+
         plugin_dir = marketplace_dir / "plugins" / "hook-plugin"
         assert [
             hook.plugin_root
@@ -2416,3 +2426,48 @@ class TestAgentPluginsMCPExpansion:
         assert merged.args == literal_args
         assert mcp_tools_created[-1]["portable-server"].args == literal_args
         conversation.close()
+
+
+@pytest.mark.usefixtures("public_repo")
+@pytest.mark.parametrize("plugin", [False, True])
+def test_public_skills_disabled_keeps_marketplace_github(
+    tmp_path: Path, mock_llm, monkeypatch, plugin
+):
+    monkeypatch.setenv("OH_PUBLIC_SKILLS_ENABLED", "false")
+    if plugin:
+        marketplace_dir = create_test_marketplace(
+            tmp_path / "org",
+            plugins=[
+                {"name": "org-tools", "skills": [{"name": "github", "content": "ORG"}]}
+            ],
+        )
+    else:
+        marketplace_dir = create_test_marketplace_with_standalone_skills(
+            tmp_path / "org", skills=["github"]
+        )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    conversation = LocalConversation(
+        agent=Agent(
+            llm=mock_llm,
+            tools=[],
+            agent_context=AgentContext(
+                load_public_skills=True,
+                registered_marketplaces=[
+                    MarketplaceRegistration(
+                        name="org", source=str(marketplace_dir), auto_load=True
+                    )
+                ],
+            ),
+        ),
+        workspace=workspace,
+        visualizer=None,
+        mcp_tool_provider=RecordingMCPToolProvider([]),
+    )
+    conversation._ensure_plugins_loaded()
+
+    assert conversation.agent.agent_context is not None
+    skills = {s.name: s.content for s in conversation.agent.agent_context.skills}
+    assert set(skills) == {"github"}
+    assert "PUBLIC" not in skills["github"]
+    conversation.close()
