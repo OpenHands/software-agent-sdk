@@ -6,12 +6,18 @@ Business logic is delegated to skills_service.py.
 
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, HTTPException, Path, Request
+from fastapi import APIRouter, Depends, Path
 from pydantic import BaseModel, Field
 
+from openhands.agent_server.catalog import PublicCatalogResponse
+from openhands.agent_server.config import Config
+from openhands.agent_server.dependencies import get_config
+from openhands.agent_server.errors import error_responses
 from openhands.agent_server.skills_service import (
     ExposedUrlData,
     MarketplaceSkillInfo,
+    discover_profile_skills,
+    discover_public_skill_names,
     load_all_skills,
     service_disable_skill,
     service_enable_skill,
@@ -23,6 +29,7 @@ from openhands.agent_server.skills_service import (
     service_update_skill,
     sync_public_skills,
 )
+from openhands.sdk.errors import Conflict, Invalid, NotFound, Unprocessable
 from openhands.sdk.extensions.fetch import ExtensionFetchError
 from openhands.sdk.marketplace.registration import MarketplaceRegistration
 from openhands.sdk.skills import (
@@ -31,7 +38,11 @@ from openhands.sdk.skills import (
     SkillInfo,
     SkillValidationError,
 )
-from openhands.sdk.skills.skill import DEFAULT_MARKETPLACE_PATH
+from openhands.sdk.skills.skill import (
+    DEFAULT_MARKETPLACE_PATH,
+    public_catalog_enabled,
+    public_skills_enabled,
+)
 from openhands.sdk.skills.utils import SKILL_NAME_PATTERN
 
 
@@ -109,6 +120,13 @@ class SkillsRequest(BaseModel):
             "public skills."
         ),
     )
+    load_registered_marketplaces: bool | None = Field(
+        default=None,
+        description=(
+            "Load auto_load registered marketplaces independently of load_public. "
+            "Null keeps the legacy behavior of following load_public."
+        ),
+    )
 
     project_dir: str | None = Field(
         default=None, description="Workspace directory path for project skills"
@@ -130,6 +148,23 @@ class SkillsResponse(BaseModel):
         default_factory=dict,
         description="Count of skills loaded from each source",
     )
+
+
+class SkillCatalogEntry(SkillInfo):
+    """A skill an Agent Profile launch can load."""
+
+    origin: Literal["public", "user"] = Field(
+        description=(
+            "`public`: the public extensions catalog. `user`: the user's own "
+            "skills, including marketplace installs."
+        )
+    )
+
+
+class SkillCatalogResponse(BaseModel):
+    """Response for ``GET /api/skills/catalog``."""
+
+    skills: list[SkillCatalogEntry]
 
 
 class SyncResponse(BaseModel):
@@ -236,7 +271,7 @@ class UpdateSkillResponse(BaseModel):
     skill: InstalledSkillResponse
 
 
-class MarketplaceCatalogResponse(BaseModel):
+class MarketplaceCatalogResponse(PublicCatalogResponse):
     """Response containing the marketplace catalog."""
 
     skills: list[MarketplaceSkillInfo]
@@ -256,7 +291,9 @@ def _merge_registered_marketplaces(
 
 
 @skills_router.post("", response_model=SkillsResponse)
-def get_skills(request: SkillsRequest, http_request: Request) -> SkillsResponse:
+def get_skills(
+    request: SkillsRequest, config: Config = Depends(get_config)
+) -> SkillsResponse:
     """Load and merge skills from all configured sources.
 
     Skills are loaded from multiple sources and merged with the following
@@ -285,8 +322,7 @@ def get_skills(request: SkillsRequest, http_request: Request) -> SkillsResponse:
     if request.org_configs:
         org_repos = [(c.org_repo_url, c.org_name) for c in request.org_configs]
 
-    config = getattr(http_request.app.state, "config", None)
-    server_registrations = config.registered_marketplaces if config is not None else []
+    server_registrations = config.registered_marketplaces
     registered_marketplaces = _merge_registered_marketplaces(
         server_registrations,
         request.registered_marketplaces,
@@ -303,11 +339,32 @@ def get_skills(request: SkillsRequest, http_request: Request) -> SkillsResponse:
         sandbox_exposed_urls=sandbox_urls,
         marketplace_path=request.marketplace_path,
         registered_marketplaces=registered_marketplaces,
+        load_registered_marketplaces=request.load_registered_marketplaces,
     )
 
     skills_info = [skill.to_skill_info() for skill in result.skills]
 
     return SkillsResponse(skills=skills_info, sources=result.sources)
+
+
+@skills_router.get("/catalog", response_model=SkillCatalogResponse)
+def get_skill_catalog() -> SkillCatalogResponse:
+    """List the skills an Agent Profile launch can load.
+
+    A profile's ``public_skills`` and ``disabled_skills`` select from exactly
+    this list. Project skills load only when a conversation opens its
+    workspace, so they are not listed.
+    """
+    public_names = discover_public_skill_names()
+    return SkillCatalogResponse(
+        skills=[
+            SkillCatalogEntry(
+                **skill.to_skill_info().model_dump(),
+                origin="public" if skill.name in public_names else "user",
+            )
+            for skill in discover_profile_skills()
+        ]
+    )
 
 
 @skills_router.post("/sync", response_model=SyncResponse)
@@ -320,6 +377,11 @@ def sync_skills() -> SyncResponse:
     Returns:
         SyncResponse indicating success or failure.
     """
+    if not (public_skills_enabled() or public_catalog_enabled()):
+        return SyncResponse(
+            status="error",
+            message="Public extensions are disabled by instance policy",
+        )
     success, message = sync_public_skills()
     return SyncResponse(
         status="success" if success else "error",
@@ -335,11 +397,13 @@ def sync_skills() -> SyncResponse:
 @skills_router.post(
     "/install",
     response_model=InstalledSkillResponse,
-    responses={
-        400: {"description": "Failed to fetch skill source"},
-        409: {"description": "Skill already installed (use force=true)"},
-        422: {"description": "Invalid skill (missing SKILL.md, etc.)"},
-    },
+    responses=error_responses(
+        {
+            Invalid: "Failed to fetch skill source",
+            Conflict: "Skill already installed (use force=true)",
+            Unprocessable: "Invalid skill (missing SKILL.md, etc.)",
+        }
+    ),
 )
 def install_skill_endpoint(request: InstallSkillRequest) -> InstalledSkillResponse:
     """Install a skill from a source.
@@ -367,19 +431,12 @@ def install_skill_endpoint(request: InstallSkillRequest) -> InstalledSkillRespon
         )
         return InstalledSkillResponse.from_skill_info(info)
     except FileExistsError:
-        raise HTTPException(
-            status_code=409,
-            detail="Skill already installed. Use force=true to overwrite.",
-        )
+        raise Conflict("Skill already installed. Use force=true to overwrite.")
     except (SkillFetchError, ExtensionFetchError):
-        raise HTTPException(
-            status_code=400,
-            detail="Failed to fetch skill source. Check that the source is valid.",
-        )
+        raise Invalid("Failed to fetch skill source. Check that the source is valid.")
     except SkillValidationError:
-        raise HTTPException(
-            status_code=422,
-            detail="Invalid skill. Ensure the source contains a valid SKILL.md.",
+        raise Unprocessable(
+            "Invalid skill. Ensure the source contains a valid SKILL.md."
         )
 
 
@@ -402,7 +459,7 @@ def list_installed_skills_endpoint() -> InstalledSkillsListResponse:
 @skills_router.get(
     "/installed/{skill_name}",
     response_model=InstalledSkillResponse,
-    responses={404: {"description": "Skill not installed"}},
+    responses=error_responses({NotFound: "Skill not installed"}),
 )
 def get_installed_skill_endpoint(skill_name: SkillNamePath) -> InstalledSkillResponse:
     """Get information about a specific installed skill.
@@ -418,17 +475,14 @@ def get_installed_skill_endpoint(skill_name: SkillNamePath) -> InstalledSkillRes
     """
     info = service_get_installed_skill(name=skill_name)
     if info is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Skill '{skill_name}' is not installed",
-        )
+        raise NotFound(f"Skill '{skill_name}' is not installed")
     return InstalledSkillResponse.from_skill_info(info)
 
 
 @skills_router.patch(
     "/installed/{skill_name}",
     response_model=UpdateSkillStateResponse,
-    responses={404: {"description": "Skill not installed"}},
+    responses=error_responses({NotFound: "Skill not installed"}),
 )
 def set_skill_enabled_endpoint(
     skill_name: SkillNamePath, request: UpdateSkillStateRequest
@@ -447,10 +501,7 @@ def set_skill_enabled_endpoint(
     """
     fn = service_enable_skill if request.enabled else service_disable_skill
     if not fn(name=skill_name):
-        raise HTTPException(
-            status_code=404,
-            detail=f"Skill '{skill_name}' is not installed",
-        )
+        raise NotFound(f"Skill '{skill_name}' is not installed")
 
     return UpdateSkillStateResponse(
         name=skill_name,
@@ -461,7 +512,7 @@ def set_skill_enabled_endpoint(
 @skills_router.delete(
     "/installed/{skill_name}",
     response_model=UninstallSkillResponse,
-    responses={404: {"description": "Skill not installed"}},
+    responses=error_responses({NotFound: "Skill not installed"}),
 )
 def uninstall_skill_endpoint(skill_name: SkillNamePath) -> UninstallSkillResponse:
     """Uninstall a skill by name.
@@ -479,10 +530,7 @@ def uninstall_skill_endpoint(skill_name: SkillNamePath) -> UninstallSkillRespons
     """
     success = service_uninstall_skill(name=skill_name)
     if not success:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Skill '{skill_name}' is not installed",
-        )
+        raise NotFound(f"Skill '{skill_name}' is not installed")
     return UninstallSkillResponse(
         message=f"Skill '{skill_name}' uninstalled",
     )
@@ -491,7 +539,12 @@ def uninstall_skill_endpoint(skill_name: SkillNamePath) -> UninstallSkillRespons
 @skills_router.post(
     "/installed/{skill_name}/refresh",
     response_model=UpdateSkillResponse,
-    responses={404: {"description": "Skill not installed"}},
+    responses=error_responses(
+        {
+            Invalid: "Failed to fetch the skill's recorded source",
+            NotFound: "Skill not installed",
+        }
+    ),
 )
 def refresh_skill_endpoint(skill_name: SkillNamePath) -> UpdateSkillResponse:
     """Refresh an installed skill to the latest version.
@@ -505,14 +558,25 @@ def refresh_skill_endpoint(skill_name: SkillNamePath) -> UpdateSkillResponse:
         UpdateSkillResponse with updated skill information.
 
     Raises:
+        HTTPException 400: If the recorded source cannot be fetched.
         HTTPException 404: If the skill is not installed.
+        HTTPException 422: If the source no longer holds a valid skill.
+        A failed refresh leaves the installed copy unchanged.
     """
-    info = service_update_skill(name=skill_name)
-    if info is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Skill '{skill_name}' is not installed",
+    try:
+        info = service_update_skill(name=skill_name)
+    except (SkillFetchError, ExtensionFetchError):
+        raise Invalid(
+            f"Failed to fetch the source of skill '{skill_name}'. "
+            "The installed copy was kept."
         )
+    except SkillValidationError:
+        raise Unprocessable(
+            f"The source of skill '{skill_name}' no longer holds a valid "
+            "skill. The installed copy was kept."
+        )
+    if info is None:
+        raise NotFound(f"Skill '{skill_name}' is not installed")
     return UpdateSkillResponse(
         message=f"Skill '{skill_name}' updated",
         skill=InstalledSkillResponse.from_skill_info(info),
@@ -532,4 +596,7 @@ def get_marketplace_catalog() -> MarketplaceCatalogResponse:
     Returns:
         MarketplaceCatalogResponse containing list of available skills.
     """
-    return MarketplaceCatalogResponse(skills=service_get_marketplace_catalog())
+    return MarketplaceCatalogResponse(
+        skills=service_get_marketplace_catalog(),
+        disabled=not public_catalog_enabled(),
+    )

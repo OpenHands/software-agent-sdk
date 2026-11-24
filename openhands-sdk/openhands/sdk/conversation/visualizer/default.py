@@ -18,9 +18,11 @@ from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
     ConversationStateUpdateEvent,
+    MessageEditEvent,
     MessageEvent,
     ObservationEvent,
     PauseEvent,
+    ReactionEvent,
     SystemPromptEvent,
     UserRejectObservation,
 )
@@ -241,6 +243,14 @@ EVENT_VISUALIZATION_CONFIG: dict[type[Event], EventVisualizationConfig] = {
     PauseEvent: EventVisualizationConfig(
         title="User Paused",
         color=_PAUSE_COLOR,
+    ),
+    MessageEditEvent: EventVisualizationConfig(
+        title="Message Edit",
+        color=_SYSTEM_COLOR,
+    ),
+    ReactionEvent: EventVisualizationConfig(
+        title="Reaction",
+        color=_SYSTEM_COLOR,
     ),
     Condensation: EventVisualizationConfig(
         title="Condensation",

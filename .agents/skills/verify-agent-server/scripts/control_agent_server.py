@@ -65,11 +65,13 @@ FERNET_TOKEN = re.compile(r"gAAAAA[A-Za-z0-9_\-]{40,}={0,2}")
 # Environment forwarded from the caller into a launched server. Everything
 # else (LLM keys, OH_* overrides, cloud tokens) stays out unless passed with
 # --env or --pass-env, so a run never inherits a developer's configuration.
+# PLAYWRIGHT_BROWSERS_PATH stays out too: the server's browser probe reads it,
+# and the browser recipes decide where the server finds Chromium.
 FORWARDED_ENV = re.compile(
     r"^(PATH|LANG|LC_[A-Z]+|TZ|TERM|SHELL|USER|LOGNAME|TMPDIR"
     r"|(HTTP|HTTPS|NO|ALL)_PROXY|(http|https|no|all)_proxy"
     r"|SSL_CERT_FILE|SSL_CERT_DIR|REQUESTS_CA_BUNDLE|CURL_CA_BUNDLE"
-    r"|NODE_EXTRA_CA_CERTS|PLAYWRIGHT_BROWSERS_PATH|DOCKER_HOST|UV_[A-Z_]+)$"
+    r"|NODE_EXTRA_CA_CERTS|DOCKER_HOST|UV_[A-Z_]+)$"
 )
 
 
@@ -536,6 +538,9 @@ def server_env(
     secret_file = run.private / "secret_key"
     if secret_file.exists():
         env["OH_SECRET_KEY"] = secret_file.read_text().strip()
+    previous_secret = run.private / "previous_secret_key"
+    if run.data.get("keep_previous_secret_key") and previous_secret.exists():
+        env["OH_PREVIOUS_SECRET_KEYS_0"] = previous_secret.read_text().strip()
     env.update(extra)
     return env
 
@@ -887,6 +892,23 @@ def cmd_restart(args: argparse.Namespace) -> dict[str, Any]:
         (run.private / "previous_secret_key").write_text(old_secret)
         (run.private / "secret_key").write_text(secrets.token_urlsafe(32))
         run.register_secrets()
+    if (
+        args.keep_previous_secret_key
+        and not (run.private / "previous_secret_key").exists()
+    ):
+        usage_error("--keep-previous-secret-key needs an earlier --rotate-secret-key")
+    # Per restart: a later restart without the flag drops the previous key.
+    run.data["keep_previous_secret_key"] = bool(args.keep_previous_secret_key)
+    if args.checkout:
+        # Upgrade or downgrade: another version of the server on the same state.
+        checkout = Path(args.checkout).resolve()
+        if not (checkout / "openhands-agent-server").is_dir():
+            usage_error(f"{checkout} is not an agent-sdk checkout")
+        run.data["checkout"] = str(checkout)
+        run.data["checkout_sha"] = git("rev-parse", "HEAD", cwd=checkout)
+        run.data["checkout_ref"] = git(
+            "rev-parse", "--abbrev-ref", "HEAD", cwd=checkout
+        )
     if args.reset_config:
         run.data["config_overrides"] = {}
         run.data["extra_env"] = {}
@@ -907,6 +929,7 @@ def cmd_restart(args: argparse.Namespace) -> dict[str, Any]:
         "rotated_key": bool(args.rotate_key),
         "hard": bool(args.hard),
         "rotated_secret_key": bool(args.rotate_secret_key),
+        "kept_previous_secret_key": bool(args.keep_previous_secret_key),
         **readiness,
     }
 
@@ -985,6 +1008,9 @@ def ws_probe(run: Run, path: str, auth: str) -> dict[str, Any]:
     except ConnectionClosed as exc:
         result["open"] = False
         result["close_code"] = exc.rcvd.code if exc.rcvd else None
+    except InvalidStatus as exc:
+        result["open"] = False
+        result["handshake_status"] = exc.response.status_code
     except Exception as exc:
         result["open"] = False
         result["error"] = f"{type(exc).__name__}: {exc}"
@@ -994,6 +1020,7 @@ def ws_probe(run: Run, path: str, auth: str) -> dict[str, Any]:
 def cmd_doctor(args: argparse.Namespace) -> dict[str, Any]:
     run = resolve_run(args.run, require_alive=False)
     checks: list[dict[str, Any]] = []
+    dormant = _dormant(run)
 
     def check(name: str, ok: bool, detail: Any, required: bool = True) -> None:
         checks.append({"name": name, "ok": ok, "required": required, "detail": detail})
@@ -1012,7 +1039,7 @@ def cmd_doctor(args: argparse.Namespace) -> dict[str, Any]:
         for path in ("/alive", "/health", "/ready"):
             try:
                 response = client.get(run.url + path)
-                expected = 503 if (path == "/ready" and _dormant(run)) else 200
+                expected = 503 if (path == "/ready" and dormant) else 200
                 check(
                     path,
                     response.status_code in (200, expected),
@@ -1039,46 +1066,60 @@ def cmd_doctor(args: argparse.Namespace) -> dict[str, Any]:
         except Exception as exc:
             check("server-info", False, f"{type(exc).__name__}: {exc}")
         probe = "/api/conversations/count"
-        if run.data.get("auth"):
-            denied = client.get(run.url + probe)
+        try:
+            if run.data.get("auth"):
+                denied = client.get(run.url + probe)
+                check(
+                    "dormant-gates-missing-key"
+                    if dormant
+                    else "auth-rejects-missing-key",
+                    denied.status_code == (503 if dormant else 401),
+                    denied.status_code,
+                )
+            allowed = client.get(run.url + probe, headers=auth_headers(run))
             check(
-                "auth-rejects-missing-key",
-                denied.status_code == 401,
-                denied.status_code,
+                "dormant-gates-api" if dormant else "auth-accepts-key",
+                allowed.status_code == (503 if dormant else 200),
+                {"status": allowed.status_code, "dormant": dormant},
             )
-        allowed = client.get(run.url + probe, headers=auth_headers(run))
-        dormant = _dormant(run)
-        check(
-            "auth-accepts-key",
-            allowed.status_code == 200 or (dormant and allowed.status_code == 503),
-            {"status": allowed.status_code, "dormant": dormant},
-        )
-        if (run.private / "previous_session_api_key").exists():
-            stale = client.get(run.url + probe, headers=auth_headers(run, "previous"))
-            check(
-                "auth-rejects-rotated-key", stale.status_code == 401, stale.status_code
-            )
+            if not dormant and (run.private / "previous_session_api_key").exists():
+                stale = client.get(
+                    run.url + probe, headers=auth_headers(run, "previous")
+                )
+                check(
+                    "auth-rejects-rotated-key",
+                    stale.status_code == 401,
+                    stale.status_code,
+                )
+        except httpx.HTTPError as exc:
+            check("api-access", False, f"{type(exc).__name__}: {exc}")
         try:
             spec = client.get(run.url + "/openapi.json").json()
             operations = sum(len(v) for v in spec.get("paths", {}).values())
             check("openapi", operations > 0, {"operations": operations})
         except Exception as exc:
             check("openapi", False, f"{type(exc).__name__}: {exc}")
-    if run.data.get("auth"):
+    if dormant:
+        gated_socket = ws_probe(run, "/sockets/bash-events", "none")
+        check(
+            "dormant-gates-websocket",
+            gated_socket.get("handshake_status") == 403,
+            gated_socket,
+        )
+    elif run.data.get("auth"):
+        bad_socket = ws_probe(run, "/sockets/bash-events", "bad")
         check(
             "ws-rejects-bad-key",
-            not ws_probe(run, "/sockets/bash-events", "bad")["open"],
-            ws_probe(run, "/sockets/bash-events", "bad"),
+            not bad_socket["open"],
+            bad_socket,
         )
-    check(
-        "ws-accepts-first-frame-auth",
-        ws_probe(
+    if not dormant:
+        allowed_socket = ws_probe(
             run,
             "/sockets/bash-events",
             "first-frame" if run.data.get("auth") else "none",
-        )["open"],
-        None,
-    )
+        )
+        check("ws-accepts-first-frame-auth", allowed_socket["open"], allowed_socket)
     if run.log_path.exists():
         text = run.log_path.read_text(errors="replace")
         tracebacks = text.count("Traceback (most recent call last)")
@@ -1105,7 +1146,7 @@ def _dormant(run: Run) -> bool:
         return False
     with contextlib.suppress(Exception), http_client(5) as client:
         body = client.get(run.url + "/api/init", headers=auth_headers(run)).json()
-        return str(body.get("status", "")).lower() != "ready"
+        return str(body.get("state", "")).lower() != "ready"
     return True
 
 
@@ -1343,6 +1384,7 @@ def cmd_api(args: argparse.Namespace) -> dict[str, Any]:
                     "content-length",
                     "cache-control",
                     "etag",
+                    "x-content-type-options",
                     "access-control-allow-origin",
                     "access-control-allow-credentials",
                     "access-control-expose-headers",
@@ -1886,8 +1928,36 @@ PRESETS: dict[str, dict[str, Any]] = {
                 "activate": False,
             },
         ],
+        # With $LLM_BASE_URL and $LLM_API_KEY set, the preset goes through
+        # that LiteLLM proxy instead, with the flash model it serves.
+        "proxy": {
+            "env": "LLM_API_KEY",
+            "base_url_env": "LLM_BASE_URL",
+            "profiles": [
+                {
+                    "name": "deepseek-flash",
+                    "model": "litellm_proxy/deepseek-v4.1-flash",
+                    "activate": True,
+                },
+            ],
+        },
     }
 }
+
+
+def preset_route(preset: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
+    """The proxy variant when its base URL and key are set and no key was
+    named on the command line; otherwise the provider's own."""
+    proxy = preset.get("proxy")
+    if (
+        proxy
+        and not args.api_key_env
+        and not args.api_key_file
+        and os.environ.get(proxy["base_url_env"])
+        and os.environ.get(proxy["env"])
+    ):
+        return {**proxy, "base_url": os.environ[proxy["base_url_env"]]}
+    return {**preset, "base_url": None}
 
 
 def read_api_key(args: argparse.Namespace, default_env: str) -> str:
@@ -1958,21 +2028,33 @@ def cmd_llm_preset(args: argparse.Namespace) -> dict[str, Any]:
     preset = PRESETS.get(args.preset)
     if not preset:
         usage_error(f"Unknown preset {args.preset!r}; known: {', '.join(PRESETS)}")
-    key = read_api_key(args, str(preset["env"]))
+    route = preset_route(preset, args)
+    key = read_api_key(args, str(route["env"]))
     rows = [
         save_llm_profile(
             run,
             p["name"],
             p["model"],
             key,
-            None,
+            route["base_url"],
             p["activate"],
             not args.no_validate and p["activate"],
         )
-        for p in preset["profiles"]
+        for p in route["profiles"]
     ]
     ok = all("error" not in r and r.get("activated", 200) < 400 for r in rows)
-    return {"ok": ok, "profiles": rows}
+    result = {
+        "ok": ok,
+        "via": "proxy" if route["base_url"] else "provider",
+        "profiles": rows,
+    }
+    if args.print_model:
+        if not ok:
+            emit(result)
+            raise SystemExit(1)
+        print(next(p["model"] for p in route["profiles"] if p["activate"]))
+        raise SystemExit(0)
+    return result
 
 
 def cmd_llm_set(args: argparse.Namespace) -> dict[str, Any]:
@@ -2004,7 +2086,16 @@ def cmd_llm_show(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def conversation_status(run: Run, conversation_id: str) -> str:
+    if not conversation_id.strip():
+        raise CliError(
+            "conversation id is empty",
+            hint="the variable holding it is set by a step that failed or did not run",
+        )
     info = api_json(run, "GET", f"/api/conversations/{conversation_id}")
+    if not isinstance(info, dict):
+        raise CliError(
+            f"GET /api/conversations/{conversation_id} did not return a conversation"
+        )
     return str(info.get("execution_status", "unknown")).lower()
 
 
@@ -2530,7 +2621,7 @@ def fixture_mcp_server(run: Run, name: str) -> dict[str, Any]:
     folder.mkdir(parents=True, exist_ok=True)
     script = folder / f"{name}.py"
     script.write_text(
-        "from mcp.server.fastmcp import FastMCP\n\n"
+        "from fastmcp import FastMCP\n\n"
         f"mcp = FastMCP({name!r})\n\n\n"
         "@mcp.tool()\n"
         "def qa_echo(text: str) -> str:\n"
@@ -2737,13 +2828,16 @@ def serve_llm_stub(port: int, script: Path, out: Path) -> None:
             if "hang" in step:
                 time.sleep(float(step["hang"]))
             if "status" in step:
-                error = step.get("body") or {
-                    "error": {
-                        "message": "qa stub error",
-                        "type": "qa_stub",
-                        "code": step["status"],
-                    }
-                }
+                error = step.get(
+                    "body",
+                    {
+                        "error": {
+                            "message": "qa stub error",
+                            "type": "qa_stub",
+                            "code": step["status"],
+                        }
+                    },
+                )
                 self._reply(
                     int(step["status"]), json.dumps(error).encode(), "application/json"
                 )
@@ -2757,7 +2851,10 @@ def serve_llm_stub(port: int, script: Path, out: Path) -> None:
         def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
             del format, args
 
-    ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
+    # A Docker-network fixture can bind its container interface. The default
+    # remains loopback for fixtures launched on the host.
+    bind_host = os.environ.get("QA_LLM_STUB_BIND", "127.0.0.1")
+    ThreadingHTTPServer((bind_host, port), Handler).serve_forever()
 
 
 def parse_stub_step(text: str) -> dict[str, Any]:
@@ -2773,7 +2870,11 @@ def parse_stub_step(text: str) -> dict[str, Any]:
         name, _, args = rest.partition(":")
         return {"tool": name, "args": json.loads(args) if args else {}}
     if kind == "status":
-        return {"status": int(rest)}
+        code, _, body = rest.partition(":")
+        step = {"status": int(code)}
+        if body:
+            step["body"] = json.loads(body)
+        return step
     if kind == "hang":
         return {"hang": float(rest)}
     usage_error(
@@ -3637,7 +3738,7 @@ def route_templates(checkout: Path | None = None) -> list[dict[str, Any]]:
         "from fastapi.routing import APIRoute, APIWebSocketRoute\n"
         "from starlette.routing import Route\n"
         "from openhands.agent_server.api import create_app\n"
-        "from openhands.agent_server.config import get_default_config\n"
+        "from openhands.agent_server.config import load_config\n"
         "def table(app):\n"
         "    out = []\n"
         "    for r in app.routes:\n"
@@ -3657,7 +3758,7 @@ def route_templates(checkout: Path | None = None) -> list[dict[str, Any]]:
         "    return out\n"
         "out = table(create_app())\n"
         "seen = {(r['method'], r['path']) for r in out}\n"
-        "docker = get_default_config().model_copy(update={'conversation_runtime': 'docker'})\n"
+        "docker = load_config().model_copy(update={'conversation_runtime': 'docker'})\n"
         "for r in table(create_app(docker)):\n"
         "    if (r['method'], r['path']) not in seen:\n"
         "        out.append({**r, 'config': 'conversation_runtime=docker'})\n"
@@ -4727,7 +4828,16 @@ def cmd_map_run(args: argparse.Namespace) -> dict[str, Any]:
         )
         run_dir = launched["last_line"].strip()
         try:
-            report = replay_family(load_run(Path(run_dir)), path, args)
+            run = load_run(Path(run_dir))
+            health = cmd_doctor(argparse.Namespace(run=run_dir))
+            saved_health = save_evidence(run, "map-run/doctor-before", health)
+            if not health["ok"]:
+                raise CliError(
+                    "Fresh verification server failed doctor",
+                    exit_code=3,
+                    data={"run": run_dir, "doctor": str(saved_health)},
+                )
+            report = replay_family(run, path, args)
         finally:
             self_command("stop", "--run", run_dir)
         attempts.append({**report, "run": run_dir})
@@ -5423,6 +5533,7 @@ secret key all private to the run. Without --new, an already-live run
   {CLI} restart --rotate-key       # the old session key must now be rejected
   {CLI} restart --hard             # SIGKILL: running conversations come back as error
   {CLI} restart --rotate-secret-key  # new cipher key: are stored secrets still readable?
+  {CLI} restart --rotate-secret-key --keep-previous-secret-key  # supported rotation
   {CLI} restart --env OH_MAX_CONCURRENT_RUNS=1""",
         cmd_restart,
     )
@@ -5443,9 +5554,23 @@ secret key all private to the run. Without --new, an already-live run
         help="new OH_SECRET_KEY (cipher): what happens to secrets stored under the old one",
     )
     p.add_argument(
+        "--keep-previous-secret-key",
+        action="store_true",
+        help=(
+            "pass the key the last --rotate-secret-key replaced as "
+            "OH_PREVIOUS_SECRET_KEYS_0 for this start (a supported rotation); "
+            "a restart without it drops that key again"
+        ),
+    )
+    p.add_argument(
         "--hard",
         action="store_true",
         help="SIGKILL instead of a graceful stop (crash recovery)",
+    )
+    p.add_argument(
+        "--checkout",
+        help="restart on another agent-sdk checkout (an upgrade or downgrade "
+        "over the same settings and conversations)",
     )
     p.add_argument("--env", action="append", metavar="K=V")
     p.add_argument("--config-json")
@@ -5768,7 +5893,8 @@ under <run>/evidence/FEATURE/NAME.json.""",
         description="LLM profiles: preset | set | show",
         formatter_class=Formatter,
         epilog=f"""Examples:
-  {CLI} llm preset deepseek                 # deepseek-flash (active) + deepseek-pro from $DEEPSEEK_API_KEY
+  {CLI} llm preset deepseek                 # deepseek-flash (active) + deepseek-pro from $DEEPSEEK_API_KEY;
+                                            # with $LLM_BASE_URL and $LLM_API_KEY: deepseek-flash through that proxy
   {CLI} llm set --profile alt --model deepseek/deepseek-v4-pro --api-key-env DEEPSEEK_API_KEY --no-activate
   {CLI} llm show""",
     )
@@ -5778,7 +5904,11 @@ under <run>/evidence/FEATURE/NAME.json.""",
         "preset",
         help="save a known set of profiles",
         formatter_class=Formatter,
-        epilog=f"Examples:\n  {CLI} llm preset deepseek\n  {CLI} llm preset deepseek --api-key-file ~/.deepseek",
+        epilog=(
+            f"Examples:\n  {CLI} llm preset deepseek\n"
+            f"  {CLI} llm preset deepseek --api-key-file ~/.deepseek\n"
+            f"  MODEL=$({CLI} llm preset deepseek --print-model)"
+        ),
     )
     add_run_flag(lp)
     lp.set_defaults(func=cmd_llm_preset)
@@ -5787,6 +5917,11 @@ under <run>/evidence/FEATURE/NAME.json.""",
     lp.add_argument("--api-key-file")
     lp.add_argument(
         "--no-validate", action="store_true", help="skip the one-call validation"
+    )
+    lp.add_argument(
+        "--print-model",
+        action="store_true",
+        help="print only the active profile's model (it differs through the proxy)",
     )
     ls = llm_sub.add_parser(
         "set",
@@ -5974,6 +6109,7 @@ Without --body-json agent fields, the agent comes from GET /api/settings
   {CLI} fixture http-sink --name creds --body '{{"token": "qa"}}' --status 200
   {CLI} fixture llm-stub --name qa-stub --step 'tool:finish:{{"message":"done"}}'
   {CLI} fixture llm-stub --name qa-stub --step status:500      # rewrites the script of a running stub
+  {CLI} fixture llm-stub --name qa-quota --step 'status:429:{{"error":{{"message":"Quota exceeded","type":"insufficient_quota","code":"insufficient_quota"}}}}'
   {CLI} fixture list
 
 llm-stub is an OpenAI-compatible provider on 127.0.0.1 that answers each
@@ -6000,7 +6136,7 @@ readable with `sink read --name <stub>`.""",
         "--step",
         action="append",
         metavar="STEP",
-        help="llm-stub script step: reply:TEXT[@usage=P,C] | tool:NAME:JSON | status:CODE | hang:SECONDS",
+        help="llm-stub script step: reply:TEXT[@usage=P,C] | tool:NAME:JSON | status:CODE[:JSON] | hang:SECONDS",
     )
 
     hp = commands.add_parser(

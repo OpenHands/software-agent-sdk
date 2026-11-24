@@ -5,6 +5,7 @@ agent (each run finishes on a content-only reply) and a separate scripted judge.
 """
 
 import asyncio
+import json
 from threading import Event
 from typing import cast
 from unittest.mock import MagicMock, patch
@@ -16,11 +17,17 @@ from pydantic import PrivateAttr, SecretStr
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import StoredConversation
 from openhands.sdk.agent import Agent
+from openhands.sdk.conversation.goal import GoalAsked, GoalController
 from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.event import MessageEvent
+from openhands.sdk.event.ask_user import find_pending_ask
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
-from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.llm import LLM, Message, MessageToolCall, TextContent
 from openhands.sdk.testing import TestLLM
+from openhands.sdk.tool import Tool
 from openhands.sdk.workspace import LocalWorkspace
+from openhands.tools.ask_user import AskUserTool
+from tests.tools.ask_user.test_ask_user import QUESTION
 
 
 def _scripted(*texts: str, usage_id: str) -> TestLLM:
@@ -321,7 +328,8 @@ async def test_stop_running_goal_loop_emits_interrupted(event_service, tmp_path)
         updates = _goal_status_updates(event_service)
         assert updates[-1]["status"] == "interrupted"
         assert updates[-1]["active"] is False
-        assert updates[-1]["iteration"] == 1
+        # The audit was abandoned, so the round is not counted as completed.
+        assert updates[-1]["iteration"] == 0
     finally:
         judge._gate.set()  # release the orphaned judge thread for cleanup
         await event_service.close()
@@ -357,6 +365,85 @@ async def test_resume_from_interrupted_status(event_service, tmp_path):
         assert outcome is not None
         assert outcome.status == "complete"
         assert outcome.iterations == 2  # resumed from round 1 -> completed at round 2
+    finally:
+        await event_service.close()
+
+
+@pytest.mark.asyncio
+async def test_resume_after_failed_audit_never_exceeds_cap(event_service, tmp_path):
+    # The only round's judge call fails -> interrupted at 0 of 1 (the failed
+    # audit is not a completed round); the resume re-runs that round and caps
+    # at 1 of 1, never above max_iterations.
+    await _start(event_service, tmp_path, "did the work", "tried again")
+    failing_judge = TestLLM.from_messages(
+        [RuntimeError("judge network error")], usage_id="judge"
+    )
+    try:
+        await event_service.start_goal_loop(
+            "build x", judge_llm=failing_judge, max_iterations=1
+        )
+        await asyncio.wait_for(event_service._goal_loop_task, timeout=15)
+        updates = _goal_status_updates(event_service)
+        assert updates[-1]["status"] == "interrupted"
+        assert updates[-1]["iteration"] == 0
+
+        await event_service.resume_goal_loop(
+            judge_llm=_scripted(_NOT_DONE, usage_id="judge")
+        )
+        await asyncio.wait_for(event_service._goal_loop_task, timeout=15)
+
+        updates = _goal_status_updates(event_service)
+        assert updates[-1]["status"] == "capped"
+        assert updates[-1]["iteration"] == 1
+        assert all(u["iteration"] <= u["max_iterations"] for u in updates)
+    finally:
+        await event_service.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stored_iteration", "stored_max", "override_max", "final_iteration"),
+    [(1, 1, None, 1), (3, 5, 2, 2)],
+    ids=["stored-at-cap", "lower-max-override"],
+)
+async def test_resume_from_status_at_cap_never_exceeds_cap(
+    event_service,
+    tmp_path,
+    stored_iteration,
+    stored_max,
+    override_max,
+    final_iteration,
+):
+    # An interrupted status already at (or past) the cap -- persisted by an
+    # older server that counted the failed audit, or resumed with a lower
+    # max_iterations -- resumes into one final round, not past the cap.
+    await _start(event_service, tmp_path, "resumed")
+    conversation = event_service.get_conversation()
+    with conversation._state:
+        conversation._on_event(
+            ConversationStateUpdateEvent(
+                key="goal",
+                value={
+                    "active": False,
+                    "status": "interrupted",
+                    "iteration": stored_iteration,
+                    "max_iterations": stored_max,
+                    "objective": "build x",
+                    "verdict": None,
+                },
+            )
+        )
+    try:
+        await event_service.resume_goal_loop(
+            judge_llm=_scripted(_NOT_DONE, usage_id="judge"),
+            max_iterations=override_max,
+        )
+        await asyncio.wait_for(event_service._goal_loop_task, timeout=15)
+
+        updates = _goal_status_updates(event_service)[1:]  # skip the stored one
+        assert updates[-1]["status"] == "capped"
+        assert updates[-1]["iteration"] == final_iteration
+        assert all(u["iteration"] <= u["max_iterations"] for u in updates)
     finally:
         await event_service.close()
 
@@ -729,3 +816,91 @@ async def test_restart_leaves_inactive_goal_status_alone(
         assert _goal_status_updates(restarted) == before
     finally:
         await restarted.close()
+
+
+@pytest.mark.asyncio
+async def test_goal_loop_stops_on_a_question_for_the_user(event_service, tmp_path):
+    # The agent asked the user (ask_user): no followup may land over the
+    # question, so the loop stops, resumable, without judging the round.
+    await _start(event_service, tmp_path, "turn 1")
+    judge = _scripted(_NOT_DONE, usage_id="judge")
+    try:
+        with patch.object(
+            GoalController,
+            "on_run_finished",
+            return_value=GoalAsked(ask_id="ask-1", question="Postgres or SQLite?"),
+        ):
+            await event_service.start_goal_loop(
+                "build x", judge_llm=judge, max_iterations=5
+            )
+            await asyncio.wait_for(event_service._goal_loop_task, timeout=15)
+
+        updates = _goal_status_updates(event_service)
+        assert updates[-1]["status"] == "interrupted"
+        assert updates[-1]["active"] is False
+        user_messages = [
+            e
+            for e in event_service.get_conversation()._state.events
+            if isinstance(e, MessageEvent) and e.source == "user"
+        ]
+        assert len(user_messages) == 1  # only the objective
+    finally:
+        await event_service.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("answer_in_chat", [False, True], ids=["card", "chat"])
+async def test_goal_resume_waits_for_a_real_answer(
+    event_service, tmp_path, answer_in_chat
+):
+    assert isinstance(event_service.agent, Agent)
+    event_service.agent.tools.append(Tool(name=AskUserTool.name))
+    await _start(event_service, tmp_path)
+    conversation = event_service.get_conversation()
+    conversation.switch_llm(
+        TestLLM.from_messages(
+            [
+                Message(
+                    role="assistant",
+                    tool_calls=[
+                        MessageToolCall(
+                            id="ask",
+                            name="ask_user",
+                            arguments=json.dumps(QUESTION),
+                            origin="completion",
+                        )
+                    ],
+                ),
+                Message(role="assistant", content=[TextContent(text="Shipped")]),
+            ],
+            usage_id="asking-agent",
+        )
+    )
+    judge = _scripted(_DONE, usage_id="judge")
+    try:
+        await event_service.start_goal_loop("Ship the fix", judge_llm=judge)
+        await asyncio.wait_for(event_service._goal_loop_task, timeout=15)
+        pending = find_pending_ask(conversation.state.events)
+        assert pending is not None
+        with pytest.raises(ValueError, match="pending_ask"):
+            await event_service.resume_goal_loop(judge_llm=judge)
+        assert find_pending_ask(conversation.state.events) == pending
+
+        await event_service.send_message(
+            Message(role="user", content=[TextContent(text="Synthetic goal nudge")]),
+            _from_goal_loop=True,
+        )
+        assert find_pending_ask(conversation.state.events) == pending
+
+        if answer_in_chat:
+            message = Message(role="user", content=[TextContent(text="Use the flag")])
+        else:
+            _, message = conversation.answer_ask(pending.ask_id, option_index=0)
+        await event_service.send_message(message)
+        await event_service.resume_goal_loop(judge_llm=judge)
+        await asyncio.wait_for(event_service._goal_loop_task, timeout=15)
+        assert find_pending_ask(conversation.state.events) is None
+        assert event_service._goal_loop_outcome is not None
+        assert event_service._goal_loop_outcome.status == "complete"
+    finally:
+        await event_service.close()

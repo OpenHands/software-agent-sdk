@@ -18,6 +18,8 @@ import {
   AgentBase,
   SecretValue,
   LLM,
+  ModelRouterSelection,
+  ModelRouterStatus,
 } from '../types/base';
 import {
   ConversationInfo,
@@ -42,6 +44,11 @@ import type { HookConfig } from '../hooks';
  * Options for creating a RemoteConversation instance.
  */
 export interface RemoteConversationOptions extends BaseConversationOptions {
+  /**
+   * Positive USD limit on accumulated conversation cost, including earlier runs.
+   * Null means unbounded. A completed agent step may overshoot the limit.
+   */
+  maxBudgetPerRun?: number | null;
   /**
    * Optional user ID to associate with server-side observability traces.
    */
@@ -93,6 +100,7 @@ export class RemoteConversation implements IConversation {
   private hookConfig?: HookConfig;
   private userId?: string;
   private maxIterations?: number;
+  private maxBudgetPerRun?: number | null;
   private stuckDetection?: boolean;
 
   constructor(
@@ -108,6 +116,7 @@ export class RemoteConversation implements IConversation {
     this.hookConfig = options.hookConfig;
     this.userId = options.userId;
     this.maxIterations = options.maxIterations;
+    this.maxBudgetPerRun = options.maxBudgetPerRun;
     this.stuckDetection = options.stuckDetection;
 
     this.client = new HttpClient({
@@ -144,6 +153,7 @@ export class RemoteConversation implements IConversation {
     options: {
       initialMessage?: string;
       maxIterations?: number;
+      maxBudgetPerRun?: number | null;
       stuckDetection?: boolean;
       hookConfig?: HookConfig;
       userId?: string;
@@ -175,6 +185,8 @@ export class RemoteConversation implements IConversation {
       agent: this.agent,
       initial_message: initialMessage,
       max_iterations: options.maxIterations || this.maxIterations || 500,
+      max_budget_per_run:
+        options.maxBudgetPerRun !== undefined ? options.maxBudgetPerRun : this.maxBudgetPerRun,
       stuck_detection: options.stuckDetection ?? this.stuckDetection ?? true,
       workspace: { type: 'local', working_dir: this.workspace.workingDir },
       hook_config: hookConfig ?? null,
@@ -327,6 +339,59 @@ export class RemoteConversation implements IConversation {
   }
 
   /**
+   * Return model-router state for this conversation.
+   */
+  async getModelRouter(): Promise<ModelRouterStatus> {
+    const response = await this.client.get<ModelRouterStatus>(
+      `/api/conversations/${this.id}/model_router`
+    );
+    return response.data;
+  }
+
+  /**
+   * Add a saved LLM profile as a route to this conversation's model router.
+   */
+  async addModelRouterRoute(
+    profileName: string,
+    routeName?: string,
+    baseRouteName = 'default'
+  ): Promise<ModelRouterStatus> {
+    const response = await this.client.post<ModelRouterStatus>(
+      `/api/conversations/${this.id}/model_router/routes`,
+      { profile_name: profileName, route_name: routeName, base_route_name: baseRouteName }
+    );
+    return response.data;
+  }
+
+  /**
+   * Update route selection for this RouterLLM-backed conversation.
+   */
+  async updateModelRouter(selection: ModelRouterSelection): Promise<ModelRouterStatus> {
+    const response = await this.client.patch<ModelRouterStatus>(
+      `/api/conversations/${this.id}/model_router`,
+      { selection }
+    );
+    return response.data;
+  }
+
+  /**
+   * Switch a RouterLLM-backed conversation to a manual route.
+   */
+  async switchModelRouter(routeName: string): Promise<ModelRouterStatus> {
+    return this.updateModelRouter({
+      mode: 'manual',
+      manual_route_name: routeName,
+    });
+  }
+
+  /**
+   * Return a RouterLLM-backed conversation to automatic routing.
+   */
+  async resumeAutoModelRouting(): Promise<ModelRouterStatus> {
+    return this.updateModelRouter({ mode: 'auto' });
+  }
+
+  /**
    * Switch the model of an ACP conversation (the ACP analog of
    * {@link switchLlm}). On a live session the server calls the wrapper's
    * `session/set_model` in place with context preserved. Before the first run
@@ -335,6 +400,11 @@ export class RemoteConversation implements IConversation {
    */
   async switchAcpModel(model: string): Promise<void> {
     await this.client.post(`/api/conversations/${this.id}/switch_acp_model`, { model });
+  }
+
+  /** Switch this ACP conversation's reasoning effort (see `ConversationClient.switchAcpEffort`). */
+  async switchAcpEffort(effort: string): Promise<void> {
+    await this.client.post(`/api/conversations/${this.id}/switch_acp_effort`, { effort });
   }
 
   /**

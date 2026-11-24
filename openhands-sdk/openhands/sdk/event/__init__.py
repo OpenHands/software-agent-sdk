@@ -18,6 +18,12 @@ from openhands.sdk.event.llm_convertible import (
     SystemPromptEvent,
     UserRejectObservation,
 )
+from openhands.sdk.event.message_edit import MessageEditEvent
+from openhands.sdk.event.reaction import (
+    REACTION_EMOJI,
+    ReactionEmoji,
+    ReactionEvent,
+)
 from openhands.sdk.event.resume_transcript import (
     RESUME_CONTEXT_MARKER,
     render_resume_transcript,
@@ -25,7 +31,7 @@ from openhands.sdk.event.resume_transcript import (
 from openhands.sdk.event.security import SecurityAnalysisEvent
 from openhands.sdk.event.streaming_delta import StreamingDeltaEvent
 from openhands.sdk.event.token import TokenEvent
-from openhands.sdk.event.types import EventID, ToolCallID
+from openhands.sdk.event.types import EventID, ToolCallID, UnmaskedID
 from openhands.sdk.event.user_action import InterruptEvent, PauseEvent
 
 
@@ -44,6 +50,10 @@ __all__ = [
     "RejectionSource",
     "InterruptEvent",
     "PauseEvent",
+    "MessageEditEvent",
+    "ReactionEvent",
+    "ReactionEmoji",
+    "REACTION_EMOJI",
     "StreamingDeltaEvent",
     "Condensation",
     "CondensationRequest",
@@ -54,6 +64,7 @@ __all__ = [
     "LLMCompletionLogEvent",
     "EventID",
     "ToolCallID",
+    "UnmaskedID",
     "RESUME_CONTEXT_MARKER",
     "render_resume_transcript",
 ]

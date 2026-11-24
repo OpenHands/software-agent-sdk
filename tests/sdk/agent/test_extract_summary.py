@@ -55,7 +55,7 @@ def _make_mcp_tool_with_summary():
     mcp_tool = mcp.types.Tool(
         name="jira_create_issue",
         description="Create a Jira issue",
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {
                 "project_key": {"type": "string"},
@@ -127,7 +127,7 @@ def test_extract_summary_still_pops_for_tools_without_summary_param(agent):
     mcp_tool = mcp.types.Tool(
         name="some_tool",
         description="A tool without a summary param",
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {
                 "url": {"type": "string"},

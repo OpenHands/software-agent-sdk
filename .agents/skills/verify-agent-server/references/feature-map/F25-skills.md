@@ -11,12 +11,16 @@ or disable, refresh from the recorded source, and uninstall. Enabled installed
 skills join the user tier of the catalog and of conversations that load user
 skills, where a trigger word activates them. The marketplace catalog lists the
 installable entries of the public repository with a fresh `installed` flag.
+An operator can switch the public repository off: `OH_PUBLIC_SKILLS_ENABLED=false`
+keeps its skills out of the catalogs and conversations, and
+`OH_PUBLIC_CATALOG_ENABLED=false` empties the marketplace catalog, which then
+says `disabled: true`.
 
-Source: `openhands-agent-server/openhands/agent_server/skills_router.py`, `openhands-agent-server/openhands/agent_server/skills_service.py`, `openhands-sdk/openhands/sdk/skills/`, `openhands-sdk/openhands/sdk/extensions/`, `openhands-sdk/openhands/sdk/marketplace/`, `openhands-sdk/openhands/sdk/git/cached_repo.py`, `openhands-sdk/openhands/sdk/context/agent_context.py`, `openhands-sdk/openhands/sdk/workspace/remote/base.py`, `clients/typescript/src/client/skills-client.ts`
+Source: `openhands-agent-server/openhands/agent_server/skills_router.py`, `openhands-agent-server/openhands/agent_server/skills_service.py`, `openhands-agent-server/openhands/agent_server/catalog.py`, `openhands-sdk/openhands/sdk/skills/`, `openhands-sdk/openhands/sdk/extensions/`, `openhands-sdk/openhands/sdk/marketplace/`, `openhands-sdk/openhands/sdk/git/cached_repo.py`, `openhands-sdk/openhands/sdk/context/agent_context.py`, `openhands-sdk/openhands/sdk/workspace/remote/base.py`, `clients/typescript/src/client/skills-client.ts`
 
 Needs: `git`
 
-Routes: `POST /api/skills`, `POST /api/skills/sync`, `POST /api/skills/install`,
+Routes: `POST /api/skills`, `GET /api/skills/catalog`, `POST /api/skills/sync`, `POST /api/skills/install`,
 `GET /api/skills/installed`, `GET /api/skills/installed/{skill_name}`,
 `PATCH /api/skills/installed/{skill_name}`,
 `DELETE /api/skills/installed/{skill_name}`,
@@ -27,7 +31,8 @@ Routes: `POST /api/skills`, `POST /api/skills/sync`, `POST /api/skills/install`,
 
 - `F25.auth`: every skills route answers 401 without a valid session key, and nothing is installed.
 - `F25.public-repo`: against the real public extensions repository (network), sync clones it into the public cache and `POST /api/skills` with `load_public` lists skills loaded from that clone.
-- `F25.marketplace-public`: against the real public extensions repository, `GET /api/skills/marketplace` lists its installable entries; today it returns an empty catalog because the repository has `.plugin/marketplace.json` but no `marketplaces/default.json`.
+- `F25.marketplace-public`: against the real public extensions repository, `GET /api/skills/marketplace` lists its installable entries, discovered from `.plugin/marketplace.json` (the repository has no `marketplaces/default.json`).
+- `F25.profile-catalog`: `GET /api/skills/catalog` lists the public and user skills available to profile launches with their `origin`, excluding project-only skills.
 - `F25.catalog-project`: `POST /api/skills` offline with a `project_dir` lists the project's AgentSkills (`agentskills`), legacy trigger skill (`knowledge`) and `AGENTS.md` (`repo`), counts them in `sources.project`, and silently skips a SKILL.md with an invalid name.
 - `F25.catalog-user-precedence`: user skills from `~/.agents/skills` appear only with `load_user`, and a project skill overrides a user skill of the same name.
 - `F25.catalog-server-sources`: `sandbox_config` URLs named `WORKER_*` become one always-on `work_hosts` skill, and `org_configs` repositories are cloned from a git URL (an unreachable one contributes nothing).
@@ -43,8 +48,8 @@ Routes: `POST /api/skills`, `POST /api/skills/sync`, `POST /api/skills/install`,
 - `F25.install-documented-sources`: every GitHub source form the OpenAPI description of `InstallSkillRequest.source` advertises installs, including the `github:owner/repo/<path>` shorthand.
 - `F25.refresh`: refresh re-fetches from the recorded source: a new commit in the git source updates `resolved_ref` and the installed files, an edited local source updates the description, and the enabled flag is preserved.
 - `F25.install-ref`: installing a git source with `ref` pins that commit (`resolved_ref`, the installed files, `requested_ref` in `.installed.json`); refresh moves it to the source's latest commit and drops `requested_ref`.
-- `F25.install-unknown-ref`: a `ref` the git source does not have is 400 and leaves the installation unchanged; today that holds only for a first clone, while a source whose clone is cached installs the cached HEAD with 200.
-- `F25.refresh-unfetchable`: refreshing a skill whose recorded source no longer exists is a client error and keeps the installation; today it is a 500.
+- `F25.install-unknown-ref`: a `ref` the git source does not have is 400 and leaves the installation unchanged for both a first clone and a cached source.
+- `F25.refresh-unfetchable`: refreshing a skill whose recorded source no longer exists is a client error (400) and keeps the installation.
 - `F25.name-errors`: an unknown skill name is 404 and a name outside `^[a-z0-9]+(-[a-z0-9]+)*$` is 422 on get, enable/disable, uninstall and refresh.
 - `F25.self-heal`: a skill directory copied into the store by hand is invisible to the single view until the list call discovers it with source `local`; a tracked directory removed by hand is pruned from the metadata by the list call.
 - `F25.sync`: `POST /api/skills/sync` updates the cached public repository from its origin and clears the 60 s public-skills cache, so a skill committed upstream is listed immediately (translated: a local git origin stands in for GitHub).
@@ -58,15 +63,25 @@ Routes: `POST /api/skills`, `POST /api/skills/sync`, `POST /api/skills/install`,
 - `F25.ts-client`: the TypeScript `SkillsClient` installs a skill from a git source, lists, reads, disables and re-enables it (`toggleSkill`, with `getSkills` following the flag), refreshes, syncs, reads the marketplace and uninstalls it; an unknown skill is a 404 `HttpError` and a client without a key gets 401.
 - `F25.marketplace-stale-cache`: after a sync brings a new entry into the public repository, the catalog lists it: a successful sync clears the catalog's 5-minute cache, which never keeps an empty result.
 - `F25.uninstall`: uninstall deletes the directory and the metadata entry, the single view and a second uninstall are 404, the catalog drops the skill and the marketplace entry reads `installed: false` again.
+- `F25.public-catalog-disabled`: with `OH_PUBLIC_CATALOG_ENABLED=false` the marketplace catalog answers `disabled: true` and no entries although the public clone lists some (the default server answers `disabled: false` with them), while public skills still load and sync still succeeds.
+- `F25.public-skills-disabled`: with `OH_PUBLIC_SKILLS_ENABLED=false` neither `POST /api/skills`, the profile catalog nor a conversation with `load_public_skills` gets public skills (nothing is cloned, and a present clone is not read), while user, project and registered-marketplace skills still load and the marketplace catalog stays enabled.
+- `F25.public-extensions-disabled`: with both switches off, sync answers `status: error` with `Public extensions are disabled by instance policy` and leaves the clone untouched, the marketplace is `disabled: true` and empty, and public skills do not load.
+- `F25.load-registered-marketplaces`: `load_registered_marketplaces: true` loads auto-load registered marketplaces with `load_public: false`, `false` leaves them out with `load_public: true`, and leaving it out follows `load_public`.
+- `F25.long-description`: a skill description over 1024 characters is cut to 1024 in the project catalog, the installed view and the profile catalog, with a notice that names `invoke_skill(name=...)` and not the `SKILL.md` path.
 
 ## How to get to it (agent POV)
 
 - REST, merged catalog: `POST /api/skills` with `SkillsRequest`
   (`load_public`, `load_user`, `load_project`, `load_org` all default to
   `true`, plus `project_dir`, `marketplace_path`, `registered_marketplaces`,
-  `org_configs`, `sandbox_config`) returns `{"skills": [SkillInfo], "sources":
+  `org_configs`, `sandbox_config`, and `load_registered_marketplaces`, which
+  defaults to `null`, meaning "follow `load_public`") returns `{"skills": [SkillInfo], "sources":
   {...}}`; `POST /api/skills/sync` force-updates the public repository clone.
   Driven by the `F25.catalog-*` and `F25.sync*` bullets.
+- REST, profile launch catalog: `GET /api/skills/catalog` returns
+  `{"skills": [SkillCatalogEntry]}` with `origin: public|user`, matching the
+  public and user sources profiles can resolve (#6098). Project and org
+  sources need conversation context and are excluded (`F25.profile-catalog`).
 - REST, installed skills: `POST /api/skills/install` (`source`, `ref`,
   `repo_path`, `force`), `GET /api/skills/installed`,
   `GET|PATCH|DELETE /api/skills/installed/{skill_name}` and
@@ -98,7 +113,13 @@ Routes: `POST /api/skills`, `POST /api/skills/sync`, `POST /api/skills/install`,
   in the config file) adds server-default registrations that request entries
   override by name (driven through the config file by
   `F25.catalog-server-marketplaces`); `EXTENSIONS_REF` pins the public
-  repository ref.
+  repository ref. `OH_PUBLIC_SKILLS_ENABLED` and `OH_PUBLIC_CATALOG_ENABLED`
+  (default `true`; `false` turns one off, an unrecognised value keeps it
+  on, `F26.marketplace-disabled`) are read at call time: the first stops public skills
+  from loading anywhere, the second empties `GET /api/skills/marketplace`
+  (and the plugins marketplace, F26) and sets its `disabled` field; with both
+  off sync refuses (`F25.public-*-disabled`, each on a second server launched
+  with `--env`). Skills a client sends explicitly are not filtered.
 - WebSocket: `/sockets/events/{conversation_id}` carries the user
   `MessageEvent` with `activated_skills` (owned by the events family; the
   activation bullet replays it with `resend_mode=all`).
@@ -114,8 +135,8 @@ Preconditions:
   preset themselves; the TypeScript bullet needs `node`.
   No launch flags are needed. Outbound HTTPS
   to github.com is needed by `F25.public-repo` and `F25.install-github`, which
-  arrange the network state for the two bullets after them
-  (`F25.marketplace-public`, a known bug, and `F25.install-documented-sources`); every other
+  arrange the network state for the bullets after them
+  (`F25.marketplace-public`, `F25.install-documented-sources`); every other
   bullet runs offline (apart from the DeepSeek calls). Each of these recipes
   declares what it needs on its own `Needs:` line (those two bullets
   inherit `network` through `Requires:`), so a machine without a model key,
@@ -166,6 +187,7 @@ Preconditions:
   with a wrong key).
   ```sh
   control-agent-server api POST /api/skills --auth none --json '{"load_public": false}' --expect 401
+  control-agent-server api GET /api/skills/catalog --auth none --expect 401
   control-agent-server api POST /api/skills/sync --auth bad --expect 401
   control-agent-server api POST /api/skills/install --auth none --json '{"source": "'"$S"'"}' --expect 401
   control-agent-server api GET /api/skills/installed --auth none --expect 401
@@ -176,7 +198,7 @@ Preconditions:
   control-agent-server api GET /api/skills/marketplace --auth none --expect 401 --save F25.auth/marketplace
   test ! -e "$I/qa-f25-skill"
   ```
-  All nine answer `401 {"detail": "Unauthorized"}` and nothing is installed.
+  All ten answer `401 {"detail": "Unauthorized"}` and nothing is installed.
 - **The real public repository (`F25.public-repo`).** Sync against
   `github.com/OpenHands/extensions` (network), which clones it into the public
   cache, then load the public tier from that clone.
@@ -195,21 +217,21 @@ Preconditions:
   the public tier lists skills whose `source` is a `SKILL.md` inside the
   clone. This bullet is the network arrange step for
   `F25.marketplace-public`; without network it fails here.
-- **Public marketplace catalog (`F25.marketplace-public`), known bug.** Read
+- **Public marketplace catalog (`F25.marketplace-public`).** Read
   the catalog against the clone of the real `OpenHands/extensions`
   repository that `F25.public-repo` made.
 
   Requires: `F25.public-repo`
   ```sh
-  control-agent-server api GET /api/skills/marketplace --timeout 180 --expect 200 --check skills len-ge 1 --save F25.marketplace-public/catalog  # bug: status eq 200 && response.body.skills len-eq 0
+  control-agent-server api GET /api/skills/marketplace --timeout 180 --expect 200 --check skills len-ge 1 --save F25.marketplace-public/catalog
   ```
   The clone holds `.plugin/marketplace.json` with about 70 plugin entries
-  whose sources are `./skills/<name>`, so the catalog should list them. Today
-  it returns `{"skills": []}`: `_fetch_catalog_entries` gives up when
-  `marketplaces/default.json` is missing (the repository ships
-  `marketplaces/openhands-extensions.json` and `large-codebase.json`
-  instead) before it tries `Marketplace.load`, and the empty list is then
-  cached for 5 minutes.
+  whose sources are `./skills/<name>`, and the catalog lists them (73 on
+  2026-10-13), each `source` an absolute path inside the clone.
+  `_fetch_catalog_entries` loads the manifest with `Marketplace.load` first
+  and reads `marketplaces/default.json` only as a fallback; the repository
+  ships `marketplaces/openhands-extensions.json` and `large-codebase.json`
+  instead of `default.json`.
 - **Project skills (`F25.catalog-project`).** Load only the fixture project.
   ```sh
   control-agent-server api POST /api/skills --json '{"load_public": false, "load_user": false, "load_org": false, "project_dir": "'"$P"'"}' \
@@ -431,8 +453,9 @@ Preconditions:
     esac
   done
   ```
-  `F25.install-github` showed the skill installs from github.com, so every
-  documented example installs it too. `github:owner/repo/<path>` clones
+  `F25.install-github` proves the skill installs from github.com when the
+  subpath is explicit. The shorthand installs the same skill under its own
+  name. The shorthand clones
   `owner/repo` and uses `<path>` as `repo_path` (passing both is a `400`).
   The loop also covers the `/tree/<ref>/<path>` URL in case it is documented
   again; that form is not parsed (it would be cloned as
@@ -481,7 +504,7 @@ Preconditions:
   in the installed file) and records the requested ref. Refresh reinstalls
   with `ref` dropped, by design ("latest version"), so the skill is back at
   `H2` and `requested_ref` is gone.
-- **Unknown ref (`F25.install-unknown-ref`), known bug.** Ask for a ref that
+- **Unknown ref (`F25.install-unknown-ref`).** Ask for a ref that
   neither git source has: first for a source never cloned, then for the
   cached `qa-f25-src` source.
 
@@ -494,20 +517,16 @@ Preconditions:
   T2=$(control-agent-server api GET /api/skills/installed/qa-f25-src-skill --field installed_at)
   ls -d "$AGENT_SERVER_VERIFY_RUN"/home/.openhands/cache/extensions/qa-f25-src-*/.git
   control-agent-server api POST /api/skills/install --json '{"source": "file://'"$G"'", "repo_path": "skills/qa-f25-src-skill", "ref": "qa-f25-no-such-ref", "force": true}' \
-    --expect 400 --save F25.install-unknown-ref/cached  # bug: status eq 200 && response.body.name eq qa-f25-src-skill
+    --expect 400 --save F25.install-unknown-ref/cached
   control-agent-server api GET /api/skills/installed/qa-f25-src-skill --expect 200 --check installed_at eq "$T2"
   ```
   The first clone fails (`git clone --branch qa-f25-no-such-ref`), so the
-  install is `400` and nothing is installed (the positive control). The
-  `qa-f25-src` clone is in the extensions cache, and that cached source should
-  fail the same way. Today it answers `200` and reinstalls the cached HEAD
-  (`H2` after the refresh bullet)
-  with `requested_ref: "qa-f25-no-such-ref"` in `.installed.json`:
-  `_try_checkout_and_reset` only logs `Failed to checkout ... Using cached
-  version.` and `fetch_with_resolution` resolves whatever is checked out.
-  From source, a real ref that the cache does not hold yet ends the same way
-  when the fetch fails (offline).
-- **Refresh of a vanished source (`F25.refresh-unfetchable`), known bug.**
+  install is `400` and nothing is installed. The `qa-f25-src` clone is in the
+  extensions cache; it also returns `400` and keeps the installed copy at
+  `H2`, with its prior `installed_at` value. A valid ref that is not in the
+  cache is fetched before checkout. If that fetch fails, the install returns
+  `400` and keeps the prior installation.
+- **Refresh of a vanished source (`F25.refresh-unfetchable`).**
   Install from a temporary directory, delete it, refresh.
   ```sh
   mkdir -p "$F/tmp/qa-f25-gone"
@@ -515,16 +534,16 @@ Preconditions:
   control-agent-server api POST /api/skills/install --json '{"source": "'"$F/tmp/qa-f25-gone"'"}' --expect 200
   rm -rf "$F/tmp/qa-f25-gone"
   control-agent-server api POST /api/skills/install --json '{"source": "'"$F/tmp/qa-f25-gone"'"}' --expect 400 --check detail contains 'Failed to fetch'
-  control-agent-server api POST /api/skills/installed/qa-f25-gone/refresh --expect 400,422 --save F25.refresh-unfetchable/refresh  # bug: status eq 500 && response.body.exception contains 'Local extension path does not exist'
+  control-agent-server api POST /api/skills/installed/qa-f25-gone/refresh --expect 400,422 --save F25.refresh-unfetchable/refresh
   control-agent-server api GET /api/skills/installed/qa-f25-gone --expect 200 --check enabled eq true
   ```
   The source cannot be fetched: installing from the vanished path again is
   `400 Failed to fetch skill source` (the positive control), so the refresh
-  route should report a client error too and keep the installed copy. Today it is
-  `500` (`Local extension path does not exist: ...`): `refresh_skill_endpoint`
-  does not catch `ExtensionFetchError`/`SkillValidationError`. The installed
-  copy does survive. A skill discovered by `F25.self-heal` (source `local`)
-  fails the same way.
+  route reports a client error too and keeps the installed copy:
+  `refresh_skill_endpoint` maps `SkillFetchError`/`ExtensionFetchError` to
+  `400` and `SkillValidationError` to `422`, as install does. A skill
+  discovered by `F25.self-heal` (source `local`) has nothing to fetch from and
+  is `400` the same way.
 - **Unknown and invalid names (`F25.name-errors`).** Address a skill that is
   not installed, then a name that breaks the pattern.
   ```sh
@@ -582,6 +601,24 @@ Preconditions:
   equals the origin's and the skill is listed. With the default
   `marketplace_path` only the entries of `marketplaces/default.json` load, so
   `qa-f25-pub-new` stays out.
+- **Profile launch catalog (`F25.profile-catalog`).** Use the local public
+  repository from the sync recipe and the user fixtures. The profile catalog
+  does not need a project directory and labels the two sources explicitly.
+
+  Requires: `F25.sync`
+  ```sh
+  mkdir -p "$P/.agents/skills/qa-f25-project-only"
+  printf -- '---\nname: qa-f25-project-only\ndescription: QA project-only skill\n---\nQA_PROJECT_ONLY\n' > "$P/.agents/skills/qa-f25-project-only/SKILL.md"
+  control-agent-server api POST /api/skills --json '{"load_public":false,"load_user":false,"load_org":false,"project_dir":"'"$P"'"}' \
+    --expect 200 --check skills contains qa-f25-project-only
+  PROFILE_CATALOG=$(control-agent-server api GET /api/skills/catalog --expect 200 \
+    --save F25.profile-catalog/catalog --field skills)
+  jq -e 'any(.name == "qa-f25-pub" and .origin == "public") and any(.name == "qa-f25-user" and .origin == "user") and all(.origin == "public" or .origin == "user") and all(.name != "qa-f25-project-only")' <<< "$PROFILE_CATALOG"
+  rm -r "$P/.agents/skills/qa-f25-project-only"
+  ```
+  The positive control sees the project-only skill through the workspace
+  catalog. The profile catalog includes the public and user fixtures with
+  their expected origins and omits that project-only skill.
 - **Sync without a reachable origin (`F25.sync-offline`).** Point
   the clone's origin at a missing path, sync, restore it on exit.
 
@@ -657,7 +694,7 @@ Preconditions:
   control-agent-server api POST /api/skills/install --json '{"source": "'"$F/qa-f25-invoke"'"}' --expect 200 --check name eq qa-f25-invoke
   control-agent-server api POST /api/skills --json '{"load_public": false, "load_user": true, "load_project": false, "load_org": false}' \
     --expect 200 --check skills contains '"name": "qa-f25-invoke", "type": "agentskills", "content": "QA_INVOKE_BODY' \
-    --check skills contains '"triggers": [], "source": "'"$I/qa-f25-invoke/SKILL.md"'"'
+    --check skills contains '"triggers": [], "paths": [], "source": "'"$I/qa-f25-invoke/SKILL.md"'"'
   CID2=$(control-agent-server conversation start --tools none --no-autotitle \
     --prompt 'Call the invoke_skill tool with name "qa-f25-invoke", then finish.' --wait --until finished,idle --timeout 300 --print-id)
   control-agent-server conversation events "$CID2" --kinds SystemPromptEvent --contains '<name>qa-f25-invoke</name>'
@@ -839,6 +876,152 @@ Preconditions:
   the marketplace entry reads `installed: false` again, and the user tier no
   longer has `qa-f25-skill`. `qa-f25-src-skill` and `qa-f25-gone` stay
   installed in this run.
+- **Long description (`F25.long-description`).** A project skill whose
+  description is longer than 1024 characters, read through the project
+  catalog, then installed and read through the installed view and the
+  profile launch catalog, then uninstalled. The bullet arranges everything
+  itself, so it also runs alone (`map run --only`).
+  ```sh
+  LD="$AGENT_SERVER_VERIFY_RUN/fixtures/qa-f25-long"
+  mkdir -p "$LD/.agents/skills/qa-f25-long"
+  printf -- '---\nname: qa-f25-long\ndescription: QA_LONG_DESC %s\n---\nQA_LONG_BODY\n' "$(printf 'x%.0s' $(seq 1500))" \
+    > "$LD/.agents/skills/qa-f25-long/SKILL.md"
+  control-agent-server api POST /api/skills --json '{"load_public": false, "load_user": false, "load_project": true, "load_org": false, "project_dir": "'"$LD"'"}' \
+    --expect 200 --check skills contains '"name": "qa-f25-long"' --check skills contains 'to load the full skill.</NOTE>' \
+    --check skills not-contains 'complete skill content at' --save F25.long-description/project
+  control-agent-server api POST /api/skills/install --json '{"source": "'"$LD/.agents/skills/qa-f25-long"'"}' --expect 200 \
+    --check name eq qa-f25-long --check description len-eq 1024
+  control-agent-server api GET /api/skills/installed/qa-f25-long --expect 200 --check description len-eq 1024 \
+    --check description contains 'QA_LONG_DESC x' --check description contains 'Call invoke_skill(name="qa-f25-long") to load the full skill.' \
+    --check description not-contains SKILL.md --save F25.long-description/installed
+  control-agent-server api GET /api/skills/catalog --expect 200 --check skills contains '"name": "qa-f25-long"' \
+    --check skills contains 'to load the full skill.</NOTE>' --check skills not-contains 'complete skill content at' --save F25.long-description/catalog
+  control-agent-server api DELETE /api/skills/installed/qa-f25-long --expect 200
+  ```
+  Every view cuts the description to 1024 characters when the `SKILL.md`
+  is loaded: it keeps the head and the tail and puts in the middle
+  `<response clipped><NOTE>Due to the max output limit, only part of the
+  full description is shown. Call invoke_skill(name="qa-f25-long") to load
+  the full skill.</NOTE>`, naming the skill and never its file (the
+  agent's prompt omits skill locations on purpose).
+- **Public catalog switched off (`F25.public-catalog-disabled`).** The
+  run's marketplace (the local stand-in) is the default; a second server
+  launched with `OH_PUBLIC_CATALOG_ENABLED=false` gets its own clone of the
+  stand-in and reads its marketplace, public skills and sync.
+
+  Requires: `F25.sync`
+  ```sh
+  control-agent-server api GET /api/skills/marketplace --expect 200 --check disabled eq false --check skills len-ge 1 \
+    --check skills.0.name eq qa-f25-pub --save F25.public-catalog-disabled/default
+  NOCAT=$(control-agent-server launch --new --name f25-nocat --env OH_PUBLIC_CATALOG_ENABLED=false --print-run)
+  trap 'control-agent-server stop --run "$NOCAT" >/dev/null' EXIT
+  git clone -q "$E" "$NOCAT/home/.openhands/cache/skills/public-skills"
+  grep -q '"name": "qa-f25-pub"' "$NOCAT/home/.openhands/cache/skills/public-skills/marketplaces/default.json"
+  control-agent-server api GET /api/skills/marketplace --run "$NOCAT" --expect 200 --check disabled eq true --check skills len-eq 0 \
+    --save F25.public-catalog-disabled/disabled
+  control-agent-server api POST /api/skills --run "$NOCAT" --expect 200 --check skills contains '"name": "qa-f25-pub"' \
+    --json '{"load_public": true, "load_user": false, "load_project": false, "load_org": false}' --save F25.public-catalog-disabled/skills
+  control-agent-server api POST /api/skills/sync --run "$NOCAT" --expect 200 --check status eq success
+  control-agent-server stop --run "$NOCAT"
+  ```
+  The default server's catalog says `disabled: false` and lists the
+  stand-in's entries. With the switch off, the same clone yields
+  `{"skills": [], "disabled": true}`, so a client can tell "turned off" from
+  "nothing to install"; the public tier of `POST /api/skills` still loads
+  `qa-f25-pub` and sync still succeeds, because only the catalog is off.
+- **Public skills switched off (`F25.public-skills-disabled`).** A second
+  server launched with `OH_PUBLIC_SKILLS_ENABLED=false` and a user skill of
+  its own: load every tier before and after it has a clone of the stand-in,
+  read the profile catalog, the marketplace and a registered marketplace,
+  and create a never-run conversation (placeholder model) that asks for
+  public and user skills, next to the same conversation on the run's server.
+
+  Requires: `F25.sync`
+  ```sh
+  KB='{"agent_settings": {"agent_kind": "openhands", "tools": [], "llm": {"model": "openai/qa-placeholder", "api_key": "qa-placeholder", "base_url": "http://127.0.0.1:9/v1", "num_retries": 0}, "agent_context": {"load_user_skills": true, "load_public_skills": true}}}'
+  KMAIN=$(control-agent-server conversation start --no-autotitle --body-json "$KB" --print-id)
+  control-agent-server api GET "/api/conversations/$KMAIN" --query include_skills=true --expect 200 \
+    --check agent.agent_context.skills contains '"name": "qa-f25-pub"' --check agent.agent_context.skills contains '"name": "qa-f25-user"'
+  NOPUB=$(control-agent-server launch --new --name f25-nopub --env OH_PUBLIC_SKILLS_ENABLED=false --print-run)
+  trap 'control-agent-server stop --run "$NOPUB" >/dev/null' EXIT
+  NOPUB_CLONE="$NOPUB/home/.openhands/cache/skills/public-skills"
+  mkdir -p "$NOPUB/home/.agents/skills/qa-f25-nopub-user"
+  printf -- '---\nname: qa-f25-nopub-user\ndescription: QA user skill\n---\nQA_NOPUB_USER\n' > "$NOPUB/home/.agents/skills/qa-f25-nopub-user/SKILL.md"
+  QN='{"load_public": true, "load_user": true, "load_project": true, "load_org": false, "project_dir": "'"$P"'"}'
+  control-agent-server api POST /api/skills --run "$NOPUB" --json "$QN" --expect 200 --check skills contains '"name": "qa-f25-nopub-user"' \
+    --check skills contains '"name": "qa-f25-proj-skill"' --check skills not-contains qa-f25-pub --check sources.sdk_base eq 1
+  test ! -e "$NOPUB_CLONE"
+  git clone -q "$E" "$NOPUB_CLONE"
+  control-agent-server api POST /api/skills --run "$NOPUB" --json "$QN" --expect 200 --check skills contains '"name": "qa-f25-nopub-user"' \
+    --check skills contains '"name": "qa-f25-proj-skill"' --check skills not-contains qa-f25-pub --check sources.sdk_base eq 1 \
+    --save F25.public-skills-disabled/skills
+  control-agent-server api GET /api/skills/catalog --run "$NOPUB" --expect 200 --check skills contains '"name": "qa-f25-nopub-user"' \
+    --check skills not-contains '"origin": "public"' --save F25.public-skills-disabled/profile-catalog
+  control-agent-server api GET /api/skills/marketplace --run "$NOPUB" --expect 200 --check disabled eq false --check skills.0.name eq qa-f25-pub
+  control-agent-server api POST /api/skills --run "$NOPUB" --expect 200 --check sources.registered_marketplaces eq 3 \
+    --check skills contains '"name": "qa-f25-mk-skill"' --check skills not-contains '"name": "qa-f25-pub"' \
+    --json '{"load_public": true, "load_user": false, "load_project": false, "load_org": false, "registered_marketplaces": [{"name": "qa-f25-mk", "source": "'"$M"'", "auto_load": true}]}'
+  KNOPUB=$(control-agent-server conversation start --run "$NOPUB" --no-autotitle --body-json "$KB" --print-id)
+  control-agent-server api GET "/api/conversations/$KNOPUB" --run "$NOPUB" --query include_skills=true --expect 200 \
+    --check agent.agent_context.skills contains '"name": "qa-f25-nopub-user"' --check agent.agent_context.skills not-contains qa-f25-pub \
+    --save F25.public-skills-disabled/conversation
+  control-agent-server stop --run "$NOPUB"
+  ```
+  On the run's server the conversation gets the public stand-in skill and
+  the user skill. With the switch off nothing is cloned (no
+  `public-skills` directory appears) and even a present clone is not read:
+  every view has the user and project skills (`sources.sdk_base` counts the
+  one user skill) and no `qa-f25-pub`, the profile catalog has no `public`
+  origin, and the conversation's agent holds the user skill only. The
+  marketplace catalog stays enabled (`disabled: false`, its entry listed),
+  and a registered marketplace still contributes its three skills.
+- **Both switches off (`F25.public-extensions-disabled`).** A third server
+  with both variables `false` and a clone of the stand-in one commit behind
+  its origin: sync, then read the marketplace and the public tier.
+
+  Requires: `F25.sync`
+  ```sh
+  NOEXT=$(control-agent-server launch --new --name f25-noext --env OH_PUBLIC_SKILLS_ENABLED=false --env OH_PUBLIC_CATALOG_ENABLED=false --print-run)
+  trap 'control-agent-server stop --run "$NOEXT" >/dev/null' EXIT
+  NOEXT_CLONE="$NOEXT/home/.openhands/cache/skills/public-skills"
+  git clone -q "$E" "$NOEXT_CLONE"
+  git -C "$NOEXT_CLONE" reset -q --hard HEAD~1
+  BEHIND=$(git -C "$NOEXT_CLONE" rev-parse HEAD)
+  test "$BEHIND" != "$(git -C "$E" rev-parse HEAD)"
+  control-agent-server api POST /api/skills/sync --run "$NOEXT" --expect 200 --check status eq error \
+    --check message eq 'Public extensions are disabled by instance policy' --save F25.public-extensions-disabled/sync
+  test "$(git -C "$NOEXT_CLONE" rev-parse HEAD)" = "$BEHIND"
+  control-agent-server api GET /api/skills/marketplace --run "$NOEXT" --expect 200 --check disabled eq true --check skills len-eq 0
+  control-agent-server api POST /api/skills --run "$NOEXT" --expect 200 --check skills not-contains qa-f25-pub --check sources.sdk_base eq 0 \
+    --json '{"load_public": true, "load_user": false, "load_project": false, "load_org": false}'
+  control-agent-server stop --run "$NOEXT"
+  ```
+  The sync answers `{"status": "error", "message": "Public extensions are
+  disabled by instance policy"}` without fetching: the clone's HEAD stays one
+  commit behind its origin (`F25.sync` shows the same request fast-forwarding
+  it on the default server). The catalog is `disabled: true` and empty, and
+  no public skill loads.
+- **Registered marketplaces on their own (`F25.load-registered-marketplaces`).**
+  On the run's server, register `qa-f25-mk` and set
+  `load_registered_marketplaces` against `load_public` both ways, then leave
+  it out.
+
+  Requires: `F25.sync`
+  ```sh
+  RM='"load_user": false, "load_project": false, "load_org": false, "registered_marketplaces": [{"name": "qa-f25-mk", "source": "'"$M"'", "auto_load": true}]'
+  control-agent-server api POST /api/skills --json '{"load_public": false, "load_registered_marketplaces": true, '"$RM"'}' --expect 200 \
+    --check sources.registered_marketplaces eq 3 --check sources.sdk_base eq 0 --check skills contains '"name": "qa-f25-mk-skill"' \
+    --check skills not-contains '"name": "qa-f25-pub"' --save F25.load-registered-marketplaces/registered-only
+  control-agent-server api POST /api/skills --json '{"load_public": true, "load_registered_marketplaces": false, '"$RM"'}' --expect 200 \
+    --check sources.registered_marketplaces eq 0 --check skills contains '"name": "qa-f25-pub"' --check skills not-contains qa-f25-mk \
+    --save F25.load-registered-marketplaces/public-only
+  control-agent-server api POST /api/skills --json '{"load_public": true, "load_registered_marketplaces": null, '"$RM"'}' --expect 200 \
+    --check sources.registered_marketplaces eq 3 --check skills contains '"name": "qa-f25-pub"'
+  control-agent-server api POST /api/skills --json '{"load_public": false, '"$RM"'}' --expect 200 --check sources.registered_marketplaces eq 0
+  ```
+  `true` loads the marketplace's three skills without the public tier,
+  `false` keeps the public tier without them, and `null` or no field
+  couples them to `load_public` as before.
 
 ## Gotchas
 
@@ -861,7 +1044,9 @@ Preconditions:
 - `sources` counts are per tier before the name merge (`sdk_base` is public
   plus user plus enabled installed skills), so their sum can exceed the
   number of skills.
-- Registered marketplaces contribute only when `load_public` is true; the
+- Registered marketplaces follow `load_public` unless the request sets
+  `load_registered_marketplaces` (`F25.load-registered-marketplaces`), and
+  `OH_PUBLIC_SKILLS_ENABLED=false` does not turn them off; the
   server-default registrations (`OH_REGISTERED_MARKETPLACES`) merge with the
   request's, the request winning by name.
 - The public-skills cache lives 60 s (forever for a tag or SHA
@@ -873,21 +1058,21 @@ Preconditions:
   the local stand-in work: replacing `public-skills` with a clone of a local
   repository makes `load_public`, sync and the marketplace catalog offline and
   deterministic. The real repository has no `marketplaces/default.json`, so
-  `load_public` loads every `skills/` entry there while the catalog stays
-  empty (`F25.marketplace-public`).
+  `load_public` loads every `skills/` entry there, while the catalog reads
+  `.plugin/marketplace.json` (`F25.marketplace-public`).
 - Install sources: plain absolute paths are copied; `file://` and other URLs
   are cloned into `$OH_PERSISTENCE_DIR/cache/extensions/`.
   `github:OpenHands/extensions/skills/github` is the same install as
   `{"source": "github:OpenHands/extensions", "repo_path": "skills/github"}`
-  (`F25.install-documented-sources`), but the record keeps the source as
-  given; a GitHub `/tree/<ref>/<path>` URL is not parsed.
+  in the fetch layer, and installation accepts both
+  (`F25.install-documented-sources`). A GitHub `/tree/<ref>/<path>` URL
+  is not parsed.
 - The 409 for an existing skill is decided after the fetch, so a conflicting
   git install still clones. `version` is always `1.0.0` (the frontmatter
   `version` is not read). Refresh reinstalls with `ref` dropped, so a skill
   installed at a tag moves to the default branch (`F25.install-ref`). A
-  `ref` that cannot be checked out in an already cached clone is ignored
-  with a log warning (`F25.install-unknown-ref`): compare `resolved_ref`
-  with the commit you asked for.
+  `ref` that cannot be checked out in an already cached clone returns a client
+  error and leaves the installed skill unchanged (`F25.install-unknown-ref`).
 - Only the list call and `PATCH` reconcile `.installed.json` with the disk;
   the single view, `DELETE` and refresh do not, so call order matters for hand
   edits (`F25.self-heal`).
@@ -906,14 +1091,14 @@ Preconditions:
   skill body in their reply, so select the `InvokeSkillObservation` by its
   `skill_name` before looking for the body text.
 - Network: only `F25.public-repo` and `F25.install-github` reach github.com.
-  They are normal bullets so that the two known-bug bullets after them start
-  from a proven clone or install, and those bullets `Require` them; without
-  network all four are reported `blocked` rather than failing or reporting a
-  misleading `xfail`.
+  They are normal bullets so that the two bullets after them
+  (`F25.marketplace-public`, `F25.install-documented-sources`) start from a
+  proven clone or install, and those bullets `Require` them; without network
+  all four are reported `blocked` rather than failing or reporting a
+  misleading result.
 - `conversation events --contains` fails when no selected event contains the
   text, so it asserts content on its own. `ws listen` has no content filter;
   `--until-kind K --until FIELD=VALUE` fails unless a frame of kind `K` with
   that field arrives within `--duration`, which is how the activation bullet
   asserts the WebSocket replay.
-- Error 500s carry the exception text in an `exception` field; the
-  `known bug` bullets save it as evidence.
+- Error 500s carry the exception text in an `exception` field.

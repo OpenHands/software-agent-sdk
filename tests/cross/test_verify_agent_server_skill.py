@@ -102,6 +102,25 @@ def _run(capsys, *argv):
     return code, out
 
 
+@pytest.mark.parametrize("body", [{"error": {"code": "insufficient_quota"}}, {}, None])
+def test_llm_stub_preserves_explicit_error_body(run_dir, capsys, body):
+    code, out = _run(
+        capsys,
+        "fixture",
+        "llm-stub",
+        "--name",
+        "quota",
+        "--step",
+        "status:429:" + json.dumps(body),
+    )
+    assert code == 0, out
+    url = json.loads(out)["url"]
+    with cas.http_client() as client:
+        response = client.post(url + "/v1/chat/completions", json={"messages": []})
+    assert response.status_code == 429
+    assert response.json() == body
+
+
 def test_api_checks_pass_and_fail_on_the_json_body(run_dir, capsys):
     code, out = _run(
         capsys,
@@ -339,6 +358,30 @@ Preconditions:
 
 - None.
 """
+
+
+@pytest.mark.parametrize("healthy", [True, False])
+def test_fresh_map_health_gates_recipes_and_preserves_cleanup(
+    run_dir, capsys, write_verification_family, monkeypatch, healthy
+):
+    write_verification_family(cas, FAMILY)
+    stopped = []
+
+    def launch_or_stop(*args):
+        if args[0] == "stop":
+            stopped.append(args[-1])
+        return {"last_line": str(run_dir)}
+
+    monkeypatch.setattr(cas, "self_command", launch_or_stop)
+    monkeypatch.setattr(cas, "cmd_doctor", lambda args: {"ok": healthy})
+    code, out = _run(
+        capsys, "map", "run", "--file", "F98", "--only", "F98.first", "--fresh"
+    )
+    assert code == (0 if healthy else 3), out
+    assert stopped == [str(run_dir)]
+    health = run_dir / "evidence" / "map-run" / "doctor-before.json"
+    assert json.loads(health.read_text())["ok"] is healthy
+    assert (run_dir / "map-run" / "F98-demo.state.sh").exists() is healthy
 
 
 def test_map_run_carries_variables_and_reports_xfail_and_blocked(
@@ -1150,3 +1193,62 @@ def test_without_a_run_errors_are_one_json_object(tmp_path, monkeypatch, capsys)
     assert code == 3
     assert payload["ok"] is False
     assert "launch --new --print-run" in payload["hint"]
+
+
+def _preset_args(**kwargs):
+    import argparse
+
+    return argparse.Namespace(**{"api_key_env": None, "api_key_file": None, **kwargs})
+
+
+def test_deepseek_preset_goes_through_the_llm_proxy_when_one_is_set(monkeypatch):
+    preset = cas.PRESETS["deepseek"]
+    monkeypatch.setenv("LLM_BASE_URL", "https://proxy.example")
+    monkeypatch.setenv("LLM_API_KEY", "proxy-key")
+
+    route = cas.preset_route(preset, _preset_args())
+
+    assert route["base_url"] == "https://proxy.example"
+    assert route["env"] == "LLM_API_KEY"
+    assert [(p["name"], p["model"]) for p in route["profiles"]] == [
+        ("deepseek-flash", "litellm_proxy/deepseek-v4.1-flash")
+    ]
+    # A key named on the command line keeps the provider's own route.
+    named = cas.preset_route(preset, _preset_args(api_key_env="DEEPSEEK_API_KEY"))
+    assert named["base_url"] is None
+    assert named["profiles"][0]["model"] == "deepseek/deepseek-flash"
+
+
+def test_deepseek_preset_without_a_proxy_uses_deepseek(monkeypatch):
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    monkeypatch.setenv("LLM_API_KEY", "proxy-key")
+
+    route = cas.preset_route(cas.PRESETS["deepseek"], _preset_args())
+
+    assert route["base_url"] is None
+    assert route["env"] == "DEEPSEEK_API_KEY"
+
+
+def test_deepseek_preset_prints_the_active_model_for_recipe_checks(monkeypatch, capsys):
+    monkeypatch.setenv("LLM_BASE_URL", "https://proxy.example")
+    monkeypatch.setenv("LLM_API_KEY", "proxy-key")
+    monkeypatch.setattr(cas, "resolve_run", lambda run: object())
+    saved = []
+
+    def save(run, name, model, key, base_url, activate, validate):
+        saved.append((name, model, base_url))
+        return {"profile": name, "model": model}
+
+    monkeypatch.setattr(cas, "save_llm_profile", save)
+    args = _preset_args(
+        run=None, preset="deepseek", no_validate=False, print_model=True
+    )
+
+    with pytest.raises(SystemExit) as done:
+        cas.cmd_llm_preset(args)
+
+    assert done.value.code == 0
+    assert capsys.readouterr().out == "litellm_proxy/deepseek-v4.1-flash\n"
+    assert saved == [
+        ("deepseek-flash", "litellm_proxy/deepseek-v4.1-flash", "https://proxy.example")
+    ]

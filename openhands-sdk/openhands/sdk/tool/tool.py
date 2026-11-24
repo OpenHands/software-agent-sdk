@@ -392,6 +392,14 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
     conversation_local: ClassVar[bool] = False
     """Whether the tool only reads and writes its own conversation's state."""
 
+    ends_turn: ClassVar[bool] = False
+    """Whether a successful call ends the agent's turn, as ``finish`` does.
+
+    The agent's other calls in the same response still run; then the
+    conversation is ``finished`` and waits for the next message. A call whose
+    observation is an error does not end the turn.
+    """
+
     def __init_subclass__(cls, **kwargs):
         """Automatically set name from class name when subclass is created."""
         super().__init_subclass__(**kwargs)

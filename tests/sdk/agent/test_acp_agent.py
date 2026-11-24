@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import gc
 import json
+import os
+import signal
 import sys
 import textwrap
 import threading
@@ -13,6 +15,7 @@ import uuid
 import weakref
 from collections.abc import Mapping
 from concurrent.futures import Future
+from contextlib import suppress
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -34,7 +37,6 @@ from openhands.sdk.agent.acp_agent import (
     _auth_selection_failure_reason,
     _classify_acp_init_error,
     _classify_acp_turn_error,
-    _codex_model_config_options,
     _estimate_cost_from_tokens,
     _extract_session_models,
     _extract_token_usage,
@@ -51,6 +53,7 @@ from openhands.sdk.agent.acp_agent import (
     _reapply_session_model_on_resume,
     _select_auth_method,
     _serialize_tool_content,
+    _split_effort_suffix,
     _stringify_acp_error_data,
     _strip_inherited_npm_env,
     _warn_auth_selection_failure,
@@ -92,6 +95,7 @@ from openhands.sdk.settings.acp_install_catalog import (
 from openhands.sdk.settings.acp_providers import ACP_PROVIDERS
 from openhands.sdk.skills import KeywordTrigger, Skill
 from openhands.sdk.tool.builtins.finish import FinishAction
+from openhands.sdk.utils.async_executor import AsyncExecutor
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 from openhands.sdk.workspace.local import LocalWorkspace
@@ -239,11 +243,11 @@ def test_acp_process_starts_in_workspace(tmp_path: Path, resume: bool) -> None:
 
 def test_logs_matching_acp_provider_version(caplog):
     with caplog.at_level("INFO"):
-        _log_acp_provider_version("codex-acp", "1.10.0")
+        _log_acp_provider_version("codex-acp", "2.2.2")
 
     assert "provider=codex" in caplog.text
-    assert "pinned_version='1.10.0'" in caplog.text
-    assert "reported_version='1.10.0'" in caplog.text
+    assert "pinned_version='2.2.2'" in caplog.text
+    assert "reported_version='2.2.2'" in caplog.text
     assert "mismatch" not in caplog.text
 
 
@@ -2891,7 +2895,10 @@ class TestACPAgentAstep:
                     autospec=True,
                     side_effect=lambda _agent: threading.Event().wait(0.05),
                 ),
-                patch.object(acp_agent_module, "_ACP_CANCEL_DRAIN_TIMEOUT", 0.01),
+                # Must exceed the 0.05s credential-sync delay above: with
+                # 0.01s the drain window expires before the released prompt
+                # can complete on loaded runners, flaking to `idle`.
+                patch.object(acp_agent_module, "_ACP_CANCEL_DRAIN_TIMEOUT", 5.0),
             ):
                 task = asyncio.create_task(
                     agent.astep(conversation, on_event=emitted.append)
@@ -3498,8 +3505,10 @@ class TestACPAgentCleanup:
         env: dict[str, str] = {}
         agent._materialise_file_secrets(state, env)
         assert Path(env["CODEX_HOME"], "auth.json").read_text() == valid
-        assert not durable_auth.exists()
+        # The legacy durable copy is replaced by a link to the temporary file.
+        assert durable_auth.is_symlink()
         agent.close()
+        assert not durable_auth.exists() and not durable_auth.is_symlink()
 
     def test_failed_init_keeps_agent_reusable(self, tmp_path):
         agent = _make_agent()
@@ -5003,6 +5012,66 @@ class TestACPAgentAskAgent:
         assert mock_client._fork_session_id is None
         assert mock_client._fork_accumulated_text == []
 
+    def test_ask_agent_records_fork_usage_update_without_waiting(self, caplog):
+        """A UsageUpdate for the fork session is billed and releases the wait."""
+        from acp.schema import AgentMessageChunk, TextContentBlock, UsageUpdate
+
+        agent = _make_agent()
+        client = _OpenHandsACPBridge()
+        client._context_window = 200000
+        agent._client = client
+        agent._conn = MagicMock()
+        agent._session_id = "main-session"
+        agent._working_dir = "/workspace"
+
+        mock_fork_response = MagicMock()
+        mock_fork_response.session_id = "fork-session-usage"
+        mock_prompt_response = MagicMock()
+        mock_prompt_response.usage = None
+
+        async def _fake_prompt(*args, **kwargs):
+            await client.session_update(
+                "fork-session-usage",
+                AgentMessageChunk(
+                    session_update="agent_message_chunk",
+                    content=TextContentBlock(type="text", text="Fork answer"),
+                ),
+            )
+            update = MagicMock(spec=UsageUpdate)
+            update.cost = MagicMock()
+            update.cost.amount = 0.05
+            update.size = 150000
+            await client.session_update("fork-session-usage", update)
+            return mock_prompt_response
+
+        def _fake_run_async(coro_fn, **_kwargs):
+            loop = asyncio.new_event_loop()
+            try:
+                _agent_conn(agent).fork_session = AsyncMock(
+                    return_value=mock_fork_response
+                )
+                _agent_conn(agent).prompt = _fake_prompt
+                return loop.run_until_complete(coro_fn())
+            finally:
+                loop.close()
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        t0 = time.monotonic()
+        with caplog.at_level("WARNING"):
+            result = agent.ask_agent("Which files did you list?")
+        elapsed = time.monotonic() - t0
+
+        assert result == "Fork answer"
+        assert agent.llm.metrics.accumulated_cost == pytest.approx(0.05)
+        assert "UsageUpdate not received" not in caplog.text
+        assert elapsed < 1.0
+        # The fork's window does not overwrite the main session's.
+        assert client._context_window == 200000
+        assert "fork-session-usage" not in client._turn_usage_updates
+
 
 # ---------------------------------------------------------------------------
 # Client fork text routing
@@ -5448,18 +5517,41 @@ class TestWithCodexBaseUrl:
         assert _with_codex_base_url("codex-acp", [], env) == env
 
 
-class TestCodexModelConfigOptions:
-    def test_splits_combined_model_and_reasoning_effort(self):
-        assert _codex_model_config_options("gpt-5.5/high") == (
-            ("model", "gpt-5.5"),
-            ("reasoning_effort", "high"),
+class TestSplitEffortSuffix:
+    def test_codex_splits_reasoning_effort(self):
+        assert _split_effort_suffix("codex-acp", "gpt-5.5/high") == ("gpt-5.5", "high")
+
+    def test_claude_splits_effort(self):
+        assert _split_effort_suffix("claude-agent-acp", "opus[1m]/max") == (
+            "opus[1m]",
+            "max",
         )
 
     def test_leaves_base_or_custom_model_id_unchanged(self):
-        assert _codex_model_config_options("gpt-5.5") == (("model", "gpt-5.5"),)
-        assert _codex_model_config_options("custom/provider/model") == (
-            ("model", "custom/provider/model"),
+        assert _split_effort_suffix("codex-acp", "gpt-5.5") == ("gpt-5.5", None)
+        assert _split_effort_suffix("codex-acp", "custom/provider/model") == (
+            "custom/provider/model",
+            None,
         )
+        # `ultra` is a Codex level, not a Claude one.
+        assert _split_effort_suffix("claude-agent-acp", "opus[1m]/ultra") == (
+            "opus[1m]/ultra",
+            None,
+        )
+
+    @pytest.mark.parametrize("effort", ["max", "ultra"])
+    def test_codex_splits_top_reasoning_efforts(self, effort):
+        assert _split_effort_suffix("codex-acp", f"gpt-6.1-sol/{effort}") == (
+            "gpt-6.1-sol",
+            effort,
+        )
+
+    def test_provider_without_effort_option_is_unchanged(self):
+        assert _split_effort_suffix("gemini-cli", "gemini-2.5-pro/high") == (
+            "gemini-2.5-pro/high",
+            None,
+        )
+        assert _split_effort_suffix("my-acp", "model/high") == ("model/high", None)
 
 
 # ---------------------------------------------------------------------------
@@ -5482,7 +5574,7 @@ class TestMaybeSetSessionModel:
         )
         conn.set_config_option.assert_not_called()
         # The override was actually pushed to the server via the protocol call.
-        assert applied is True
+        assert applied == "gpt-5.4"
 
     @pytest.mark.asyncio
     async def test_set_config_option_mechanism(self):
@@ -5502,7 +5594,31 @@ class TestMaybeSetSessionModel:
             session_id="session-1",
         )
         conn.set_session_model.assert_not_called()
-        assert applied is True
+        assert applied == "opus[1m]"
+
+    @pytest.mark.asyncio
+    async def test_rejected_effort_keeps_applied_model(self):
+        # claude-agent-acp has no effort option for Haiku: the model switch
+        # still succeeds and only the effort is dropped.
+        conn = AsyncMock()
+
+        async def _set_config_option(*, config_id, value, session_id):
+            if config_id == "effort":
+                raise ACPRequestError(code=-32603, message="Internal error")
+
+        conn.set_config_option.side_effect = _set_config_option
+        applied = await _maybe_set_session_model(
+            conn,
+            "claude-agent-acp",
+            "session-1",
+            "haiku/high",
+            via_config_option=True,
+        )
+        assert conn.set_config_option.await_args_list == [
+            call(config_id="model", value="haiku", session_id="session-1"),
+            call(config_id="effort", value="high", session_id="session-1"),
+        ]
+        assert applied == "haiku"
 
     @pytest.mark.asyncio
     async def test_codex_config_option_splits_reasoning_effort(self):
@@ -5524,7 +5640,7 @@ class TestMaybeSetSessionModel:
             ]
         )
         assert conn.set_config_option.await_count == 2
-        assert applied is True
+        assert applied == "gpt-5.4"
 
     @pytest.mark.asyncio
     async def test_pi_model_switch_mechanism(self):
@@ -5542,7 +5658,7 @@ class TestMaybeSetSessionModel:
             value="anthropic/claude-sonnet-4-6",
             session_id="session-1",
         )
-        assert applied is True
+        assert applied == "anthropic/claude-sonnet-4-6"
 
     @pytest.mark.asyncio
     async def test_missing_model_skips_protocol_override(self):
@@ -5552,7 +5668,7 @@ class TestMaybeSetSessionModel:
         )
         conn.set_session_model.assert_not_called()
         conn.set_config_option.assert_not_called()
-        assert applied is False
+        assert applied is None
 
     @pytest.mark.asyncio
     async def test_unknown_provider_applies_via_detected_mechanism(self):
@@ -5566,7 +5682,7 @@ class TestMaybeSetSessionModel:
             config_id="model", value="kimi-k2-6", session_id="session-1"
         )
         conn_cfg.set_session_model.assert_not_called()
-        assert applied is True
+        assert applied == "kimi-k2-6"
 
         conn_set = AsyncMock()
         applied = await _maybe_set_session_model(
@@ -5576,7 +5692,7 @@ class TestMaybeSetSessionModel:
             model_id="kimi-k2-6", session_id="session-1"
         )
         conn_set.set_config_option.assert_not_called()
-        assert applied is True
+        assert applied == "kimi-k2-6"
 
     @pytest.mark.asyncio
     async def test_unknown_provider_apply_failure_is_tolerated(self):
@@ -5590,7 +5706,7 @@ class TestMaybeSetSessionModel:
             conn, "some-custom-acp", "session-1", "whatever", via_config_option=True
         )
         conn.set_config_option.assert_awaited_once()
-        assert applied is False
+        assert applied is None
 
     @pytest.mark.asyncio
     async def test_known_provider_apply_rejection_is_tolerated(self):
@@ -5609,7 +5725,7 @@ class TestMaybeSetSessionModel:
         )
         conn.set_config_option.assert_awaited_once()
         conn.set_session_model.assert_not_called()
-        assert applied is False
+        assert applied is None
 
 
 class TestReapplySessionModelOnResume:
@@ -5632,7 +5748,7 @@ class TestReapplySessionModelOnResume:
         conn.set_session_model.assert_awaited_once_with(
             model_id="claude-haiku-4-5-20251001", session_id="sess-1"
         )
-        assert applied is True
+        assert applied == "claude-haiku-4-5-20251001"
 
     @pytest.mark.asyncio
     async def test_reapply_via_set_config_option_mechanism(self):
@@ -5646,7 +5762,7 @@ class TestReapplySessionModelOnResume:
             config_id="model", value="gpt-5.5", session_id="sess-1"
         )
         conn.set_session_model.assert_not_called()
-        assert applied is True
+        assert applied == "gpt-5.5"
 
     @pytest.mark.asyncio
     async def test_codex_reapply_splits_reasoning_effort(self):
@@ -5666,7 +5782,7 @@ class TestReapplySessionModelOnResume:
             ]
         )
         assert conn.set_config_option.await_count == 2
-        assert applied is True
+        assert applied == "gpt-5.4"
 
     @pytest.mark.asyncio
     async def test_missing_model_skips_reapply(self):
@@ -5676,7 +5792,7 @@ class TestReapplySessionModelOnResume:
         )
         conn.set_session_model.assert_not_called()
         conn.set_config_option.assert_not_called()
-        assert applied is False
+        assert applied is None
 
     @pytest.mark.asyncio
     async def test_unknown_provider_reapplies_via_detected_mechanism(self):
@@ -5692,7 +5808,7 @@ class TestReapplySessionModelOnResume:
             value="kimi-k2-6",
             session_id="sess-1",
         )
-        assert applied is True
+        assert applied == "kimi-k2-6"
 
     @pytest.mark.asyncio
     async def test_known_unsupported_provider_skips_reapply(self):
@@ -5719,13 +5835,13 @@ class TestReapplySessionModelOnResume:
                 conn, "legacy-acp", "sess-1", "x", via_config_option=False
             )
         conn.set_session_model.assert_not_called()
-        assert applied is False
+        assert applied is None
 
     @pytest.mark.asyncio
     async def test_client_rejection_is_swallowed_on_resume(self):
         # A client/protocol rejection (method-not-found = server doesn't support
-        # the call, or invalid model id) must not break resume — mirrors the
-        # load_session fallback. The error is logged, not raised.
+        # the call, or invalid model id) must not break model reapplication.
+        # The error is logged, not raised.
         conn = AsyncMock()
         conn.set_config_option.side_effect = ACPRequestError(
             code=-32601, message="method not found"
@@ -5736,13 +5852,12 @@ class TestReapplySessionModelOnResume:
         conn.set_config_option.assert_awaited_once()
         # Rejected => the live session kept the server default, so the override
         # must NOT be reported as applied.
-        assert applied is False
+        assert applied is None
 
     @pytest.mark.asyncio
     async def test_any_request_error_is_swallowed_on_resume(self):
         # Any ACPRequestError (here a -32603 server error) is tolerated on
-        # resume — like the load_session fallback — so a flaky/stale server
-        # can't break session startup; the session keeps the server default.
+        # model reapplication; the resumed session keeps the server default.
         conn = AsyncMock()
         conn.set_session_model.side_effect = ACPRequestError(
             code=-32603, message="internal error"
@@ -5751,7 +5866,7 @@ class TestReapplySessionModelOnResume:
             conn, "codex-acp", "sess-1", "gpt-5.5", via_config_option=False
         )
         conn.set_session_model.assert_awaited_once()
-        assert applied is False
+        assert applied is None
 
 
 class TestHasLiveACPSession:
@@ -5866,7 +5981,7 @@ class TestSetACPModel:
         assert _agent_conn(agent).set_config_option.await_count == 2
         _agent_conn(agent).set_session_model.assert_not_called()
         assert agent.llm.model == "gpt-5.5/high"
-        assert agent._current_model_id == "gpt-5.5/high"
+        assert agent._current_model_id == "gpt-5.5"
 
     def test_switches_claude_via_config_option_single_call(self):
         # A bare id (no `/`) applies as a single `model` selection — no effort.
@@ -5876,6 +5991,29 @@ class TestSetACPModel:
             config_id="model", value="sonnet", session_id="sess-1"
         )
         assert agent._current_model_id == "sonnet"
+
+    def test_switches_claude_via_config_option_splits_effort(self):
+        agent = self._wire(_make_agent(), "claude-agent-acp", via_config_option=True)
+        agent.set_acp_model("opus[1m]/high")
+        _agent_conn(agent).set_config_option.assert_has_awaits(
+            [
+                call(config_id="model", value="opus[1m]", session_id="sess-1"),
+                call(config_id="effort", value="high", session_id="sess-1"),
+            ]
+        )
+        assert _agent_conn(agent).set_config_option.await_count == 2
+        assert agent._current_model_id == "opus[1m]"
+
+    def test_switch_with_rejected_effort_reports_base_model(self):
+        agent = self._wire(_make_agent(), "claude-agent-acp", via_config_option=True)
+
+        async def _set_config_option(*, config_id, value, session_id):
+            if config_id == "effort":
+                raise ACPRequestError(code=-32603, message="Internal error")
+
+        _agent_conn(agent).set_config_option.side_effect = _set_config_option
+        agent.set_acp_model("haiku/low")
+        assert agent._current_model_id == "haiku"
 
     def test_switch_method_not_found_raises_no_fallback(self):
         # No cross-mechanism fallback: a -32601 surfaces as a ValueError naming
@@ -6421,7 +6559,7 @@ class TestACPSessionIdPersistence:
         """
         from contextlib import ExitStack
 
-        mock_process = MagicMock(spec=asyncio.subprocess.Process)
+        mock_process = MagicMock(spec=asyncio.subprocess.Process, pid=None)
         mock_process.returncode = None
         mock_process.wait = AsyncMock(return_value=0)
         mock_process.stdin = MagicMock()
@@ -6517,6 +6655,44 @@ class TestACPSessionIdPersistence:
         conn.load_session.assert_not_awaited()
         assert agent._session_id == "fresh-sess"
 
+    @pytest.mark.parametrize("with_skills", [True, False])
+    def test_skills_directory_is_shared_with_the_session(self, tmp_path, with_skills):
+        context = (
+            AgentContext(
+                skills=[Skill(name="s", content="body", is_agentskills_format=True)]
+            )
+            if with_skills
+            else None
+        )
+        agent = _make_agent().model_copy(update={"agent_context": context})
+        state = _make_state(tmp_path)
+        agent._materialize_skills(state)
+        conn = self._make_conn()
+
+        self._patched_start_acp_server(agent, state, conn=conn)
+
+        extra = conn.new_session.await_args.kwargs["additional_directories"]
+        assert extra == ([str(agent._skills_root)] if with_skills else None)
+
+    def test_skills_directory_is_not_sent_when_the_server_lacks_the_capability(
+        self, tmp_path
+    ):
+        agent = _make_agent().model_copy(
+            update={
+                "agent_context": AgentContext(
+                    skills=[Skill(name="s", content="body", is_agentskills_format=True)]
+                )
+            }
+        )
+        state = _make_state(tmp_path)
+        agent._materialize_skills(state)
+        conn = self._make_conn()
+        conn.initialize.return_value.agent_capabilities.session_capabilities = None
+
+        self._patched_start_acp_server(agent, state, conn=conn)
+
+        assert conn.new_session.await_args.kwargs["additional_directories"] is None
+
     def test_cancel_drain_restart_keeps_retry_flag_when_init_fails(self, tmp_path):
         """A failed replacement session should leave the deferred restart armed."""
         agent = _make_agent()
@@ -6596,21 +6772,31 @@ class TestACPSessionIdPersistence:
         assert state.agent_state["acp_suffix_installed"] is True
         assert agent._suffix_install_state == "installed"
 
-    def test_load_session_failure_falls_back_to_new_session(self, tmp_path):
-        """ACPRequestError on load_session → new_session is called."""
+    @pytest.mark.parametrize("code", [-32603, -32602, -32000])
+    def test_load_session_failure_preserves_session(self, tmp_path, code):
+        """A failed resume must not discard the provider's conversation history."""
         agent = _make_agent()
         state = _make_state(tmp_path)
         state.agent_state = {**state.agent_state, "acp_session_id": "stale-sess"}
         conn = self._make_conn(
             new_session_id="replacement-sess",
-            load_exc=ACPRequestError(-32602, "unknown session"),
+            load_exc=ACPRequestError(code, "provider failure for stale-sess"),
         )
 
-        self._patched_start_acp_server(agent, state, conn=conn)
+        with (
+            self._transport_patches(conn),
+            pytest.raises(
+                ACPRequestError, match="Could not resume the existing ACP session"
+            ) as exc,
+        ):
+            agent.init_state(state, on_event=lambda _: None)
 
         conn.load_session.assert_awaited_once()
-        conn.new_session.assert_awaited_once()
-        assert agent._session_id == "replacement-sess"
+        conn.new_session.assert_not_awaited()
+        assert exc.value.code == code
+        assert "stale-sess" not in str(exc.value)
+        assert state.agent_state["acp_session_id"] == "stale-sess"
+        assert state.execution_status == ConversationExecutionStatus.ERROR
 
     # ----- explicit acp_resume_session_id (the durable-mirror override) -----
 
@@ -6678,13 +6864,8 @@ class TestACPSessionIdPersistence:
         assert client.before_mask is not None
         assert client.before_mask() is None
 
-    def test_acp_resume_session_id_failure_falls_back_to_new_session(self, tmp_path):
-        """If the server can't load the explicit id, fall back to new_session.
-
-        The ACP server may have lost its own session storage (no PVC, different
-        host …); failing closed by aborting is worse than starting fresh.
-        Matches the existing ``load_session`` failure path.
-        """
+    def test_acp_resume_session_id_failure_preserves_override(self, tmp_path):
+        """An explicit resume must fail rather than silently start fresh."""
         agent = _make_agent(acp_resume_session_id="missing-sess")
         state = _make_state(tmp_path)
         conn = self._make_conn(
@@ -6692,11 +6873,13 @@ class TestACPSessionIdPersistence:
             load_exc=ACPRequestError(-32602, "unknown session"),
         )
 
-        self._patched_start_acp_server(agent, state, conn=conn)
+        with self._transport_patches(conn), pytest.raises(ACPRequestError):
+            agent.init_state(state, on_event=lambda _: None)
 
         conn.load_session.assert_awaited_once()
-        conn.new_session.assert_awaited_once()
-        assert agent._session_id == "replacement-sess"
+        conn.new_session.assert_not_awaited()
+        assert agent.acp_resume_session_id == "missing-sess"
+        assert "acp_session_id" not in state.agent_state
 
     def test_acp_resume_session_id_matches_fs_id_uses_fs_cwd(self, tmp_path):
         """When the explicit id equals the FS id, the FS cwd is reused.
@@ -6748,13 +6931,14 @@ class TestACPSessionIdPersistence:
             new_session_id="replacement",
             load_exc=ACPRequestError(-32602, "unknown session"),
         )
-        with caplog.at_level("WARNING"):
-            self._patched_start_acp_server(agent2, state2, conn=conn2)
-        fail_warnings = "\n".join(
-            rec.getMessage()
-            for rec in caplog.records
-            if "load_session" in rec.getMessage()
-        )
+        with (
+            caplog.at_level("WARNING"),
+            self._transport_patches(conn2),
+            pytest.raises(ACPRequestError),
+        ):
+            agent2.init_state(state2, on_event=lambda _: None)
+        fail_warnings = "\n".join(rec.getMessage() for rec in caplog.records)
+        assert "Could not resume" in fail_warnings
         assert sensitive_explicit not in fail_warnings
 
     def test_fingerprint_session_id_helper(self):
@@ -7131,18 +7315,8 @@ class TestACPSessionIdPersistence:
         assert agent._model_override_applied is False
         assert "acp_current_model_id" not in state.agent_state
 
-    def test_fresh_replacement_clears_stale_model_when_new_session_omits_models(
-        self, tmp_path
-    ):
-        """Fresh replacement (load_session failed → new_session) with no
-        ``models`` block in the response must clear the persisted
-        ``acp_current_model_*`` rather than carry the old session's values
-        forward.
-
-        Otherwise ``acp_session_id`` points at the replacement session while
-        the model fields still describe the dead one — ``ConversationInfo``
-        renders the wrong chip.
-        """
+    def test_failed_resume_preserves_model_and_emits_error(self, tmp_path):
+        """Failed resume retains the session metadata and surfaces a useful error."""
         from openhands.sdk.utils.async_executor import AsyncExecutor
 
         agent = _make_agent()
@@ -7156,30 +7330,31 @@ class TestACPSessionIdPersistence:
                 {"model_id": "claude-opus-4-1", "name": "Opus 4.1"}
             ],
         }
-        # load_session fails → new_session runs; its response has no .models.
-        new_session_response = MagicMock(spec=["session_id"])
-        new_session_response.session_id = "replacement-sess"
+        before = dict(state.agent_state)
         conn = self._make_conn(
-            load_exc=ACPRequestError(-32602, "unknown session"),
+            load_exc=ACPRequestError(-32603, "Internal error", {"reason": "busy"}),
         )
-        conn.new_session = AsyncMock(return_value=new_session_response)
 
         agent._executor = AsyncExecutor()
-        with self._transport_patches(conn):
-            agent.init_state(state, on_event=lambda _: None)
+        events = []
+        with self._transport_patches(conn), pytest.raises(ACPRequestError) as exc:
+            agent.init_state(state, on_event=events.append)
 
-        # Replacement id wins, and the stale model fields are gone.
-        assert state.agent_state["acp_session_id"] == "replacement-sess"
-        assert "acp_current_model_id" not in state.agent_state
-        assert "acp_available_models" not in state.agent_state
+        # Clients that only render str(exc) still see the provider's cause.
+        assert "busy" in str(exc.value)
+        assert state.agent_state == before
+        assert state.execution_status == ConversationExecutionStatus.ERROR
+        errors = [e for e in events if isinstance(e, ConversationErrorEvent)]
+        assert len(errors) == 1
+        assert errors[0].code == "ACPInitError"
+        assert "No new session was started" in errors[0].detail
+        assert "busy" in errors[0].detail
+        conn.new_session.assert_not_awaited()
 
     def test_cwd_mismatch_clears_stale_model_when_new_session_omits_models(
         self, tmp_path
     ):
-        """Same contract as the load_session-failure case, but reached via
-        the cwd-mismatch branch in ``_start_acp_server`` (which sets
-        ``prior_session_id = None`` before falling through to new_session).
-        """
+        """A changed workspace clears stale model state on a fresh session."""
         from openhands.sdk.utils.async_executor import AsyncExecutor
 
         agent = _make_agent()
@@ -7208,11 +7383,8 @@ class TestACPSessionIdPersistence:
         assert "acp_current_model_id" not in state.agent_state
         assert "acp_available_models" not in state.agent_state
 
-    def test_fallback_replacement_id_lands_in_agent_state(self, tmp_path):
-        """When load_session fails and new_session runs, init_state must
-        overwrite state.agent_state['acp_session_id'] with the new id so
-        the next restart doesn't keep trying to resume the stale one.
-        """
+    def test_failed_resume_retains_session_id_in_agent_state(self, tmp_path):
+        """A failed resume must retain the original id for another attempt."""
         from openhands.sdk.utils.async_executor import AsyncExecutor
 
         agent = _make_agent()
@@ -7228,18 +7400,16 @@ class TestACPSessionIdPersistence:
         )
 
         agent._executor = AsyncExecutor()
-        with self._transport_patches(conn):
+        with self._transport_patches(conn), pytest.raises(ACPRequestError):
             agent.init_state(state, on_event=lambda _: None)
 
         conn.load_session.assert_awaited_once()
-        conn.new_session.assert_awaited_once()
-        assert state.agent_state["acp_session_id"] == "replacement-sess"
+        conn.new_session.assert_not_awaited()
+        assert state.agent_state["acp_session_id"] == "stale-sess"
         assert state.agent_state["acp_session_cwd"] == str(tmp_path)
 
-    def test_fallback_replacement_clears_suffix_marker(self, tmp_path):
-        """If load_session fails, the replacement session has not seen any
-        suffix yet, even if the stale session had persisted the marker.
-        """
+    def test_cancel_drain_failed_resume_can_retry_original_session(self, tmp_path):
+        """Retry after a failed restart keeps the original session and suffix."""
         agent = _make_agent(
             agent_context=AgentContext(system_message_suffix="Team rules.")
         )
@@ -7255,15 +7425,23 @@ class TestACPSessionIdPersistence:
             load_exc=ACPRequestError(-32602, "unknown session"),
         )
 
-        with self._transport_patches(conn):
-            agent.init_state(state, on_event=lambda _: None)
+        with self._transport_patches(conn), pytest.raises(ACPRequestError):
+            agent._restart_session_after_drain_timeout(state, on_event=lambda _: None)
 
         conn.load_session.assert_awaited_once()
-        conn.new_session.assert_awaited_once()
-        assert state.agent_state["acp_session_id"] == "replacement-sess"
+        conn.new_session.assert_not_awaited()
+        assert state.agent_state["acp_session_id"] == "stale-sess"
         assert state.agent_state["acp_session_cwd"] == str(tmp_path)
-        assert state.agent_state.get("acp_suffix_installed") is not True
-        assert agent._suffix_install_state == "pending_first_prompt"
+        assert state.agent_state["acp_suffix_installed"] is True
+
+        recovered = self._make_conn()
+        with self._transport_patches(recovered):
+            agent._restart_session_after_drain_timeout(state, on_event=lambda _: None)
+
+        assert recovered.load_session.call_args.kwargs["session_id"] == "stale-sess"
+        recovered.new_session.assert_not_awaited()
+        assert state.agent_state["acp_session_id"] == "stale-sess"
+        assert state.agent_state["acp_suffix_installed"] is True
 
     def test_resume_path_still_applies_session_mode_and_model(self, tmp_path):
         """load_session must be followed by the same set_session_model and
@@ -7542,7 +7720,7 @@ class TestACPSecretsEnvInjection:
         captured: dict = {}
         conn = TestACPSecretsEnvInjection._make_conn()
 
-        mock_process = MagicMock(spec=asyncio.subprocess.Process)
+        mock_process = MagicMock(spec=asyncio.subprocess.Process, pid=None)
         mock_process.returncode = None
         mock_process.wait = AsyncMock(return_value=0)
         mock_process.stdin = MagicMock()
@@ -7700,7 +7878,7 @@ class TestACPSecretRegistryEnvInjection:
         captured: dict = {}
         conn = TestACPSecretsEnvInjection._make_conn()
 
-        mock_process = MagicMock(spec=asyncio.subprocess.Process)
+        mock_process = MagicMock(spec=asyncio.subprocess.Process, pid=None)
         mock_process.returncode = None
         mock_process.wait = AsyncMock(return_value=0)
         mock_process.stdin = MagicMock()
@@ -7936,7 +8114,7 @@ class TestACPEnvConflictSuppression:
         captured: dict = {}
         conn = TestACPEnvConflictSuppression._make_conn()
 
-        mock_process = MagicMock(spec=asyncio.subprocess.Process)
+        mock_process = MagicMock(spec=asyncio.subprocess.Process, pid=None)
         mock_process.returncode = None
         mock_process.wait = AsyncMock(return_value=0)
         mock_process.stdin = MagicMock()
@@ -8830,6 +9008,118 @@ class TestMcpConfigToAcpServers:
             ("Authorization", "Bearer token-y")
         ]
 
+    def test_oauth_access_token_maps_to_bearer_header(self):
+        from acp.schema import HttpMcpServer
+
+        cfg = {
+            "mcpServers": {
+                "linear": {
+                    "url": "https://mcp.linear.app/mcp",
+                    "auth": {
+                        "strategy": "oauth2",
+                        "state": {
+                            "tokens": {"access_token": "oauth-access-token"},
+                            "token_expires_at": 4102444800.0,
+                        },
+                    },
+                }
+            }
+        }
+        out = _mcp_config_to_acp_servers(
+            self._config(cfg), self._caps(http=True, sse=False)
+        )
+        assert len(out) == 1
+        assert isinstance(out[0], HttpMcpServer)
+        assert [(h.name, h.value) for h in out[0].headers] == [
+            ("Authorization", "Bearer oauth-access-token")
+        ]
+
+    def test_oauth_token_encrypted_at_rest_is_forwarded_decrypted(self):
+        from openhands.sdk.mcp.config import MCPServer
+
+        cipher = Cipher(secret_key="test-secret-key-0123456789")
+        stored = MCPServer.model_validate(
+            {
+                "url": "https://mcp.linear.app/mcp",
+                "auth": {
+                    "strategy": "oauth2",
+                    "state": {"tokens": {"access_token": "oauth-access-token"}},
+                },
+            }
+        ).model_dump(mode="json", context={"cipher": cipher})
+        assert stored["auth"]["state"]["tokens"]["access_token"] != (
+            "oauth-access-token"
+        )
+        server = MCPServer.model_validate(stored, context={"cipher": cipher})
+
+        out = _mcp_config_to_acp_servers(
+            {"linear": server}, self._caps(http=True, sse=False)
+        )
+        assert [h.value for h in out[0].headers] == ["Bearer oauth-access-token"]
+
+    def test_oauth_access_token_keeps_static_headers(self):
+        cfg = {
+            "mcpServers": {
+                "linear": {
+                    "url": "https://mcp.linear.app/mcp",
+                    "headers": {"X-Client": "canvas"},
+                    "auth": {
+                        "strategy": "oauth2",
+                        "state": {"tokens": {"access_token": "oauth-access-token"}},
+                    },
+                }
+            }
+        }
+        out = _mcp_config_to_acp_servers(
+            self._config(cfg), self._caps(http=True, sse=False)
+        )
+        assert [(h.name, h.value) for h in out[0].headers] == [
+            ("X-Client", "canvas"),
+            ("Authorization", "Bearer oauth-access-token"),
+        ]
+
+    def test_oauth_without_stored_token_omits_authorization_header(self):
+        from acp.schema import HttpMcpServer
+
+        cfg = {
+            "mcpServers": {
+                "granola": {
+                    "url": "https://mcp.granola.ai/mcp",
+                    "auth": {"strategy": "oauth2"},
+                }
+            }
+        }
+        out = _mcp_config_to_acp_servers(
+            self._config(cfg), self._caps(http=True, sse=False)
+        )
+        assert len(out) == 1
+        assert isinstance(out[0], HttpMcpServer)
+        assert out[0].headers == []
+
+    def test_oauth_access_token_maps_to_bearer_header_for_sse(self):
+        from acp.schema import SseMcpServer
+
+        cfg = {
+            "mcpServers": {
+                "linear": {
+                    "url": "https://mcp.linear.app/sse",
+                    "transport": "sse",
+                    "auth": {
+                        "strategy": "oauth2",
+                        "state": {"tokens": {"access_token": "oauth-access-token"}},
+                    },
+                }
+            }
+        }
+        out = _mcp_config_to_acp_servers(
+            self._config(cfg), self._caps(http=True, sse=True)
+        )
+        assert len(out) == 1
+        assert isinstance(out[0], SseMcpServer)
+        assert [(h.name, h.value) for h in out[0].headers] == [
+            ("Authorization", "Bearer oauth-access-token")
+        ]
+
     def test_http_header_auth_forwards_authorization_header(self):
         cfg = {
             "mcpServers": {
@@ -9008,7 +9298,7 @@ class TestACPFileSecretMaterialisation:
         from openhands.sdk.utils.async_executor import AsyncExecutor
 
         captured: dict[str, Any] = {}
-        mock_process = MagicMock(spec=asyncio.subprocess.Process)
+        mock_process = MagicMock(spec=asyncio.subprocess.Process, pid=None)
         mock_process.returncode = None
         mock_process.wait = AsyncMock(return_value=0)
         mock_process.stdin = MagicMock()
@@ -9783,7 +10073,7 @@ class TestACPDataDirIsolation:
             encoding="utf-8"
         ) == '{"tokens": "x"}'
 
-    def test_binding_overrides_isolated_codex_home(self, tmp_path):
+    def test_binding_links_auth_into_durable_codex_home(self, tmp_path):
         agent = self._agent(["codex-acp"])
         state = self._H._state(tmp_path)
         durable_codex_home = Path(state.persistence_dir or "") / "acp" / "codex"
@@ -9805,12 +10095,14 @@ class TestACPDataDirIsolation:
             env = self._H._run_start(agent, state, conn=self._H._make_conn())
         try:
             codex_home = Path(env["CODEX_HOME"])
-            assert codex_home != durable_codex_home
-            assert (codex_home / "auth.json").read_text(encoding="utf-8") == auth
-            assert not durable_auth.exists()
-            assert durable_codex_home.exists()
+            assert codex_home == durable_codex_home
+            assert durable_auth.is_symlink()
+            assert not durable_auth.resolve().is_relative_to(durable_codex_home)
+            assert durable_auth.read_text(encoding="utf-8") == auth
         finally:
             agent.close()
+        assert not durable_auth.exists() and not durable_auth.is_symlink()
+        assert durable_codex_home.exists()
 
     # --- Claude: isolation applies under either auth mode (#3588) ------------
 
@@ -10327,3 +10619,141 @@ class TestUnperformableAuthMethodLogging:
 
         assert "session creation may fail" in caplog.text
         assert "GEMINI_API_KEY is unset" in caplog.text
+
+
+class TestACPProcessGroupShutdown:
+    @pytest.mark.parametrize("posix", [True, False])
+    def test_spawn_records_only_isolated_process_groups(self, tmp_path, posix):
+        agent = _make_agent()
+        agent._executor = AsyncExecutor()
+        conn = TestACPSessionIdPersistence._make_conn()
+        process = MagicMock()
+        process.pid = 54321
+        process.returncode = 0
+        process.wait = AsyncMock(return_value=0)
+        spawn = AsyncMock(return_value=process)
+        drain = AsyncMock()
+
+        try:
+            with (
+                patch.object(acp_agent_module, "_ACP_POSIX_PROCESS_GROUPS", posix),
+                patch.object(asyncio, "create_subprocess_exec", spawn),
+                patch.object(
+                    acp_agent_module, "_ACPClientConnection", return_value=conn
+                ),
+                patch.object(acp_agent_module, "_filter_jsonrpc_lines", drain),
+                patch.object(acp_agent_module, "_log_acp_subprocess_stderr", drain),
+            ):
+                agent._start_acp_server(_make_state(tmp_path))
+
+            if posix:
+                assert spawn.call_args.kwargs["start_new_session"] is True
+                assert agent._process_group_id == process.pid
+            else:
+                assert "start_new_session" not in spawn.call_args.kwargs
+                assert agent._process_group_id is None
+        finally:
+            with patch.object(ACPAgent, "_signal_process_group", return_value=False):
+                agent.close()
+
+    @pytest.mark.skipif(os.name != "posix", reason="Requires POSIX process groups")
+    @pytest.mark.parametrize(
+        ("leader_group", "own_group", "returncode"),
+        [(54322, 12345, None), (54321, 12345, 0), (54321, 54321, None)],
+    )
+    def test_never_signals_reused_or_caller_process_group(
+        self, leader_group, own_group, returncode
+    ):
+        process = MagicMock()
+        process.returncode = returncode
+
+        with (
+            patch.object(os, "getpgid", return_value=leader_group),
+            patch.object(os, "getpgrp", return_value=own_group),
+            patch.object(os, "killpg") as killpg,
+        ):
+            for sig in (signal.SIGTERM, signal.SIGKILL):
+                assert not ACPAgent._signal_process_group(process, 54321, sig)
+
+        killpg.assert_not_called()
+
+    @pytest.mark.skipif(os.name != "posix", reason="Requires POSIX process groups")
+    @pytest.mark.parametrize("leader_exited", [False, True])
+    @pytest.mark.parametrize("restart", [False, True])
+    def test_releases_descendant_writer_lock(self, tmp_path, leader_exited, restart):
+        fcntl = pytest.importorskip("fcntl")
+        worker = """
+import fcntl, signal, sys
+
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+with open(sys.argv[1], "a") as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    print("ready", flush=True)
+    signal.pause()
+"""
+        leader = """
+import signal, subprocess, sys
+
+child = subprocess.Popen(
+    [sys.executable, "-c", sys.argv[1], sys.argv[2]],
+    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+    text=True,
+)
+assert child.stdout.readline() == "ready\\n"
+print(child.pid, flush=True)
+if sys.argv[3] == "False":
+    signal.pause()
+"""
+        lock_path = tmp_path / "writer.lock"
+        executor = AsyncExecutor()
+        agent = _make_agent()
+        agent._executor = executor
+
+        async def spawn():
+            return await asyncio.create_subprocess_exec(
+                sys.executable,
+                "-c",
+                leader,
+                worker,
+                str(lock_path),
+                str(leader_exited),
+                stdout=asyncio.subprocess.PIPE,
+                start_new_session=True,
+            )
+
+        def assert_lock_released(*args, **kwargs):
+            with lock_path.open("a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+        process = executor.run_async(spawn, timeout=5.0)
+        agent._process = process
+        agent._process_group_id = process.pid
+        child_pid = None
+        try:
+            assert process.stdout is not None
+            child_pid = int(executor.run_async(process.stdout.readline, timeout=5.0))
+            assert os.getpgid(child_pid) == process.pid
+            if leader_exited:
+                assert executor.run_async(process.wait, timeout=5.0) == 0
+            with pytest.raises(BlockingIOError):
+                assert_lock_released()
+
+            if restart:
+                with patch.object(
+                    ACPAgent, "init_state", side_effect=assert_lock_released
+                ) as initialize:
+                    agent._restart_session_after_drain_timeout(
+                        _make_state(tmp_path), on_event=lambda _: None
+                    )
+                initialize.assert_called_once()
+            else:
+                agent.close()
+                assert_lock_released()
+        finally:
+            agent.close()
+            if child_pid is not None:
+                try:
+                    assert_lock_released()
+                except BlockingIOError:
+                    with suppress(ProcessLookupError):
+                        os.kill(child_pid, signal.SIGKILL)

@@ -24,6 +24,16 @@ class Socket {
     this.readyState = 3;
     this.onclose?.({ code, reason: '' } as CloseEvent);
   }
+  /** Node 22's undici WebSocket: a refused handshake fires `error` and never `close`. */
+  refuse() {
+    this.readyState = 3;
+    this.onerror?.(new Event('error'));
+  }
+}
+
+/** A socket that never fires `close`, not even when close() is called. */
+class ErrorOnlySocket extends Socket {
+  close = vi.fn(() => this.refuse());
 }
 
 describe('ConversationEventStream', () => {
@@ -112,6 +122,66 @@ describe('ConversationEventStream', () => {
     stream.start();
     vi.advanceTimersByTime(10_000);
     expect(Socket.instances[0].close).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(1000);
+    expect(Socket.instances).toHaveLength(2);
+  });
+
+  it('keeps backing off when refused handshakes fire only error, from start() and after a drop', () => {
+    globalThis.WebSocket = ErrorOnlySocket as unknown as typeof WebSocket;
+    const onError = vi.fn();
+    stream = new ConversationEventStream({
+      ...options(),
+      onError,
+      reconnect: { enabled: true },
+    });
+    stream.start();
+    Socket.instances[0].refuse();
+    expect(states.at(-1)).toMatchObject({ isReconnecting: true, attemptCount: 1 });
+    vi.advanceTimersByTime(1000);
+    Socket.instances[1].refuse();
+    vi.advanceTimersByTime(2000);
+    Socket.instances[2].refuse();
+    vi.advanceTimersByTime(4000);
+    expect(Socket.instances).toHaveLength(4);
+    Socket.instances[3].open();
+    expect(states.at(-1)).toMatchObject({ isConnected: true, attemptCount: 0 });
+
+    Socket.instances[3].finish(1012);
+    vi.advanceTimersByTime(1000);
+    Socket.instances[4].refuse();
+    vi.advanceTimersByTime(2000);
+    Socket.instances[5].refuse();
+    vi.advanceTimersByTime(4000);
+    Socket.instances[6].open();
+    expect(Socket.instances).toHaveLength(7);
+    expect(states.at(-1)).toMatchObject({ isConnected: true, isReconnecting: false });
+    expect(onError).toHaveBeenCalledTimes(6);
+  });
+
+  it('fails a handshake that never settles after 10 s, even when close() fires no close', () => {
+    globalThis.WebSocket = ErrorOnlySocket as unknown as typeof WebSocket;
+    stream = new ConversationEventStream(options());
+    stream.start();
+    vi.advanceTimersByTime(10_000);
+    expect(Socket.instances[0].close).toHaveBeenCalledTimes(1);
+    expect(states.at(-1)?.error?.message).toMatch('timed out');
+    vi.advanceTimersByTime(1000);
+    expect(Socket.instances).toHaveLength(2);
+    vi.advanceTimersByTime(10_000 + 2000);
+    expect(Socket.instances).toHaveLength(3);
+  });
+
+  it('schedules once when a refused handshake fires error and then close', () => {
+    const onClose = vi.fn();
+    const onError = vi.fn();
+    stream = new ConversationEventStream({ ...options(), onClose, onError });
+    stream.start();
+    Socket.instances[0].refuse();
+    Socket.instances[0].finish(1006);
+    expect(states.at(-1)?.attemptCount).toBe(1);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(1);
     vi.advanceTimersByTime(1000);
     expect(Socket.instances).toHaveLength(2);
   });

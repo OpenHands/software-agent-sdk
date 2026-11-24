@@ -13,6 +13,7 @@ import logging
 import os
 import subprocess
 import tempfile
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -62,6 +63,24 @@ def test_session_initialization(terminal_type):
     )
     session.initialize()
     session.close()
+
+
+def test_tmux_waits_for_slow_shell_initialization(tmp_path):
+    (tmp_path / ".bashrc").write_text("sleep 0.4\n")
+    session = create_terminal_session(
+        work_dir=str(tmp_path),
+        no_change_timeout_seconds=1,
+        terminal_type="tmux",
+        env={"HOME": str(tmp_path)},
+    )
+    session.initialize()
+    try:
+        obs = session.execute(TerminalAction(command="sleep 2"))
+
+        assert obs.metadata.exit_code == -1
+        assert session.prev_status == TerminalCommandStatus.NO_CHANGE_TIMEOUT
+    finally:
+        session.close()
 
 
 @parametrize_terminal_types
@@ -934,8 +953,10 @@ def test_parser_fallback_heredocs_wait_for_trailing_command(terminal_type, comma
 
 
 @parametrize_terminal_types
+@pytest.mark.parametrize("prompt_delay", [0, 0.2])
 def test_heredoc_completion_preserves_aliases_and_ignores_stdout_redirect(
     terminal_type,
+    prompt_delay,
 ):
     with tempfile.TemporaryDirectory() as temp_dir:
         session = create_terminal_session(
@@ -943,12 +964,21 @@ def test_heredoc_completion_preserves_aliases_and_ignores_stdout_redirect(
         )
         session.initialize()
         try:
+            # Force completion-marker reads to precede the final prompt as well
+            # as exercising the usual prompt timing.
+            setup = session.execute(
+                TerminalAction(
+                    command=f'PROMPT_COMMAND="$PROMPT_COMMAND; sleep {prompt_delay}"'
+                )
+            )
+            assert setup.metadata.exit_code == 0
             obs = _run_bash_action(
                 session,
                 "alias oh_test='echo alias-expanded'; cat <<EOF\nbody\nEOF\noh_test",
             )
             assert obs.metadata.exit_code == 0
             assert "alias-expanded" in obs.text
+            assert "__OH_COMMAND_FINISHED_" not in obs.text
 
             obs = _run_bash_action(
                 session,
@@ -1386,3 +1416,27 @@ def test_running_heredoc_rejects_new_command_without_wrapper(
         assert "second" in obs.text
     finally:
         session.close()
+
+
+@parametrize_terminal_types
+def test_closing_the_session_stops_waiting_on_a_running_command(terminal_type):
+    session = create_terminal_session(work_dir=os.getcwd(), terminal_type=terminal_type)
+    session.initialize()
+    observations: list[TerminalObservation] = []
+    action = TerminalAction(command="sleep 30", timeout=60)
+    waiter = threading.Thread(
+        target=lambda: observations.append(session.execute(action))
+    )
+    waiter.start()
+    time.sleep(2)
+
+    closed_at = time.monotonic()
+    session.close()
+    waiter.join(timeout=10)
+
+    assert not waiter.is_alive(), "execute() kept waiting on a command after close()"
+    assert time.monotonic() - closed_at < 10
+    (obs,) = observations
+    assert obs.is_error
+    assert obs.exit_code == -1
+    assert "terminal was closed" in obs.text

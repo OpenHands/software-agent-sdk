@@ -1,6 +1,6 @@
 """Build the default :class:`~openhands.sdk.profiles.AgentProfile` from live settings.
 
-The inverse of :func:`~openhands.sdk.profiles.resolve_agent_profile`: turns the
+The inverse of ``openhands.sdk.launch.resolve``: turns the
 current ``AgentSettingsConfig`` into the single profile used by the one-time
 migration (lazy on the local agent-server, eager backfill on the cloud one).
 """
@@ -44,6 +44,7 @@ def build_seed_profile(
             name=name,
             acp_server=agent_settings.acp_server,
             acp_model=agent_settings.acp_model,
+            acp_effort=agent_settings.acp_effort,
             acp_session_mode=agent_settings.acp_session_mode,
             acp_prompt_timeout=agent_settings.acp_prompt_timeout,
             acp_startup_timeout=agent_settings.acp_startup_timeout,

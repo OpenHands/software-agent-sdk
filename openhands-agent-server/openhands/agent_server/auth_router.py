@@ -8,7 +8,10 @@ frontend wants to embed workspace artifacts (HTML reports, plots, PDFs).
 These endpoints let a client that already has a valid session API key
 exchange it for a short-lived cookie which the browser will automatically
 attach to every workspace request — including cross-site iframes, thanks
-to ``SameSite=None; Secure; Partitioned``.
+to ``SameSite=None; Secure; Partitioned``. Over plain HTTP to non-loopback
+hosts the cookie is minted with ``SameSite=Lax`` instead, because browsers
+reject ``SameSite=None`` without ``Secure``; cross-site iframes are a
+secure-context-only feature.
 
 The cookie is honored by ``workspace_router`` ONLY. Every other API route
 continues to require the ``X-Session-API-Key`` header. This is deliberate:
@@ -19,6 +22,8 @@ cookie auth would otherwise add.
 from fastapi import APIRouter, Request, Response, status
 
 from openhands.agent_server.dependencies import WORKSPACE_SESSION_COOKIE_NAME
+from openhands.agent_server.errors import error_responses
+from openhands.sdk.errors import Unauthenticated
 
 
 auth_router = APIRouter(prefix="/auth", tags=["Auth"])
@@ -29,8 +34,20 @@ auth_router = APIRouter(prefix="/auth", tags=["Auth"])
 _COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 365 * 10  # 10 years
 
 # Path scope: only sent on workspace-router URLs. Other /api/* endpoints
-# never see the cookie.
+# never see the cookie. Prefixed with the app's ``root_path`` per request.
 _COOKIE_PATH = "/api/conversations"
+
+
+def _cookie_path(request: Request) -> str:
+    """Cookie path for the URLs the browser uses, including ``root_path``.
+
+    Behind a path prefix (``OH_WEB_URL`` with a path) the browser requests
+    ``{root_path}/api/conversations/...``; a cookie scoped to the bare
+    ``/api/conversations`` would never be sent back on those URLs.
+    """
+    root_path = request.scope.get("root_path", "").rstrip("/")
+    return f"{root_path}{_COOKIE_PATH}"
+
 
 # Hostnames the browser treats as "secure contexts" even over plain HTTP, so
 # we can issue ``Secure`` cookies against them in local development without
@@ -67,7 +84,7 @@ def _request_is_secure_context(request: Request) -> bool:
 
 
 def _set_workspace_cookie(
-    response: Response, *, value: str, secure: bool, max_age: int
+    response: Response, *, value: str, path: str, secure: bool, max_age: int
 ) -> None:
     """Issue the workspace session cookie.
 
@@ -76,21 +93,27 @@ def _set_workspace_cookie(
     in third-party contexts; without it, the cookie may be silently
     dropped under third-party-cookie phase-out.
 
-    We always set ``SameSite=None`` so the same cookie works for both
-    same-site and cross-site iframes, and always set ``HttpOnly`` so JS
-    in workspace HTML can't read it back. ``Secure`` is set whenever
-    the request comes from a secure context (HTTPS or loopback) — the
-    only contexts where a ``SameSite=None`` cookie will actually be
-    stored by the browser.
+    In secure contexts (HTTPS or loopback) we set ``SameSite=None`` plus
+    ``Secure`` — the only attribute combination browsers will store, so
+    the same cookie works for both same-site and cross-site iframes. We
+    always set ``HttpOnly`` so JS in workspace HTML can't read it back.
+
+    In non-secure contexts (plain HTTP against a non-loopback host) we
+    mint with ``SameSite=Lax`` instead: Chromium refuses to store any
+    ``SameSite=None`` cookie without ``Secure``, so a ``None`` cookie
+    would never be stored and the workspace preview would always 401
+    (OpenHands/OpenHands#15567). ``Lax`` cookies are stored and sent on
+    the same-site requests the canvas makes when served from the same
+    origin; cross-site iframes remain unsupported on plain HTTP.
     """
     response.set_cookie(
         key=WORKSPACE_SESSION_COOKIE_NAME,
         value=value,
         max_age=max_age,
-        path=_COOKIE_PATH,
+        path=path,
         secure=secure,
         httponly=True,
-        samesite="none",
+        samesite="none" if secure else "lax",
     )
     # Starlette plumbs ``partitioned`` through to ``http.cookies.Morsel``,
     # which only recognized the attribute starting in Python 3.14. We need
@@ -126,7 +149,9 @@ def _append_partitioned_to_last_set_cookie(
     status_code=status.HTTP_204_NO_CONTENT,
     responses={
         204: {"description": "Cookie set"},
-        401: {"description": "Missing or invalid X-Session-API-Key header"},
+        **error_responses(
+            {Unauthenticated: "Missing or invalid X-Session-API-Key header"}
+        ),
     },
 )
 async def create_workspace_session(request: Request, response: Response) -> Response:
@@ -141,6 +166,7 @@ async def create_workspace_session(request: Request, response: Response) -> Resp
     _set_workspace_cookie(
         response,
         value=session_api_key,
+        path=_cookie_path(request),
         secure=_request_is_secure_context(request),
         max_age=_COOKIE_MAX_AGE_SECONDS,
     )
@@ -164,6 +190,7 @@ async def delete_workspace_session(request: Request, response: Response) -> Resp
     _set_workspace_cookie(
         response,
         value="",
+        path=_cookie_path(request),
         secure=_request_is_secure_context(request),
         max_age=0,
     )

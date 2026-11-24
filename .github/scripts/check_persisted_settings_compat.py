@@ -662,6 +662,13 @@ def _validate_single_payload(
         )
 
 
+# Released openhands-sdk 1.63.0 allows litellm<1.110, but litellm 1.109 removed a
+# module it imports (#7014), so the release cannot be imported as resolved.
+# Hold litellm to what that release was built and tested against; drop this once
+# the baseline release carries its own cap.
+_BASELINE_EXTRA_REQUIREMENTS: tuple[str, ...] = ("litellm<1.109",)
+
+
 def _venv_python(venv_dir: Path) -> Path:
     if sys.platform == "win32":  # pragma: no cover - CI uses Linux
         return venv_dir / "Scripts" / "python.exe"
@@ -687,19 +694,31 @@ def generate_baseline_payloads(
 
         try:
             _uv_run(["uv", "venv", str(venv_dir), "--python", sys.executable])
-            _uv_run(
+            install_args = [
+                "uv",
+                "pip",
+                "install",
+                "--python",
+                str(python),
+                "--quiet",
+                # Resolve the release as published; this workspace's
+                # constraint-dependencies may exclude its pinned versions.
+                "--no-config",
+                # PyPI JSON can see a release before uv's cached package index does.
+                "--refresh-package",
+                "openhands-sdk",
+            ]
+            if agent_server_version is not None:
+                install_args.extend(["--refresh-package", "openhands-agent-server"])
+            install_args.extend(
                 [
-                    "uv",
-                    "pip",
-                    "install",
-                    "--python",
-                    str(python),
-                    "--quiet",
                     "--exclude-newer",
                     exclude_newer,
                     *packages,
+                    *_BASELINE_EXTRA_REQUIREMENTS,
                 ]
             )
+            _uv_run(install_args)
             result = _uv_run([str(python), "-c", _BASELINE_PAYLOAD_SCRIPT])
         except subprocess.CalledProcessError as exc:
             output = (exc.stdout or "") + ("\n" + exc.stderr if exc.stderr else "")

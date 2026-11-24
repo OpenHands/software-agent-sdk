@@ -24,7 +24,10 @@ Routes: `WS /sockets/session/{conversation_id}`
 ## Sub-features
 
 - `F07.sync-first`: the first server frame is `{"type": "sync"}`; `from_seq` echoes `after_seq` (absent when live-only) and `through_seq` is the last on-disk `seq` (absent for an empty log).
+- `F07.sync-first-during-run`: while a run holds the conversation's state lock, `sync` is still the first frame; an `error` reply to an invalid frame sent right after connecting comes after it.
 - `F07.snapshot-transient`: every connection gets one `transient` frame with a `full_state` `ConversationStateUpdateEvent` and no `seq`, after `sync` (and after the replay when one ran); it is never persisted.
+- `F07.snapshot-compact-stats`: the `full_state` snapshot carries each LLM's aggregate stats (`accumulated_cost`, `accumulated_token_usage`) but not the per-call `costs`, `response_latencies` and `token_usages` lists, so it stays small however long the conversation runs; `GET /api/conversations/{id}` returns the same aggregates with empty per-call lists.
+- `F07.snapshot-no-skill-bodies`: the `full_state` snapshot and live `agent` state updates carry the agent with `agent_context.skills` emptied, so skill bodies never ride the socket live, while `GET /api/conversations/{id}?include_skills=true` and the stored event keep them.
 - `F07.full-replay`: `after_seq=-1` (or any value below it) replays every persisted event as `durable` frames with `seq` 0..`through_seq`, in order, once each, with the same ids REST returns.
 - `F07.seq-on-disk`: a durable frame's `seq` is the event's on-disk index, the `NNNNN` in `events/event-NNNNN-<event id>.json`.
 - `F07.resume-cursor`: `after_seq=k` replays exactly the events with `seq > k`; `after_seq=through_seq` replays nothing.
@@ -304,14 +307,13 @@ Preconditions:
   `ws stop` capture starts with an `opened` entry and ends with a `stopped`
   entry, so `frames.5.direction ne received` says exactly four frames
   arrived.
-- **Live frames in seq order (`F07.live-order`), known bug.** Durable frames
-  on one connection should arrive in `seq` order, like the replay. A user
-  message is published after the `last_user_message_id` update it causes,
-  because `LocalConversation`'s persist callback appends the message, sets
-  `last_user_message_id` (which appends and publishes the update at once),
-  and only then lets the message reach the publish callback. A client that
-  stores the highest `seq` it saw and drops between the two frames resumes
-  past the message and loses it.
+- **Live frames in seq order (`F07.live-order`).** Durable frames on one
+  connection arrive in `seq` order, like the replay. A user message is
+  published before the `last_user_message_id` update it causes:
+  `LocalConversation` sets `last_user_message_id` (which appends and
+  publishes the update at once) only after the message has reached the
+  publish callback. A client that stores the highest `seq` it saw can resume
+  from it without losing the message.
   ```sh
   ORD=$(control-agent-server conversation start --tools none --no-autotitle --print-id)
   control-agent-server ws start "/sockets/session/$ORD" --name "order-$ORD" --settle 2
@@ -323,15 +325,14 @@ Preconditions:
   control-agent-server state cat "evidence/F07.live-order/order-$ORD.json" --contains QA_F07_ORDER --check frames.6.direction ne received \
     --check frames.1.frame.type eq sync --check frames.2.frame.type eq transient \
     --check frames.3.frame.type eq durable --check frames.4.frame.type eq durable --check frames.5.frame.type eq durable
-  control-agent-server state cat "evidence/F07.live-order/order-$ORD.json" --check frames.3.frame.seq eq 0 --check frames.4.frame.seq eq 1 --check frames.5.frame.seq eq 2  # bug: checks.0.actual eq 0 && checks.1.actual eq 2 && checks.2.actual eq 1
+  control-agent-server state cat "evidence/F07.live-order/order-$ORD.json" --check frames.3.frame.seq eq 0 --check frames.4.frame.seq eq 1 --check frames.5.frame.seq eq 2
   ```
   The arrange steps and positive controls hold either way: the message is
   persisted, the capture holds `sync`, the snapshot and exactly three
   durable frames, and those carry `seq` 0 (the system prompt), 1 (the
   message) and 2 (its `last_user_message_id` update). Only the last line
-  judges their order: expected 0, 1, 2; today they arrive as 0, 2, 1 (the
-  update, then the message), on every user message, whether it came over
-  REST or over the socket, so it fails at `frames.4.frame.seq eq 1`.
+  judges their order: 0, 1, 2 (the message, then its update), on every
+  user message, whether it came over REST or over the socket.
 - **Replay and live tail, each event once (`F07.replay-then-live`).** Open a
   full-history capture while four more messages are being appended in the
   background, so the connect lands before, inside or after the appends;
@@ -448,6 +449,72 @@ Preconditions:
   ```
   The replay carries the durable reply (its id is `ITEM`) and no progress
   frame of any kind.
+- **Compact snapshot stats (`F07.snapshot-compact-stats`).**
+  Reconnect live-only to the streamed conversation, which has made one
+  model call, and read its snapshot's stats for the agent's LLM (usage id
+  `default`), then the same conversation's REST `ConversationInfo`.
+
+  Requires: `F07.progress-frames`
+  ```sh
+  control-agent-server ws listen "/sockets/session/$SID" --count 2 --save "F07.snapshot-compact-stats/live-$SID"
+  control-agent-server state cat "evidence/F07.snapshot-compact-stats/live-$SID.json" \
+    --check frames.2.frame.event.key eq full_state \
+    --check frames.2.frame.event.value.stats.usage_to_metrics.default.accumulated_token_usage.prompt_tokens gt 0
+  control-agent-server state cat "evidence/F07.snapshot-compact-stats/live-$SID.json" \
+    --check frames.2.frame.event.value.stats.usage_to_metrics.default.accumulated_cost exists \
+    --check frames.2.frame.event.value.stats.usage_to_metrics.default.response_latencies missing \
+    --check frames.2.frame.event.value.stats.usage_to_metrics.default.token_usages missing \
+    --check frames.2.frame.event.value.stats.usage_to_metrics.default.costs missing
+  control-agent-server api GET "/api/conversations/$SID" --expect 200 --save "F07.snapshot-compact-stats/info-$SID" \
+    --check stats.usage_to_metrics.default.accumulated_token_usage.prompt_tokens gt 0 \
+    --check stats.usage_to_metrics.default.costs len-eq 0 \
+    --check stats.usage_to_metrics.default.response_latencies len-eq 0 \
+    --check stats.usage_to_metrics.default.token_usages len-eq 0
+  ```
+  Expected: the snapshot keeps the aggregates (prompt tokens above 0, an
+  `accumulated_cost`) and drops the per-call lists, as the incremental
+  `stats` updates do (`use_snapshot`), so its size does not grow with the
+  number of model calls and a long conversation's snapshot stays under the
+  4 MiB frame cap. `GET /api/conversations/{id}` (and search) keeps the same
+  `stats` schema with the aggregates and empty per-call lists. The
+  conversation's `base_state.json` still keeps every per-call entry; only
+  the wire payloads are compact. The legacy events socket's snapshot (F06)
+  is built the same way.
+- **Snapshot without skill bodies (`F07.snapshot-no-skill-bodies`).** A
+  conversation whose agent carries an inline skill (a placeholder model, never
+  run): read its live-only snapshot, then switch its LLM (F09's route) while a
+  capture is open, and compare with the stored state.
+  ```sh
+  KLLM='"llm": {"model": "openai/qa-placeholder", "api_key": "qa-placeholder", "base_url": "http://127.0.0.1:9/v1", "num_retries": 0}'
+  KID=$(control-agent-server conversation start --no-autotitle --print-id --body-json \
+    '{"agent_settings": {"agent_kind": "openhands", '"$KLLM"', "tools": [], "agent_context": {"skills": [{"name": "qa-f07-skill", "content": "QA_F07_SKILL_BODY", "trigger": null}]}}}')
+  control-agent-server api GET "/api/conversations/$KID" --query include_skills=true --expect 200 \
+    --check agent.agent_context.skills.0.name eq qa-f07-skill --check agent.agent_context.skills.0.content eq QA_F07_SKILL_BODY
+  control-agent-server ws listen "/sockets/session/$KID" --count 2 --save "F07.snapshot-no-skill-bodies/live-$KID"
+  control-agent-server state cat "evidence/F07.snapshot-no-skill-bodies/live-$KID.json" --not-contains QA_F07_SKILL_BODY \
+    --check frames.2.frame.event.key eq full_state --check frames.2.frame.event.value.agent.agent_context exists \
+    --check frames.2.frame.event.value.agent.agent_context.skills len-eq 0
+  control-agent-server ws start "/sockets/session/$KID" --name "qa-f07-skills-$KID"
+  control-agent-server ws read "qa-f07-skills-$KID" --wait 10 --contains '"key": "full_state"' --expect-min 1
+  control-agent-server api POST "/api/conversations/$KID/switch_llm" --expect 200 --check success eq true \
+    --json '{"llm": {"model": "openai/qa-placeholder-2", "api_key": "qa-placeholder", "base_url": "http://127.0.0.1:9/v1", "num_retries": 0, "usage_id": "qa-f07-switched"}}'
+  control-agent-server ws stop "qa-f07-skills-$KID" --wait 10 --kinds durable:ConversationStateUpdateEvent --contains '"key": "agent"' \
+    --expect-min 1 --save "F07.snapshot-no-skill-bodies/agent-$KID"
+  control-agent-server state cat "evidence/F07.snapshot-no-skill-bodies/agent-$KID.json" --not-contains QA_F07_SKILL_BODY \
+    --check frames.3.frame.type eq durable --check frames.3.frame.event.key eq agent \
+    --check frames.3.frame.event.value.llm.model eq openai/qa-placeholder-2 --check frames.3.frame.event.value.agent_context.skills len-eq 0
+  control-agent-server api GET "/api/conversations/$KID" --query include_skills=true --expect 200 \
+    --check agent.llm.model eq openai/qa-placeholder-2 --check agent.agent_context.skills.0.content eq QA_F07_SKILL_BODY \
+    --save "F07.snapshot-no-skill-bodies/info-$KID"
+  control-agent-server api GET "/api/conversations/$KID/events/search" --expect 200 --check items len-eq 1 \
+    --check items.0.key eq agent --check items.0.value.agent_context.skills.0.content eq QA_F07_SKILL_BODY
+  ```
+  The conversation holds the skill (REST with `include_skills=true`), yet
+  the snapshot's agent has `agent_context.skills: []` and no frame of either
+  capture contains the body. The `switch_llm` publishes the new agent as a
+  durable `agent` update (seq 0, the conversation's only event), whose live
+  frame also has an empty skill list next to the new model. Nothing is lost:
+  the conversation and the stored event keep the skill with its body.
 - **Interrupted stream (`F07.item-aborted`).** Start a streamed
   deepseek-flash answer that takes tens of seconds (counting to 3000), wait
   until its `delta` frames flow on a background capture, then interrupt the
@@ -630,7 +697,7 @@ Preconditions:
   holds one subscription of its own), every other one closes with 1013
   `Too many connections for this conversation`, and once they close a new
   socket is admitted.
-- **Deleting closes the socket (`F07.deleted-close`), known bug.**
+- **Deleting closes the socket (`F07.deleted-close`).**
   A client attached to a conversation that gets deleted should be told.
   A background capture is subscribed (its `full_state` snapshot arrived and
   it is open) before the DELETE; the DELETE, a 404 on REST and a 4004 for a
@@ -642,20 +709,41 @@ Preconditions:
   control-agent-server api DELETE "/api/conversations/$DEL" --expect 200 --save "F07.deleted-close/delete-$DEL"
   control-agent-server api GET "/api/conversations/$DEL" --expect 404
   control-agent-server ws listen "/sockets/session/$DEL" --duration 5 --expect-close 4004 --expect-frames 0
-  control-agent-server ws stop "del-$DEL" --save "F07.deleted-close/socket-$DEL" | control-agent-server assert --check close.code exists  # bug: value.opened eq true && value.stopped eq stopped && value.close missing
+  control-agent-server ws stop "del-$DEL" --save "F07.deleted-close/socket-$DEL" | control-agent-server assert --check close.code eq 4004
   ```
-  Correct behavior: the server closes the open socket (with any close code)
-  while it deletes the conversation; `EventService.close()` awaits
-  `PubSub.close()` before the DELETE answers, so the close has arrived by
-  the time the capture is stopped. Today the capture is still open with no
-  close frame (`close: null`) and nothing after the snapshot, although REST
-  answers 404 and a new socket gets 4004: `PubSub.close()` calls
-  `Subscriber.close()`, which `_SessionSubscriber` does not implement
-  (`pub_sub.py`, `session_socket.py`), so the client waits forever. The same
-  bug holds the legacy events socket open (`F06.ws-delete-close`).
+  The server closes the open socket with 4004 while it deletes the
+  conversation: `delete_conversation` calls `EventService.close_connections`,
+  which sends the frames already queued, closes the `_SessionSubscriber`'s
+  socket and stops its writer, before the DELETE answers, so the close has
+  arrived by the time the capture is stopped. The legacy events socket is
+  closed the same way (`F06.ws-delete-close`).
+
+- **Sync first while a run holds the lock (`F07.sync-first-during-run`), known bug #6745.**
+  Start a run whose agent sits in a 25 s `sleep`, connect while the tool
+  call is in flight, and send an `assistant` message at once.
+
+  Needs: `tmux`
+  ```sh
+  RUNC=$(control-agent-server conversation start --no-autotitle --prompt 'Run exactly this terminal command and nothing else: sleep 25 && echo QA_F07_LOCK' --print-id)
+  control-agent-server conversation wait "$RUNC" --until running --timeout 60
+  control-agent-server api GET "/api/conversations/$RUNC/events/search" --query kind=ActionEvent --check items len-ge 1 --until-ok 60 --quiet
+  control-agent-server ws listen "/sockets/session/$RUNC" --send '{"role":"assistant","content":[{"type":"text","text":"QA_F07_LOCK_ROLE"}]}' \
+    --until-kind sync --duration 90 --expect-kind error --save "F07.sync-first-during-run/order-$RUNC"
+  control-agent-server state cat "evidence/F07.sync-first-during-run/order-$RUNC.json" --check frames.2.kind eq sync  # bug: checks.0.actual eq error
+  control-agent-server conversation wait "$RUNC" --until finished,idle --timeout 120
+  ```
+  Expected: `sync` arrives first (when the step ends and the lock frees),
+  then the `error` frame (`AssertionError`, `Only user messages are allowed
+  to be sent to the agent.`). Today the socket reads client frames from the
+  moment it connects, before subscribing (which waits for the lock), so the
+  `error` frame is sent at once and `sync` only when the step ends, about
+  25 s later (#6745). A valid user message sent during the step is saved
+  either way.
 
 ## Gotchas
 
+- The 4 MiB frame cap of `F07.frame-too-large` applies to live delivery too, not only to replay: a socket open while a 5 MiB event is appended receives the events before it and then closes with 1013 `frame_too_large`, so later events never arrive on that socket; reconnecting with `after_seq` past the big event resumes. A client that does not reconnect past it loses the live stream ([#6934](https://github.com/OpenHands/software-agent-sdk/issues/6934), open).
+- `F07.reject-non-user`, `F07.error-frame`, `F07.error-non-json` and `F07.auth-frame-ignored` read the `error` frames at fixed positions after `sync` and the snapshot. While #6745 lasts, an `error` can overtake `sync` when the server is slow to subscribe, on an idle machine as well as under load (for `F07.auth-frame-ignored` as `frames.3.frame.type` `error`, for `F07.error-non-json` as an `error` frame ahead of `sync`), and the bullet then fails on its first position check. A fail of one of these four whose transcript shows that order is #6745, not a new defect; another attempt often passes. `F07.sync-first-during-run` reproduces that order deterministically.
 - Neither the SDK nor the TypeScript client uses this socket yet, so a
   regression here breaks no shipped consumer's tests; only these recipes and
   `tests/agent_server/test_session_socket.py` notice.
@@ -707,10 +795,9 @@ Preconditions:
   message count. A `websockets` client is a poor stall: it keeps reading
   into its own buffer even with `max_queue=1`.
 - Durable frames dropped with a connection (oversize, slow consumer) are not
-  lost: reconnect with `after_seq` set to the highest `seq` below which
-  nothing is missing. Today that is not always the last `seq` received,
-  because live frames can arrive out of order (`F07.live-order`). Progress
-  frames are never replayed, by design.
+  lost: reconnect with `after_seq` set to the last `seq` received; live
+  frames arrive in `seq` order (`F07.live-order`). Progress frames are
+  never replayed, by design.
 - An open streaming item ends either with the `durable` frame whose
   `event.id` is its `item_id` or with one `item_aborted`. The abort `reason`
   is `cancelled` for an interrupt (`F07.item-aborted`), the exception's
@@ -741,3 +828,9 @@ Preconditions:
   POSTs above use `--quiet` to keep the map-run transcript small (`--expect`
   and `--check` still see the bodies); `--max-chars` only trims non-JSON
   response bodies.
+- Only frames published live are trimmed of skill bodies
+  (`F07.snapshot-no-skill-bodies`): a replay (`after_seq`) reads the stored
+  event, so the same durable `agent` update at the same `seq` carries
+  `agent_context.skills` with their bodies, as `GET .../events/search` does.
+  A client that needs the skills reads `GET /api/conversations/{id}?include_skills=true`.
+- Agent Canvas bundles Agent Server 1.62.0 by default, whose `full_state` snapshot still carries the per-call lists, so a very long conversation keeps closing with 1013 `frame_too_large` in Canvas until it pins a release that has `F07.snapshot-compact-stats` ([OpenHands/OpenHands#18935](https://github.com/OpenHands/OpenHands/issues/18935)).

@@ -13,16 +13,17 @@ from openhands.sdk.utils.redact import redact_text_secrets
 logger = get_logger(__name__)
 
 
-# Env vars that should not be exposed to subprocesses (e.g., bash commands
-# executed by the agent). These credentials allow access to user secrets via
-# the SaaS API and/or decrypting persisted secrets, and must remain isolated to
-# the SDK's Python process.
-#
-# - ``SESSION_API_KEY``: legacy (V0) session key name.
-# - ``OH_SECRET_KEY``: cipher key that decrypts persisted conversation/provider
-#   secrets; leaking it is at least as damaging as leaking the session key.
-# See ``openhands.agent_server.config`` for where these are read from the env.
-_SENSITIVE_ENV_VARS = frozenset({"SESSION_API_KEY", "OH_SECRET_KEY"})
+# Credentials needed by the SDK/server, not by agent-run subprocesses.
+_SENSITIVE_ENV_VARS = frozenset(
+    {
+        "SESSION_API_KEY",
+        "OH_SECRET_KEY",
+        "LMNR_PROJECT_API_KEY",
+        "OTEL_HEADERS",
+        "OTEL_EXPORTER_OTLP_HEADERS",
+        "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+    }
+)
 
 # Session keys are also delivered as an indexed list ``OH_SESSION_API_KEYS_0``,
 # ``OH_SESSION_API_KEYS_1``, ... (V1). Strip every slot by prefix so a rename or
