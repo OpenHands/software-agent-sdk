@@ -10,7 +10,6 @@ from fastapi import (
     Depends,
     Header,
     Query,
-    Request,
     Response,
     status,
 )
@@ -18,27 +17,35 @@ from pydantic import TypeAdapter, ValidationError
 
 from openhands.agent_server._secrets_exposure import (
     decrypt_incoming_llm_secrets,
-    get_cipher,
 )
 from openhands.agent_server.conversation_registry import ConversationRegistry
-from openhands.agent_server.conversation_service import (
-    ConversationService,
+from openhands.agent_server.conversation_service import ConversationService
+from openhands.agent_server.dependencies import (
+    get_cipher,
+    get_conversation_registry,
+    get_conversation_service,
+    get_llm_profile_store,
+)
+from openhands.agent_server.errors import error_responses
+from openhands.agent_server.exceptions import (
+    CondensationUnavailable,
+    ConversationAlreadyRunning,
+    GoalAlreadyRunning,
     InvalidParentConversation,
     UnavailableAgentTool,
 )
-from openhands.agent_server.dependencies import get_conversation_service
-from openhands.agent_server.errors import error_responses
-from openhands.agent_server.event_service import CondensationUnavailable
 from openhands.agent_server.launch import launch_error
+from openhands.agent_server.message_sender import SenderError
 from openhands.agent_server.models import (
     INCLUDE_SKILLS_PARAM_TITLE,
+    AddMCPServersRequest,
+    AddModelRouterRouteRequest,
     AgentResponseResult,
     AskAgentRequest,
     AskAgentResponse,
     ConversationInfo,
     ConversationPage,
     ConversationRuntimeInfo,
-    ConversationRuntimeStatus,
     ConversationSortOrder,
     ForkConversationRequest,
     NavigateConversationRequest,
@@ -53,10 +60,11 @@ from openhands.agent_server.models import (
     UpdateSecretsRequest,
     trim_conversation_response_skills,
 )
-from openhands.agent_server.persistence import get_llm_profile_store
+from openhands.agent_server.persistence import run_store
 from openhands.sdk import LLM
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.types import (
+    PROJECT_TAG_KEY,
     ConversationObservabilityMetadata,
     ConversationObservabilitySpanName,
     ConversationObservabilityTags,
@@ -70,14 +78,22 @@ from openhands.sdk.errors import (
     UpstreamTimeout,
 )
 from openhands.sdk.launch import AgentLaunchError, LaunchStoreError
+from openhands.sdk.llm import (
+    ModelRouterStatus,
+    ModelRouterUpdateRequest,
+    RouterLLM,
+)
+from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.marketplace.registry import (
     MarketplaceNotFoundError,
     PluginNotFoundError,
     PluginResolutionError,
 )
+from openhands.sdk.mcp.exceptions import MCPServerStartError
 from openhands.sdk.plugin import PluginFetchError
 from openhands.sdk.profiles.resolver import ProfileNotFound
 from openhands.sdk.tool.client_tool import ClientToolRegistrationError
+from openhands.sdk.utils.cipher import Cipher
 
 
 conversation_catalog_router = APIRouter(prefix="/conversations", tags=["Conversations"])
@@ -150,20 +166,29 @@ START_CONVERSATION_EXAMPLES = [
 
 
 def _with_runtime_info(
-    request: Request, conversation: ConversationInfo
+    registry: ConversationRegistry, conversation: ConversationInfo
 ) -> ConversationInfo:
-    registry = getattr(request.app.state, "conversation_registry", None)
-    if not isinstance(registry, ConversationRegistry):
-        return conversation
     return conversation.model_copy(
         update={"runtime_info": registry.runtime_info(conversation.id)}
     )
 
 
+async def _refuse_project_member(
+    service: ConversationService, tags: dict[str, str] | None
+) -> None:
+    """A client cannot start a project's conversation: only the project's
+    coordinator does. A ``project`` tag naming no project (or with Projects
+    off) is an ordinary tag."""
+    if tags and await service.projects.member_of(tags) is not None:
+        raise Unprocessable(
+            "A project's conversations are started by its coordinator; "
+            f"leave out the '{PROJECT_TAG_KEY}' tag"
+        )
+
+
 @conversation_catalog_router.get("/search", include_in_schema=False)
 @conversation_router.get("/search")
 async def search_conversations(
-    request: Request,
     page_id: Annotated[
         str | None,
         Query(title="Optional next_page_id from the previously returned page"),
@@ -182,6 +207,7 @@ async def search_conversations(
     ] = ConversationSortOrder.CREATED_AT_DESC,
     include_skills: Annotated[bool, Query(title=INCLUDE_SKILLS_PARAM_TITLE)] = False,
     conversation_service: ConversationService = Depends(get_conversation_service),
+    registry: ConversationRegistry = Depends(get_conversation_registry),
 ) -> ConversationPage:
     """Search / List conversations"""
     page = await conversation_service.search_conversations(
@@ -200,7 +226,7 @@ async def search_conversations(
             }
         )
     page = page.model_copy(
-        update={"items": [_with_runtime_info(request, item) for item in page.items]}
+        update={"items": [_with_runtime_info(registry, item) for item in page.items]}
     )
     return page
 
@@ -224,9 +250,9 @@ async def count_conversations(
 )
 async def get_conversation(
     conversation_id: UUID,
-    request: Request,
     include_skills: Annotated[bool, Query(title=INCLUDE_SKILLS_PARAM_TITLE)] = False,
     conversation_service: ConversationService = Depends(get_conversation_service),
+    registry: ConversationRegistry = Depends(get_conversation_registry),
 ) -> ConversationInfo:
     """Given an id, get a conversation"""
     conversation = await conversation_service.get_conversation(conversation_id)
@@ -234,35 +260,30 @@ async def get_conversation(
         raise NotFound()
     if not include_skills:
         conversation = trim_conversation_response_skills(conversation)
-    return _with_runtime_info(request, conversation)
+    return _with_runtime_info(registry, conversation)
 
 
 @conversation_router.get("/{conversation_id}/runtime")
 async def get_local_conversation_runtime(
     conversation_id: UUID,
-    request: Request,
     conversation_service: ConversationService = Depends(get_conversation_service),
+    registry: ConversationRegistry = Depends(get_conversation_registry),
 ) -> ConversationRuntimeInfo:
     """Inspect the always-available in-process runtime."""
     if await conversation_service.get_conversation(conversation_id) is None:
         raise NotFound()
-    registry = getattr(request.app.state, "conversation_registry", None)
-    if isinstance(registry, ConversationRegistry):
-        return registry.runtime_info(conversation_id)
-    return ConversationRuntimeInfo(
-        runtime_status=ConversationRuntimeStatus.AVAILABLE, can_resume=True
-    )
+    return registry.runtime_info(conversation_id)
 
 
 @conversation_router.post("/{conversation_id}/runtime/reprovision")
 async def reprovision_local_conversation_runtime(
     conversation_id: UUID,
-    request: Request,
     conversation_service: ConversationService = Depends(get_conversation_service),
+    registry: ConversationRegistry = Depends(get_conversation_registry),
 ) -> ConversationRuntimeInfo:
     """Return local runtime state; local mode has no infrastructure to provision."""
     return await get_local_conversation_runtime(
-        conversation_id, request, conversation_service
+        conversation_id, conversation_service, registry
     )
 
 
@@ -289,16 +310,16 @@ async def get_conversation_agent_final_response(
 
 @conversation_router.get("")
 async def batch_get_conversations(
-    request: Request,
     ids: Annotated[list[UUID], Query(max_length=99)],
     include_skills: Annotated[bool, Query(title=INCLUDE_SKILLS_PARAM_TITLE)] = False,
     conversation_service: ConversationService = Depends(get_conversation_service),
+    registry: ConversationRegistry = Depends(get_conversation_registry),
 ) -> list[ConversationInfo | None]:
     """Get a batch of up to 99 conversations given their ids, returning null
     for any missing item"""
     conversations = await conversation_service.batch_get_conversations(ids)
     conversations = [
-        _with_runtime_info(request, conversation) if conversation is not None else None
+        _with_runtime_info(registry, conversation) if conversation is not None else None
         for conversation in conversations
     ]
     if not include_skills:
@@ -341,6 +362,7 @@ async def start_conversation(
     """Start a conversation in the local environment."""
     if request.conversation_runtime not in (None, "local"):
         raise Unprocessable("This server only runs local conversations")
+    await _refuse_project_member(conversation_service, request.tags)
     request = _request_with_observability_headers(
         request,
         span_name=x_openhands_observability_span_name,
@@ -354,7 +376,7 @@ async def start_conversation(
         raise launch_error(e) from e
     except ClientToolRegistrationError as e:
         raise Unprocessable(str(e)) from e
-    except (InvalidParentConversation, UnavailableAgentTool) as e:
+    except (InvalidParentConversation, UnavailableAgentTool, SenderError) as e:
         raise Unprocessable(str(e)) from e
     response.status_code = status.HTTP_201_CREATED if is_new else status.HTTP_200_OK
     if not include_skills:
@@ -431,11 +453,11 @@ async def run_conversation(
 
     try:
         await event_service.run()
+    except ConversationAlreadyRunning:
+        raise Conflict(
+            "Conversation already running. Wait for completion or pause first."
+        )
     except ValueError as e:
-        if str(e) == "conversation_already_running":
-            raise Conflict(
-                "Conversation already running. Wait for completion or pause first."
-            )
         raise Invalid(str(e))
 
     return Success()
@@ -470,11 +492,10 @@ async def start_goal_in_conversation(
         await event_service.start_goal_loop(
             request.objective, max_iterations=request.max_iterations
         )
+    except (ConversationAlreadyRunning, GoalAlreadyRunning):
+        raise Conflict("Conversation run or goal loop already running.")
     except ValueError as e:
-        message = str(e)
-        if message in ("conversation_already_running", "goal_already_running"):
-            raise Conflict("Conversation run or goal loop already running.")
-        raise Invalid(message)
+        raise Invalid(str(e))
 
     return Success()
 
@@ -520,12 +541,38 @@ async def resume_goal_in_conversation(
 
     try:
         await event_service.resume_goal_loop()
+    except (ConversationAlreadyRunning, GoalAlreadyRunning):
+        raise Conflict("Conversation run or goal loop already running.")
     except ValueError as e:
-        message = str(e)
-        if message in ("conversation_already_running", "goal_already_running"):
-            raise Conflict("Conversation run or goal loop already running.")
-        raise Invalid(message)
+        raise Invalid(str(e))
 
+    return Success()
+
+
+@conversation_router.post(
+    "/{conversation_id}/mcp",
+    responses=error_responses(
+        {NotFound: "Item not found", Invalid: "Invalid MCP server update"}
+    ),
+)
+async def add_conversation_mcp_servers(
+    conversation_id: UUID,
+    request: AddMCPServersRequest,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+    cipher: Cipher | None = Depends(get_cipher),
+) -> Success:
+    """Add modern MCP servers to one conversation."""
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise NotFound()
+    mcp_servers = {
+        name: server.with_decrypted_secrets(cipher=cipher)
+        for name, server in request.mcp_servers.items()
+    }
+    try:
+        await event_service.add_mcp_servers(mcp_servers)
+    except (ValueError, MCPServerStartError) as exc:
+        raise Invalid(str(exc)) from exc
     return Success()
 
 
@@ -624,10 +671,11 @@ async def switch_conversation_profile(
     ),
 )
 async def switch_conversation_llm(
-    request: Request,
     conversation_id: UUID,
     llm: LLM = Body(..., embed=True),  # noqa: B008
     conversation_service: ConversationService = Depends(get_conversation_service),
+    cipher: Cipher | None = Depends(get_cipher),
+    llm_profile_store: LLMProfileStore = Depends(get_llm_profile_store),
 ) -> Success:
     """Swap the conversation's LLM to a caller-supplied object.
 
@@ -641,7 +689,6 @@ async def switch_conversation_llm(
     if event_service is None:
         raise NotFound()
     conversation = event_service.get_conversation()
-    cipher = get_cipher(request)
     if cipher is not None:
         llm = decrypt_incoming_llm_secrets(llm, cipher)
     # Resolve a referenced provider connection before installing the LLM, so a
@@ -650,12 +697,98 @@ async def switch_conversation_llm(
     # reference or missing credential surfaces as 422 before the working LLM
     # is replaced. Inline-key configs without a provider_connection_id are
     # byte-identical to the old path.
-    llm = get_llm_profile_store().resolve_provider_connection(llm, cipher=cipher)
+    llm = await run_store(
+        llm_profile_store.resolve_provider_connection, llm, cipher=cipher
+    )
     try:
         conversation.switch_llm(llm)
     except ValueError as e:
         raise Invalid(str(e))
     return Success()
+
+
+def _model_router_status(llm: LLM) -> ModelRouterStatus:
+    if not isinstance(llm, RouterLLM):
+        return ModelRouterStatus(enabled=False)
+    return llm.status()
+
+
+@conversation_router.get(
+    "/{conversation_id}/model_router",
+    response_model=ModelRouterStatus,
+    responses=error_responses({NotFound: "Conversation not found"}),
+)
+async def get_conversation_model_router(
+    conversation_id: UUID,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> ModelRouterStatus:
+    """Return model-router state for the conversation's active LLM."""
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise NotFound()
+    return _model_router_status(event_service.get_conversation().agent.llm)
+
+
+@conversation_router.post(
+    "/{conversation_id}/model_router/routes",
+    response_model=ModelRouterStatus,
+    responses=error_responses(
+        {
+            Invalid: "Conversation cannot add this model router route",
+            NotFound: "Conversation or profile not found",
+        }
+    ),
+)
+async def add_conversation_model_router_route(
+    conversation_id: UUID,
+    route_request: AddModelRouterRouteRequest,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> ModelRouterStatus:
+    """Add a saved LLM profile as a conversation model-router route."""
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise NotFound()
+    route_name = route_request.route_name or route_request.profile_name
+    try:
+        await event_service.add_model_router_route(
+            route_request.profile_name,
+            route_name=route_name,
+            base_route_name=route_request.base_route_name,
+        )
+    except FileNotFoundError:
+        raise NotFound(f"Profile '{route_request.profile_name}' not found")
+    except ValueError as e:
+        raise Invalid(str(e))
+    return _model_router_status(event_service.get_conversation().agent.llm)
+
+
+@conversation_router.patch(
+    "/{conversation_id}/model_router",
+    response_model=ModelRouterStatus,
+    responses=error_responses(
+        {
+            Invalid: (
+                "Conversation is not backed by a model router or route name is invalid"
+            ),
+            NotFound: "Conversation not found",
+        }
+    ),
+)
+async def update_conversation_model_router(
+    conversation_id: UUID,
+    request: ModelRouterUpdateRequest,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> ModelRouterStatus:
+    """Update model-router selection for the conversation's active LLM."""
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise NotFound()
+    conversation = event_service.get_conversation()
+    try:
+        conversation.update_model_router_selection(request.selection)
+    except ValueError as e:
+        raise Invalid(str(e))
+    return _model_router_status(conversation.agent.llm)
 
 
 @conversation_router.post(
@@ -774,9 +907,17 @@ async def update_conversation(
 ) -> Success:
     """Update conversation metadata.
 
-    This endpoint allows updating conversation details like title.
+    This endpoint allows updating conversation details like title. ``tags``
+    replaces the whole set. With Projects on, a member of a project (its
+    ``project`` tag names an existing project) keeps the tags the server owns:
+    ``project``, ``turn``, ``ask``, ``resolved`` and ``resolvenote``. Resolve
+    or reopen it with the project routes ``.../resolve`` and ``.../reopen``.
+    Tags that would make a conversation a member answer 422: only a project's
+    coordinator starts its conversations.
     """
-    updated = await conversation_service.update_conversation(conversation_id, request)
+    updated = await conversation_service.projects.update_conversation_from_client(
+        conversation_id, request
+    )
     if not updated:
         raise NotFound()
     return Success()
@@ -846,6 +987,7 @@ async def fork_conversation(
     Calling ``run`` on the fork resumes from the copied state, meaning
     the agent has full event memory of the source conversation.
     """
+    await _refuse_project_member(conversation_service, request.tags)
     try:
         info = await conversation_service.fork_conversation(
             conversation_id,
@@ -877,6 +1019,7 @@ async def fork_conversation(
         **error_responses(
             {
                 NotFound: "Parent conversation not found",
+                Conflict: "Parent is a project member, not its coordinator",
                 RateLimited: "Server conversation run capacity is full",
             }
         ),
@@ -892,8 +1035,10 @@ async def start_child_conversation(
 
     The child inherits the parent's configuration and workspace (optionally
     isolated in a git worktree), is linked via ``parent_conversation_id`` and
-    receives ``task`` as its first user message. This is the default launcher
-    behind the ``start_child_conversation`` tool.
+    receives ``task`` as its first user message. When the parent belongs to a
+    project, the child runs the project's worker agent profile, or the
+    user's active one, instead of a copy of the parent's agent. This is the
+    default launcher behind the ``start_child_conversation`` tool.
     """
     try:
         result = await conversation_service.start_child_conversation(
@@ -928,7 +1073,7 @@ async def navigate_conversation(
         )
     except ValueError as exc:
         # An unknown ``event_id`` against an existing conversation is a 404;
-        # other ValueErrors (e.g. inactive_service) are genuine server errors.
+        # other ValueErrors (e.g. ServiceInactive) are genuine server errors.
         if "event_id" in str(exc):
             raise NotFound(str(exc)) from exc
         raise

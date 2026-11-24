@@ -33,6 +33,38 @@ def pool_executor():
         executor.close()
 
 
+def _server_stays_up(server, timeout: float) -> bool:
+    """True if *server* still answers after *timeout* seconds.
+
+    ``Server.is_alive()`` distinguishes a live server with zero sessions
+    from a dead one, so this also covers a server that outlives its last
+    session (e.g. with ``exit-empty`` off).
+    """
+    deadline = time.monotonic() + timeout
+    while server.is_alive():
+        if time.monotonic() >= deadline:
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def test_pool_waits_for_slow_shell_initialization(tmp_path):
+    (tmp_path / ".bashrc").write_text("sleep 0.4\n")
+    executor = TerminalExecutor(
+        working_dir=str(tmp_path),
+        no_change_timeout_seconds=1,
+        terminal_type="tmux",
+        env={"HOME": str(tmp_path)},
+        max_panes=1,
+    )
+    try:
+        obs = executor(TerminalAction(command="sleep 2"))
+
+        assert obs.metadata.exit_code == -1
+    finally:
+        executor.close()
+
+
 class TestDeclaredResources:
     def test_pool_mode_opts_out_of_framework_locking(self, pool_executor):
         """In pool mode, declared_resources returns empty keys so the
@@ -126,6 +158,107 @@ class TestTmuxPoolRecovery:
         assert not after.is_error
         assert after.exit_code == 0
         assert "after_rebuild" in after.text
+
+    def test_shell_exit_with_server_surviving_rebuilds_pool(self, pool_executor):
+        """A real tmux server can briefly outlive its last session.
+
+        With the standard tmux ``exit-empty`` option set to ``off`` on the
+        pool's own server, the server genuinely survives with zero
+        sessions after the sole real pane's shell really exits. The next
+        real ``capture-pane`` against that real, running server then gets
+        real tmux stderr ``"no current target"`` (not fabricated), which
+        must be classified as recoverable the same way the plain
+        single-pane-exit case above is.
+        """
+        # Warm up so the pool's real session/server/pane exist before we
+        # flip the option.
+        warm = pool_executor(TerminalAction(command="true", timeout=5.0))
+        assert not warm.is_error
+
+        old_pool = pool_executor._pool
+        assert old_pool is not None
+        old_server = old_pool._server
+        assert old_server is not None
+
+        try:
+            # Real, standard tmux server option (tmux(1)); default is
+            # "on". This is the pool's own isolated server, never a
+            # shared one.
+            result = old_server.cmd("set-option", "-g", "exit-empty", "off")
+            assert not result.stderr
+            assert _server_stays_up(old_server, timeout=0.2)
+
+            obs = pool_executor(TerminalAction(command="exit 7", timeout=5.0))
+
+            assert obs.is_error
+            assert obs.exit_code == -1
+            assert "rebuilt the terminal pool" in obs.text
+            assert "top-level `exit`" in obs.text
+            assert "Original tmux error: no current target" in obs.text
+
+            # The pool must have shut down its *own* dedicated server as
+            # part of recovery, not merely the session within it (a
+            # session-only kill leaves a lingering tmux process when
+            # exit-empty is off, as set above).
+            assert not _server_stays_up(old_server, timeout=2.0), (
+                "old pool's dedicated tmux server is still alive after "
+                "recovery; pool.close() must kill its own server, not "
+                "just its session"
+            )
+
+            after = pool_executor(
+                TerminalAction(command="echo after_rebuild", timeout=5.0)
+            )
+            assert not after.is_error
+            assert after.exit_code == 0
+            assert "after_rebuild" in after.text
+        finally:
+            # Belt-and-suspenders: if an assertion above failed before
+            # recovery could clean up (or cleanup itself is broken), make
+            # sure this test-owned leftover server never lingers past the
+            # test. Harmless (and silently ignored) if it is already dead.
+            try:
+                old_server.kill()
+            except Exception:
+                pass
+
+    def test_shell_exit_beside_a_busy_pane_rebuilds_pool(self, pool_executor):
+        # The busy pane keeps the tmux server up, so the exited pane is gone
+        # while the server still answers.
+        busy = threading.Thread(
+            target=lambda: pool_executor(TerminalAction(command="sleep 3", timeout=10))
+        )
+        busy.start()
+        time.sleep(0.5)
+        obs = pool_executor(TerminalAction(command="exit 7", timeout=5.0))
+        busy.join()
+
+        assert obs.is_error
+        assert "rebuilt the terminal pool" in obs.text
+        after = pool_executor(TerminalAction(command="echo after_rebuild", timeout=5.0))
+        assert "after_rebuild" in after.text
+
+    def test_recovery_when_server_survives_without_sessions(self, pool_executor):
+        # The tmux server can outlive its last session for a moment: the shell
+        # exits, the session goes with it, but the server has not torn itself
+        # down yet. In that window tmux cannot resolve the pane target and
+        # reports "no current target" instead of "no server running". The pool
+        # must treat that as recoverable too.
+        pool_executor(TerminalAction(command="echo ready", timeout=5.0))
+        pool = pool_executor._pool
+        assert pool is not None and pool._server is not None
+        pool._server.cmd("set-option", "-s", "exit-empty", "off")
+        pool._session.kill()
+
+        obs = pool_executor(TerminalAction(command="echo after_rebuild", timeout=5.0))
+
+        assert obs.is_error
+        assert "rebuilt the terminal pool" in obs.text
+        assert "no current target" in obs.text
+
+        after = pool_executor(TerminalAction(command="echo recovered", timeout=5.0))
+        assert not after.is_error
+        assert "recovered" in after.text
 
     def test_reset_after_shell_exit_uses_rebuilt_pool(self, pool_executor):
         obs = pool_executor(TerminalAction(command="exit 0", timeout=1.0))

@@ -5,18 +5,19 @@ a reset of the telemetry sink singleton, so no test can observe another's
 process state.
 """
 
-import os
-import tempfile
 from base64 import urlsafe_b64encode
-from pathlib import Path
 from typing import Any
 
 import pytest
 from pydantic import SecretStr
 
 from openhands.agent_server.config import Config, TelemetryExporterKind, TelemetrySpec
-from openhands.agent_server.persistence.store import reset_stores
-from openhands.agent_server.telemetry import reset_telemetry_sink
+from openhands.agent_server.persistence import ServerStores
+from openhands.agent_server.telemetry import (
+    TelemetrySink,
+    build_telemetry_sink,
+    reset_telemetry_sink,
+)
 from openhands.agent_server.telemetry.policy import (
     CONSENT_ENV,
     CONSENT_MODE_ENV,
@@ -41,17 +42,19 @@ def _reset_sink():
 
 
 @pytest.fixture
-def temp_persistence_dir():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        reset_stores()
-        old_val = os.environ.get("OH_PERSISTENCE_DIR")
-        os.environ["OH_PERSISTENCE_DIR"] = tmpdir
-        yield Path(tmpdir)
-        reset_stores()
-        if old_val is not None:
-            os.environ["OH_PERSISTENCE_DIR"] = old_val
-        else:
-            os.environ.pop("OH_PERSISTENCE_DIR", None)
+def temp_persistence_dir(tmp_path, monkeypatch):
+    persistence_dir = tmp_path / "persistence"
+    persistence_dir.mkdir()
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(persistence_dir))
+    return persistence_dir
+
+
+async def build_sink(config: Config) -> TelemetrySink:
+    """Build the sink as a server running ``config`` does.
+
+    Consent is read from that server's own settings store.
+    """
+    return await build_telemetry_sink(config, ServerStores.from_config(config).settings)
 
 
 @pytest.fixture

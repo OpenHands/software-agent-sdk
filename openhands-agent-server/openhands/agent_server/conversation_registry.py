@@ -12,6 +12,7 @@ from openhands.agent_server.models import (
     ConversationRuntimeInfo,
     ConversationRuntimeStatus,
 )
+from openhands.agent_server.persistence import ServerStores
 
 
 if TYPE_CHECKING:
@@ -21,8 +22,9 @@ if TYPE_CHECKING:
 class ConversationRegistry:
     """Route and lifecycle adapter for host-local conversations."""
 
-    def __init__(self, config: Config) -> None:
+    def __init__(self, config: Config, stores: ServerStores) -> None:
         self.config = config
+        self.stores = stores
 
     def configure_service(self, service: ConversationService) -> None:
         """Connect runtime-specific persistence to the shared catalog."""
@@ -80,17 +82,19 @@ class ConversationRegistry:
         return router
 
 
-def create_conversation_registry(config: Config) -> ConversationRegistry:
+def create_conversation_registry(
+    config: Config, stores: ServerStores
+) -> ConversationRegistry:
     if config.conversation_runtime_selectable:
         from openhands.agent_server.docker_runtime.hybrid import (
             HybridConversationRegistry,
         )
 
-        return HybridConversationRegistry(config)
+        return HybridConversationRegistry(config, stores)
     if config.conversation_runtime == "docker":
         from openhands.agent_server.docker_runtime.registry import (
             DockerConversationRegistry,
         )
 
-        return DockerConversationRegistry(config)
-    return ConversationRegistry(config)
+        return DockerConversationRegistry(config, stores)
+    return ConversationRegistry(config, stores)

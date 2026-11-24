@@ -23,10 +23,16 @@ import json
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
+from openhands.sdk.event.ask_user import ASK_USER_TOOL_NAME
 from openhands.sdk.tool.spec import Tool
+
+
+if TYPE_CHECKING:
+    from openhands.agent_server.persistence import SettingsStore
 
 
 @dataclass(frozen=True)
@@ -59,7 +65,68 @@ CONVERSATION_REACTIONS = ExperimentalFeatureDefinition(
     ),
 )
 
-EXPERIMENTAL_FEATURES: list[ExperimentalFeatureDefinition] = [CONVERSATION_REACTIONS]
+ASK_USER = ExperimentalFeatureDefinition(
+    key="ask_user",
+    label="Decision cards",
+    description=(
+        "When a choice is yours to make, the agent can ask you one question "
+        "with a few options and a recommendation, shown as a card you answer "
+        "in one tap or in your own words. Applies to conversations started "
+        "after you turn it on."
+    ),
+)
+
+CONVERSATION_MENTIONS = ExperimentalFeatureDefinition(
+    key="conversation_mentions",
+    label="Conversation mentions",
+    description=(
+        "The agent can find your other conversations by title, read one you "
+        "point it at, and link to them in its answers. Applies to "
+        "conversations started after you turn it on."
+    ),
+)
+
+MESSAGE_EDITS = ExperimentalFeatureDefinition(
+    key="message_edits",
+    label="Message edits",
+    description=(
+        "The agent can edit its earlier messages when they got answered or "
+        "became wrong: it strikes the outdated part and adds a short note, and "
+        "the message shows as edited. Applies to conversations started after "
+        "you turn it on."
+    ),
+)
+
+# Read by clients only: the agent server gives this feature no tools or routes.
+FACTORIES = ExperimentalFeatureDefinition(
+    key="factories",
+    label="Factories",
+    description=(
+        "Shows Factories in the sidebar: named groups of automations that "
+        "together run a software development process. Needs an automation "
+        "service that supports factories."
+    ),
+)
+
+PROJECTS = ExperimentalFeatureDefinition(
+    key="projects",
+    label="Projects",
+    description=(
+        "Group conversations into projects: a coordinator conversation hands "
+        "work to other conversations, hears back from them, and keeps project "
+        "files and memory. Turned off, the projects API is unavailable and project "
+        "tools refuse to run; existing projects are kept."
+    ),
+)
+
+EXPERIMENTAL_FEATURES: list[ExperimentalFeatureDefinition] = [
+    CONVERSATION_REACTIONS,
+    ASK_USER,
+    CONVERSATION_MENTIONS,
+    MESSAGE_EDITS,
+    FACTORIES,
+    PROJECTS,
+]
 
 
 def find_experimental_feature(key: str) -> ExperimentalFeatureDefinition | None:
@@ -86,10 +153,40 @@ def experimental_feature_flags(
 
 def experimental_feature_tools(features: Mapping[str, bool]) -> list[Tool]:
     """Tools to add to an OpenHands agent for the features that are on."""
+    tools: list[Tool] = []
     if is_enabled(features, CONVERSATION_REACTIONS.key):
         # Tool names as registered by openhands.tools.reaction.
-        return [Tool(name="react"), Tool(name="unreact")]
-    return []
+        tools += [Tool(name="react"), Tool(name="unreact")]
+    if is_enabled(features, ASK_USER.key):
+        # Registered by openhands.tools.ask_user.
+        tools.append(Tool(name=ASK_USER_TOOL_NAME))
+    if is_enabled(features, CONVERSATION_MENTIONS.key):
+        # Tool names as registered by openhands.tools.conversation_mentions.
+        tools += [Tool(name="find_conversations"), Tool(name="read_conversation")]
+    if is_enabled(features, MESSAGE_EDITS.key):
+        # Tool name as registered by openhands.tools.message_edit.
+        tools.append(Tool(name="edit_message"))
+    return tools
+
+
+async def feature_enabled_now(key: str, settings_store: "SettingsStore | None") -> bool:
+    """Whether the user has ``key`` on right now (host switches in a runtime).
+
+    For server behavior that follows the switch at once, such as a route or a
+    wake-up. An unreadable settings file, or no store, counts as off.
+    """
+    host_features = host_experimental_features()
+    if host_features is not None:
+        return is_enabled(host_features, key)
+    if settings_store is None:
+        return False
+    from openhands.agent_server.persistence import run_store
+
+    try:
+        features = await run_store(settings_store.experimental_features)
+    except (PermissionError, OSError):
+        return False
+    return is_enabled(features, key)
 
 
 RUNTIME_EXPERIMENTAL_FEATURES_ENV = "OH_RUNTIME_EXPERIMENTAL_FEATURES"

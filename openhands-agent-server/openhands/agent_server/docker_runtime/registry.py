@@ -30,8 +30,7 @@ from openhands.agent_server.models import (
     ConversationRuntimeInfo,
     ConversationRuntimeStatus,
 )
-from openhands.agent_server.persistence import get_settings_store
-from openhands.agent_server.persistence.store import _get_persistence_dir
+from openhands.agent_server.persistence import ServerStores
 from openhands.agent_server.storage import Reclaimer
 from openhands.sdk.conversation.request import ConversationContainerOptions
 from openhands.sdk.logger import get_logger
@@ -128,11 +127,10 @@ class ContainerLease:
 
 
 class DockerConversationRegistry(ConversationRegistry):
-    def __init__(self, config: Config) -> None:
-        super().__init__(config)
+    def __init__(self, config: Config, stores: ServerStores) -> None:
+        super().__init__(config, stores)
         paths = (
-            f"{config.conversations_path.resolve()}\0"
-            f"{_get_persistence_dir(config).resolve()}"
+            f"{config.conversations_path.resolve()}\0{stores.workspace_dir.resolve()}"
         )
         self.owner = hashlib.sha256(paths.encode()).hexdigest()[:24]
         self.provisioning = RuntimeProvisioningStore(config)
@@ -622,7 +620,7 @@ class DockerConversationRegistry(ConversationRegistry):
     def _experimental_features(self) -> dict[str, bool]:
         """The user's experimental-feature switches, for a new container."""
         try:
-            settings = get_settings_store(self.config).load()
+            settings = self.stores.settings.load()
         except (PermissionError, OSError):
             logger.warning(
                 "Cannot read settings; the runtime starts with features off",

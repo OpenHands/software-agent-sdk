@@ -9,9 +9,6 @@ from filelock import FileLock
 
 from openhands.agent_server.api import _add_exception_handlers
 from openhands.agent_server.conversation_lease import ConversationOwnershipLostError
-from openhands.agent_server.conversation_service import (
-    CredentialBindingActivationRequired,
-)
 from openhands.agent_server.errors import (
     ERROR_STATUS,
     ForwardedStatus,
@@ -19,7 +16,10 @@ from openhands.agent_server.errors import (
     error_responses,
     status_for,
 )
-from openhands.agent_server.event_service import ConversationRunLimitExceeded
+from openhands.agent_server.exceptions import (
+    ConversationRunLimitExceeded,
+    CredentialBindingActivationRequired,
+)
 from openhands.sdk.errors import (
     Busy,
     Conflict,

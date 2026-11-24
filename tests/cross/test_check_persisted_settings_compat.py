@@ -424,6 +424,7 @@ def test_generate_baseline_payloads_uses_uv_with_release_cutoff(monkeypatch) -> 
         "--python",
         "/tmp/fake-python",
         "--quiet",
+        "--no-config",
         "--refresh-package",
         "openhands-sdk",
         "--refresh-package",
@@ -432,6 +433,7 @@ def test_generate_baseline_payloads_uses_uv_with_release_cutoff(monkeypatch) -> 
         "2026-01-02T00:00:00Z",
         "openhands-sdk==1.2.3",
         "openhands-agent-server==1.2.3",
+        "litellm<1.109",
     ]
 
 

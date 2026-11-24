@@ -34,6 +34,7 @@ Examples: `examples/01_standalone_sdk/46_agent_settings.py`
 - `S19.profile-resolve`: since 1.60 a launch has two stages in `openhands.sdk.launch`. `resolve(profile_or_id, LaunchStores(llm_profiles=..., mcp_config=..., skills=...))` runs where the stores live and returns a reference-free `ResolvedLaunch` with validated settings: it loads the LLM profile, filters MCP servers, applies `disabled_skills`, scopes tools and delegation, and keeps persona and verification; every dangling reference (LLM profile, MCP servers, meta-profile) is raised together as `UnresolvedProfileReferences`. `finalize(resolved, LaunchRuntime(...))` builds the agent where it runs; `preview_launch(profile, stores, runtime)` reports the same verdict without raising, with secrets redacted. The legacy `resolve_agent_profile` / `resolve_agent_profile_dry_run` were removed. Unit: `tests/sdk/launch/test_resolve_legacy_parity.py`. Example: none. Real-LLM: none.
 - `S19.profile-refs`: renaming an LLM profile cascades to every agent profile that cites it, atomically; deleting a referenced LLM profile raises `ProfileReferenced` naming the referrers. Unit: `tests/sdk/profiles/test_profile_refs.py`, `tests/sdk/profiles/test_store_protocol_hoists.py`. Example: none. Real-LLM: none.
 - `S19.profile-seed`: `build_seed_profile(settings)` derives the default profile from current settings (persona, explicit tools, ACP branch, no disabled skills); `save_profile_preserving_identity` keeps the id and bumps `revision`. Unit: `tests/sdk/profiles/test_store_protocol_hoists.py`. Example: none. Real-LLM: none.
+- `S19.profile-sandbox`: both profile variants take an optional `sandbox=ProfileSandboxSettings(spec_id=...)` (exported from `openhands.sdk.profiles`): a sandbox spec id the host that provisions sandboxes reads; it round-trips through `validate_agent_profile` and `AgentProfileStore`, a stored profile without it loads with `sandbox` `None`, an empty `spec_id`, a missing `spec_id`, an extra key or a non-object is refused, and `resolve()` gives exactly the same `AgentSettings` with or without it. Unit: `tests/sdk/profiles/test_agent_profile.py::test_sandbox_defaults_to_none_and_older_payloads_load`, `::test_sandbox_round_trips_on_both_variants`, `::test_sandbox_rejects_empty_or_unknown_fields`, `tests/sdk/launch/test_resolve.py::test_sandbox_metadata_does_not_change_the_resolved_settings`. Example: none. Real-LLM: none.
 - `S19.credential-binding`: `HttpVersionedCredentialBinding(url, headers).load()` GETs `{value, version}`, `replace(expected_version, value)` PUTs and returns the new version; 404 and 400/422 raise `CredentialNeedsReauthentication`, 409 `CredentialConflict`, 401/403 `CredentialAuthorizationRejected`, 501 `CredentialBindingUnsupported`, invalid URLs `CredentialInvalidResponse`; `reauthorize()` swaps headers for the same URL. Unit: `tests/sdk/test_credential.py`. Example: none. Real-LLM: none.
 
 ## How to get to it (agent POV)
@@ -42,7 +43,7 @@ Examples: `examples/01_standalone_sdk/46_agent_settings.py`
 - `settings.create_agent()`, `settings.model_dump(mode="json")`, `OpenHandsAgentSettings.model_validate(payload)`, `OpenHandsAgentSettings.from_persisted(payload)`, `ConversationSettings.from_persisted(payload)`: `S19.settings-roundtrip`, `S19.schema-migrations`.
 - Constants: `AGENT_SETTINGS_SCHEMA_VERSION = 8`, `CONVERSATION_SETTINGS_SCHEMA_VERSION = 1` (`settings/model.py`), `AGENT_PROFILE_SCHEMA_VERSION = 3` (`profiles/agent_profile.py`).
 - Files: `tests/sdk/persisted_settings_baselines/v1..v10/*.json`, `.github/scripts/check_persisted_settings_compat.py`, workflow `.github/workflows/persisted-settings-compat.yml`: `S19.persisted-baselines`, `S19.pypi-baseline-gate`.
-- `from openhands.sdk.profiles import AgentProfileStore, OpenHandsAgentProfile, ACPAgentProfile, validate_agent_profile, cascade_rename, delete_llm_profile, rename_llm_profile, build_seed_profile, save_profile_preserving_identity`; on disk `~/.openhands/agent-profiles/<name>.json` (moved by `OH_PERSISTENCE_DIR`): `S19.profile-*`. LLM profiles themselves (the `llm_profile_ref` targets) belong to the LLM profile store family (example 37).
+- `from openhands.sdk.profiles import AgentProfileStore, OpenHandsAgentProfile, ACPAgentProfile, validate_agent_profile, cascade_rename, delete_llm_profile, rename_llm_profile, build_seed_profile, save_profile_preserving_identity, ProfileSandboxSettings`; on disk `~/.openhands/agent-profiles/<name>.json` (moved by `OH_PERSISTENCE_DIR`): `S19.profile-*`. LLM profiles themselves (the `llm_profile_ref` targets) belong to the LLM profile store family (example 37).
 - `from openhands.sdk.credential import HttpVersionedCredentialBinding, ResolvedCredential, Credential*`: `S19.credential-binding`; consumed by the ACP agent's file-credential sync.
 - Env read by example 46: `LLM_API_KEY`, `LLM_MODEL` (default `gpt-5.5`), `LLM_BASE_URL`.
 
@@ -184,6 +185,20 @@ Preconditions:
     --check seed.id_kept eq true --check seed.revision_bumped eq true
   ```
   Six threads saving the same name through `save_profile_preserving_identity` leave one profile, one id, revision 5. `list()` returns file names (`coder.json`), as documented.
+- **Sandbox metadata on a profile (`S19.profile-sandbox`).** A v4 payload without the field, both variants with a spec id, four refused shapes, a save and load through the run's `AgentProfileStore`, and `resolve()` of the same profile with and without the field. No model call.
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  control-sdk program S19/profile_sandbox \
+    --check old_payload_sandbox eq null \
+    --check variants.openhands.spec_id eq registry.example/agent-server:qa-s19 --check variants.openhands.round_trip eq true \
+    --check variants.acp.type eq ACPAgentProfile --check variants.acp.spec_id eq registry.example/agent-server:qa-s19 \
+    --check variants.acp.round_trip eq true \
+    --check refused.empty_spec eq string_too_short --check refused.no_spec eq missing \
+    --check refused.extra_key eq extra_forbidden --check refused.string eq model_type \
+    --check store.spec_id eq registry.example/agent-server:qa-s19 --check store.on_disk_spec eq 1 \
+    --check resolve.same_settings eq true --check resolve.settings_mention_spec eq false
+  ```
+  Expected: an older payload loads with no sandbox; the spec id survives validation, a dump-and-load and the store on both variants; the bad shapes are refused with those error types; and the resolved settings are identical with and without the sandbox, which never appears in them.
 - **Credential binding (`S19.credential-binding`).** A versioned credential source served on localhost (Bearer auth, 409 on a stale version, fixed status paths), loaded and replaced through `HttpVersionedCredentialBinding`.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)

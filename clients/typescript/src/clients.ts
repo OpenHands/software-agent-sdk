@@ -15,9 +15,11 @@ export { ConversationClient } from './client/conversation-client';
 export { FileClient } from './client/file-client';
 export { HooksClient } from './client/hooks-client';
 export { GitClient } from './client/git-client';
+export { InitClient } from './client/init-client';
 export { LLMMetadataClient } from './client/llm-client';
 export { MCPClient } from './client/mcp-client';
 export { ProfilesClient } from './client/profiles-client';
+export { PROJECT_ATTENTION_ORDER, ProjectsClient, projectIdKey } from './client/projects-client';
 export { MetaProfilesClient } from './client/meta-profiles-client';
 export { SettingsClient } from './client/settings-client';
 export { SkillsClient } from './client/skills-client';
@@ -55,9 +57,19 @@ export type {
   CreateConversationPayload,
   SendConversationEventOptions,
 } from './client/conversation-client';
-export type { FileClientOptions, FileUploadContent } from './client/file-client';
+export type {
+  FileArchiveFormat,
+  FileArchiveOptions,
+  FileClientOptions,
+  FileUploadContent,
+} from './client/file-client';
 export type { HooksClientOptions } from './client/hooks-client';
-export type { GitClientOptions, SearchRepositoriesOptions } from './client/git-client';
+export type {
+  GitClientOptions,
+  GitCommitsOptions,
+  SearchRepositoriesOptions,
+} from './client/git-client';
+export type { InitClientOptions, InitializeServerOptions } from './client/init-client';
 export type { LLMMetadataClientOptions } from './client/llm-client';
 export type { MCPClientOptions } from './client/mcp-client';
 export type { ProfilesClientOptions, GetProfileOptions } from './client/profiles-client';
@@ -70,6 +82,27 @@ export type {
   ActivateAgentProfileResponse,
 } from './client/agent-profiles-client';
 export type { MetaProfilesClientOptions } from './client/meta-profiles-client';
+export type {
+  CreateProjectRequest,
+  NewProjectCoordinator,
+  Project,
+  ProjectArtifact,
+  ProjectArtifactsResponse,
+  ProjectAttention,
+  ProjectConversation,
+  ProjectConversationsResponse,
+  ProjectDeleteResponse,
+  ProjectMemoryFile,
+  ProjectMemoryFileContent,
+  ProjectMemoryResponse,
+  ProjectPullRequest,
+  ProjectsClientOptions,
+  ProjectsListResponse,
+  ProjectTranscriptMessage,
+  ProjectTranscriptResponse,
+  SaveConversationArtifactRequest,
+  UpdateProjectRequest,
+} from './client/projects-client';
 export type {
   ExperimentalFeature,
   SettingsClientOptions,
@@ -95,6 +128,18 @@ export type {
 } from './client/workspaces-client';
 export type { AgentServerFeatureRequirement } from './client/agent-server-compatibility';
 export type {
+  AgentServerArchiveQuery,
+  AgentServerBatchEventIds,
+  AgentServerBatchEventsResponse,
+  AgentServerGitCommitChangesQuery,
+  AgentServerGitCommitChangesResponse,
+  AgentServerGitCommitsQuery,
+  AgentServerGitCommitsResponse,
+  AgentServerInitRequest,
+  AgentServerInitResponse,
+  AgentServerInitStatus,
+  AgentServerLoadPluginRequest,
+  AgentServerLoadPluginResponse,
   AgentServerCanvasBackendDataDeleteResponse,
   AgentServerCanvasBackendLogs,
   AgentServerCanvasBackendLogsResponse,

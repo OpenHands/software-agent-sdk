@@ -2,14 +2,36 @@
 
 from __future__ import annotations
 
-from openhands.agent_server.config import get_default_config
+import os
+import threading
+
+from openhands.agent_server.skills_service import (
+    discover_profile_skills,
+    discover_public_skill_names,
+)
 from openhands.sdk.logger import get_logger
+from openhands.sdk.skills.skill import PUBLIC_SKILLS_PATH_ENV
 from openhands.sdk.tool.schema import Action
 from openhands.sdk.tool.tool import create_action_type_with_risk
 from openhands.sdk.utils.models import get_known_concrete_subclasses
 
 
 _logger = get_logger(__name__)
+
+
+def _warm_first_conversation() -> None:
+    """Load what the first conversation start would otherwise load inline."""
+    try:
+        # litellm imports this lazily on the first completion through an
+        # OpenAI-compatible client.
+        import openai.resources.chat  # noqa: F401
+
+        # Only a local extensions copy: never add a clone to every startup.
+        if os.environ.get(PUBLIC_SKILLS_PATH_ENV):
+            discover_profile_skills()
+            discover_public_skill_names()
+    except Exception:
+        _logger.debug("First-conversation warm-up failed", exc_info=True)
 
 
 class ToolPreloadService:
@@ -26,6 +48,11 @@ class ToolPreloadService:
             return True
 
         self.running = True
+        threading.Thread(
+            target=_warm_first_conversation,
+            name="first-conversation-warmup",
+            daemon=True,
+        ).start()
         try:
             from openhands.tools.browser_use.impl import BrowserToolExecutor
 
@@ -50,20 +77,3 @@ class ToolPreloadService:
     def is_running(self) -> bool:
         """Check if tool preload is running."""
         return self.running
-
-
-_tool_preload_service: ToolPreloadService | None = None
-
-
-def get_tool_preload_service() -> ToolPreloadService | None:
-    """Get the tool preload service instance if preload is enabled."""
-    global _tool_preload_service
-    config = get_default_config()
-
-    if not config.preload_tools:
-        _logger.info("Tool preload is disabled in configuration")
-        return None
-
-    if _tool_preload_service is None:
-        _tool_preload_service = ToolPreloadService()
-    return _tool_preload_service

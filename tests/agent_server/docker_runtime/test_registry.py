@@ -20,7 +20,7 @@ from openhands.agent_server.docker_runtime.registry import (
     DockerConversationRegistry,
 )
 from openhands.agent_server.models import StartConversationRequest
-from openhands.agent_server.persistence import PersistedSettings, get_settings_store
+from openhands.agent_server.persistence import PersistedSettings, ServerStores
 from openhands.agent_server.storage import trash as trash_module
 from openhands.sdk import LLM, Agent, Message, TextContent
 from openhands.sdk.conversation.request import ConversationContainerOptions
@@ -33,14 +33,15 @@ def registry(
     tmp_path, monkeypatch, idle_ttl: float | None = 1200, **config
 ) -> DockerConversationRegistry:
     monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "persistence"))
+    server_config = Config(
+        conversations_path=tmp_path / "conversations",
+        workspace_path=tmp_path / "workspaces",
+        secret_key=SecretStr("outer-key"),
+        conversation_idle_ttl_seconds=idle_ttl,
+        **config,
+    )
     return DockerConversationRegistry(
-        Config(
-            conversations_path=tmp_path / "conversations",
-            workspace_path=tmp_path / "workspaces",
-            secret_key=SecretStr("outer-key"),
-            conversation_idle_ttl_seconds=idle_ttl,
-            **config,
-        )
+        server_config, ServerStores.from_config(server_config)
     )
 
 
@@ -658,7 +659,7 @@ def test_container_gets_the_hosts_experimental_feature_switches(tmp_path, monkey
         settings.experimental_features = {"conversation_reactions": True}
         return settings
 
-    get_settings_store(runtime.config).update(turn_on)
+    runtime.stores.settings.update(turn_on)
 
     _, command, env = _build_container(runtime, monkeypatch, uuid4())
 
