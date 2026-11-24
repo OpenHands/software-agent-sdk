@@ -1,7 +1,7 @@
 import io
 from typing import BinaryIO
 
-from PIL import Image
+from PIL import Image, features
 
 
 MAX_PREVIEW_DIMENSION = 1024
@@ -41,18 +41,23 @@ def image_view(
         )
         preview = preview.convert("RGBA" if preview.has_transparency_data else "RGB")
         preview.info.clear()
-        while True:
-            output = io.BytesIO()
-            preview.save(output, format="PNG")
-            if output.tell() <= MAX_PREVIEW_BYTES:
-                break
-            preview.thumbnail(
-                (max(1, preview.width * 3 // 4), max(1, preview.height * 3 // 4)),
-                Image.Resampling.LANCZOS,
-            )
+        output = io.BytesIO()
+        image_format = "PNG"
+        preview.save(output, format=image_format)
+        if output.tell() > MAX_PREVIEW_BYTES:
+            image_format = "WEBP" if features.check("webp") else "PNG"
+            while True:
+                output = io.BytesIO()
+                preview.save(output, format=image_format, quality=85)
+                if output.tell() <= MAX_PREVIEW_BYTES:
+                    break
+                preview.thumbnail(
+                    (max(1, preview.width * 3 // 4), max(1, preview.height * 3 // 4)),
+                    Image.Resampling.LANCZOS,
+                )
         area = f" of region {region}" if region is not None else ""
         message = (
             f"Preview {preview.width}x{preview.height}{area} from {path} "
             f"({width}x{height}).{frame} Use image_region on the original for detail."
         )
-        return output.getvalue(), "image/png", message
+        return output.getvalue(), Image.MIME[image_format], message

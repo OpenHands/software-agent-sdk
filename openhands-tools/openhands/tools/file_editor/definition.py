@@ -114,7 +114,7 @@ class FileEditorObservation(Observation):
                     or not header.startswith("data:image/")
                     or len(encoded) <= 4 * ((MAX_PREVIEW_BYTES + 2) // 3)
                 ):
-                    content.append(ImageContent(image_urls=[url]))
+                    content.append(item.model_copy(update={"image_urls": [url]}))
                     continue
                 # Persisted views may contain a full image from before previews.
                 try:
@@ -127,15 +127,12 @@ class FileEditorObservation(Observation):
                         )
                     )
                     continue
+                encoded_preview = base64.b64encode(data).decode("ascii")
+                preview_url = f"data:{mime};base64,{encoded_preview}"
                 content.extend(
                     [
                         TextContent(text=message),
-                        ImageContent(
-                            image_urls=[
-                                f"data:{mime};base64,"
-                                + base64.b64encode(data).decode("ascii")
-                            ]
-                        ),
+                        item.model_copy(update={"image_urls": [preview_url]}),
                     ]
                 )
         return content
