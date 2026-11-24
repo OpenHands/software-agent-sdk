@@ -10,7 +10,10 @@ Usage:
 
 Requirements:
   - LLM_BASE_URL: LiteLLM proxy URL (routes Claude Code requests)
-  - LLM_API_KEY: LiteLLM virtual API key
+  - ACP_LLM_API_KEY: LiteLLM virtual API key whose alias bypasses the proxy's
+    OpenHands-identity guardrail (Claude Code sends its own system prompt,
+    which the guardrail would 403). Falls back to LLM_API_KEY.
+  - RUNTIME_API_URL: Base URL of your runtime API deployment
   - RUNTIME_API_KEY: API key for runtime API access
 """
 
@@ -29,17 +32,25 @@ from openhands.workspace import APIRemoteWorkspace
 logger = get_logger(__name__)
 
 
-# ACP agents (Claude Code) route through LiteLLM proxy
+# ACP agents (Claude Code) route through the OpenHands LiteLLM proxy. Claude
+# Code sends its own non-OpenHands system prompt, so the proxy's identity
+# guardrail would 403 it; ACP_LLM_API_KEY is a dedicated key whose LiteLLM
+# alias (`acp-llm-api-key`) is in the proxy's `ignored_key_aliases`.
 llm_base_url = os.getenv("LLM_BASE_URL")
-llm_api_key = os.getenv("LLM_API_KEY")
-assert llm_base_url and llm_api_key, "LLM_BASE_URL and LLM_API_KEY required"
+llm_api_key = os.getenv("ACP_LLM_API_KEY") or os.getenv("LLM_API_KEY")
+assert llm_base_url and llm_api_key, (
+    "LLM_BASE_URL and ACP_LLM_API_KEY (or LLM_API_KEY) required"
+)
 
 # Set ANTHROPIC_* vars so Claude Code routes through LiteLLM
 os.environ["ANTHROPIC_BASE_URL"] = llm_base_url
 os.environ["ANTHROPIC_API_KEY"] = llm_api_key
 
+runtime_api_url = os.getenv("RUNTIME_API_URL")
 runtime_api_key = os.getenv("RUNTIME_API_KEY")
-assert runtime_api_key, "RUNTIME_API_KEY required"
+assert runtime_api_url and runtime_api_key, (
+    "RUNTIME_API_URL and RUNTIME_API_KEY required"
+)
 
 # SDK_SHA is the canonical commit SHA set by CI workflows (avoids the
 # built-in GITHUB_SHA which resolves to the merge-commit on PRs).
@@ -48,7 +59,7 @@ server_image = f"ghcr.io/openhands/agent-server:{server_image_sha[:7]}-python-am
 logger.info(f"Using server image: {server_image}")
 
 with APIRemoteWorkspace(
-    runtime_api_url=os.getenv("RUNTIME_API_URL", "https://runtime.eval.all-hands.dev"),
+    runtime_api_url=runtime_api_url,
     runtime_api_key=runtime_api_key,
     server_image=server_image,
     image_pull_policy="Always",

@@ -28,8 +28,9 @@ Examples: `examples/01_standalone_sdk/25_agent_delegation.py`, `examples/01_stan
 - `S11.task-metrics`: each sub-agent gets its own LLM copy (streaming off, fresh metrics), and after a run its combined metrics are stored in the parent's `conversation_stats.usage_to_metrics["task:<id>"]`, replaced on resume, not double counted. Unit: `tests/tools/task/test_task_manager.py::TestTaskMetrics`. Example: `examples/01_standalone_sdk/25_agent_delegation.py` (prints `EXAMPLE_COST`). Real-LLM: none.
 - `S11.task-persistence`: with a persisting parent, sub-conversations are stored under `<parent persistence_dir>/subagents/` and kept on close; without one they go to a temporary `openhands_tasks_*` dir that `close()` deletes. Unit: `tests/tools/task/test_task_manager.py::TestTaskManagerPersistence`. Example: none. Real-LLM: none.
 - `S11.task-hooks`: a definition's `hooks` become the sub-conversation's `hook_config`, on create and on resume. Unit: `tests/tools/task/test_task_manager.py::TestTaskManagerHooks`. Example: none. Real-LLM: none.
-- `S11.task-observability`: sub-conversations share the parent's prompt cache key and carry delegate trace metadata (`is_delegate`, `task_id`, `subagent_type`, `parent_session_id`, parent span link) and the `delegate` tag. Unit: `tests/tools/task/test_task_manager.py::TestTaskManager::test_sub_agents_inherit_parent_prompt_cache_key`, `::test_resumed_sub_agent_keeps_parent_prompt_cache_key`, `::test_marks_conversation_as_delegate_with_linking_metadata`, `::test_delegate_metadata_includes_parent_span_link`. Example: none. Real-LLM: none.
-- `S11.task-confirmation`: a definition's `permission_mode` sets the sub-conversation's confirmation policy, omission inherits the parent's; when the sub-agent waits for confirmation, `TaskToolSet.create(confirmation_handler=...)` decides, and without a handler the actions are approved. Unit: **none (untested)**. Example: none. Real-LLM: none.
+- `S11.task-observability`: sub-conversations share the parent's prompt cache key and carry delegate trace metadata (`is_delegate`, `task_id`, `subagent_type`, `parent_session_id`, parent span link) and the `delegate` tag. Unit: `tests/tools/task/test_task_manager.py::TestTaskManager::test_sub_agents_inherit_parent_prompt_cache_key`, `::test_marks_conversation_as_delegate_with_linking_metadata`, `::test_delegate_metadata_includes_parent_span_link`. Example: none. Real-LLM: none.
+- `S11.task-secrets`: secrets the parent conversation holds (`conversation.update_secrets(...)`) resolve in a task sub-agent's terminal, on create and on resume, and stay masked in what comes back. Unit: `tests/tools/task/test_secret_inheritance.py`. Example: none. Real-LLM: none.
+- `S11.task-confirmation`: a definition's `permission_mode` sets the sub-conversation's confirmation policy, omission inherits the parent's; when the sub-agent waits for confirmation, `TaskToolSet.create(confirmation_handler=...)` decides; without a handler the actions are approved and the parent's security analyzer is not passed on (a known failure, [#6999](https://github.com/OpenHands/software-agent-sdk/issues/6999)). Unit: **none (untested)**. Example: none. Real-LLM: none.
 - `S11.sub-agent-scope`: `SubAgentScope(tools=True, mcp_servers=True)` (the `sub_agent_scope` tool param) hides and refuses sub-agents whose tools or MCP servers the parent lacks, compares built-in tool names canonically, propagates to nested delegation tools, and says so when no sub-agent fits. Unit: `tests/sdk/subagent/test_subagent_scope.py`, `tests/tools/task/test_sub_agent_scope.py`. Example: none. Real-LLM: none.
 - `S11.delegate-executor`: the older `DelegateExecutor` (`spawn` named sub-agents, then `delegate` a dict of tasks run in parallel threads) closes replaced and spawned sub-agents, rolls back a partial spawn, merges metrics, and inherits the parent's persistence dir. Unit: `tests/tools/delegate/test_delegation.py`. Example: none. Real-LLM: none.
 - `S11.delegation-visualizer`: `DelegationVisualizer(name=...)` labels messages by sender and agent name and creates per-task sub-visualizers. Unit: `tests/tools/delegate/test_visualizer.py`. Example: all three examples. Real-LLM: none.
@@ -72,6 +73,18 @@ Programs give each programmatic sub-agent its own scripted LLM (`programs/S11/s1
     --check subagent_dirs eq 3 --check sub_hook_lines len-eq 1 --check sub_hook_lines.0 eq sub-hook
   ```
   The resumed sub-agent's LLM request still holds the first prompt; a non-finished sub-agent comes back as an error observation with the run's error, never an empty success; three sub-conversations stay under `<parent>/subagents/` after close.
+- **Resume a task after the parent is reopened (`S11.task-resume`, `S11.task-persistence`).** A persisted parent delegates to `echoer` (`task_00000001`) and closes; a second process reopens the parent by id (a new task tool) and its model calls `task(resume="task_00000001")`. Then, in one session, a parent resumes its `echoer` task naming the type `other` (no tools).
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  CID=$(control-sdk program S11/task_resume_session --arg create --check observations.0.status eq completed --field id)
+  control-sdk program S11/task_resume_session --arg resume --arg "$CID" \
+    --check observations len-eq 2 --check observations.1.task_id eq task_00000001 \
+    --check observations.1.status eq completed --check echoer_calls eq 1 --check subagent_dirs len-eq 1
+  control-sdk program S11/task_resume_session --arg retype \
+    --check observations.1.task_id eq task_00000001 --check observations.1.status eq completed \
+    --check echoer_calls eq 2 --check other_calls eq 0
+  ```
+  Expected: the reopened parent's task tool finds `task_00000001` (its sub-conversation is on disk under `<parent>/subagents/`) and continues it, and a resume runs the type the task was created with. Known failure (reproduced 2026-11-19, [#6990](https://github.com/OpenHands/software-agent-sdk/issues/6990)): the task index lives only in the `TaskManager`'s memory, so after the reopen the resume fails with `Task 'task_00000001' not found. Available tasks: ` (`task_id` `unknown`, `status` `error`) although the sub-conversation directory is there; and `Task` does not record its type, so resuming with `other` builds that agent and fails with `Cannot resume conversation: tools were removed mid-conversation (removed: ['terminal'])`.
 - **Delegates share the parent's prompt-cache key (`S11.task-observability`).** Same scenario; each `echoer` LLM call records its call context.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
@@ -80,6 +93,15 @@ Programs give each programmatic sub-agent its own scripted LLM (`programs/S11/s1
     --check sub_cache_key_is_parent.2 eq true --check sub_session_differs eq true
   ```
   Expected: every sub-agent call carries the parent conversation's id as `prompt_cache_key`, on create and on resume. Before #6655, the call made after `task(resume=...)` carried the sub-conversation's own id (`[true, true, false]`) because `TaskManager._resume_task` built the `LocalConversation` without `prompt_cache_key=...`; now the resumed task passes the parent's id too.
+- **Delegates see the parent's secrets (`S11.task-secrets`).** A persisted parent registers `PROBE_TOKEN` with `update_secrets`, runs `echo probe=${PROBE_TOKEN:+set} value=$PROBE_TOKEN` itself, then delegates the same command to the programmatic sub-agent `prober` and resumes that task for a second run.
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  control-sdk program S11/task_secrets \
+    --check execution_status eq finished --check parent_probe eq set \
+    --check task_statuses len-eq 2 --check parent_masked eq true --check secret_leaked eq false \
+    --check create_probe eq set --check resume_probe eq set
+  ```
+  Expected: the secret resolves in the sub-agent's shell, on create and on resume, as it does in the parent's (`create_probe` and `resume_probe` are `set`), and the parent's output stays masked.
 - **Delegate trace metadata (`S11.task-observability`), blocked.** `is_delegate`, `task_id`, `subagent_type`, `parent_session_id`, the parent span link and the `delegate` tag go only to the observability backend; proving them needs a Laminar/OpenTelemetry collector to read spans from.
 - **Registry, Markdown definitions and factories (`S11.register-programmatic`, `S11.register-if-absent`, `S11.markdown-schema`, `S11.file-discovery`, `S11.file-precedence`, `S11.plugin-agents`, `S11.definition-factory`, `S11.definition-model`).** The program lays out agent files in the workspace (`.agents/agents/`, `.openhands/agents/`, a `README.md`, a nested dir), the user's home (`~/.agents/agents/`) and `$OH_PERSISTENCE_DIR/agents/`, saves an LLM profile, and goes through `openhands.sdk.subagent`.
   ```sh
@@ -125,7 +147,7 @@ Programs give each programmatic sub-agent its own scripted LLM (`programs/S11/s1
   control-sdk program S11/builtins \
     --check example_in_description.general-purpose eq true --check example_in_description.web-researcher eq true
   ```
-  Known failure (reproduced 2026-10-13, not yet filed): with all four built-ins registered, only the `code-explorer` and `bash-runner` examples appear. `TASK_TOOL_EXAMPLES` keys the other two as `"general purpose"` and `"web researcher"` (spaces), while the built-ins register as `general-purpose` and `web-researcher`, so their examples never match.
+  Expected: with all four built-ins registered, the description holds an example for each, keyed by the names the built-ins register under.
 - **Workspace Markdown agents picked up by the conversation (`S11.conversation-autoregister`, `S11.builtin-agents`, `S11.task-persistence`).** The workspace holds `.agents/agents/ws-reviewer.md`; the program never calls `register_file_agents`. A non-persisted parent delegates to it and to the built-in `bash-runner`.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
@@ -136,7 +158,7 @@ Programs give each programmatic sub-agent its own scripted LLM (`programs/S11/s1
     --check builtin_written eq true --check description_lists_ws_reviewer eq true --check script_left eq 0 \
     --check temp_task_dirs_before_close eq 1 --check temp_task_dirs_after_close eq 0
   ```
-- **Sub-agent confirmation (`S11.task-confirmation`).** The program registers its own task tool set whose `create()` passes a `confirmation_handler`; `careful` has `permission_mode: always_confirm` and the handler rejects it; after `set_confirmation_policy(AlwaysConfirm())` on the parent, `inheritor` (no `permission_mode`) inherits the policy and the handler approves; a plain `TaskToolSet` without a handler approves on its own.
+- **Sub-agent confirmation (`S11.task-confirmation`).** The program registers its own task tool set whose `create()` passes a `confirmation_handler`; `careful` has `permission_mode: always_confirm` and the handler rejects it; after `set_confirmation_policy(AlwaysConfirm())` on the parent, `inheritor` (no `permission_mode`) inherits the policy and the handler approves.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
   control-sdk program S11/task_confirmation \
@@ -145,9 +167,17 @@ Programs give each programmatic sub-agent its own scripted LLM (`programs/S11/s1
     --check careful_file eq false --check observations.0.text eq "careful done" \
     --check parent_waited eq waiting_for_confirmation \
     --check handler_calls.1.task_id eq task_00000002 --check handler_calls.1.approved eq true \
-    --check inherited_file eq true --check execution_status eq finished \
-    --check auto_file eq true --check plain_observations.0.status eq completed
+    --check inherited_file eq true --check execution_status eq finished
   ```
+- **Sub-agent confirmation with no handler, and the parent's analyzer (`S11.task-confirmation`, `S11.delegate-executor`).** No handler: `careful` (`permission_mode: always_confirm`) runs `touch closed-task.txt` through the plain task tool, and `careful_worker` (the same mode) runs `touch closed-delegate.txt` through a `DelegateExecutor` wrapped in a `delegate` tool. Then a parent with `ConfirmRisky()` and a recording analyzer (LOW for `task`, HIGH otherwise) delegates `touch risky.txt` to `inheritor` (no `permission_mode`) through a task tool whose handler rejects.
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  control-sdk program S11/task_fail_closed \
+    --check task_file eq false --check delegate_file eq false \
+    --check risky_status eq finished --check handler_calls len-eq 1 --check handler_calls.0.tools.0 eq terminal \
+    --check risky_file eq false --check sub_action_analyzed eq true
+  ```
+  Expected: with nothing to ask, a sub-agent action that waits for confirmation is rejected, not run (neither file exists); the sub-conversation gets the parent's security analyzer, so the analyzer rates the sub-agent's `terminal` call. Known failure (reproduced 2026-11-19, [#6999](https://github.com/OpenHands/software-agent-sdk/issues/6999)): `TaskManager._run_until_finished` and `DelegateExecutor._run_until_finished` treat a missing `confirmation_handler` as approval and call `run()` again, so both files are written and the task comes back `completed`; the analyzer is asked only about the parent's `task` call (`analyzed_tools` is `["task"]`, `sub_action_analyzed` false): the sub-agent runs with no analyzer, and the handler is asked only because `ConfirmRisky` confirms an unrated action.
 - **Sub-agent scope (`S11.sub-agent-scope`).** A parent with only the terminal sets `sub_agent_scope: {tools: true}` on its task tool; `editor` needs `file_editor`, `sheller` needs the terminal and has its own task tool; a parent with no tools of its own is offered nothing.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)

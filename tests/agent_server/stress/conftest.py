@@ -21,6 +21,7 @@ import pytest_asyncio
 from fastapi import FastAPI
 
 from openhands.agent_server import bash_router as bash_router_module
+from openhands.agent_server.api import add_domain_error_handler
 from openhands.agent_server.bash_service import BashEventService
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_router import conversation_router
@@ -31,6 +32,7 @@ from openhands.agent_server.server_details_router import (
     mark_initialization_complete,
     server_details_router,
 )
+from tests.agent_server.conftest import install_test_context
 from tests.agent_server.stress.budgets import CONCURRENT_CONVERSATIONS
 from tests.agent_server.stress.probe import ResourceProbe
 
@@ -80,19 +82,19 @@ def app(
     that need websocket coverage assert against pub_sub internals (white-box)
     rather than performing real WS handshakes through ASGITransport.
 
-    ``app.state.config`` is set so any code that reads it (e.g. middleware)
-    finds something. ``mark_initialization_complete`` is called so /ready
-    returns 200 in the responsiveness canary.
+    A server context is installed so any code that reads it (config, stores,
+    the bash service) finds one. ``mark_initialization_complete`` is called
+    so /ready returns 200 in the responsiveness canary.
     """
     fastapi_app = FastAPI()
-    fastapi_app.state.config = Config()
-    fastapi_app.state.bash_event_service = bash_service
+    add_domain_error_handler(fastapi_app)
+    install_test_context(fastapi_app, Config(), bash_event_service=bash_service)
     fastapi_app.include_router(server_details_router)
     fastapi_app.include_router(conversation_router, prefix="/api")
     fastapi_app.include_router(event_router, prefix="/api")
     fastapi_app.include_router(bash_router_module.bash_router, prefix="/api")
-    fastapi_app.dependency_overrides[get_conversation_service] = (
-        lambda: conversation_service
+    fastapi_app.dependency_overrides[get_conversation_service] = lambda: (
+        conversation_service
     )
     mark_initialization_complete()
     return fastapi_app

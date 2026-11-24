@@ -48,3 +48,10 @@ def atomic_write_text(path: Path, value: str, mode: int = 0o600) -> None:
         except OSError:
             pass
         raise
+
+    if os.name == "posix":
+        directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)

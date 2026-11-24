@@ -7,7 +7,17 @@ import type {
   FileSearchSubdirsOptions,
   FileSubdirectoryPage,
 } from '../models/api';
+import type { AgentServerArchiveQuery } from '../models/agent-server-api';
 import type { Success } from '../types/base';
+
+export type FileArchiveFormat = NonNullable<AgentServerArchiveQuery['format']>;
+
+export interface FileArchiveOptions {
+  format?: FileArchiveFormat;
+  baseRef?: string | null;
+  useDefaultExcludes?: boolean;
+  exclude?: string[];
+}
 
 export type FileClientOptions = RuntimeServiceClientOptions;
 
@@ -92,6 +102,41 @@ export class FileClient {
 
   async uploadTextFile(text: string, destinationPath: string, fileName?: string): Promise<Success> {
     return this.uploadFile(text, destinationPath, fileName);
+  }
+
+  /** Download a zip/tar archive of a directory as a browser-compatible Blob. */
+  async downloadArchive(path: string, options: FileArchiveOptions = {}): Promise<Blob> {
+    const response = await this.runtimeClient.get<Blob>('/api/file/archive', {
+      params: {
+        path,
+        format: options.format,
+        base_ref: options.baseRef ?? undefined,
+        use_default_excludes: options.useDefaultExcludes,
+        exclude: options.exclude,
+      },
+      responseType: 'blob',
+      cache: 'no-store',
+    });
+    return response.data;
+  }
+
+  /** Same archive as {@link downloadArchive}, as an ArrayBuffer. */
+  async downloadArchiveBuffer(
+    path: string,
+    options: FileArchiveOptions = {}
+  ): Promise<ArrayBuffer> {
+    const response = await this.runtimeClient.get<ArrayBuffer>('/api/file/archive', {
+      params: {
+        path,
+        format: options.format,
+        base_ref: options.baseRef ?? undefined,
+        use_default_excludes: options.useDefaultExcludes,
+        exclude: options.exclude,
+      },
+      responseType: 'arrayBuffer',
+      cache: 'no-store',
+    });
+    return response.data;
   }
 
   async downloadTrajectory(conversationId: string): Promise<Blob> {

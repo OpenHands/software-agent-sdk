@@ -6,13 +6,16 @@ Tests the check_session_api_key dependency with multiple session API keys suppor
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
+from openhands.agent_server.api import add_domain_error_handler
 from openhands.agent_server.config import Config
 from openhands.agent_server.dependencies import check_session_api_key
+from tests.agent_server.conftest import install_test_context
 
 
 def _make_app(session_api_keys: list[str]) -> FastAPI:
     app = FastAPI()
-    app.state.config = Config(session_api_keys=session_api_keys)
+    add_domain_error_handler(app)
+    install_test_context(app, Config(session_api_keys=session_api_keys))
 
     @app.get("/test", dependencies=[Depends(check_session_api_key)])
     async def test_endpoint():
@@ -52,7 +55,7 @@ def test_check_session_api_key_no_keys_configured():
 
 
 def test_check_session_api_key_reflects_config_update():
-    """Updating app.state.config is reflected immediately; no route re-registration needed."""  # noqa: E501
+    """A new server context is reflected immediately; no route re-registration."""
     app = _make_app(["old-key"])
     client = TestClient(app, raise_server_exceptions=False)
 
@@ -60,7 +63,7 @@ def test_check_session_api_key_reflects_config_update():
         client.get("/test", headers={"X-Session-API-Key": "old-key"}).status_code == 200
     )
 
-    app.state.config = Config(session_api_keys=["new-key"])
+    install_test_context(app, Config(session_api_keys=["new-key"]))
 
     assert (
         client.get("/test", headers={"X-Session-API-Key": "new-key"}).status_code == 200

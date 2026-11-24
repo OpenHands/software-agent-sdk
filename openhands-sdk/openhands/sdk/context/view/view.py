@@ -12,6 +12,7 @@ from openhands.sdk.event import (
     Condensation,
     CondensationRequest,
     LLMConvertibleEvent,
+    ReactionEvent,
 )
 from openhands.sdk.event.base import Event
 
@@ -124,6 +125,10 @@ class View(BaseModel):
 
             case CondensationRequest():
                 self.unhandled_condensation_request = True
+
+            # The agent's own reactions: its react call is already in view.
+            case ReactionEvent(source="agent"):
+                pass
 
             case LLMConvertibleEvent():
                 self.events.append(event)

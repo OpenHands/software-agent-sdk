@@ -14,6 +14,7 @@ import {
   Message,
 } from '../types/base';
 import type { HookConfig } from '../hooks';
+import type { ACPEffortOption } from './acp-model-discovery';
 import type { LaunchedAgentProfile, LaunchedProfile } from './agent-profile';
 
 export enum ConversationSortOrder {
@@ -46,6 +47,8 @@ export interface ConversationInfo {
    * Note: This field was renamed from agent_status to execution_status in the API.
    */
   execution_status: ConversationExecutionStatus;
+  current_effort?: string | null;
+  available_efforts?: ACPEffortOption[];
   /**
    * @deprecated Use execution_status instead. This field is kept for backward compatibility.
    */
@@ -235,14 +238,25 @@ export type ConversationEventCountOptions = Omit<
   'page_id' | 'limit' | 'sort_order'
 >;
 
+export interface BrokenConversationInfo {
+  id: ConversationID;
+  title?: string | null;
+  created_at: string;
+  updated_at: string;
+  tags?: Record<string, string>;
+  reason: 'metadata' | 'state';
+}
+
 export interface ConversationSearchResponse {
   items: ConversationInfo[];
+  broken_items?: BrokenConversationInfo[];
   next_page_id?: string;
   total_count?: number;
 }
 
 export interface ACPConversationSearchResponse {
   items: ACPConversationInfo[];
+  broken_items?: BrokenConversationInfo[];
   next_page_id?: string;
   total_count?: number;
 }

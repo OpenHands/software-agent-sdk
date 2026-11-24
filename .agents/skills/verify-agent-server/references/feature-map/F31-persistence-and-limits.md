@@ -24,11 +24,12 @@ Routes: none
 - `F31.lease-renewed`: while the server lives, the lease's `expires_at` moves forward within 15 s, with the same owner and generation.
 - `F31.lease-released-graceful`: a graceful restart deletes the lease of every loaded conversation, catalog reads do not claim it again, and the next load claims generation 1 under the new pid.
 - `F31.lease-dead-owner-takeover`: after a SIGKILL the lease still names the dead pid; the restarted server takes it over on first load with generation 2 and logs the takeover.
-- `F31.crash-tool-call`: a conversation SIGKILLed during a tool call is loaded again at startup, comes back `error` with one `AgentErrorEvent` answering the interrupted call and no observation, and the resumed run hands that error to the model.
+- `F31.lease-zombie-owner-takeover`: a restarted server serves its own conversation at once and takes the lease over as generation 2 also when the SIGKILLed owner's pid is still in the process table as a zombie (killed, not reaped); the lease records the owner's process start time (`owner_started_at`).
+- `F31.crash-tool-call`: a conversation SIGKILLed during a tool call is loaded again at startup, comes back `error` with one `AgentErrorEvent` (`recovery_reason: server_restart`) answering the interrupted call and no observation, and the resumed run hands that error to the model.
 - `F31.state-survives-restarts`: a conversation's title, tags and events, the settings, a stored secret and the LLM profiles read back unchanged after a graceful restart and after a SIGKILL.
 - `F31.no-plaintext-at-rest`: after a real model run, the provider key, a stored secret and a conversation secret appear nowhere in the run's persisted files or the server log, while the server still hands out the provider key and the stored secret and keeps the conversation secret encrypted in its registry.
 - `F31.second-instance-catalog`: a second server sharing the conversations directory lists, counts and reads conversations that existed when it started, without claiming their leases.
-- `F31.second-instance-lease-held`: while the owner lives, the second server cannot load the conversation: event reads, sending a message, `/run` and `agent_final_response` are 404, PATCH is `success: false`, pause, interrupt and DELETE are 400, its events socket closes 4004, and nothing changes.
+- `F31.second-instance-lease-held`: while the owner lives, the second server cannot load the conversation: event reads, sending a message, `/run`, `agent_final_response`, PATCH, pause, interrupt and DELETE are all 404, its events socket closes 4004, and nothing changes.
 - `F31.second-instance-takeover`: once the owner is SIGKILLed, the second server takes the conversation over at once (generation 2, its pid) with the same events, and the restarted owner is now the one refused.
 - `F31.takeover-keeps-metadata`: a title the owner stored after the second server started survives the second server's takeover, in its GET and in `meta.json`.
 - `F31.lease-expiry-fencing`: an owner that stops renewing (frozen, pid alive) loses the lease once it expires, and after it resumes its writes are refused and never reach disk.
@@ -188,6 +189,51 @@ Preconditions:
   first load on the restarted server takes it over at once (same host, pid
   gone) as generation 2 and logs `Taking over conversation lease ... from
   dead owner`.
+- **Zombie owner takeover (`F31.lease-zombie-owner-takeover`).**
+  The same crash, seen where nothing reaps the dead server (a container whose
+  PID 1 does not): its pid stays in the process table as a zombie. To get
+  that state on any machine, a helper makes itself a child subreaper
+  (`prctl(PR_SET_CHILD_SUBREAPER)`, Linux), launches a second server `Z`,
+  which is thereby its child, and never waits on it.
+  ```sh
+  ZLOG="$AGENT_SERVER_VERIFY_RUN/fixtures/qa-f31-zombie-parent.log"
+  control-agent-server helper start --name qa-f31-zombie-parent --log "$ZLOG" -- python3 -c \
+    'import ctypes, subprocess, sys, time; ctypes.CDLL(None).prctl(36, 1, 0, 0, 0); subprocess.run(sys.argv[1:], check=True); time.sleep(900)' \
+    control-agent-server launch --new --name f31-zombie --print-run
+  for i in $(seq 1 240); do test -s "$ZLOG" && break; sleep 0.5; done
+  Z=$(head -n 1 "$ZLOG")
+  test -f "$Z/run.json"
+  stop_zombie_run() {
+    control-agent-server stop --run "$Z" >/dev/null 2>&1 || true
+    control-agent-server helper stop qa-f31-zombie-parent >/dev/null 2>&1 || true
+  }
+  trap stop_zombie_run EXIT
+  ZPID=$(jq -r .pid "$Z/run.json")
+  ZC=$(control-agent-server conversation start --run "$Z" --tools none --no-autotitle --prompt 'qa-f31-zombie-marker' --no-run --print-id)
+  ZN=$(control-agent-server api GET "/api/conversations/$ZC/events/count" --run "$Z" --expect 200 --field .)
+  control-agent-server state cat owner_lease.json --run "$Z" --conversation "$ZC" --check owner_pid eq "$ZPID" --check generation eq 1 \
+    --check owner_started_at exists
+  control-agent-server restart --hard --run "$Z"
+  test "$(ps -o state= -p "$ZPID")" = Z
+  ZPID2=$(jq -r .pid "$Z/run.json")
+  test "$ZPID2" != "$ZPID"
+  control-agent-server state cat owner_lease.json --run "$Z" --conversation "$ZC" --check owner_pid eq "$ZPID" --check generation eq 1 \
+    --check expires_at gt "$(date +%s)"
+  control-agent-server api GET "/api/conversations/$ZC" --run "$Z" --expect 200 --check id eq "$ZC" --quiet
+  control-agent-server api GET "/api/conversations/$ZC/events/count" --run "$Z" --expect 200 --check . eq "$ZN" --save F31.lease-zombie-owner-takeover/first-load
+  control-agent-server state cat owner_lease.json --run "$Z" --conversation "$ZC" --check owner_pid eq "$ZPID2" --check generation eq 2
+  control-agent-server stop --run "$Z"
+  control-agent-server helper stop qa-f31-zombie-parent
+  trap - EXIT
+  ```
+  After the SIGKILL the old pid is in state `Z` (a zombie, its parent the
+  helper) and the leftover lease still names it, generation 1, not yet
+  expired. The restarted server lists the conversation (GET is a catalog
+  read) and must load it on the first request with the events it had before
+  the crash, taking the lease over as generation 2, as it does when the pid
+  is gone
+  (`F31.lease-dead-owner-takeover`): a pid in state `Z` (or `X`) counts as
+  dead. Evidence lands in `Z`'s `evidence/`.
 - **Crash during a tool call (`F31.crash-tool-call`).** `T`'s model asks for
   `terminal` `sleep 300`; the server is SIGKILLed while it runs, then the
   stub is rewritten to call `finish` and the run resumes.
@@ -203,7 +249,8 @@ Preconditions:
   control-agent-server api GET "/api/conversations/$T" --check execution_status eq error --quiet --save F31.crash-tool-call/get
   control-agent-server api GET "/api/conversations/$T/events/search" --query kind=$AGENT_ERROR_KIND --check items len-eq 1 \
     --check items.0.tool_call_id eq "$TCALL" --check items.0.error contains 'A restart occurred while this tool was in progress' \
-    --save F31.crash-tool-call/agent-error
+    --check items.0.recovery_reason eq server_restart --check items.0.classification.kind eq internal \
+    --check items.0.classification.retryable eq false --save F31.crash-tool-call/agent-error
   control-agent-server api GET "/api/conversations/$T/events/count" --query kind=$OBSERVATION_KIND --check . eq 0
   control-agent-server fixture llm-stub --name qa-f31-tool --step 'tool:finish:{"message":"QA_F31_RESUMED"}'
   control-agent-server api POST "/api/conversations/$T/run" --expect 200 --check success eq true
@@ -216,7 +263,9 @@ Preconditions:
   startup loaded `T` (its lease already names the new pid), marked it
   `error` and appended one `AgentErrorEvent` for the open `tool_call_id`
   ("A restart occurred while this tool was in progress ..."), with no
-  observation. The resumed model request carries that error as the tool
+  observation. The error says where it came from: `recovery_reason:
+  "server_restart"` (`null` on errors not synthesized by recovery)
+  and `classification` `{"kind": "internal", "retryable": false}`. The resumed model request carries that error as the tool
   result, and `T` finishes.
 - **State survives restarts (`F31.state-survives-restarts`).** One
   conversation, a settings field, a stored secret and the two DeepSeek
@@ -308,11 +357,11 @@ Preconditions:
   control-agent-server api POST "/api/conversations/$X/events" --run "$B" --json '{"role": "user", "content": [{"type": "text", "text": "qa-f31-from-b"}], "run": false}' --expect 404
   control-agent-server api POST "/api/conversations/$X/run" --run "$B" --expect 404 --save F31.second-instance-lease-held/run
   control-agent-server api GET "/api/conversations/$X/agent_final_response" --run "$B" --expect 404
-  control-agent-server api PATCH "/api/conversations/$X" --run "$B" --json '{"title": "QA F31 from B"}' --expect 200 --check success eq false \
+  control-agent-server api PATCH "/api/conversations/$X" --run "$B" --json '{"title": "QA F31 from B"}' --expect 404 \
     --save F31.second-instance-lease-held/patch
-  control-agent-server api POST "/api/conversations/$X/pause" --run "$B" --expect 400
-  control-agent-server api POST "/api/conversations/$X/interrupt" --run "$B" --expect 400
-  control-agent-server api DELETE "/api/conversations/$X" --run "$B" --expect 400 --save F31.second-instance-lease-held/delete
+  control-agent-server api POST "/api/conversations/$X/pause" --run "$B" --expect 404
+  control-agent-server api POST "/api/conversations/$X/interrupt" --run "$B" --expect 404
+  control-agent-server api DELETE "/api/conversations/$X" --run "$B" --expect 404 --save F31.second-instance-lease-held/delete
   control-agent-server ws listen "/sockets/events/$X" --run "$B" --expect-close 4004 --duration 10 --save F31.second-instance-lease-held/socket
   control-agent-server api GET "/api/conversations/$X" --run "$B" --expect 200 --check title eq 'QA F31 shared' --quiet
   control-agent-server state cat owner_lease.json --conversation "$X" --check owner_instance_id eq "$OWNER" --check generation eq 1
@@ -323,8 +372,7 @@ Preconditions:
   control-agent-server stop --run "$B"
   trap - EXIT
   ```
-  Every loading call on `B` reports the conversation as missing (404, 400 or
-  `success: false`, socket close 4004 `Conversation not found`), the same
+  Every loading call on `B` reports the conversation as missing (404; socket close 4004 `Conversation not found`), the same
   answers an unknown id gets, although `B`'s GET still reads it from the
   catalog. The lease, the title, the event count and the event log on the
   owner are unchanged, and `X` was not deleted.
@@ -818,13 +866,19 @@ Preconditions:
   conversation (takeover or not) it writes that stale copy to `meta.json`
   (`F31.takeover-keeps-metadata`).
 - A conversation whose lease is held elsewhere looks exactly like an unknown
-  id on the second server (404, 400, `success: false`, close 4004), while its
+  id on the second server (404, close 4004), while its
   GET is 200 from the catalog. Only the lease file tells the two apart.
 - Takeover before expiry needs the recorded owner on the same host with a
   dead pid. A frozen or hung owner (pid alive), an owner on another host, or
   a lease file from an older server without `owner_host`/`owner_pid` is taken
   over only after `expires_at`. A TTL below the 15 s renewal interval expires
-  between renewals.
+  between renewals. A zombie pid (a killed server nobody reaped, as under a
+  PID 1 that does not reap) counts as dead (`F31.lease-zombie-owner-takeover`).
+  On Linux the lease also records the owner's process start time
+  (`owner_started_at`, from `/proc/<pid>/stat`), so a live pid whose start
+  time differs (a pid reused by a restarted server in a container) counts as
+  dead too; a lease without that field, or a host without `/proc`, falls back
+  to the pid check alone.
 - An owner that lost its lease keeps the conversation loaded and answers
   every write with 409 until idle eviction or a restart closes it, and its
   reads serve the stale in-memory state; each attempt counts as activity,

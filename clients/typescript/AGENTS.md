@@ -199,7 +199,7 @@ src/conversation/
 
 - Integrates with ILLM interface for LLM communication
 - Implements agent loop with tool calling support
-- Built-in tools: `execute_command`, `read_file`, `write_file`, `finish`
+- Built-in tools: `finish` with a stub `LocalWorkspace`; workspace tools (`execute_command`, `read_file`, `write_file`) require a functional workspace
 - Maintains message history for multi-turn conversations
 - Supports pause/resume functionality
 - Event emission with callback support
@@ -207,10 +207,10 @@ src/conversation/
 **Local Conversation Example**:
 
 ```typescript
-import { LocalWorkspace, LocalConversation, OpenRouterLLM } from '@openhands/typescript-client';
+import { RemoteWorkspace, LocalConversation, OpenRouterLLM } from '@openhands/typescript-client';
 
-// Create components
-const workspace = new LocalWorkspace({ workingDir: '/path/to/project' });
+// Create components; filesystem tools execute on the remote Agent Server.
+const workspace = new RemoteWorkspace({ host: 'http://localhost:8000', workingDir: '/workspace' });
 const llm = new OpenRouterLLM({
   apiKey: 'your-key',
   defaultModel: 'anthropic/claude-3.5-sonnet',

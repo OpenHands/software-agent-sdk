@@ -222,6 +222,7 @@ class TaskManager:
             with detached_delegate_context() as link:
                 conversation = LocalConversation(
                     agent=worker_agent,
+                    secrets=self.parent_conversation.state.secret_registry.secret_sources,
                     workspace=self.parent_conversation.state.workspace.working_dir,
                     persistence_dir=self._persistence_dir,
                     conversation_id=conversation_id,
@@ -327,6 +328,7 @@ class TaskManager:
         with detached_delegate_context() as link:
             return LocalConversation(
                 agent=worker_agent,
+                secrets=parent.state.secret_registry.secret_sources,
                 workspace=parent.state.workspace.working_dir,
                 visualizer=visualizer,
                 persistence_dir=self._persistence_dir,
