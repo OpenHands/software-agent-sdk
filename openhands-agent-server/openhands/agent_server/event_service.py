@@ -2022,7 +2022,6 @@ class EventService:
         conversation = self._conversation
         if conversation is None:
             return
-        loop = asyncio.get_running_loop()
 
         def _snapshot_and_judge() -> GoalStep:
             # Snapshot events under the conversation lock, then judge (an LLM
@@ -2059,7 +2058,7 @@ class EventService:
                 with conversation._state:
                     conversation._on_event(event)
 
-            await loop.run_in_executor(None, _persist)
+            await self.run_state_op(_persist)
 
         try:
             await _emit_status(active=True, status="running")
@@ -2091,7 +2090,7 @@ class EventService:
                     # that breaks the agent out of any genuine loop). Only
                     # PAUSED/ERROR (real stop signals) terminate the goal.
                     logger.info("Goal loop continuing past stuck run")
-                step = await loop.run_in_executor(None, _snapshot_and_judge)
+                step = await self.run_state_op(_snapshot_and_judge)
                 if isinstance(step, GoalAsked):
                     # The agent asked the user (ask_user). A followup would
                     # land over the question, so stop here, resumable; the
