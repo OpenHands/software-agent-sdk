@@ -503,7 +503,7 @@ class SubprocessTerminal(TerminalInterface):
             return content
 
     def clear_screen(self) -> None:
-        """Drop buffered output up to the most recent PS1 block; do not emit ^L."""
+        """Drop buffered output, retaining only the latest PS1 block; emit no input."""
         if not self._initialized:
             return
 
@@ -513,7 +513,11 @@ class SubprocessTerminal(TerminalInterface):
             end_idx = data.rfind(CMD_OUTPUT_PS1_END)
             self.output_buffer.clear()
             if start_idx != -1 and end_idx != -1 and end_idx >= start_idx:
-                self.output_buffer.append(data[start_idx:])
+                # A heredoc boundary may complete before the final prompt, so
+                # output after the latest prompt can still belong to that command.
+                self.output_buffer.append(
+                    data[start_idx : end_idx + len(CMD_OUTPUT_PS1_END)] + "\n"
+                )
 
     def interrupt(self) -> bool:
         """Send SIGINT to the PTY process group (fallback to signal-based interrupt)."""
