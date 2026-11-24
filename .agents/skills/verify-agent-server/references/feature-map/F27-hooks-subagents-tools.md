@@ -37,7 +37,7 @@ Routes: `GET /api/tools/`, `GET /api/tools/catalog`, `POST /api/sub-agents`,
 - `F27.hooks-formats`: a snake_case `hooks.json` keeps its matcher, timeout and `async` flag, a PascalCase key next to it is normalized, a `prompt` hook keeps its prompt, and a matcher left out becomes `*`.
 - `F27.hooks-absent`: no `project_dir`, a misspelled field (`projectDir`), a missing directory, a directory without `.openhands/hooks.json`, a `hooks.json` only under `.agents/`, and an empty `{}` file all return 200 with `hook_config: null`.
 - `F27.hooks-invalid`: unparsable JSON, an unknown event (PascalCase or snake_case), both spellings of one event, and a command hook without a command return 200 with `hook_config: null` and log `Failed to load hooks`.
-- `F27.hooks-conversation`: the config `POST /api/hooks` returns, passed as `hook_config` to a DeepSeek conversation in that project, runs: a `HookExecutionEvent` with the hook's stdout appears over REST and the WebSocket replay, and the conversation keeps its `hook_config` across a restart.
+- `F27.hooks-conversation`: the config `POST /api/hooks` returns, passed as `hook_config` to a DeepSeek conversation in that project, runs: a `HookExecutionEvent` with the hook's stdout appears over REST and the WebSocket replay, and the conversation keeps its `hook_config` across a restart; a command hook sees the conversation's secrets in its environment, as the agent's terminal does (known bug #6966: the hook's environment has none).
 - `F27.hooks-not-automatic`: a conversation in the same project started without `hook_config` runs no hook, although the project has `hooks.json` and the agent used the terminal.
 - `F27.hooks-block`: a `PreToolUse` hook that exits 2 stops the agent's terminal call (a `HookExecutionEvent` with `blocked: true`, a `UserRejectObservation` from the hook with its stderr as the reason, no terminal observation, no file) and records the action in `blocked_actions` until the agent consumes it; a `UserPromptSubmit` hook that exits 2 records the queued message in `blocked_messages`, and running finishes at once without a model call.
 - `F27.subagents-builtin`: without project and user agents (switched off, or a `project_dir` that does not exist) the catalog is exactly the four built-ins (`bash-runner`, `code-explorer`, `general-purpose`, `web-researcher`) with `level: builtin` and `is_builtin: true`, `mcp_servers` mirrors `mcp_config`, and `load_builtin: false` empties it.
@@ -531,6 +531,29 @@ Preconditions:
   echo QA_PROJECT_HOOK`, the command's output in `stdout` and `exit_code: 0`
   is in the event log and in the WebSocket replay. The conversation still
   reports the same `hook_config` after the restart.
+- **Hooks and the conversation's secrets (`F27.hooks-conversation`), known bug #6966.**
+  A conversation with the secret `QA_F27_HOOK_SECRET`, a `PreToolUse` hook
+  on `terminal`, and an `llm-stub` model whose terminal call runs the same
+  probe; both print `SET` or `UNSET`, never the value.
+  ```sh
+  HS_PROBE='test -n "$QA_F27_HOOK_SECRET" && echo QA_F27_%s_SECRET_SET || echo QA_F27_%s_SECRET_UNSET'
+  HS_TERMINAL_CMD=$(printf "$HS_PROBE" TERMINAL TERMINAL)
+  HS_HOOK_CMD=$(printf "$HS_PROBE" HOOK HOOK)
+  HS_STEP=$(jq -nc --arg c "$HS_TERMINAL_CMD" '{command: $c}')
+  HS_STUB=$(control-agent-server fixture llm-stub --name qa-f27-hs-stub --step "tool:terminal:$HS_STEP" --step 'tool:finish:{"message":"QA_F27_HS_DONE"}' --print-path)
+  HS_BODY=$(jq -nc --arg b "$HS_STUB/v1" --arg c "$HS_HOOK_CMD" \
+    '{agent: {llm: {model: "openai/qa-stub", api_key: "qa-stub-key", base_url: $b, num_retries: 0}, tools: [{name: "terminal"}]}, hook_config: {pre_tool_use: [{matcher: "terminal", hooks: [{command: $c}]}]}}')
+  HSCID=$(control-agent-server conversation start --body-json "$HS_BODY" --secret QA_F27_HOOK_SECRET=qa-f27-hook-secret-value \
+    --no-autotitle --prompt 'Check the secret.' --wait --timeout 90 --print-id)
+  control-agent-server conversation events "$HSCID" --kinds ObservationEvent --contains QA_F27_TERMINAL_SECRET_SET --expect-kind ObservationEvent
+  control-agent-server conversation events "$HSCID" --kinds HookExecutionEvent --contains '"stdout": "QA_F27_HOOK_SECRET_SET\n"' \
+    --expect-kind HookExecutionEvent --full --save F27.hooks-conversation/hook-secret # bug: matching eq 0 && kinds.HookExecutionEvent eq 1
+  ```
+  The terminal call sees the secret (`QA_F27_TERMINAL_SECRET_SET`, the
+  control), and so should the hook. Today the hook's one
+  `HookExecutionEvent` has `stdout` `QA_F27_HOOK_SECRET_UNSET`: the SDK's
+  `HookExecutor` builds the hook environment from `sanitized_env()` and
+  never reads the conversation's secrets.
 - **Hooks are not loaded implicitly (`F27.hooks-not-automatic`).** The same
   project and prompt, without `hook_config`.
   ```sh

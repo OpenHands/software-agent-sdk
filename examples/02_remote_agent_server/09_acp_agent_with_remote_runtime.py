@@ -13,6 +13,7 @@ Requirements:
   - ACP_LLM_API_KEY: LiteLLM virtual API key whose alias bypasses the proxy's
     OpenHands-identity guardrail (Claude Code sends its own system prompt,
     which the guardrail would 403). Falls back to LLM_API_KEY.
+  - RUNTIME_API_URL: Base URL of your runtime API deployment
   - RUNTIME_API_KEY: API key for runtime API access
 """
 
@@ -45,8 +46,11 @@ assert llm_base_url and llm_api_key, (
 os.environ["ANTHROPIC_BASE_URL"] = llm_base_url
 os.environ["ANTHROPIC_API_KEY"] = llm_api_key
 
+runtime_api_url = os.getenv("RUNTIME_API_URL")
 runtime_api_key = os.getenv("RUNTIME_API_KEY")
-assert runtime_api_key, "RUNTIME_API_KEY required"
+assert runtime_api_url and runtime_api_key, (
+    "RUNTIME_API_URL and RUNTIME_API_KEY required"
+)
 
 # SDK_SHA is the canonical commit SHA set by CI workflows (avoids the
 # built-in GITHUB_SHA which resolves to the merge-commit on PRs).
@@ -55,7 +59,7 @@ server_image = f"ghcr.io/openhands/agent-server:{server_image_sha[:7]}-python-am
 logger.info(f"Using server image: {server_image}")
 
 with APIRemoteWorkspace(
-    runtime_api_url=os.getenv("RUNTIME_API_URL", "https://runtime.eval.all-hands.dev"),
+    runtime_api_url=runtime_api_url,
     runtime_api_key=runtime_api_key,
     server_image=server_image,
     image_pull_policy="Always",

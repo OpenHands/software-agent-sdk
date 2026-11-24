@@ -165,7 +165,7 @@ def test_settings_saved_before_experimental_features_load_with_none_on():
 
 
 @pytest.mark.asyncio
-async def test_features_are_listed_and_off(client):
+async def test_every_feature_is_listed_and_off(client):
     response = await client.get("/api/settings/experimental")
 
     assert [(f["key"], f["enabled"]) for f in response.json()] == [
@@ -173,19 +173,21 @@ async def test_features_are_listed_and_off(client):
         ("ask_user", False),
         ("conversation_mentions", False),
         ("message_edits", False),
+        ("factories", False),
+        ("projects", False),
     ]
 
 
 def test_feature_tools_follow_the_flags():
     assert experimental_feature_tools({}) == []
+    assert [t.name for t in experimental_feature_tools({"ask_user": True})] == [
+        "ask_user"
+    ]
     assert [
         t.name for t in experimental_feature_tools({"conversation_reactions": True})
     ] == [
         "react",
         "unreact",
-    ]
-    assert [t.name for t in experimental_feature_tools({"ask_user": True})] == [
-        "ask_user"
     ]
     assert [
         t.name for t in experimental_feature_tools({"conversation_mentions": True})
@@ -200,6 +202,8 @@ def test_feature_tools_follow_the_flags():
     assert [t.name for t in experimental_feature_tools({"message_edits": True})] == [
         "edit_message"
     ]
+    # A client-only feature gives the agent nothing.
+    assert experimental_feature_tools({"factories": True}) == []
 
 
 def _runtime() -> LaunchRuntime:

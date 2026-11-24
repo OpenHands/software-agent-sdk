@@ -99,6 +99,7 @@ OPENHANDS_CONTEXT = {
     "load_project_skills": Fixed(True),
     "load_memory": LAUNCH,
     "memory_context": LAUNCH,
+    "project_context": LAUNCH,
     "disabled_skills": PROFILE,
     "secrets": NotOnProfile("a profile is secret-free; secrets ride the request"),
     "current_datetime": LAUNCH,

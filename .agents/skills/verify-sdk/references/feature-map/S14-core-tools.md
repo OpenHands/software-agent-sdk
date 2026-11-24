@@ -19,7 +19,7 @@ Examples: `examples/04_llm_specific_tools/01_gpt5_apply_patch_preset.py`, `examp
 - `S14.terminal-env`: exported variables persist in the session, the parent environment is inherited, `TerminalTool.create(..., env={...})` adds client-controlled variables, and a very large environment does not break startup. Unit: `tests/tools/terminal/test_terminal_session.py::test_environment_variable_persistence`, `::test_environment_variable_inheritance_from_parent`, `tests/tools/terminal/test_large_environment.py`. Example: none. Real-LLM: none.
 - `S14.terminal-output-truncation`: long output is truncated for the LLM with metadata kept, and the full output is written under the conversation's observation persistence directory (`full_output_save_dir`). Unit: `tests/tools/terminal/test_observation_truncation.py`, `tests/tools/terminal/test_terminal_session.py::test_session_truncates_large_command_output`, `::test_truncation_preserves_metadata_in_llm_content`. Example: none. Real-LLM: none.
 - `S14.terminal-metadata`: the PS1 marker carries cwd, exit code, username and Python interpreter into `CmdOutputMetadata`, and survives corrupted or interleaved prompts. Unit: `tests/tools/terminal/test_terminal_ps1_metadata.py`, `tests/tools/terminal/test_ps1_corruption.py`, `tests/tools/terminal/test_terminal_parsing.py`. Example: none. Real-LLM: none.
-- `S14.terminal-input-encoding`: heredocs are sent in chunks and complete correctly, terminal query sequences (such as the DSR cursor-position request and OSC queries) are filtered from output, other escape sequences pass through, and literal arguments that would be mangled by the shell are guarded. Unit: `tests/tools/terminal/test_heredoc_chunked_send.py`, `tests/tools/terminal/test_escape_filter.py`, `tests/tools/terminal/test_literal_arg_guard.py`. Example: none. Real-LLM: none.
+- `S14.terminal-input-encoding`: heredocs are sent in chunks and complete correctly, and on tmux the completion-boundary echo and `__OH_COMMAND_FINISHED_<id>_<exit>__` marker of a previous command never show in the next observation, even when they reach the pane after its screen was cleared; terminal query sequences (such as the DSR cursor-position request and OSC queries) are filtered from output, other escape sequences pass through, and literal arguments that would be mangled by the shell are guarded. Unit: `tests/tools/terminal/test_heredoc_chunked_send.py`, `tests/tools/terminal/test_terminal_parsing.py`, `tests/tools/terminal/test_escape_filter.py`, `tests/tools/terminal/test_literal_arg_guard.py`. Example: none. Real-LLM: none.
 - `S14.terminal-secret-masking`: secret values registered on the conversation are masked in terminal output and in tmux debug logs. Unit: `tests/tools/terminal/test_secrets_masking.py`, `tests/tools/terminal/test_tmux_log_redaction.py`. Example: `examples/01_standalone_sdk/12_custom_secrets.py`. Real-LLM: none.
 - `S14.terminal-cleanup`: closing the conversation closes the terminal session (and tmux panes), and executor shutdown tolerates interpreter teardown. Unit: `tests/tools/terminal/test_conversation_cleanup.py`, `tests/tools/terminal/test_shutdown_handling.py`. Example: none. Real-LLM: none.
 - `S14.terminal-windows`: the PowerShell backend runs commands, sends keys and handles Ctrl+C on Windows. Unit: `tests/tools/terminal/test_windows_terminal.py`, `tests/tools/terminal/test_windows_ctrl_c.py` (both skip off Windows), `tests/tools/terminal/test_windows_terminal_send_keys.py` (runs anywhere). Example: none. Real-LLM: none.
@@ -30,7 +30,7 @@ Examples: `examples/04_llm_specific_tools/01_gpt5_apply_patch_preset.py`, `examp
 - `S14.file-editor-validation`: relative paths, missing files, binary files, oversized files and invalid parameters return error observations; paths resolve against the workspace root; non-UTF-8 files keep their encoding; memory use stays bounded on large files. Unit: `tests/tools/file_editor/test_file_validation.py`, `tests/tools/file_editor/test_error_handling.py`, `tests/tools/file_editor/test_exceptions.py`, `tests/tools/file_editor/test_workspace_root.py`, `tests/tools/file_editor/utils/test_encoding.py`, `tests/tools/file_editor/utils/test_file_cache.py`, `tests/tools/file_editor/test_memory_usage.py`. Example: none. Real-LLM: none.
 - `S14.apply-patch`: `ApplyPatchAction(patch="*** Begin Patch ... *** End Patch")` adds, updates (context-matched hunks) and deletes files relative to the workspace and reports a `DiffError` for a bad patch. Unit: `tests/tools/apply_patch/test_apply_patch_executor.py`. Example: `examples/04_llm_specific_tools/01_gpt5_apply_patch_preset.py`. Real-LLM: `tests/integration/run_infer.py --tool-preset gpt5` (t01 to t08).
 - `S14.gemini-file-tools`: `read_file` (offset and limit), `write_file`, `edit` (replace with expected occurrence count) and `list_directory` work on workspace paths, and concurrent calls on the same file are serialized by a shared file lock. Unit: `tests/tools/gemini/read_file/test_read_file.py`, `tests/tools/gemini/write_file/test_write_file.py`, `tests/tools/gemini/edit/test_edit.py`, `tests/tools/gemini/list_directory/test_list_directory.py`, `tests/tools/gemini/test_cross_tool_locking.py`. Example: `examples/04_llm_specific_tools/02_gemini_file_tools.py`. Real-LLM: `tests/integration/run_infer.py --tool-preset gemini`.
-- `S14.glob`: `glob` matches a pattern under an optional path, returns paths sorted by modification time (capped), uses `rg --files` and falls back to Python `glob` with the same results. Unit: `tests/tools/glob/test_glob_tool.py`, `tests/tools/glob/test_glob_executor.py`, `tests/tools/glob/test_consistency.py`. Example: `examples/01_standalone_sdk/24_planning_agent_workflow.py` (planning preset). Real-LLM: none.
+- `S14.glob`: `glob` matches a pattern (with or without a directory part, such as `src/**/*.ts`) under an optional path, returns paths sorted by modification time (capped), uses `rg --files` and falls back to Python `glob` with the same results (known failure #7052: with ripgrep, a pattern with a directory part finds nothing unless the process runs in the search path). Unit: `tests/tools/glob/test_glob_tool.py`, `tests/tools/glob/test_glob_executor.py`, `tests/tools/glob/test_consistency.py`. Example: `examples/01_standalone_sdk/24_planning_agent_workflow.py` (planning preset). Real-LLM: none.
 - `S14.grep`: `grep` searches file contents by regex with an `include` filter, returns matching files (capped), uses ripgrep and falls back to Python with the same results. Unit: `tests/tools/grep/test_grep_tool.py`, `tests/tools/grep/test_grep_executor.py`, `tests/tools/grep/test_consistency.py`. Example: `examples/01_standalone_sdk/24_planning_agent_workflow.py`. Real-LLM: none.
 - `S14.tool-output-masking`: file editor views, the grep pattern, glob paths and apply_patch commit content are masked through one chokepoint when the conversation has secrets; without a conversation nothing is masked. Unit: `tests/tools/test_tool_output_secret_masking.py`. Example: none. Real-LLM: none.
 - `S14.shared-working-dir`: terminal, file editor and other tools take their working directory from the conversation workspace and need no `params` for it. Unit: `tests/tools/test_working_dir_standardization.py`, `tests/cross/test_registry_directories.py`. Example: none. Real-LLM: none.
@@ -101,7 +101,7 @@ Preconditions:
     --check tmux_servers_after_close eq 0
   ```
   A nonzero exit is reported through `exit_code` with `is_error` false; `is_error` marks calls the tool refused. The three calls in one response run one after another (the single session declares the `terminal:session` resource).
-- **The terminal on the default backend, the tmux pane pool (`S14.terminal-backend-select`, `S14.terminal-pane-pool`, `S14.terminal-exec`, `S14.terminal-timeout`, `S14.terminal-reset`, `S14.terminal-env`, `S14.terminal-output-truncation`, `S14.terminal-metadata`, `S14.terminal-secret-masking`, `S14.terminal-cleanup`).** The same program without `terminal_type`; with tmux installed the executor runs the pane pool, the three calls in one response overlap, and no cap applies to `timeout` without `OH_RUNTIME_IDLE_TIMEOUT_SECONDS`.
+- **The terminal on the default backend, the tmux pane pool (`S14.terminal-backend-select`, `S14.terminal-pane-pool`, `S14.terminal-input-encoding`, `S14.terminal-exec`, `S14.terminal-timeout`, `S14.terminal-reset`, `S14.terminal-env`, `S14.terminal-output-truncation`, `S14.terminal-metadata`, `S14.terminal-secret-masking`, `S14.terminal-cleanup`).** The same program without `terminal_type`; with tmux installed the executor runs the pane pool, the three calls in one response overlap, no cap applies to `timeout` without `OH_RUNTIME_IDLE_TIMEOUT_SECONDS`, and the calls after the 400-line heredoc show no completion-boundary marker.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
   control-sdk program S14/terminal --arg auto \
@@ -112,6 +112,7 @@ Preconditions:
     --check steps.idle.exit_code eq -1 --check steps.hard.text contains "timed out after 1.0 seconds" \
     --check steps.capped.is_error eq false --check steps.capped.text contains capped-ran \
     --check big_saved_files len-eq 1 --check big_notice_names_saved_file eq true \
+    --check steps.count.text not-contains __OH_COMMAND_FINISHED_ --check steps.server_up.text not-contains __OH_COMMAND_FINISHED_ \
     --check steps.fake_ps1.exit_code eq 3 --check steps.literal.is_error eq true \
     --check steps.secret.text contains "token=<secret-hidden>" --check secret_leaked eq false \
     --check after_reset_in_workspace eq true --check steps.after_reset.text not-contains FOO=bar \
@@ -143,6 +144,29 @@ Preconditions:
     --check steps.shell_after_reset.text contains my-shell --check backend_at_end eq SubprocessTerminal
   ```
   Expected: a reset starts a fresh shell of the same kind. Known failure (reproduced 2026-11-17, [#6653](https://github.com/OpenHands/software-agent-sdk/issues/6653)): `TerminalExecutor._reset_single_session` builds the new session with `terminal_type=None`, so an executor forced to `subprocess` comes back from a reset on tmux (`backend_at_end` is `TmuxTerminal`, `$0` is `/bin/bash`), dropping `shell_path`.
+- **A timed-out command is flagged (`S14.terminal-timeout`).** With `no_change_timeout_seconds: 2`, a scripted agent runs `sleep 5` with `timeout` 1 (the hard limit) and `sleep 30` with none (no new output for 2 s), each stopped with `C-c`; on tmux, then on the subprocess backend.
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  for backend in tmux subprocess; do
+    control-sdk program S14/terminal_flags --arg "$backend" \
+      --check steps.hard.exit_code eq -1 --check steps.hard.is_error eq false \
+      --check steps.hard.text contains "timed out after 1.0 seconds" --check steps.hard.timeout eq true \
+      --check steps.idle.exit_code eq -1 --check steps.idle.text contains "no new output after 2 seconds" \
+      --check steps.idle.timeout eq true
+  done
+  ```
+  Expected: both observations carry `timeout=True`, so a hook or observer can tell a timed-out command from its fields; text, exit code (-1) and `is_error` (false) as they are. Known failure (reproduced 2026-11-19, [#6991](https://github.com/OpenHands/software-agent-sdk/issues/6991)): on both backends the text says the command timed out but `timeout` is `false`: `TerminalSession._handle_hard_timeout_command` and `_handle_nochange_timeout_command` build the `TerminalObservation` without `timeout=True`.
+- **A command that starts with a comment line (`S14.terminal-exec`).** The same program: `sleep 2 && printf '%s-%s\n' synthetic status-output` (only its output, not the command line, holds `synthetic-status-output`), then the same command after a `# Read-only: ...` line; on tmux, then on the subprocess backend.
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  for backend in tmux subprocess; do
+    control-sdk program S14/terminal_flags --arg "$backend" \
+      --check steps.control.exit_code eq 0 --check steps.control.text contains synthetic-status-output \
+      --check steps.comment.exit_code eq 0 --check steps.comment.seconds ge 1.5 \
+      --check steps.comment.text contains synthetic-status-output
+  done
+  ```
+  Expected: the leading comment changes nothing; the call waits for the command and returns its output. Known failure (reproduced 2026-11-19, [#6972](https://github.com/OpenHands/software-agent-sdk/issues/6972)): on both backends the commented call returns exit 0 within about 0.2 s, its text holding only the echoed command lines and no `synthetic-status-output` (Bash prints a prompt after the comment line, which the session takes for completion); on the subprocess backend the missing output turns up at the start of the next call's observation.
 - **A one-second observation wait cap and a shell that exits, subprocess backend (`S14.terminal-observation-wait-cap`, `S14.terminal-shell-exit`).** `Tool(name="terminal", params={"terminal_type": "subprocess", "max_observation_wait_seconds": 1})`; a scripted agent starts `sleep 3; echo finished` with `timeout` 600 and polls it with `""` until it finishes, then runs `printf ...; exit 7`, `echo still-here`, a reset and `echo back`. The program also creates the tool with a cap of 0 and of -1.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
@@ -212,6 +236,15 @@ Preconditions:
     --check rg.glob_in_path.truncated eq false
   ```
   Expected: both backends report 100 files and `truncated` false.
+- **Glob patterns with a directory part (`S14.glob`).** The same program also globs `src/**/*.py` from the workspace (the program's working directory) and `pkg/*.py` under `path` `{ws}/src` (not its working directory), on both backends.
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  control-sdk program S14/search --arg 100 \
+    --check cwd_is_workspace eq true \
+    --check python.glob_dir.count eq 2 --check python.glob_dir_in_path.files.0 eq src/pkg/new.py \
+    --check rg.glob_dir.count eq 2 --check rg.glob_dir_in_path.files.0 eq src/pkg/new.py
+  ```
+  Expected: both backends find `src/old.py` and `src/pkg/new.py` for `src/**/*.py`, and `src/pkg/new.py` for `pkg/*.py` under `src`, whatever the process working directory is. Known failure (reproduced 2026-11-22 on main@74f198d, [#7052](https://github.com/OpenHands/software-agent-sdk/issues/7052), fix in [#7053](https://github.com/OpenHands/software-agent-sdk/pull/7053)): the Python fallback finds both, but with ripgrep `pkg/*.py` under `src` reports "No files found" (not an error), because `rg --files <path> -g <pattern>` runs without `cwd` and resolves a glob that contains `/` against the process's own working directory; `src/**/*.py` works only because the program runs in the workspace (from any other directory it finds nothing too).
 - **Tool presets build working agents (`S14.preset-default`, `S14.preset-gpt5-gemini`, `S14.gemini-file-tools`, `S14.apply-patch`).** Each preset's agent does a scripted task with its own file tools; the default preset also reports the tool lists of all three and the SDK's `default_tool_specs()`, and builds a structured finish tool.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)

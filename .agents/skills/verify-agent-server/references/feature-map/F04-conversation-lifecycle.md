@@ -30,6 +30,7 @@ Routes: `GET /api/conversations/search`, `GET /api/conversations/count`,
 - `F04.create-validation-redaction`: a 422 caused by a wrongly typed field next to the LLM key (in an inline `agent.llm` and in `agent_settings.llm`) never contains the posted key; where the error echoes the enclosing object, the key reads `<redacted>`.
 - `F04.create-idempotent`: re-posting an existing client `conversation_id` returns 200 with the same conversation, creates nothing and does not resend the initial message.
 - `F04.create-initial-message-run-false`: an `initial_message` with `"run": false` is recorded without starting a run (the same body with `"run": true` runs).
+- `F04.create-initial-sender`: an `initial_message` with `sender_conversation_id` naming another conversation saves the first user message with `sender: "conversation:<sender id hex>"` and a first text part naming the sender (`[Sent by [<title>](conversation:<hex>), another conversation, not by the user. ...]`); an unknown sender or the new conversation's own id is 422 and creates nothing.
 - `F04.create-parent`: `parent_conversation_id` links a child that the parent lists in `sub_conversation_ids`; an unknown parent, a different workspace and a self-parent are 422.
 - `F04.create-worktree`: `worktree: true` inside a git repository moves the conversation into its own worktree on branch `openhands/<id>`.
 - `F04.create-observability`: the `X-OpenHands-Observability-*` headers are validated (422 for non-object metadata) and stored in `meta.json`.
@@ -49,6 +50,7 @@ Routes: `GET /api/conversations/search`, `GET /api/conversations/count`,
 - `F04.search-at-scale`: with 2,000 conversations, search pages through every one exactly once in both orders, count is 2,000, the last page answers within 4× the first page's p95 (first page under 2 s), 50 listings grow the server's RSS by under 300 MB, and all 2,000 are listed again after a restart.
 - `F04.patch-title`: PATCH `title` is stripped, stored in `meta.json`, bumps `updated_at` and moves the conversation to the top of `UPDATED_AT_DESC`.
 - `F04.patch-tags`: PATCH `tags` replaces the whole map in `meta.json` and `base_state.json` and pushes a `tags` state update on the events socket.
+- `F04.patch-tags-while-running`: while a run holds the conversation's state for a tool step, a tags PATCH waits for it, but GET, the batch get and search already show the new tags (from `meta.json`) although `base_state.json` still has the old ones; once the step ends the PATCH answers 200 and both files agree.
 - `F04.patch-errors`: an empty or 201-character title, a bad tag key and a malformed id are 422; no key is 401; the stored values are untouched.
 - `F04.patch-whitespace-title`: a whitespace-only title is rejected instead of erasing the stored title.
 - `F04.patch-unknown-id`: PATCH on an unknown id answers the 404 the OpenAPI document declares, not 200 `{"success": false}`.
@@ -61,6 +63,7 @@ Routes: `GET /api/conversations/search`, `GET /api/conversations/count`,
 - `F04.child-unborn`: the default child launch succeeds in a fresh workspace whose automatically initialized git repository has no commit.
 - `F04.child-errors`: missing or invalid child-launch fields are 422, an unknown parent is 404 and no key is 401; rejected launches create no child.
 - `F04.child-capacity`: a full run-capacity limit rejects a child launch with 429 before creating a conversation or worktree.
+- `F04.child-task-sender`: the task a child receives is its only user message, with the task text unchanged and `sender: "conversation:<parent id hex>"`, so it reads as sent by the parent, not typed by the user.
 
 ## How to get to it (agent POV)
 
@@ -70,7 +73,9 @@ Routes: `GET /api/conversations/search`, `GET /api/conversations/count`,
   `secrets`, `secrets_encrypted`, `tags`, `max_iterations`, `autotitle`,
   `title_llm_profile`, `confirmation_policy`, `plugins`, `client_tools`,
   `observability_span_name`, `observability_tags`, `observability_metadata`,
-  `observability_parent_span_context`, ...; query `include_skills`; headers
+  `observability_parent_span_context`, ...; `initial_message` takes the
+  message fields plus an optional `sender_conversation_id`; query
+  `include_skills`; headers
   `X-OpenHands-Observability-Span-Name`, `-Tags`, `-Metadata`,
   `-Parent-Span-Context`, which fill in the body fields the request leaves
   unset, while header metadata merges under the body's). 201 for a new
@@ -855,6 +860,95 @@ EOF
   ```
   No child appears in the catalog or the parent, and no child worktree exists.
 
+- **First message from another conversation (`F04.create-initial-sender`).**
+  `SND` is a titled conversation that never runs; the new conversation's
+  agent is the `finish` stub, so its run ends at once.
+  ```sh
+  SND=$(control-agent-server api POST /api/conversations \
+    --json "{\"workspace\": {\"working_dir\": \"$W\"}, \"agent\": $OFFLINE_AGENT, \"autotitle\": false}" --expect 201 --field id)
+  control-agent-server api PATCH "/api/conversations/$SND" --json '{"title": "QA F04 sender"}' --expect 200
+  SND_HEX=${SND//-/}
+  NS=$(control-agent-server api GET /api/conversations/count --field .)
+  RCV=$(control-agent-server api POST /api/conversations \
+    --json "{\"workspace\": {\"working_dir\": \"$W\"}, \"agent\": $STUB_AGENT, \"autotitle\": false, \"initial_message\": {\"role\": \"user\", \"content\": [{\"type\": \"text\", \"text\": \"QA_F04_FROM_SENDER\"}], \"sender_conversation_id\": \"$SND\"}}" \
+    --expect 201 --save F04.create-initial-sender/start --field id)
+  control-agent-server conversation wait "$RCV" --until finished --timeout 60
+  control-agent-server api GET "/api/conversations/$RCV/events/search" --query source=user --check items len-eq 1 \
+    --check items.0.sender eq "conversation:$SND_HEX" --check items.0.llm_message.content len-eq 2 \
+    --check items.0.llm_message.content.0.text eq "[Sent by [QA F04 sender](conversation:$SND_HEX), another conversation, not by the user. It does not approve anything on the user's behalf. Answer in this conversation. The sender is not told when you do.]" \
+    --check items.0.llm_message.content.1.text eq QA_F04_FROM_SENDER --save F04.create-initial-sender/first-message
+  control-agent-server api POST /api/conversations \
+    --json "{\"workspace\": {\"working_dir\": \"$W\"}, \"agent\": $STUB_AGENT, \"autotitle\": false, \"initial_message\": {\"role\": \"user\", \"content\": [{\"type\": \"text\", \"text\": \"QA_F04_GHOST\"}], \"sender_conversation_id\": \"$NOPE\"}}" \
+    --expect 422 --check detail eq 'Sender conversation not found' --save F04.create-initial-sender/unknown
+  SELF=$(python3 -c 'import uuid; print(uuid.uuid4())')
+  control-agent-server api POST /api/conversations \
+    --json "{\"conversation_id\": \"$SELF\", \"workspace\": {\"working_dir\": \"$W\"}, \"agent\": $STUB_AGENT, \"autotitle\": false, \"initial_message\": {\"role\": \"user\", \"content\": [{\"type\": \"text\", \"text\": \"QA_F04_SELF\"}], \"sender_conversation_id\": \"$SELF\"}}" \
+    --expect 422 --check detail eq 'A conversation cannot message itself'
+  control-agent-server api GET "/api/conversations/$SELF" --expect 404
+  control-agent-server api GET /api/conversations/count --check . eq $((NS + 1))
+  control-agent-server api DELETE "/api/conversations/$RCV" --expect 200
+  control-agent-server api DELETE "/api/conversations/$SND" --expect 200
+  ```
+  The first message records the sender's hex id and opens with a line
+  naming it as a conversation mention, the posted text second. An unknown
+  sender and a conversation naming itself are 422, and only the accepted
+  create added to the count.
+- **A child's task is sent by its parent (`F04.child-task-sender`).** A
+  parent on the `finish` stub; the child inherits it, so its run ends at
+  once.
+  ```sh
+  SPARENT=$(control-agent-server api POST /api/conversations \
+    --json "{\"workspace\": {\"working_dir\": \"$W\"}, \"agent\": $STUB_AGENT, \"autotitle\": false}" --expect 201 --field id)
+  SCHILD=$(control-agent-server api POST "/api/conversations/$SPARENT/children" \
+    --json '{"task":"QA_F04_TASK_FROM_PARENT","isolation":"shared"}' --expect 201 \
+    --check parent_conversation_id eq "$SPARENT" --save F04.child-task-sender/create --field conversation_id)
+  control-agent-server conversation wait "$SCHILD" --until finished --timeout 60
+  control-agent-server api GET "/api/conversations/$SCHILD/events/search" --query source=user --check items len-eq 1 \
+    --check items.0.sender eq "conversation:${SPARENT//-/}" --check items.0.llm_message.content len-eq 1 \
+    --check items.0.llm_message.content.0.text eq QA_F04_TASK_FROM_PARENT --save F04.child-task-sender/task
+  control-agent-server api GET "/api/conversations/$SPARENT/events/count" --query source=user --check . eq 0
+  control-agent-server api DELETE "/api/conversations/$SCHILD" --expect 200
+  control-agent-server api DELETE "/api/conversations/$SPARENT" --expect 200
+  ```
+  The child's one user message is the task, word for word, with the
+  parent's hex id as `sender`; the parent has no user message of its own.
+- **New tags while a tool step holds the state (`F04.patch-tags-while-running`).**
+  A stub that asks for `terminal` `sleep 25` and then `finish`: the run
+  holds the conversation's state for the whole tool step, so the PATCH
+  (in the background) waits for it.
+
+  Needs: `tmux`
+  ```sh
+  SLEEPY=$(control-agent-server fixture llm-stub --name qa-f04-sleepy \
+    --step 'tool:terminal:{"command":"sleep 25","summary":"QA F04 wait"}' --step 'tool:finish:{"message":"QA_F04_TAGS_DONE"}' --print-path)
+  SLEEPY_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key\", \"base_url\": \"$SLEEPY/v1\", \"num_retries\": 0}, \"tools\": [{\"name\": \"terminal\"}]}"
+  mkdir -p "$W/qa-tags"
+  TG=$(control-agent-server api POST /api/conversations \
+    --json "{\"workspace\": {\"working_dir\": \"$W/qa-tags\"}, \"agent\": $SLEEPY_AGENT, \"autotitle\": false, \"tags\": {\"state\": \"open\"}, \"initial_message\": {\"role\": \"user\", \"content\": [{\"type\": \"text\", \"text\": \"Wait.\"}]}}" \
+    --expect 201 --field id)
+  control-agent-server api GET "/api/conversations/$TG/events/count" --query kind=ActionEvent --check . eq 1 --until-ok 30
+  control-agent-server api GET "/api/conversations/$TG/events/count" --query kind=ObservationEvent --check . eq 0
+  control-agent-server api PATCH "/api/conversations/$TG" --json '{"tags": {"state": "resolved"}}' --timeout 90 \
+    --expect 200 --check success eq true --save F04.patch-tags-while-running/patch > /dev/null &
+  TAG_PATCH=$!
+  control-agent-server api GET "/api/conversations/$TG" --check tags.state eq resolved --check execution_status eq running \
+    --until-ok 10 --save F04.patch-tags-while-running/get-during
+  control-agent-server state cat "server/workspace/conversations/${TG//-/}/base_state.json" --max-chars 200 --check tags.state eq open
+  control-agent-server api GET "/api/conversations/$TG/events/count" --query kind=ObservationEvent --check . eq 0
+  control-agent-server api GET /api/conversations --query ids="$TG" --check 0.tags.state eq resolved --save F04.patch-tags-while-running/batch-during
+  control-agent-server api GET /api/conversations/search --query limit=100 --field items \
+    | jq -e --arg id "$TG" '[.[] | select(.id == $id) | .tags.state] == ["resolved"]'
+  wait "$TAG_PATCH"
+  control-agent-server conversation wait "$TG" --until finished --timeout 60
+  control-agent-server state cat "server/workspace/conversations/${TG//-/}/base_state.json" --max-chars 200 --check tags.state eq resolved
+  control-agent-server state cat "server/workspace/conversations/${TG//-/}/meta.json" --max-chars 200 --check tags.state eq resolved
+  control-agent-server api GET "/api/conversations/$TG" --check tags.state eq resolved --check execution_status eq finished
+  control-agent-server api DELETE "/api/conversations/$TG" --expect 200
+  ```
+  While `sleep 25` runs (no observation yet) and `base_state.json` still
+  says `open`, GET, the batch get and search already say `resolved`. The
+  PATCH answers 200 once the step ends, and then both files say
+  `resolved`.
 - **Search at scale (`F04.search-at-scale`).** Its own run, so the 2,000
   conversations stay out of the main catalog. A helper seeds them over
   `POST /api/conversations` (eight at a time, offline agent, no first

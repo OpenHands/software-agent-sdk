@@ -222,6 +222,16 @@ class ConversationState(OpenHandsModel):
         description="MCP server names contributed by ambient plugins at the last load.",
     )
 
+    runtime_mcp_servers: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Names of MCP servers added with add_mcp_servers after the "
+            "conversation started. Their tools are named `<server>_<tool>`; "
+            "recording them keeps those names, and the names of the other "
+            "servers, when the conversation is reopened."
+        ),
+    )
+
     # Hook-blocked actions: action_id -> blocking reason
     blocked_actions: dict[str, str] = Field(
         default_factory=dict,

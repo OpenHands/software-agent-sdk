@@ -4184,6 +4184,58 @@ async def test_event_service_checks_the_workspace_repo_off_the_event_loop(
     assert threads[0] != loop_thread
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "wait_on_state_lock",
+    [
+        pytest.param(
+            lambda service: service.subscribe_to_events(AsyncMock()),
+            id="websocket-subscribe",
+        ),
+        pytest.param(
+            lambda service: service.send_message(
+                Message(role="user", content=[TextContent(text="hi")])
+            ),
+            id="send-message",
+        ),
+        pytest.param(lambda service: service.pause(), id="pause"),
+    ],
+)
+async def test_state_lock_waiters_leave_the_default_executor_free(
+    tmp_path: Path, wait_on_state_lock
+) -> None:
+    """A run holds the state lock for a whole tool step. Requests waiting on it
+    must not take default-executor threads: lock-free work, such as the event
+    reads of every conversation, needs that pool (#6553)."""
+    loop = asyncio.get_running_loop()
+    loop.set_default_executor(ThreadPoolExecutor(max_workers=1))
+    service = EventService(
+        stored=_make_stored(tmp_path), agent=_sample_agent(), conversations_dir=tmp_path
+    )
+    await service.start()
+    state = service.get_conversation()._state
+    held, release = threading.Event(), threading.Event()
+
+    def hold_state_lock() -> None:  # stands in for a run inside a tool step
+        with state:
+            held.set()
+            release.wait()
+
+    holder = threading.Thread(target=hold_state_lock)
+    holder.start()
+    held.wait()
+    waiter = asyncio.create_task(wait_on_state_lock(service))
+    try:
+        await asyncio.sleep(0.1)  # let the request reach the lock
+        probe = loop.run_in_executor(None, lambda: "free")
+        assert await asyncio.wait_for(probe, timeout=2) == "free"
+    finally:
+        release.set()
+        holder.join()
+        await asyncio.wait_for(waiter, timeout=5)
+        await service.close()
+
+
 def test_concurrent_repo_checks_on_a_new_directory_all_succeed(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:

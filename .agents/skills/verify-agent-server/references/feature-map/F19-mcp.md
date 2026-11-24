@@ -62,15 +62,15 @@ Routes: `POST /api/mcp/test`, `POST /api/mcp/oauth/start`,
 - `F19.oauth-inline-writeback`: an OAuth server passed inline on a conversation's agent (not in settings) whose access token has expired is refreshed when the conversation connects, keeps its tools, and the rotated tokens are posted with the run's session key to the webhook's `/mcp-oauth-state`, not stored in settings.
 - `F19.oauth-stored-state`: the returned `oauth_state` used as `auth.state` connects without consent (test, and start without `authorization_url`), and stored through the settings route it is redacted, encrypted on disk and decrypted to the real token.
 - `F19.disabled-server`: a conversation started from the settings exposes the tools of enabled servers (including the OAuth server from its stored tokens) and neither exposes nor spawns a disabled server.
-- `F19.conversation-tool`: a model-driven conversation calls the configured stdio server's `qa_echo` tool, the `ObservationEvent` (REST and WebSocket) carries `QA_MCP_ECHO:hi`, and deleting the conversation stops the stdio child.
+- `F19.conversation-tool`: a model-driven conversation calls the configured stdio server's `qa_echo` tool, the `ObservationEvent` (REST and WebSocket) carries `QA_MCP_ECHO:hi`, and deleting the conversation stops the stdio child; an embedded resource's text and a structured-only result reach the observation (known bug #6993: both are dropped), and a single server that advertises `terminal` next to the built-in terminal gets it as `<server>_terminal` while both run (known bug #6992: a server that joins after the startup budget loses all its tools, so its other tools are `not found`; one ready within the budget makes the first message 500 `Duplicate tool names found: {'terminal'}`).
 - `F19.oauth-refresh-writeback`: when a stored OAuth server's access token has expired, the next conversation refreshes it, keeps the server's tools, and writes the rotated token and new expiry back into the settings (encrypted on disk) without posting them to the webhook.
 - `F19.conversation-secrets-at-rest`: a conversation started from the settings persists its agent's MCP credentials (a disabled server's `env`, OAuth tokens) encrypted, and no MCP credential this family used appears in plaintext under the conversations directory or in the server log.
 - `F19.restart`: stored MCP servers and their credentials survive a restart (plaintext GET and the SDK's `RemoteWorkspace.get_mcp_config()`), while in-memory OAuth jobs are gone (404).
 - `F19.conversation-mcp-add`: `POST /api/conversations/{conversation_id}/mcp` on a conversation whose agent is initialized starts the server before it answers 200 `{"success": true}`, `GET /api/conversations/{conversation_id}` and `base_state.json` show it in `agent.mcp_config`, the model's next request offers its tools as `<server>_<tool>`, a call returns the tool's result, deleting the conversation stops the child, and `/server_info` advertises `conversation_mcp_install_v1` and `conversation_configuration_additions_v1`.
 - `F19.conversation-mcp-add-before-init`: on a conversation without a first message the route only records the server (no process, fast answer), with `env` values encrypted by the settings API decrypted for the child and stored encrypted in `base_state.json`; the first message connects it like any configured server.
 - `F19.conversation-mcp-add-errors`: an unknown conversation is 404, a server name the agent already has and an SSE server are 400 with the reason, a server without `command`/`url`, an unknown field and a non-UUID id are 422, none of them changes the agent's `mcp_config`, and a disabled server is stored without being spawned.
-- `F19.conversation-mcp-add-start-failure`: a server that cannot start (a command that exits at once) is refused with the route's 400 and is not added (known bug [#6926](https://github.com/OpenHands/software-agent-sdk/issues/6926), fix in [#6928](https://github.com/OpenHands/software-agent-sdk/pull/6928): 500 Internal Server Error with `exception: Connection closed`).
-- `F19.conversation-mcp-add-restart`: a server added at runtime is still in the conversation's agent after a restart, and the tools the agent already called keep working under the same names (known bug [#6927](https://github.com/OpenHands/software-agent-sdk/issues/6927), fix in [#6929](https://github.com/OpenHands/software-agent-sdk/pull/6929): with one server the tools come back unprefixed, so `qa-f19-rs_qa_echo` is `Tool ... not found`).
+- `F19.conversation-mcp-add-start-failure`: a server that cannot start (a command that exits at once) is refused with the route's 400 naming the server and the cause (`Could not start MCP server <name>: Connection closed`) and is not added.
+- `F19.conversation-mcp-add-restart`: a server added at runtime is still in the conversation's agent after a restart, and the tools the agent already called keep working under the same names (`qa-f19-rs_qa_echo`, prefixed even as the agent's only server).
 - `F19.conversation-mcp-slow-start`: a conversation whose stdio server delays its handshake by 8 s is created within a few seconds, the server is spawned, and the agent's first model request waits for it and offers its tools; the agent's call returns its result.
 - `F19.conversation-mcp-late-failure`: a server that fails after the startup budget costs only its own tools: the conversation starts at once, the first step waits for the failure, the other server's tools are offered, the run finishes and the log names the failed server.
 
@@ -140,10 +140,13 @@ Preconditions:
   `F19.oauth-refresh-writeback` read it), `doctor` ok, `$DEEPSEEK_API_KEY` set
   (only `F19.conversation-tool` uses the model), and `jq`, `curl` and `pgrep`
   on `PATH`.
-- The CLI's stdio fixture (`fixture mcp-server`, tool `qa_echo`) plus three
+- The CLI's stdio fixture (`fixture mcp-server`, tool `qa_echo`) plus four
   recipe-local fixtures written below (no CLI verb exists for them): a stdio
   server with `qa_env`, `qa_sleep` and `qa_fail` whose first argument delays
-  the MCP handshake, an HTTP FastMCP server with `read_subject` and `qa_wait`
+  the MCP handshake, a stdio server whose results are not plain text
+  (`qa_resource`, one embedded resource; `qa_structured_only`, only
+  structured content) and that also advertises `terminal` and `qa_sibling`,
+  an HTTP FastMCP server with `read_subject` and `qa_wait`
   in three modes (`none`, `bearer`
   with the static token `qa-f19-bearer`, and `oauth` with FastMCP's
   `InMemoryOAuthProvider`, which approves every authorization request), and an
@@ -190,6 +193,49 @@ Preconditions:
   def qa_fail() -> str:
       """Always fail."""
       raise ValueError("QA_MCP_FAIL")
+
+
+  if __name__ == "__main__":
+      mcp.run()
+  EOF
+  cat > "$F19/qa_f19_payload.py" <<'EOF'
+  """F19 stdio MCP fixture: non-text results, and a tool named like the built-in terminal; argv[1] delays the MCP handshake."""
+  import sys
+  import time
+
+  from fastmcp import FastMCP
+  from fastmcp.tools import ToolResult
+  from mcp import types
+
+  if len(sys.argv) > 1:
+      time.sleep(float(sys.argv[1]))
+
+  mcp = FastMCP("qa-f19-payload")
+
+
+  @mcp.tool(output_schema=None)
+  def qa_resource() -> ToolResult:
+      """Return one embedded text resource."""
+      text = types.TextResourceContents(uri="file:///qa-f19/payload.json", mimeType="application/json", text='{"payload": "QA_F19_RESOURCE_TEXT"}')
+      return ToolResult(content=[types.EmbeddedResource(type="resource", resource=text)])
+
+
+  @mcp.tool(output_schema=None)
+  def qa_structured_only() -> ToolResult:
+      """Return structured content without content blocks."""
+      return ToolResult(content=[], structured_content={"payload": "QA_F19_STRUCTURED"})
+
+
+  @mcp.tool(name="terminal")
+  def qa_shadow_terminal(command: str) -> str:
+      """An MCP tool with the built-in terminal tool's name."""
+      return "QA_F19_MCP_TERMINAL:" + command
+
+
+  @mcp.tool()
+  def qa_sibling() -> str:
+      """A tool next to the shadowing one."""
+      return "QA_F19_SIBLING"
 
 
   if __name__ == "__main__":
@@ -274,6 +320,7 @@ Preconditions:
   print("SDK_MCP_ENV_OK=" + str(token == "qa-f19-env-secret" and server.enabled is False))
   EOF
   TOOLS_SRV=$(jq -nc --arg py "$PY" --arg s "$F19/qa_f19_tools.py" '{command: $py, args: [$s]}')
+  PAYLOAD_SRV=$(jq -nc --arg py "$PY" --arg s "$F19/qa_f19_payload.py" '{command: $py, args: [$s]}')
   RUN_URL=$(control-agent-server config | jq -r .url)
   free_port() { "$PY" -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'; }
   BEARER_PORT=$(free_port)
@@ -988,6 +1035,56 @@ Preconditions:
   `qa-f19_qa_echo`) carries `QA_MCP_ECHO:hi` in the REST event list and as a
   WebSocket frame, the stdio child exists during the conversation and is gone
   after the delete.
+- **Non-text tool results (`F19.conversation-tool`), known bug #6993.**
+  The payload fixture as the agent's only server; an `llm-stub` model calls
+  `qa_resource`, then `qa_structured_only`, and finishes.
+  ```sh
+  PL_STUB=$(control-agent-server fixture llm-stub --name qa-f19-pl-stub --step 'tool:qa_resource:{}' --step 'tool:qa_structured_only:{}' --step 'tool:finish:{"message":"QA_F19_PL_DONE"}' --print-path)
+  PL_AGENT=$(jq -nc --arg b "$PL_STUB/v1" --argjson s "$PAYLOAD_SRV" '{llm: {model: "openai/qa-stub", api_key: "qa-stub-key", base_url: $b, num_retries: 0}, tools: [], mcp_config: {"qa-f19-payload": $s}}')
+  PLCID=$(control-agent-server conversation start --body-json "$(jq -nc --argjson a "$PL_AGENT" '{agent: $a}')" --no-autotitle --prompt 'Read the payloads.' --wait --timeout 90 --print-id)
+  control-agent-server conversation events "$PLCID" --kinds ObservationEvent --contains "Tool 'qa_structured_only' executed" --expect-kind ObservationEvent
+  control-agent-server conversation events "$PLCID" --kinds ObservationEvent --contains QA_F19_STRUCTURED --expect-kind ObservationEvent --save F19.conversation-tool/structured-only # bug: matching eq 0 && kinds.ObservationEvent eq 3
+  control-agent-server conversation events "$PLCID" --kinds ObservationEvent --contains QA_F19_RESOURCE_TEXT --expect-kind ObservationEvent --save F19.conversation-tool/resource # bug: matching eq 0 && kinds.ObservationEvent eq 3
+  control-agent-server api DELETE "/api/conversations/$PLCID" --expect 200 --quiet
+  ```
+  Both calls ran (the `qa_structured_only` observation exists), and each
+  observation should carry the tool's payload (both checks are marked; the
+  first one stops the bullet today). Today the structured-only
+  call's observation is only `[Tool 'qa_structured_only' executed.]`, and the
+  resource call's only `[Tool 'qa_resource' executed.]`: the SDK's
+  `MCPToolObservation.from_call_tool_result` keeps text and image blocks and
+  never reads `structured_content`, so neither the model nor an event
+  consumer sees the payload.
+- **A server tool named like a built-in (`F19.conversation-tool`), known bug #6992.**
+  The agent has the built-in `terminal`, and the payload fixture (which also
+  advertises `terminal`) is its only MCP server, with its handshake delayed
+  by 3 s so it always joins after the 1 s startup budget (see Gotchas): the
+  path a slow-starting server takes, whatever the machine's load. The
+  `llm-stub` model runs the built-in terminal, then `qa_sibling`.
+  ```sh
+  SH_STUB=$(control-agent-server fixture llm-stub --name qa-f19-sh-stub --step 'tool:terminal:{"command":"echo QA_F19_BUILTIN_TERMINAL"}' --step 'tool:qa_sibling:{}' --step 'tool:finish:{"message":"QA_F19_SH_DONE"}' --print-path)
+  SH_AGENT=$(jq -nc --arg b "$SH_STUB/v1" --argjson s "$PAYLOAD_SRV" '{llm: {model: "openai/qa-stub", api_key: "qa-stub-key", base_url: $b, num_retries: 0}, tools: [{name: "terminal"}], mcp_config: {"qa-f19-shadow": ($s + {args: ($s.args + ["3"])})}}')
+  SHCID=$(control-agent-server conversation start --body-json "$(jq -nc --argjson a "$SH_AGENT" '{agent: $a}')" --no-autotitle --print-id)
+  trap 'control-agent-server api DELETE "/api/conversations/$SHCID" --expect 200,404 >/dev/null || true' EXIT
+  control-agent-server api POST "/api/conversations/$SHCID/events" --json '{"role": "user", "content": [{"type": "text", "text": "Use both tools."}], "run": true}' \
+    --expect 200 --save F19.conversation-tool/shadow-first-message
+  control-agent-server conversation wait "$SHCID" --until finished --timeout 90
+  control-agent-server conversation events "$SHCID" --kinds ObservationEvent --contains QA_F19_BUILTIN_TERMINAL --expect-kind ObservationEvent
+  control-agent-server conversation events "$SHCID" --kinds ObservationEvent --contains QA_F19_SIBLING --expect-kind ObservationEvent \
+    --save F19.conversation-tool/shadow-sibling # bug: matching eq 0 && kinds.AgentErrorEvent eq 1
+  control-agent-server sink read --name qa-f19-sh-stub --contains '"name": "qa-f19-shadow_terminal"' --expect-min 1
+  ```
+  The built-in terminal runs (the control). The server's tools should join
+  as `qa-f19-shadow_terminal` and `qa_sibling`, so the sibling call returns
+  `QA_F19_SIBLING`. Today the late join is refused as a whole (the log says
+  `Could not add MCP tools of qa-f19-shadow: Dynamically advertised MCP
+  tools conflict with existing runtime tools: ['terminal']`), the model is
+  offered no tool of that server, and the sibling call ends in an
+  `AgentErrorEvent` `Tool 'qa_sibling' not found`; the run still finishes.
+  A server that is ready within the budget hits the same collision during
+  initialization instead, and the first message is 500 `Duplicate tool
+  names found: {'terminal'}` with the conversation left `idle`; that
+  variant depends on start-up speed, so the recipe does not drive it.
 - **Stored OAuth token refresh (`F19.oauth-refresh-writeback`).** Expire the
   stored `qa-oauth` token with a sparse patch (client-side expiry only), then
   let a new conversation connect.
@@ -1153,19 +1250,20 @@ Preconditions:
   Each refusal leaves the agent's `mcp_config` as it was; the disabled
   server is stored with `enabled: false` and its command never runs; deleting
   the conversation stops the child the add started.
-- **A server that cannot start (`F19.conversation-mcp-add-start-failure`), known bug #6926.**
+- **A server that cannot start (`F19.conversation-mcp-add-start-failure`).**
   The command exits at once, so the MCP connection closes during the
-  handshake. The route's documented refusal is 400 (`Invalid MCP server
-  update`); today the exception escapes as a 500.
+  handshake. The SDK raises `MCPServerStartError` and the route answers its
+  documented refusal, 400 (`Invalid MCP server update`).
   ```sh
   SF_AGENT='{"llm": {"model": "openai/qa-offline", "api_key": "qa-offline-key", "base_url": "http://127.0.0.1:9/v1", "num_retries": 0}, "tools": []}'
   FCID=$(control-agent-server conversation start --body-json "$(jq -nc --argjson a "$SF_AGENT" '{agent: $a}')" --no-autotitle --prompt 'Never run.' --no-run --print-id)
-  control-agent-server api POST "/api/conversations/$FCID/mcp" --json '{"mcp_servers":{"qa-f19-dies":{"command":"/bin/true"}}}' --expect 400 --save F19.conversation-mcp-add-start-failure/add # bug: status eq 500 && response.body.exception eq 'Connection closed'
+  control-agent-server api POST "/api/conversations/$FCID/mcp" --json '{"mcp_servers":{"qa-f19-dies":{"command":"/bin/true"}}}' --expect 400 \
+    --check detail eq 'Could not start MCP server qa-f19-dies: Connection closed' --save F19.conversation-mcp-add-start-failure/add
   control-agent-server api GET "/api/conversations/$FCID" --max-chars 300 --check agent.mcp_config.qa-f19-dies missing --save F19.conversation-mcp-add-start-failure/after
   ```
-  The server is not added either way (`agent.mcp_config` keeps no
-  `qa-f19-dies`); only the status is wrong.
-- **Added servers after a restart (`F19.conversation-mcp-add-restart`), known bug #6927.**
+  The 400's `detail` names the server and the cause, and the server is not
+  added (`agent.mcp_config` keeps no `qa-f19-dies`).
+- **Added servers after a restart (`F19.conversation-mcp-add-restart`).**
   The stub calls the added tool, finishes, and after a restart and a new
   message calls the same tool again.
   ```sh
@@ -1181,12 +1279,13 @@ Preconditions:
   control-agent-server restart
   control-agent-server api GET "/api/conversations/$RCID" --check agent.mcp_config.qa-f19-rs.command eq "$PY" --save F19.conversation-mcp-add-restart/after-restart
   control-agent-server conversation send "$RCID" --text 'Again.' --wait --until finished --timeout 90
-  control-agent-server conversation events "$RCID" --kinds ObservationEvent --contains QA_MCP_ECHO:two --expect-kind ObservationEvent --save F19.conversation-mcp-add-restart/second-call # bug: matching eq 0 && kinds.AgentErrorEvent ge 1
+  control-agent-server conversation events "$RCID" --kinds ObservationEvent --contains QA_MCP_ECHO:two --expect-kind ObservationEvent --save F19.conversation-mcp-add-restart/second-call
   ```
   The server survives the restart in the conversation's agent and is
-  reconnected on the next message, but as the agent's only server its tools
-  come back bare (`qa_echo`), so the second call by the name the agent was
-  given ends in an `AgentErrorEvent` `Tool 'qa-f19-rs_qa_echo' not found`.
+  reconnected on the next message under the name the agent was given: the
+  conversation state records it as added at runtime (`runtime_mcp_servers`),
+  so its tools stay `qa-f19-rs_qa_echo` although it is the agent's only
+  server, and the second call returns `QA_MCP_ECHO:two`.
 - **A slow server does not hold up the start (`F19.conversation-mcp-slow-start`).**
   The F19 tools fixture with a handshake delayed by 8 s, inline on the
   conversation's agent; the stub reads one variable through it.
@@ -1259,10 +1358,13 @@ Preconditions:
   request (`sink read --name <stub> --contains '"name": "<tool>"'`), not the
   first event. Tools added through `POST /api/conversations/{id}/mcp` are not
   in it either.
-- Tools of a server added through the conversation route are always named
-  `<server>_<tool>` while the agent is running, but a restart (or an add
-  before the first message) names them like configured servers: bare when it
-  is the agent's only server (`F19.conversation-mcp-add-restart`).
+- Tools of a server added through the conversation route once the
+  conversation has started (its agent is initialized or it has events) are
+  named `<server>_<tool>`, and keep that name across a restart
+  (`F19.conversation-mcp-add-restart`); the other servers are counted without
+  it for the two-or-more prefix rule. An add to a brand-new conversation
+  before it has started is named like a configured server: bare when it is
+  the agent's only server.
 - The conversation MCP route runs the connection inside the request: an
   initialized conversation answers only after the server has started (or
   failed, up to 30 s). Explicit `transport: sse` is refused, but a `/sse` URL

@@ -3,14 +3,14 @@ import contextvars
 import threading
 import time
 import traceback
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext, suppress
 from dataclasses import dataclass, field
 from datetime import datetime
 from functools import partial
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, TypeVar, cast
 from uuid import UUID, uuid4
 
 from pydantic import ValidationError
@@ -23,8 +23,10 @@ from openhands.agent_server.conversation_lease import (
 )
 from openhands.agent_server.exceptions import (
     CondensationUnavailable,
+    ConversationAlreadyRunning,
     ConversationRunLimitExceeded,
     CredentialBindingActivationTooLate,
+    GoalAlreadyRunning,
     ServiceInactive,
 )
 from openhands.agent_server.managed_llm_key import register_managed_llm_key_refresh
@@ -74,7 +76,10 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
-from openhands.sdk.conversation.types import ConversationCallbackType
+from openhands.sdk.conversation.types import (
+    GOAL_LOOP_SENDER,
+    ConversationCallbackType,
+)
 from openhands.sdk.credential import (
     CredentialBindingError,
     CredentialNeedsReauthentication,
@@ -87,7 +92,11 @@ from openhands.sdk.event import (
     ReactionEvent,
     StreamingDeltaEvent,
 )
-from openhands.sdk.event.ask_user import AskUserAnswerEvent, find_pending_ask_back
+from openhands.sdk.event.ask_user import (
+    AskUserAnswerEvent,
+    PendingAsk,
+    find_pending_ask_back,
+)
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.conversation_state import (
     FULL_STATE_KEY,
@@ -120,6 +129,8 @@ MCP_STARTUP_BUDGET_SECONDS = 1.0
 
 
 logger = get_logger(__name__)
+
+_T = TypeVar("_T")
 _GIT_INIT_LOCK = threading.Lock()
 
 
@@ -733,6 +744,32 @@ class EventService:
 
         return EventPage(items=items, next_page_id=next_page_id)
 
+    def _scan_sync(
+        self, take: Callable[[Iterator[Event]], _T], newest_first: bool
+    ) -> _T:
+        events = self._events_for_read()
+        total = len(events)
+        indices = range(total - 1, -1, -1) if newest_first else range(total)
+        return take(
+            event
+            for i in indices
+            if (event := self._get_searchable_event(events, i)) is not None
+        )
+
+    async def scan_events(
+        self,
+        take: Callable[[Iterator[Event]], _T],
+        *,
+        newest_first: bool = True,
+    ) -> _T:
+        """``take`` applied to the event log, read lazily in log order.
+
+        Unlike :meth:`search_events`, whose page keeps reading until it has
+        ``limit + 1`` matches, the read ends when ``take`` stops iterating, so
+        a caller that wants the latest match reads only back to it.
+        """
+        return await asyncio.to_thread(self._scan_sync, take, newest_first)
+
     async def search_events(
         self,
         page_id: str | None = None,
@@ -945,21 +982,25 @@ class EventService:
         *,
         run_slot: RunSlot | None = None,
         sender: str | None = None,
+        keep_goal_loop: bool = False,
     ):
         """Append a message and, with ``run``, start a run to handle it.
 
         ``sender`` is recorded on the saved event; see
         :data:`openhands.sdk.conversation.types.CONVERSATION_SENDER_PREFIX`.
+
+        ``keep_goal_loop`` leaves an active ``/goal`` loop running, for
+        messages the server delivers rather than the user writes.
         """
         if not self._conversation:
             raise ServiceInactive()
         # A normal user message supersedes any active /goal loop in this
         # conversation. The goal loop's own messages pass _from_goal_loop=True.
-        if not _from_goal_loop:
+        if not (_from_goal_loop or keep_goal_loop):
             await self.stop_goal_loop()
         explicit_interrupt_generation = self._explicit_interrupt_generation
         if _from_goal_loop and sender is None:
-            sender = "goal"
+            sender = GOAL_LOOP_SENDER
         send_message = (
             partial(self._conversation.send_message, sender=sender)
             if sender is not None
@@ -994,21 +1035,21 @@ class EventService:
                         run_slot=run_slot,
                     )
                     self._acp_internal_rerun_requested = False
-                except ValueError as e:
-                    # run() refused. If a run is still wrapping up (its
-                    # wait_for_pending tail), the message we just appended won't
-                    # be picked up by it, so record explicit run intent for
+                except ConversationAlreadyRunning:
+                    # If a run is still wrapping up (its wait_for_pending
+                    # tail), the message we just appended won't be picked up
+                    # by it, so record explicit run intent for
                     # _run_and_publish to honor once that task clears. Tracking
                     # the request — rather than inferring it later from an IDLE
                     # status — is what keeps a deliberate run=False append, or an
                     # IDLE reached via another path, from triggering an unwanted
-                    # run. ServiceInactive is terminal and must not re-arm.
-                    if (
-                        str(e) == "conversation_already_running"
-                        and not active_acp_prompt_has_latest_message
-                    ):
+                    # run.
+                    if not active_acp_prompt_has_latest_message:
                         self._rerun_requested = True
                         self._acp_internal_rerun_requested = True
+                except ValueError:
+                    # ServiceInactive is terminal and must not re-arm.
+                    pass
                 finally:
                     self._unpin_run_session()
             else:
@@ -1027,12 +1068,28 @@ class EventService:
                         "reached. Retry POST /api/conversations/"
                         f"{self.stored.id}/run without resending the message."
                     ) from exc
-                except ValueError as e:
-                    if (
-                        str(e) == "conversation_already_running"
-                        and not active_acp_prompt_has_latest_message
-                    ):
+                except ConversationAlreadyRunning:
+                    if not active_acp_prompt_has_latest_message:
                         self._rerun_requested = True
+                except ValueError:
+                    pass
+
+    async def run_saved_message_when_free(self) -> None:
+        """Run for a message already saved, waiting for a free run slot.
+
+        For server deliveries that :meth:`send_message` saved but could not run
+        because every slot was taken (``ConversationRunLimitExceeded``): the
+        sender was told nothing and nobody would retry, so this waits for
+        capacity instead. A run that started meanwhile takes the message or is
+        re-armed for it.
+        """
+        if not self._conversation:
+            raise ServiceInactive()
+        with await RunSlot.acquire(self._run_semaphore, wait=True) as run_slot:
+            try:
+                await self.run(run_slot=run_slot)
+            except ConversationAlreadyRunning:
+                self._rerun_requested = True
 
     def _mark_running_acp_prompt_superseded_sync(self) -> tuple[bool, bool]:
         """Mark the currently running ACP prompt superseded if needed.
@@ -1650,7 +1707,7 @@ class EventService:
                 await self._get_execution_status()
                 == ConversationExecutionStatus.RUNNING
             ):
-                raise ValueError("conversation_already_running")
+                raise ConversationAlreadyRunning()
             if self._closing:
                 raise ServiceInactive()
             # Re-check: the status read above can yield to a late stop too.
@@ -1789,8 +1846,8 @@ class EventService:
 
                     # Re-arm a run for input stranded while this task was
                     # wrapping up. A send_message(run=True) that arrived during
-                    # the wait_for_pending() tail above had its run() rejected as
-                    # "conversation_already_running" and suppressed, setting
+                    # the wait_for_pending() tail above had its run() rejected
+                    # with ConversationAlreadyRunning and suppressed, setting
                     # _rerun_requested. Honor it while the conversation is IDLE
                     # (pending input) or internally ACP-interrupted PAUSED (the
                     # old task finished its interrupt before the replacement run
@@ -1840,14 +1897,11 @@ class EventService:
                                     # token beats a 429 that would strand it.
                                     wait_for_capacity=True,
                                 )
-                            except ValueError as e:
-                                if str(e) == "conversation_already_running":
-                                    self._rerun_requested = True
-                                    self._acp_internal_rerun_requested = (
-                                        acp_internal_rerun_requested
-                                    )
-                                else:
-                                    raise
+                            except ConversationAlreadyRunning:
+                                self._rerun_requested = True
+                                self._acp_internal_rerun_requested = (
+                                    acp_internal_rerun_requested
+                                )
 
             # Create task but don't await it - runs in background
             self._run_task = asyncio.create_task(_run_and_publish())
@@ -1907,14 +1961,14 @@ class EventService:
             if self._closing:
                 raise ServiceInactive()
             if self._goal_loop_task is not None and not self._goal_loop_task.done():
-                raise ValueError("goal_already_running")
+                raise GoalAlreadyRunning()
             # _run_task first: a live run holds the state lock across its step,
             # so reading execution status would block behind it.
             if (self._run_task is not None and not self._run_task.done()) or (
                 await self._get_execution_status()
                 == ConversationExecutionStatus.RUNNING
             ):
-                raise ValueError("conversation_already_running")
+                raise ConversationAlreadyRunning()
             # Re-check after the await above: close() runs without _run_lock, so
             # it may have begun teardown meanwhile (mirrors run()'s post-status
             # _closing re-check) -- avoid spawning a task close() won't cancel.
@@ -1968,7 +2022,6 @@ class EventService:
         conversation = self._conversation
         if conversation is None:
             return
-        loop = asyncio.get_running_loop()
 
         def _snapshot_and_judge() -> GoalStep:
             # Snapshot events under the conversation lock, then judge (an LLM
@@ -2005,7 +2058,7 @@ class EventService:
                 with conversation._state:
                     conversation._on_event(event)
 
-            await loop.run_in_executor(None, _persist)
+            await self.run_state_op(_persist)
 
         try:
             await _emit_status(active=True, status="running")
@@ -2014,9 +2067,8 @@ class EventService:
             while True:
                 try:
                     await self.run()
-                except ValueError as e:
-                    if str(e) != "conversation_already_running":
-                        raise
+                except ConversationAlreadyRunning:
+                    pass
                 run_task = self._run_task
                 if run_task is not None:
                     await asyncio.wait({run_task})
@@ -2038,7 +2090,7 @@ class EventService:
                     # that breaks the agent out of any genuine loop). Only
                     # PAUSED/ERROR (real stop signals) terminate the goal.
                     logger.info("Goal loop continuing past stuck run")
-                step = await loop.run_in_executor(None, _snapshot_and_judge)
+                step = await self.run_state_op(_snapshot_and_judge)
                 if isinstance(step, GoalAsked):
                     # The agent asked the user (ask_user). A followup would
                     # land over the question, so stop here, resumable; the
@@ -2185,12 +2237,12 @@ class EventService:
             if self._closing:
                 raise ServiceInactive()
             if self._goal_loop_task is not None and not self._goal_loop_task.done():
-                raise ValueError("goal_already_running")
+                raise GoalAlreadyRunning()
             if (self._run_task is not None and not self._run_task.done()) or (
                 await self._get_execution_status()
                 == ConversationExecutionStatus.RUNNING
             ):
-                raise ValueError("conversation_already_running")
+                raise ConversationAlreadyRunning()
             if self._closing:  # see start_goal_loop: close() may have begun teardown
                 raise ServiceInactive()
             self._goal_loop_outcome = None
@@ -2200,14 +2252,9 @@ class EventService:
         if request.accept:
             try:
                 await self.run()
-            except ValueError as e:
-                # Treat "already running" as a no-op success
-                if str(e) == "conversation_already_running":
-                    logger.debug(
-                        "Confirmation accepted but conversation already running"
-                    )
-                else:
-                    raise
+            except ConversationAlreadyRunning:
+                # A no-op success.
+                logger.debug("Confirmation accepted but conversation already running")
         else:
             await self.reject_pending_actions(request.reason)
 
@@ -2235,8 +2282,15 @@ class EventService:
         ask_id: str,
         option_index: int | None = None,
         text: str | None = None,
+        *,
+        sender: str | None = None,
     ) -> AskUserAnswerEvent:
         """Record the user's answer to a pending ``ask_user`` question and run.
+
+        ``sender`` is recorded on the message that carries the answer: a
+        project's coordinator, when the user answered there, on its card
+        (see :func:`~openhands.agent_server.project_wake.pass_on_answer`).
+        The answer is the user's either way.
 
         Raises:
             ValueError: The question is not pending, or the answer is invalid.
@@ -2246,8 +2300,33 @@ class EventService:
         answer, message = await self.run_state_op(
             self._conversation.answer_ask, ask_id, option_index, text
         )
-        await self.send_message(message, run=True)
+        await self.send_message(
+            message,
+            run=True,
+            sender=sender,
+            keep_goal_loop=sender is not None,
+        )
         return answer
+
+    def pending_ask(self, before: str | None = None) -> PendingAsk | None:
+        """The agent's unanswered ``ask_user`` question, from the event log.
+
+        With ``before``, the question that was pending just before that event
+        (the user's message or answer that closed it). Reads the log back
+        from the end only as far as the question or the user's latest message,
+        without the state lock, as :meth:`_get_agent_final_response_sync` does.
+        """
+        if not self._conversation:
+            raise ServiceInactive()
+        state = self._conversation._state
+        if before is None:
+            return find_pending_ask_back(state.walk_back())
+        walk = state.walk_back(until=before)
+        if not any(event.id == before for event in walk):
+            return None  # not on the active branch
+        events = state.events.walk_back(before)
+        next(events)  # ``before`` itself
+        return find_pending_ask_back(events)
 
     async def reject_pending_actions(self, reason: str):
         """Reject all pending actions and publish updated state."""
@@ -2642,6 +2721,13 @@ class EventService:
     def idle_seconds(self) -> float:
         """Seconds since the last recorded activity."""
         return time.monotonic() - self._last_active_monotonic
+
+    async def subscribe_internal(self, subscriber: Subscriber[Event]) -> UUID:
+        """:meth:`subscribe_to_events` for the server's own subscriber, which
+        does not keep the conversation from idle eviction."""
+        subscriber_id = await self.subscribe_to_events(subscriber)
+        self._internal_subscriber_ids.add(subscriber_id)
+        return subscriber_id
 
     def mark_subscription_baseline(self) -> None:
         """Snapshot the current (internal) subscribers; later ones are external."""

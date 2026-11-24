@@ -466,6 +466,27 @@ class TestBrowserExecutorE2E:
         assert isinstance(result, BrowserObservation)
         # Note: This might fail if tab ID format is different, which is expected
 
+    def test_list_right_after_closing_a_background_tab(
+        self, browser_executor: BrowserToolExecutor, test_server: str
+    ):
+        """The tab list no longer shows a tab once its close has returned."""
+        browser_executor(BrowserNavigateAction(url=test_server))
+        for _ in range(5):
+            browser_executor(
+                BrowserNavigateAction(url=f"{test_server}/page2.html", new_tab=True)
+            )
+            tabs = json.loads(browser_executor(BrowserListTabsAction()).text)
+            assert len(tabs) == 2
+            # Closing a tab that is not focused returns quickly, which is
+            # where a stale list showed up.
+            browser_executor(BrowserSwitchTabAction(tab_id=tabs[0]["tab_id"]))
+            closed = browser_executor(BrowserCloseTabAction(tab_id=tabs[1]["tab_id"]))
+            assert not closed.is_error
+
+            remaining = json.loads(browser_executor(BrowserListTabsAction()).text)
+
+            assert [t["tab_id"] for t in remaining] == [tabs[0]["tab_id"]]
+
     def test_error_handling(self, browser_executor: BrowserToolExecutor):
         """Test error handling for invalid operations."""
         # Try to navigate to invalid URL

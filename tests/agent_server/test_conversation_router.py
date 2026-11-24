@@ -16,7 +16,12 @@ from openhands.agent_server.conversation_router import conversation_router
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.event_service import EventService
-from openhands.agent_server.exceptions import CondensationUnavailable, ServiceInactive
+from openhands.agent_server.exceptions import (
+    CondensationUnavailable,
+    ConversationAlreadyRunning,
+    GoalAlreadyRunning,
+    ServiceInactive,
+)
 from openhands.agent_server.launch import launch_source
 from openhands.agent_server.models import (
     ConversationInfo,
@@ -27,6 +32,7 @@ from openhands.agent_server.models import (
     SendMessageRequest,
     StartConversationRequest,
 )
+from openhands.agent_server.project_service import ProjectService
 from openhands.agent_server.utils import utc_now
 from openhands.sdk import LLM, Agent, TextContent, Tool
 from openhands.sdk.agent.acp_agent import ACPAgent
@@ -95,6 +101,8 @@ def sample_conversation_info():
 def mock_conversation_service():
     """Create a mock ConversationService for testing."""
     service = AsyncMock(spec=ConversationService)
+    service.projects = AsyncMock(spec=ProjectService)
+    service.projects.member_of.return_value = None
     return service
 
 
@@ -1376,7 +1384,7 @@ def test_start_goal_in_conversation_rejects_busy_loop(
 ):
     """/goal returns 409 when a goal loop or conversation run is active."""
     mock_conversation_service.get_event_service.return_value = mock_event_service
-    mock_event_service.start_goal_loop.side_effect = ValueError("goal_already_running")
+    mock_event_service.start_goal_loop.side_effect = GoalAlreadyRunning()
 
     client.app.dependency_overrides[get_conversation_service] = lambda: (
         mock_conversation_service
@@ -1661,7 +1669,7 @@ def test_run_conversation_already_running(
 
     # Mock the service responses
     mock_conversation_service.get_event_service.return_value = mock_event_service
-    mock_event_service.run.side_effect = ValueError("conversation_already_running")
+    mock_event_service.run.side_effect = ConversationAlreadyRunning()
 
     client.app.dependency_overrides[get_conversation_service] = lambda: (
         mock_conversation_service
@@ -1995,7 +2003,9 @@ def test_update_conversation_success(
     """Test update_conversation endpoint with successful update."""
 
     # Mock the service response - update successful
-    mock_conversation_service.update_conversation.return_value = True
+    mock_conversation_service.projects.update_conversation_from_client.return_value = (
+        True
+    )
 
     client.app.dependency_overrides[get_conversation_service] = lambda: (
         mock_conversation_service
@@ -2013,8 +2023,10 @@ def test_update_conversation_success(
         assert data["success"] is True
 
         # Verify service was called with correct parameters
-        mock_conversation_service.update_conversation.assert_called_once()
-        call_args = mock_conversation_service.update_conversation.call_args
+        mock_conversation_service.projects.update_conversation_from_client.assert_called_once()
+        call_args = (
+            mock_conversation_service.projects.update_conversation_from_client.call_args
+        )
         assert call_args[0][0] == sample_conversation_id
         assert call_args[0][1].title == "Updated Conversation Title"
     finally:
@@ -2026,7 +2038,9 @@ def test_update_conversation_not_found(
 ):
     """An unknown conversation is 404, not 200 with success=false."""
 
-    mock_conversation_service.update_conversation.return_value = False
+    mock_conversation_service.projects.update_conversation_from_client.return_value = (
+        False
+    )
 
     client.app.dependency_overrides[get_conversation_service] = lambda: (
         mock_conversation_service
@@ -2042,7 +2056,7 @@ def test_update_conversation_not_found(
         assert response.status_code == 404
 
         # Verify service was called
-        mock_conversation_service.update_conversation.assert_called_once()
+        mock_conversation_service.projects.update_conversation_from_client.assert_called_once()
     finally:
         client.app.dependency_overrides.clear()
 
