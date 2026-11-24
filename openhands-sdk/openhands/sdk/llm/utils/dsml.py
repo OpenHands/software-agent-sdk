@@ -274,16 +274,16 @@ def normalize_deepseek_v4_response(
         return resp
 
     choice = resp.choices[0]
-    message = getattr(choice, "message", None)
+    message = choice.get("message")
     if not message:
         return resp
 
     # Do not reprocess already structured tool calls
-    existing_tool_calls = getattr(message, "tool_calls", None)
+    existing_tool_calls = message.get("tool_calls")
     if existing_tool_calls:
         return resp
 
-    content = getattr(message, "content", None)
+    content = message.get("content")
     if not isinstance(content, str) or not has_dsml_markers(content):
         return resp
 
@@ -291,7 +291,7 @@ def normalize_deepseek_v4_response(
     if parsed_calls:
         message.tool_calls = parsed_calls
         message.content = cleaned_content
-        if getattr(choice, "finish_reason", None) in (None, "stop"):
+        if choice.get("finish_reason") in (None, "stop"):
             choice.finish_reason = "tool_calls"
 
     return resp
@@ -391,11 +391,11 @@ class DSMLStreamFilter:
         if not chunk.choices:
             return chunk
 
-        delta = getattr(chunk.choices[0], "delta", None)
+        delta = chunk.choices[0].get("delta")
         if delta is None:
             return chunk
 
-        content_str = getattr(delta, "content", None)
+        content_str = delta.get("content")
         if content_str is None or not isinstance(content_str, str):
             return chunk
 
