@@ -9,6 +9,7 @@ import uuid
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager, suppress
 from pathlib import Path
+from typing import Final
 
 import libtmux
 from filelock import FileLock
@@ -226,7 +227,7 @@ _TMUX_SPECIALS: dict[str, str] = {
 _SHELL_PROMPT_TIMEOUT_SECONDS = 10
 # How long clear_screen waits for the prompt to be redrawn (a slow
 # PROMPT_COMMAND delays it) before handing the pane to the next command.
-_CLEAR_PROMPT_TIMEOUT_SECONDS = 5
+_CLEAR_PROMPT_TIMEOUT_SECONDS: Final[float] = 5
 
 
 class TmuxTerminal(TerminalInterface):
