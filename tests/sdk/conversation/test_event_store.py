@@ -1,5 +1,8 @@
 """Comprehensive edge case tests for EventLog class."""
 
+import errno
+import os
+import stat
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -648,6 +651,33 @@ def test_append_syncs_when_marker_is_missing():
 
     # And the marker is re-established for the appends that follow.
     assert fs.exists(reopened._marker_path(2))
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Requires directory fsync")
+def test_append_rescans_after_directory_sync_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    log = EventLog(LocalFileStore(str(tmp_path)))
+    first = create_test_event("aaaaaaaa-0000")
+    failed = create_test_event("bbbbbbbb-0000")
+    next_event = create_test_event("cccccccc-0000")
+    log.append(first)
+    real_fsync = os.fsync
+
+    def fail_directory_sync(fd: int) -> None:
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError(errno.EIO, "directory sync failed")
+        real_fsync(fd)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "fsync", fail_directory_sync)
+        with pytest.raises(OSError, match="directory sync failed"):
+            log.append(failed)
+
+    assert log.append(next_event) == 2
+    reopened = EventLog(LocalFileStore(str(tmp_path)))
+    assert [event.id for event in reopened] == [first.id, failed.id, next_event.id]
+    assert [reopened.get_seq(index) for index in range(len(reopened))] == [0, 1, 2]
 
 
 def test_scan_does_not_warn_about_sidecar_files(caplog):
