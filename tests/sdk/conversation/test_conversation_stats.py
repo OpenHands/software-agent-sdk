@@ -85,6 +85,97 @@ def test_get_combined_metrics(conversation_stats):
     )  # max of 8000 and 4000
 
 
+def test_get_combined_metrics_attributes_single_model(
+    conversation_stats,
+):
+    """Combined metrics carry the model name when all usages used one model.
+
+    Regression for OHE-4216: sub-agent entries (task:*, delegate:*) are built
+    by get_combined_metrics() and showed up as model_name "default" in
+    dashboards even though every usage record carried the real model.
+    """
+    usage1 = "usage1"
+    metrics1 = Metrics(model_name="anthropic/claude-sonnet-4-5")
+    metrics1.add_cost(0.05)
+    metrics1.add_token_usage(
+        prompt_tokens=100,
+        completion_tokens=50,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        context_window=8000,
+        response_id="resp1",
+    )
+    conversation_stats.usage_to_metrics[usage1] = metrics1
+
+    combined = conversation_stats.get_combined_metrics()
+
+    assert combined.model_name == "anthropic/claude-sonnet-4-5"
+    assert combined.accumulated_token_usage.model == "anthropic/claude-sonnet-4-5"
+    assert combined.accumulated_cost == 0.05
+    assert combined.accumulated_token_usage.prompt_tokens == 100
+    # Detailed records keep their per-call model attribution
+    assert combined.costs[0].model == "anthropic/claude-sonnet-4-5"
+    assert combined.token_usages[0].model == "anthropic/claude-sonnet-4-5"
+
+
+def test_get_combined_metrics_mixed_models_keep_default_fallback(
+    conversation_stats,
+):
+    """Mixed or indeterminate usage keeps the "default" aggregate model.
+
+    A condenser or nested sub-agent on another model must not cause the whole
+    rolled-up entry to be attributed to one of the models.
+    """
+    metrics1 = Metrics(model_name="gpt-4o")
+    metrics1.add_cost(0.05)
+    metrics2 = Metrics(model_name="claude-sonnet-4-5")
+    metrics2.add_cost(0.02)
+    conversation_stats.usage_to_metrics["usage1"] = metrics1
+    conversation_stats.usage_to_metrics["usage2"] = metrics2
+
+    combined = conversation_stats.get_combined_metrics()
+
+    assert combined.model_name == "default"
+    assert combined.accumulated_cost == 0.07
+    assert len(combined.costs) == 2
+
+
+def test_get_combined_metrics_snapshot_preserves_model_attribution(
+    conversation_stats,
+):
+    """Model attribution survives snapshot serialization (OHE-4216)."""
+    metrics1 = Metrics(model_name="anthropic/claude-sonnet-4-5")
+    metrics1.add_cost(0.05)
+    metrics1.add_token_usage(
+        prompt_tokens=100,
+        completion_tokens=50,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        context_window=8000,
+        response_id="resp1",
+    )
+    conversation_stats.usage_to_metrics["usage1"] = metrics1
+
+    data = conversation_stats.model_dump(mode="json", context={"use_snapshot": True})[
+        "usage_to_metrics"
+    ]
+    snapshot = data["usage1"]
+    assert snapshot["model_name"] == "anthropic/claude-sonnet-4-5"
+
+    combined = conversation_stats.get_combined_metrics()
+    assert combined.get_snapshot().model_name == "anthropic/claude-sonnet-4-5"
+
+
+def test_get_combined_metrics_all_default_keeps_default(conversation_stats):
+    """When nothing identifies a model, the aggregate stays at "default"."""
+    conversation_stats.usage_to_metrics["usage1"] = Metrics()
+    conversation_stats.usage_to_metrics["usage2"] = Metrics()
+
+    combined = conversation_stats.get_combined_metrics()
+
+    assert combined.model_name == "default"
+
+
 def test_get_metrics_for_usage(conversation_stats):
     """Test that metrics for a specific usage are retrieved correctly."""
     # Add a usage with metrics

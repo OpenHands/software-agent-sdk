@@ -398,6 +398,12 @@ def test_delegate_merges_metrics_into_parent():
     assert "delegate:a2" in parent_stats.usage_to_metrics
     assert parent_stats.usage_to_metrics["delegate:a1"].accumulated_cost == 1.00
     assert parent_stats.usage_to_metrics["delegate:a2"].accumulated_cost == 2.00
+    # Each rolled-up entry is attributed to its sub-agent's model, not
+    # "default" (OHE-4216)
+    a1_model = a1_llm.metrics.model_name
+    assert a1_model != "default"
+    assert parent_stats.usage_to_metrics["delegate:a1"].model_name == a1_model
+    assert parent_stats.usage_to_metrics["delegate:a2"].model_name == a1_model
 
     # Combined total includes parent + both sub-agents
     combined = parent_stats.get_combined_metrics()
