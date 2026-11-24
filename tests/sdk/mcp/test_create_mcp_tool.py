@@ -23,6 +23,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import PlainTextResponse
 
 from openhands.sdk.mcp import create_mcp_tools
+from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.config import (
     MCPApiKeyAuthCredential,
     MCPBasicAuthCredential,
@@ -920,9 +921,22 @@ def test_mcp_tool_reconnects_after_http_server_restart():
         thread.join(timeout=5)
 
 
-def test_reconnect_relists_the_restarted_servers_tools():
+def test_reconnect_relists_the_restarted_servers_tools(
+    monkeypatch: pytest.MonkeyPatch,
+):
     """A restarted server may offer other tools; after reconnecting, the client
-    re-lists them and tells the agent, as for tools/list_changed."""
+    re-lists them and tells the agent, as for tools/list_changed.
+
+    Auto negotiation picks a sessionless ``server/discover`` connection, which
+    has no session to lose, so this uses a legacy (handshake) session.
+    """
+    init = MCPClient.__init__
+
+    def legacy_init(self, *args, **kwargs):
+        kwargs.setdefault("mode", "legacy")
+        init(self, *args, **kwargs)
+
+    monkeypatch.setattr(MCPClient, "__init__", legacy_init)
     port = _find_free_port()
     server, thread = _start_counter_http_server(port)
     snapshots: list[list[str]] = []
