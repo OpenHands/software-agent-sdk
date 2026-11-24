@@ -66,6 +66,7 @@ def test_llm_agent_settings_export_schema_groups_sections() -> None:
         "general",
         "llm",
         "agent_context",
+        "context_compacting",
         "condenser",
         "verification",
     ]
