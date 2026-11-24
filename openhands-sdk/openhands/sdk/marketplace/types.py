@@ -364,6 +364,6 @@ class Marketplace(BaseModel):
 
         # Relative path - resolve against marketplace path if known
         if self.path:
-            source = str(Path(self.path) / source.lstrip("./"))
+            source = str(Path(self.path) / source.removeprefix("./"))
 
         return (source, None, None)
