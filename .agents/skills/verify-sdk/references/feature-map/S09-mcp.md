@@ -1,6 +1,6 @@
 # MCP client and tools
 
-A Python program gives an agent Model Context Protocol servers with `Agent(mcp_config={"name": MCPServer(...)})`: a local server started as a subprocess (`command`, `args`, `env`, `cwd`; stdio transport), or a remote one reached over streamable HTTP or SSE (`url`, `transport`, `headers`, `auth`). When the conversation initializes the agent, the SDK opens one FastMCP client for all enabled servers on a background event loop, lists their tools, and turns each MCP tool into an `MCPToolDefinition` whose JSON schema becomes the model-facing tool (with `summary` and, when a security analyzer is set, `security_risk` added). Tool names are the MCP names, prefixed with `<server>_` when there are several servers. A call validates the model's arguments against the schema, expands `$VAR` secret references from the conversation, sends `tools/call` over the same session, and returns an `MCPToolObservation` with text and images (secrets masked, errors as `is_error`). The session survives between calls, is reconnected once if it drops, and follows `notifications/tools/list_changed`. Remote servers can authenticate with a bearer token, API key, basic auth, custom header or OAuth 2 (dynamic client registration and token refresh against the discovered token endpoint). A server that fails to start is logged and skipped; the conversation continues without its tools.
+A Python program gives an agent Model Context Protocol servers with `Agent(mcp_config={"name": MCPServer(...)})`: a local server started as a subprocess (`command`, `args`, `env`, `cwd`; stdio transport), or a remote one reached over streamable HTTP or SSE (`url`, `transport`, `headers`, `auth`). When the conversation initializes the agent, the SDK opens one FastMCP client for all enabled servers on a background event loop, lists their tools, and turns each MCP tool into an `MCPToolDefinition` whose JSON schema becomes the model-facing tool (with `summary` and, when a security analyzer is set, `security_risk` added). Tool names are the MCP names, prefixed with `<server>_` when there are several servers. A call validates the model's arguments against the schema, expands `$VAR` secret references from the conversation, sends `tools/call` over the same client connection, and returns an `MCPToolObservation` with text and images (secrets masked, errors as `is_error`). The connection is kept between calls, is reconnected once if it drops, and follows `notifications/tools/list_changed`. The client negotiates the protocol with each server when it connects: the sessionless `server/discover` protocol with a server that answers it, the `initialize` handshake and one MCP session with any other server and over SSE. Remote servers can authenticate with a bearer token, API key, basic auth, custom header or OAuth 2 (dynamic client registration and token refresh against the discovered token endpoint). A server that fails to start is logged and skipped; the conversation continues without its tools.
 
 Source: `openhands-sdk/openhands/sdk/mcp/`, `openhands-sdk/openhands/sdk/agent/base.py`, `openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py`, `openhands-sdk/openhands/sdk/skills/utils.py` (MCP variable expansion)
 
@@ -18,23 +18,30 @@ Examples: `examples/01_standalone_sdk/07_mcp_integration.py`, `examples/01_stand
 - `S09.oauth`: `auth=MCPOAuthAuthCredential(strategy="oauth2", authentication=MCPOAuthAuthentication(...))` builds a FastMCP OAuth client with the given scopes, client id/secret or metadata URL and an optional token store or factory; an expired token is refreshed against the token endpoint discovered from server metadata, falling back to `<origin>/token`, and a valid token is sent without discovery. Unit: `tests/sdk/mcp/test_oauth.py`, `tests/sdk/mcp/test_create_mcp_tool.py` (`test_prepare_mcp_config_*oauth*`). Example: `examples/01_standalone_sdk/08_mcp_with_oauth.py`. Real-LLM: none.
 - `S09.enabled-flag`: `MCPServer(enabled=False)` keeps a server configured but never connects to it; if every server is disabled `create_mcp_tools` raises and the conversation skips MCP entirely. Unit: `tests/sdk/mcp/test_create_mcp_tool.py` (`test_create_mcp_tools_skips_disabled_servers`, `test_create_mcp_tools_all_servers_disabled`), `tests/sdk/conversation/test_local_conversation_mcp.py::test_disabling_every_server_skips_the_mcp_connection`. Example: none. Real-LLM: none.
 - `S09.listing-timeout`: tool listing that exceeds `timeout` (30 s in a conversation) raises `MCPTimeoutError` naming the servers and closes the client; an unreachable server raises. Unit: `tests/sdk/mcp/test_create_mcp_tool.py` (`test_create_mcp_tools_timeout_error_message`, `test_create_mcp_tools_connection_to_nonexistent_server`). Example: none. Real-LLM: none.
-- `S09.startup-failure-tolerated`: when MCP startup fails inside a `LocalConversation`, a warning is logged and the conversation runs with its other tools. Unit: `tests/sdk/conversation/test_local_conversation_mcp.py::test_mcp_startup_failure_does_not_abort_conversation`. Example: none. Real-LLM: none.
+- `S09.startup-failure-tolerated`: when MCP startup fails inside a `LocalConversation`, a warning is logged and the conversation runs with its other tools; a single server that advertises a built-in tool's name (`terminal`) gets that tool as `<server>_terminal` while the built-in and the server's other tools stay (known failure #6992: initialization raises `ValueError: Duplicate tool names found: {'terminal'}`). Unit: `tests/sdk/conversation/test_local_conversation_mcp.py::test_mcp_startup_failure_does_not_abort_conversation`. Example: none. Real-LLM: none.
 - `S09.schema-conversion`: an MCP `inputSchema` becomes the tool's OpenAI and Responses parameters with nested objects, arrays, required lists and descriptions preserved, plus `summary` and (with a security analyzer) `security_risk`; MCP annotations are kept. Unit: `tests/sdk/mcp/test_mcp_nested_schema.py`, `tests/sdk/mcp/test_mcp_security_risk.py`, `tests/sdk/mcp/test_mcp_tool.py`. Example: none. Real-LLM: none.
 - `S09.argument-validation`: `action_from_arguments` validates the model's arguments against the schema, drops `None` values and the OpenHands `kind` discriminator before the call, keeps a schema property literally named `kind`, and raises on invalid input; `security_risk` and `summary` are removed by the agent before it calls `action_from_arguments`, which rejects them as extra inputs when given directly. Unit: `tests/sdk/mcp/test_mcp_tool_validation.py`, `tests/sdk/mcp/test_mcp_tool_kind_field.py`, `tests/sdk/mcp/test_mcp_action_serialization.py`. Example: none. Real-LLM: none.
-- `S09.observation`: a `CallToolResult` becomes an `MCPToolObservation` with text and image content, `isError` mapped to `is_error`, structured JSON rendered as text; an exception or timeout (300 s per call) becomes an error observation. Unit: `tests/sdk/mcp/test_mcp_tool.py`, `tests/sdk/mcp/test_mcp_observation.py`. Example: none. Real-LLM: none.
+- `S09.observation`: a `CallToolResult` becomes an `MCPToolObservation` with text and image content, `isError` mapped to `is_error`, structured JSON rendered as text, and the text of an `EmbeddedResource` block and a result that has only `structuredContent` kept (known failure #6993: both are dropped, leaving only `[Tool '<name>' executed.]`); an exception or timeout (300 s per call) becomes an error observation. Unit: `tests/sdk/mcp/test_mcp_tool.py`, `tests/sdk/mcp/test_mcp_observation.py`. Example: none. Real-LLM: none.
 - `S09.secret-refs-in-calls`: `$VAR`, `${VAR}` and `${VAR:-default}` in a call's arguments are expanded from the conversation's secret registry (never from the host environment), and secret values in the result text are masked. Unit: `tests/sdk/mcp/test_mcp_secret_expansion.py`. Example: none. Real-LLM: none.
-- `S09.session-reuse`: all calls share one connected session, so server-side session state (counters, auth tokens) persists across calls and tools, and closing the client releases the connection. Unit: `tests/sdk/mcp/test_mcp_session_persistence.py`, `tests/sdk/mcp/test_stateful_mcp.py`. Example: none. Real-LLM: none.
-- `S09.session-recovery`: if the session was lost (for example after an HTTP 503), the next call reconnects once and retries; a closed client or a failed reconnect returns an error observation instead of raising. Unit: `tests/sdk/mcp/test_mcp_tool.py` (`test_call_tool_reconnects_when_session_lost`, `test_call_tool_fails_when_client_closed`, `test_call_tool_fails_when_reconnect_fails`), `tests/sdk/mcp/test_create_mcp_tool.py::test_mcp_tool_reconnects_after_http_error`. Example: none. Real-LLM: none.
-- `S09.tools-list-changed`: on `notifications/tools/list_changed` the client re-lists tools, reports only new ones to `on_tools_changed`, sends the full snapshot (additions, updates, removals) to `on_tools_reconciled`, and the agent registers them on its current instance; a custom `MCPToolProvider` without `on_tools_reconciled` still works. Unit: `tests/sdk/mcp/test_mcp_tool_list_changed.py`, `tests/sdk/conversation/test_local_conversation_mcp.py` (`test_reconciliation_targets_replaced_agent`, `test_legacy_provider_without_on_tools_reconciled_still_works`). Example: none. Real-LLM: none.
+- `S09.session-reuse`: all calls go through one client connection (one subprocess for a stdio server), so what the server keeps per process persists across calls and tools, and closing the client releases the connection. What the server keeps per MCP session (counters, auth tokens keyed by session id) persists only on a handshake connection (`S09.protocol-negotiation`), where every call carries the same session id; on a `server/discover` connection there is no session and the server sees a different session id on every call. Unit: `tests/sdk/mcp/test_mcp_session_persistence.py`, `tests/sdk/mcp/test_stateful_mcp.py`. Example: none. Real-LLM: none.
+- `S09.protocol-negotiation`: `MCPClient` connects with FastMCP `mode="auto"`: it probes `server/discover` and uses the sessionless protocol when the server answers it (stdio and streamable HTTP to a current FastMCP server; `client.initialize_result` is `None`), and falls back to the `initialize` handshake when the server does not (`client.initialize_result` is set); SSE always uses the handshake. Unit: `tests/sdk/mcp/test_create_mcp_tool.py::test_create_mcp_tools_http_server` (`mode == "auto"`, `initialize_result is None`), `tests/sdk/mcp/test_stateful_mcp.py` (SSE keeps a session). Example: none. Real-LLM: none.
+- `S09.session-recovery`: if the session was lost (for example after an HTTP 503), the next call reconnects once and retries; a closed client or a failed reconnect returns an error observation instead of raising. A `server/discover` connection (`S09.protocol-negotiation`) has no session to lose, so calls after a server restart succeed without a failed call. Unit: `tests/sdk/mcp/test_mcp_tool.py` (`test_call_tool_reconnects_when_session_lost`, `test_call_tool_fails_when_client_closed`, `test_call_tool_fails_when_reconnect_fails`), `tests/sdk/mcp/test_create_mcp_tool.py::test_mcp_tool_reconnects_after_http_error`. Example: none. Real-LLM: none.
+- `S09.tools-list-changed`: on `notifications/tools/list_changed` the client re-lists tools, reports only new ones to `on_tools_changed`, sends the full snapshot (additions, updates, removals) to `on_tools_reconciled`, and the agent registers them on its current instance; a custom `MCPToolProvider` without `on_tools_reconciled` still works. A notification the server sends while it answers a request arrives on every connection; one it sends outside a request arrives only on a handshake connection (`S09.protocol-negotiation`), which keeps a notification stream open, and on a `server/discover` connection it is not delivered and the tool list stays as it was. Unit: `tests/sdk/mcp/test_mcp_tool_list_changed.py`, `tests/sdk/conversation/test_local_conversation_mcp.py` (`test_reconciliation_targets_replaced_agent`, `test_legacy_provider_without_on_tools_reconciled_still_works`). Example: none. Real-LLM: none.
 - `S09.filter-tools-regex`: `Agent(filter_tools_regex=...)` filters MCP and static tools by name while built-in tools stay. Unit: `tests/sdk/agent/test_filter_tools_regex.py`. Example: `examples/01_standalone_sdk/07_mcp_integration.py` (keeps only `repomix` `pack_codebase`). Real-LLM: none.
 - `S09.config-var-expansion`: `${VAR}` and `${VAR:-default}` placeholders in `Agent.mcp_config` (and Claude Code plugin `.mcp.json`) are expanded from conversation secrets before servers start. Unit: `tests/sdk/skills/test_mcp_config_expansion.py`, `tests/sdk/conversation/test_local_conversation_plugins.py::TestPluginMcpSecretsExpansion`. Example: none. Real-LLM: none.
 - `S09.tool-serialization`: `MCPToolDefinition` is frozen, serializes polymorphically with `kind`, is written in the MCP wire spelling (`inputSchema`) and loads either spelling, so conversations persisted under older `mcp` majors resume. Unit: `tests/sdk/mcp/test_mcp_tool_serialization.py`, `tests/sdk/mcp/test_mcp_tool_immutability.py`, `tests/sdk/mcp/test_mcp_wire_compat.py`. Example: none. Real-LLM: none.
+
+- `S09.runtime-add-servers`: `LocalConversation.add_mcp_servers({name: MCPServer})` on an initialized agent connects each enabled server before it returns and registers its tools as `<server>_<tool>` (whatever the server count), adds the servers to `agent.mcp_config` and the persisted state, and the next LLM call offers them; before the first message it only records them and they connect with the agent like configured servers (bare names for a single server). A duplicate name and `transport="sse"` raise `ValueError`, a server that cannot start raises `MCPServerStartError` (an `MCPError` from `openhands.sdk.mcp`, with `server_name` and the client's connection `MCPError` as `__cause__`; message `Could not start MCP server <name>: <reason>`) after closing the servers it already started, nothing refused is added, and a disabled server is recorded without connecting. Unit: `tests/sdk/conversation/test_local_conversation_mcp.py` (`test_add_mcp_servers_registers_modern_runtime_tools`, `test_add_mcp_servers_rejects_sse_transport`, `test_add_mcp_servers_accepts_running_conversation`). Example: none. Real-LLM: none.
+- `S09.runtime-add-resume`: a conversation reopened from its persistence directory reconnects the servers added at runtime and the agent can call their tools by the names it was given: `ConversationState.runtime_mcp_servers` records the servers added after the conversation started, which keep `<server>_<tool>` on every (re)start, while the other servers follow the one-or-many prefix rule counted without them. Unit: `tests/sdk/conversation/test_local_conversation_mcp.py` (`test_runtime_added_mcp_tools_keep_their_names_after_reopen`, `test_mcp_server_added_before_a_reopened_agent_starts_keeps_old_names`, `test_reopened_single_configured_mcp_server_stays_unprefixed`). Example: none. Real-LLM: none.
+- `S09.startup-budget`: `LocalConversation(mcp_startup_budget=seconds)` lets agent initialization (the first `send_message`) return after the budget while slower servers keep starting; their tools join the agent when ready, the first step of `run()` waits for them (up to 30 s each), and one that fails late is logged and skipped. Without a budget (the default; the agent server passes 1.0) initialization waits for every server. Unit: `tests/sdk/conversation/test_local_conversation_mcp.py` (`test_startup_budget_starts_the_agent_before_a_slow_mcp_server`, `test_late_mcp_tools_are_closed_when_the_conversation_closed_first`, `test_first_step_waits_for_mcp_servers_that_missed_the_budget`). Example: none. Real-LLM: none.
 
 ## How to get to it (agent POV)
 
 - `Agent(llm=..., tools=[...], mcp_config={"fetch": MCPServer(command="uvx", args=[...]), "remote": MCPServer(url="https://.../mcp", transport="http", headers={...}, auth=...)}, filter_tools_regex=...)`. `MCPServer`, `MCPOAuthAuthCredential`, `MCPOAuthAuthentication` import from `openhands.sdk.mcp`; the static credential classes (`MCPBearerAuthCredential`, `MCPApiKeyAuthCredential`, `MCPBasicAuthCredential`, `MCPHeaderAuthCredential`, `MCPNoneAuthCredential`) from `openhands.sdk.mcp.config`. Covers every sub-feature through a conversation.
 - `LocalConversation(agent=..., mcp_tool_provider=MyProvider())` (not accepted by the `Conversation` factory) replaces how MCP clients are created; `DefaultMCPToolProvider` is the default. `S09.tools-list-changed`.
-- Direct use without an agent: `with create_mcp_tools(mcp_config, timeout=30.0, on_tools_changed=..., on_tools_reconciled=..., mcp_oauth_token_storage=..., mcp_oauth_factory=...) as client: for tool in client.tools: ...`; `tool(action)` or `tool.action_from_arguments({...})`. Covers `S09.stdio-server`, `S09.http-sse-server`, `S09.listing-timeout`, `S09.argument-validation`.
+- Direct use without an agent: `with create_mcp_tools(mcp_config, timeout=30.0, on_tools_changed=..., on_tools_reconciled=..., mcp_oauth_token_storage=..., mcp_oauth_factory=...) as client: for tool in client.tools: ...`; `tool(action)` or `tool.action_from_arguments({...})`. `client.mode` and `client.initialize_result` show what was negotiated. Covers `S09.stdio-server`, `S09.http-sse-server`, `S09.listing-timeout`, `S09.argument-validation`, `S09.protocol-negotiation`.
+- `LocalConversation(agent=..., mcp_startup_budget=1.0)` (not accepted by the `Conversation` factory) bounds how long agent initialization waits for MCP servers. `S09.startup-budget`.
+- `conversation.add_mcp_servers({"name": MCPServer(...)})` on a `LocalConversation` adds servers to a running conversation (the agent server's `POST /api/conversations/{conversation_id}/mcp`, F19); not on `RemoteConversation`. `S09.runtime-add-servers`, `S09.runtime-add-resume`.
 - `conversation.update_secrets({...})` / `Conversation(secrets=...)` feed `S09.secret-refs-in-calls` and `S09.config-var-expansion`.
 - Plugins add servers through `.mcp.json` or `mcp.json` (S08); sub-agents can carry their own `mcp_config` (S11).
 - Env vars: none of its own; examples read `LLM_API_KEY`, `LLM_MODEL`, `LLM_BASE_URL`.
@@ -45,7 +52,7 @@ Preconditions:
 - `uv sync --dev` has run (provides `fastmcp` and `uvicorn`); `control-sdk` is on `PATH` (`export PATH="$PWD/.agents/skills/verify-sdk/scripts:$PATH"`). `sdk-map run` does both.
 - Live bullets: `DEEPSEEK_API_KEY`; example 07 also needs `uvx`, `npx` and network.
 
-Every server here is `programs/S09/mcp_server.py`, a small FastMCP server the programs start over stdio, streamable HTTP or SSE on a free local port (tools: `echo`, `add`, `getenv`, `reverse`, `counter`, `nested`, `kind_echo`, `fail`, `picture`, `structured`, `slow`, `headers`, `die`, `register_extra`, `remove_extra`; options for OAuth endpoints, a slow or failing start, and a transient 503). Conversation programs record each scripted LLM call's tool schemas (`recorder.py`).
+Every server here is `programs/S09/mcp_server.py`, a small FastMCP server the programs start over stdio, streamable HTTP or SSE on a free local port (tools: `echo`, `add`, `getenv`, `reverse`, `counter`, `session`, `nested`, `kind_echo`, `fail`, `picture`, `structured`, `slow`, `headers`, `die`, `register_extra`, `remove_extra`, `register_late`; with `--payload-tools` also `resource` and `structured_only`, with `--shadow-terminal` `terminal` and `sibling_check`; options for OAuth endpoints, a slow or failing start, a transient 503, and an HTTP server without `server/discover`). Conversation programs record each scripted LLM call's tool schemas (`recorder.py`).
 
 - **An MCP server inside a conversation (`S09.stdio-server`, `S09.schema-conversion`, `S09.argument-validation`, `S09.observation`, `S09.secret-refs-in-calls`, `S09.session-reuse`, `S09.tools-list-changed`, `S09.config-var-expansion`, `S09.config-secrets`).** `Agent(mcp_config={"verify": MCPServer(command=python, args=[mcp_server.py, "stdio"], env={"TOKEN": "${MY_TOKEN}", "OTHER": "${UNSET_VAR:-dflt-other}"})})`, conversation secrets `API_KEY` and `MY_TOKEN`, and `HOST_ONLY` set only in the program's environment. The scripted agent calls each tool, passes `summary`/`security_risk` on one call, references secrets as `$API_KEY`, `${API_KEY}` and `${MISSING:-dflt}`, and registers, calls and removes a tool at runtime.
   ```sh
@@ -70,7 +77,7 @@ Every server here is `programs/S09/mcp_server.py`, a small FastMCP server the pr
     --check calls_with_extra len-ge 1 --check calls_with_extra.0 gt 0 --check last_tools_have_extra eq false \
     --check secret_values_persisted len-eq 0
   ```
-  The two `counter` calls share one server process (session reuse); `fail` comes back as an error observation; the secret reaches the server (reversed back as `321-terkes`) while an echoed value is masked; `$HOST_ONLY` stays literal because only secrets expand; the env placeholders resolved from the conversation secret (`654-kot` is `tok-456` reversed) and the default; `extra` is offered to the model after `register_extra` and gone after `remove_extra`; no secret value is in the persisted state or events.
+  The two `counter` calls share one server process (connection reuse); `fail` comes back as an error observation; the secret reaches the server (reversed back as `321-terkes`) while an echoed value is masked; `$HOST_ONLY` stays literal because only secrets expand; the env placeholders resolved from the conversation secret (`654-kot` is `tok-456` reversed) and the default; `extra` is offered to the model after `register_extra` and gone after `remove_extra`; no secret value is in the persisted state or events.
 - **Filtering tools (`S09.filter-tools-regex`).**
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
@@ -85,6 +92,15 @@ Every server here is `programs/S09/mcp_server.py`, a small FastMCP server the pr
     --check only_broken_error missing --check only_broken_status eq finished \
     --check only_broken_tools eq '["finish"]'
   ```
+- **A single server that shadows a built-in tool (`S09.startup-failure-tolerated`).** `programs/S09/conversation.py shadow`: `Agent(tools=[Tool(name="terminal")], mcp_config={"ext": ...})` where `ext` (`--shadow-terminal`) advertises `terminal` and `sibling_check`; the scripted agent runs the built-in terminal, then `sibling_check`.
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  control-sdk program S09/conversation --arg shadow \
+    --check error missing --check status eq finished \
+    --check tools contains terminal --check tools contains ext_terminal --check tools contains sibling_check \
+    --check texts.0 contains builtin-terminal --check texts.1 contains "sibling ok"
+  ```
+  Expected: the colliding MCP tool is registered as `ext_terminal`, the built-in `terminal` and the bare `sibling_check` stay, and both calls return their output. Known failure (reproduced 2026-11-19, [#6992](https://github.com/OpenHands/software-agent-sdk/issues/6992)): `send_message` raises `ValueError: Duplicate tool names found: {'terminal'}` (single-server tools are never prefixed, so `add_runtime_tools` refuses the second `terminal`); the conversation stays `idle` with only `terminal` and `finish`, and no tool call runs (`error` is set, `texts` is empty).
 - **Disabled servers (`S09.enabled-flag`).** A conversation whose only server is disabled (its command would write a marker file), and `create_mcp_tools` with everything disabled or a disabled server beside an enabled one.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
@@ -110,6 +126,32 @@ Every server here is `programs/S09/mcp_server.py`, a small FastMCP server the pr
     --check echo.local contains "echo: local" --check echo.web contains "echo: web" \
     --check echo.stream contains "echo: stream" --check single_server_names_unprefixed eq true
   ```
+- **Protocol negotiation, and what it changes (`S09.protocol-negotiation`, `S09.session-reuse`, `S09.tools-list-changed`).** Four servers, one client each: stdio, streamable HTTP, streamable HTTP that answers `server/discover` with "Method not found" (`--handshake-only`), and SSE. On each: three `session` calls (the server reports the call's session id and that session's call count), two `counter` calls, `register_extra` and `remove_extra` (notify while answering), then `register_late` (notifies 0.3 s after answering).
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  control-sdk program S09/client --arg negotiation \
+    --check stdio.mode eq auto --check stdio.has_initialize_result eq false \
+    --check stdio.session_ids eq 3 --check stdio.calls_in_session eq '[1, 1, 1]' \
+    --check stdio.process_counter eq '["count=1", "count=2"]' --check stdio.same_process eq true \
+    --check stdio.in_request_notification_adds_tool eq true --check stdio.in_request_notification_removes_tool eq true \
+    --check stdio.late_notification_adds_tool eq false --check stdio.reported_new_tools eq '["extra"]' \
+    --check http.mode eq auto --check http.has_initialize_result eq false \
+    --check http.session_ids eq 3 --check http.calls_in_session eq '[1, 1, 1]' \
+    --check http.process_counter eq '["count=1", "count=2"]' \
+    --check http.in_request_notification_adds_tool eq true --check http.in_request_notification_removes_tool eq true \
+    --check http.late_notification_adds_tool eq false \
+    --check http_handshake_only.mode eq auto --check http_handshake_only.has_initialize_result eq true \
+    --check http_handshake_only.session_ids eq 1 --check http_handshake_only.calls_in_session eq '[1, 2, 3]' \
+    --check http_handshake_only.in_request_notification_adds_tool eq true \
+    --check http_handshake_only.late_notification_adds_tool eq true \
+    --check http_handshake_only.reported_new_tools eq '["extra", "late"]' \
+    --check sse.mode eq auto --check sse.has_initialize_result eq true \
+    --check sse.session_ids eq 1 --check sse.calls_in_session eq '[1, 2, 3]' \
+    --check sse.process_counter eq '["count=1", "count=2"]' \
+    --check sse.in_request_notification_adds_tool eq true --check sse.in_request_notification_removes_tool eq true \
+    --check sse.late_notification_adds_tool eq true --check sse.reported_new_tools eq '["extra", "late"]'
+  ```
+  The process counter advances on every connection; the per-session count advances only where the handshake made a session, and only there does the late notification reach the client.
 - **Static auth headers (`S09.static-auth`).** One HTTP server, five configs with `none`, `bearer`, `api_key` (`header_name="X-Api-Key"`), `basic` and `header` credentials; the server's `headers` tool reports what arrived.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
@@ -138,16 +180,19 @@ Every server here is `programs/S09/mcp_server.py`, a small FastMCP server the pr
     --check transient_third.0 contains count=2 \
     --check closed_client.1 eq true --check closed_client.0 contains "has been closed and cannot be reconnected"
   ```
-  Expected: the first call fails, the next one reaches the server (count=1), the third keeps the session (count=2), and a closed client refuses calls. Since the `mcp` 2 client (#6540) the first error no longer names the status: `mcp.client.streamable_http` turns any non-JSON-RPC non-2xx answer into "Server returned an error response".
-- **A lost session: server restart or exit (`S09.session-recovery`).** The HTTP server is killed and restarted on the same port; the stdio server exits after answering `die`.
+  Expected: the first call fails, the next one reaches the server (count=1), the third reaches the same server (count=2), and a closed client refuses calls. The first error does not name the status: `mcp.client.streamable_http` turns any non-JSON-RPC non-2xx answer into "Server returned an error response".
+- **A server restart or exit (`S09.session-recovery`).** A streamable-HTTP server is killed and restarted on the same port, once as a server that answers `server/discover` and once with `--handshake-only`; the stdio server exits after answering `die`.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
   control-sdk program S09/client --arg restart \
     --check http_before.0 contains count=1 \
-    --check http_after_restart_again.1 eq false --check http_after_restart_again.0 contains count=1 \
-    --check stdio_after_exit_again.1 eq false --check stdio_after_exit_again.0 contains count=1
+    --check http_after_restart.1 eq false --check http_after_restart.0 contains count=1 \
+    --check http_after_restart_again.1 eq false --check http_after_restart_again.0 contains count=2 \
+    --check handshake_before.0 contains count=1 \
+    --check handshake_after_restart_again.1 eq false --check handshake_after_restart_again.0 matches 'count=[12]' \
+    --check stdio_after_exit_again.1 eq false --check stdio_after_exit_again.0 matches 'count=[12]'
   ```
-  Expected: at most one failed call, then the client reconnects (a new session or process, so the counter starts again). Before #6647, neither recovered: `MCPToolExecutor.call_tool` reconnected only when `client.is_connected()` was false, which stays true in both cases, so every later call returned `Session not found` (HTTP) or `Connection closed` (stdio). The executor now drops a lost session after the failed call (without retrying it, since it may have run), and the next call connects again.
+  Expected: a `server/discover` connection has no session to lose, so both calls after the restart succeed and count from 1 in the new process. On the handshake session and on stdio at most one call fails, then the client reconnects (a new session or process, so the counter starts again). Before #6647, those two did not recover: `MCPToolExecutor.call_tool` reconnected only when `client.is_connected()` was false, which stays true in both cases, so every later call returned `Session not found` (handshake) or `Connection closed` (stdio). The executor now drops a lost session after the failed call (without retrying it, since it may have run), and the next call connects again.
 - **Config model, secrets, schemas, arguments and serialization without an agent (`S09.config-model`, `S09.config-secrets`, `S09.schema-conversion`, `S09.argument-validation`, `S09.observation`, `S09.tool-serialization`).**
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
@@ -167,6 +212,14 @@ Every server here is `programs/S09/mcp_server.py`, a small FastMCP server the pr
     --check legacy_key_rewritten eq true --check legacy_spelling_loads eq true --check frozen eq true \
     --check kind_in_dump eq MCPToolDefinition
   ```
+- **Embedded resources and structured-only results (`S09.observation`).** `programs/S09/conversation.py payload`: one server with `--payload-tools`; the scripted agent calls `resource` (a single `EmbeddedResource` whose text resource holds `{"payload": "VERIFY_RESOURCE_TEXT"}`) and `structured_only` (no content blocks, `structuredContent` `{"payload": "VERIFY_STRUCTURED"}`).
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  control-sdk program S09/conversation --arg payload \
+    --check error missing --check status eq finished \
+    --check resource_text contains VERIFY_RESOURCE_TEXT --check structured_only_text contains VERIFY_STRUCTURED
+  ```
+  Expected: each `ObservationEvent` carries the tool's payload, the resource's text and the structured content, so the model sees it. Known failure (reproduced 2026-11-19, [#6993](https://github.com/OpenHands/software-agent-sdk/issues/6993)): both observations are only `[Tool 'resource' executed.]` and `[Tool 'structured_only' executed.]`; `MCPToolObservation.from_call_tool_result` keeps only text and image blocks (logging `Unsupported MCP content block type ... Ignoring.`) and never reads `structured_content`. The run itself finishes.
 - **A real model calls MCP tools (`S09.stdio-server`, `S09.schema-conversion`, `S09.secret-refs-in-calls`, `S09.observation`).** Live, against the local stdio server.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --llm deepseek-flash --field run)
@@ -178,6 +231,41 @@ Every server here is `programs/S09/mcp_server.py`, a small FastMCP server the pr
   export SDK_VERIFY_RUN=$(control-sdk new --llm deepseek-flash --field run)
   control-sdk exec --model-env --expect-output "EXAMPLE_COST" -- python examples/01_standalone_sdk/07_mcp_integration.py
   ```
+
+- **Adding servers to a conversation (`S09.runtime-add-servers`).** `programs/S09/runtime.py add`: a conversation initialized by `send_message` gets `verify` added and calls `verify_echo`; the refusals run on the same conversation; a second conversation gets `solo` added before its first message and calls `echo`.
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  control-sdk program S09/runtime --arg add \
+    --check ready_tools_before eq '[]' --check ready_tools_after_add contains verify_echo \
+    --check ready_mcp_config eq '["verify"]' --check ready_state_mcp_config eq '["verify"]' \
+    --check duplicate_error eq "ValueError: MCP server already exists: ['verify']" \
+    --check sse_error eq "ValueError: Runtime MCP additions do not support SSE transport: remote" \
+    --check start_failure_error eq "MCPServerStartError: Could not start MCP server broken: Connection closed" \
+    --check start_failure_is_mcp_error eq true --check start_failure_server_name eq broken --check start_failure_cause eq MCPError \
+    --check disabled_error eq null \
+    --check mcp_config_after_refusals eq '["off", "verify"]' \
+    --check ready_status eq finished --check ready_first_call_tools contains verify_echo --check ready_texts.0 contains "echo: added" \
+    --check early_mcp_config eq '["solo"]' --check early_status eq finished \
+    --check early_first_call_tools contains echo --check early_first_call_tools not-contains solo_echo --check early_texts.0 contains "echo: early"
+  ```
+  The add on a ready agent connects at once (tools listed right after the call, prefixed although `verify` is the only server); the duplicate and the SSE server raise `ValueError`, a server that exits at startup raises `MCPServerStartError` naming it (the agent server turns both into its 400, F19), and all three leave `mcp_config` with only `verify` and the disabled `off`; the server added before the first message is connected with the agent under bare names.
+- **Reopening a conversation with added servers (`S09.runtime-add-resume`).** `programs/S09/runtime.py resume`: `verify` is added to a running conversation (the only server) and its `verify_echo` called; the conversation is closed and reopened from its persistence directory with the same agent configuration, and the model calls `verify_echo` again. Expected: the reopened conversation offers the tools as `verify_echo`, ... and the second call returns `echo: two`.
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  control-sdk program S09/runtime --arg resume \
+    --check first_texts.0 contains "echo: one" --check persisted_mcp_config eq '["verify"]' \
+    --check resumed_first_call_tools contains verify_echo --check resumed_second_call_ok eq true
+  ```
+- **Startup budget (`S09.startup-budget`).** `programs/S09/runtime.py budget`: a server whose handshake is 4 s late (`--slow-start 4`) next to a command that exits after 3 s, with `mcp_startup_budget=1.0`; then the slow server alone without a budget.
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  control-sdk program S09/runtime --arg budget \
+    --check budget_send_seconds lt 2.5 --check budget_tools_after_send eq '[]' \
+    --check budget_run_seconds ge 2 --check budget_status eq finished \
+    --check budget_first_call_tools contains slow_echo --check budget_texts.0 contains "echo: late" \
+    --check default_send_seconds ge 4 --check default_tools_after_send contains echo
+  ```
+  With the budget, `send_message` returns after about a second with no MCP tools yet; `run()` holds the first LLM call until the slow server is ready (and the failing one has given up), which then already offers `slow_echo`. Without a budget `send_message` takes the whole 4 s and the tools are there when it returns.
 
 ## Gotchas
 
@@ -191,3 +279,6 @@ Every server here is `programs/S09/mcp_server.py`, a small FastMCP server the pr
 - The model sees `summary` (and `security_risk`) on every MCP tool, but `tool.action_from_arguments({...})` called directly rejects those keys; strip them first when driving tools without an agent.
 - Every MCP observation text starts with `[Tool '<name>' executed.]`; parse the tool's own output after it.
 - MCP clients run on a background event loop thread; `on_tools_changed` and `on_tools_reconciled` callbacks run on that thread and must be thread-safe.
+- Whether an MCP server keeps per-session state for the agent depends on what the client negotiated, not on the `transport` field: a streamable-HTTP or stdio server that answers `server/discover` gets a sessionless connection (a new session id per call, no standing notification stream), so a server that stores login or progress under the session id loses it between calls. Check `client.initialize_result is None` on the client `create_mcp_tools` returns.
+- With `mcp_startup_budget`, the `SystemPromptEvent` is written at initialization with only the tools of servers ready by then and is not updated when late servers join; `conversation.agent.tools_map` and the LLM call's `tools` are the current list. Tools added with `add_mcp_servers` are likewise not in it.
+- `add_mcp_servers` connects synchronously (up to the 30 s runtime timeout per server) when the agent is initialized; it checks only an explicit `transport="sse"`, so a `/sse` URL without `transport` is tried as streamable HTTP.

@@ -6,9 +6,12 @@ from fnmatch import fnmatchcase
 from functools import cache
 from typing import Any, Literal, cast
 
-from litellm import get_llm_provider, get_supported_openai_params
+from litellm import (
+    OpenAIGPT5Config,
+    get_llm_provider,
+    get_supported_openai_params,
+)
 from litellm.exceptions import BadRequestError
-from litellm.llms.openai.chat.gpt_5_transformation import OpenAIGPT5Config
 from litellm.llms.openai.chat.gpt_transformation import OpenAIGPTConfig
 from litellm.utils import supports_vision as litellm_supports_vision
 

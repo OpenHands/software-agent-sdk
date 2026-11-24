@@ -20,12 +20,21 @@ Steps (one per request):
   {"finish": "message"}                             the finish tool
   {"status": 429, "message": "..."}                 an HTTP error
   {"empty": true}                                   a reply with no choices
+  {"text": "", "finish_reason": "length"}          the choice's finish_reason
+  {"raw": "...", "raw_status": 200}                 a non-JSON body
   {"delay": 2.0, ...}                               wait before answering
   {"stall": 2.0, ...}                               (stream) pause after two events
   {"thinking": "...", "redacted": "..."}           Anthropic thinking blocks
   {"usage": {"prompt_tokens": 10, "completion_tokens": 5, "cached": 0}}
   {"encrypted": "..."}                              Responses: encrypted reasoning
   {"incomplete": true}                              Responses stream: no completed event
+  {"usage": {"cache_write": 600}}                   cache writes (chat:
+                                                    prompt_tokens_details
+                                                    .cache_creation_tokens;
+                                                    Responses: input_tokens_details
+                                                    .cache_write_tokens)
+  {"reasoning": "...", "stream_summary": true}       Responses stream: summary
+                                                    text deltas
 A request whose body has `"stream": true` is answered as server-sent events.
 """
 
@@ -115,6 +124,14 @@ class FakeProvider:
                     return
                 if step.get("delay"):
                     time.sleep(float(step["delay"]))
+                if "raw" in step:
+                    data = str(step["raw"]).encode()
+                    self.send_response(int(step.get("raw_status", 200)))
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+                    return
                 if "status" in step:
                     self._send(
                         int(step["status"]),
@@ -208,7 +225,14 @@ class FakeProvider:
                 "prompt_tokens": usage["prompt_tokens"],
                 "completion_tokens": usage["completion_tokens"],
                 "total_tokens": usage["prompt_tokens"] + usage["completion_tokens"],
-                "prompt_tokens_details": {"cached_tokens": usage["cached"]},
+                "prompt_tokens_details": {
+                    "cached_tokens": usage["cached"],
+                    **(
+                        {"cache_creation_tokens": usage["cache_write"]}
+                        if "cache_write" in usage
+                        else {}
+                    ),
+                },
             },
         }
         if step.get("empty"):
@@ -235,7 +259,9 @@ class FakeProvider:
                 {
                     "index": 0,
                     "message": message,
-                    "finish_reason": "tool_calls" if calls else "stop",
+                    "finish_reason": step.get(
+                        "finish_reason", "tool_calls" if calls else "stop"
+                    ),
                 }
             ],
         }
@@ -300,7 +326,7 @@ class FakeProvider:
                         ),
                     )
                 )
-        last = chunk({}, "tool_calls" if calls else "stop")
+        last = chunk({}, step.get("finish_reason", "tool_calls" if calls else "stop"))
         last["usage"] = {
             "prompt_tokens": usage["prompt_tokens"],
             "completion_tokens": usage["completion_tokens"],
@@ -415,7 +441,14 @@ class FakeProvider:
                 "input_tokens": usage["prompt_tokens"],
                 "output_tokens": usage["completion_tokens"],
                 "total_tokens": usage["prompt_tokens"] + usage["completion_tokens"],
-                "input_tokens_details": {"cached_tokens": usage["cached"]},
+                "input_tokens_details": {
+                    "cached_tokens": usage["cached"],
+                    **(
+                        {"cache_write_tokens": usage["cache_write"]}
+                        if "cache_write" in usage
+                        else {}
+                    ),
+                },
                 "output_tokens_details": {
                     "reasoning_tokens": 7 if step.get("reasoning") else 0
                 },
@@ -441,6 +474,21 @@ class FakeProvider:
                     },
                 )
             )
+            if item["type"] == "reasoning" and step.get("stream_summary"):
+                summary = item["summary"][0]["text"]
+                for i in range(0, len(summary), 4):
+                    out.append(
+                        (
+                            "response.reasoning_summary_text.delta",
+                            {
+                                "type": "response.reasoning_summary_text.delta",
+                                "item_id": item["id"],
+                                "output_index": index,
+                                "summary_index": 0,
+                                "delta": summary[i : i + 4],
+                            },
+                        )
+                    )
             if item["type"] == "message":
                 text = item["content"][0]["text"]
                 for i in range(0, len(text), 4):

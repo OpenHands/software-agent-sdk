@@ -1,5 +1,8 @@
 """Comprehensive edge case tests for EventLog class."""
 
+import errno
+import os
+import stat
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -650,6 +653,33 @@ def test_append_syncs_when_marker_is_missing():
     assert fs.exists(reopened._marker_path(2))
 
 
+@pytest.mark.skipif(os.name != "posix", reason="Requires directory fsync")
+def test_append_rescans_after_directory_sync_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    log = EventLog(LocalFileStore(str(tmp_path)))
+    first = create_test_event("aaaaaaaa-0000")
+    failed = create_test_event("bbbbbbbb-0000")
+    next_event = create_test_event("cccccccc-0000")
+    log.append(first)
+    real_fsync = os.fsync
+
+    def fail_directory_sync(fd: int) -> None:
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError(errno.EIO, "directory sync failed")
+        real_fsync(fd)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "fsync", fail_directory_sync)
+        with pytest.raises(OSError, match="directory sync failed"):
+            log.append(failed)
+
+    assert log.append(next_event) == 2
+    reopened = EventLog(LocalFileStore(str(tmp_path)))
+    assert [event.id for event in reopened] == [first.id, failed.id, next_event.id]
+    assert [reopened.get_seq(index) for index in range(len(reopened))] == [0, 1, 2]
+
+
 def test_scan_does_not_warn_about_sidecar_files(caplog):
     """The lock file and count marker are ours; they are not malformed events."""
     fs = InMemoryFileStore()
@@ -867,3 +897,69 @@ def test_damaged_event_file_reads_as_stand_in(caplog, damage, reason):
 
     assert reloaded.append(create_test_event("dddddddd-0000", "d")) == 3
     assert fs.read(reloaded._path(1)) == damage  # the file is left as it was
+
+
+def _counting_reads(log: EventLog) -> list[int]:
+    """Record each index ``log`` reads an event from."""
+    reads: list[int] = []
+    read = log._get_single_item
+
+    def counted(idx):
+        reads.append(int(idx))
+        return read(idx)
+
+    log._get_single_item = counted  # type: ignore[method-assign]
+    return reads
+
+
+def _chain(log: EventLog, n: int) -> list[str]:
+    ids = [f"{i:08d}-0000" for i in range(n)]
+    log.append(create_test_event(ids[0]))
+    for parent, child in zip(ids, ids[1:]):
+        log.append(_child(child, parent))
+    return ids
+
+
+def test_walk_back_reads_only_as_far_as_the_caller_goes():
+    log = EventLog(InMemoryFileStore())
+    ids = _chain(log, 50)
+    reads = _counting_reads(log)
+
+    walk = log.walk_back(ids[-1])
+    assert [next(walk).id, next(walk).id] == [ids[-1], ids[-2]]
+    assert reads == [49, 48]
+
+
+def test_walk_back_until_stops_at_the_event():
+    log = EventLog(InMemoryFileStore())
+    ids = _chain(log, 50)
+    reads = _counting_reads(log)
+
+    assert [e.id for e in log.walk_back(ids[-1], until=ids[-3])] == ids[-1:-4:-1]
+    assert reads == [49, 48, 47]
+    assert list(log.walk_back(ids[-1], until="missing")) == []
+
+
+def test_walk_back_until_off_the_branch_stops_behind_it():
+    """An event on another branch ends the walk once the walk is past it in
+    the log, not at the root."""
+    log = EventLog(InMemoryFileStore())
+    ids = _chain(log, 40)
+    side = "side0000-0000"
+    log.append(_child(side, ids[29]))  # a branch off event 29, at index 40
+    log.append(_child("tip00000-0000", ids[-1]))  # the main branch goes on
+    reads = _counting_reads(log)
+
+    walked = list(log.walk_back("tip00000-0000", until=ids[35]))
+    assert walked[-1].id == ids[35]
+    off_branch = [e.id for e in log.walk_back("tip00000-0000", until=side)]
+    assert off_branch == ["tip00000-0000"]
+    assert reads == [41, *range(39, 34, -1), 41]
+
+
+def test_path_to_root_is_the_whole_walk_reversed():
+    log = EventLog(InMemoryFileStore())
+    ids = _chain(log, 10)
+
+    assert [e.id for e in log.path_to_root(ids[-1])] == ids
+    assert [e.id for e in log.path_to_root(ids[-1], limit=3)] == ids[-3:]

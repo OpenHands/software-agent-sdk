@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from uuid import UUID, uuid4
 
 import httpx
+from httpx import ConnectTimeout, PoolTimeout
 from pydantic import ValidationError
 
 from openhands.agent_server.agent_profiles_router import active_agent_profile
@@ -19,7 +20,7 @@ from openhands.agent_server.docker_runtime.routers import (
     _container,
     start_docker_conversation,
 )
-from openhands.agent_server.errors import ForwardedStatus
+from openhands.agent_server.errors import ForwardedStatus, GatewayTimeout
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.launch import launch_error
 from openhands.agent_server.openai.models import (
@@ -45,8 +46,8 @@ from openhands.agent_server.openai.models import (
 )
 from openhands.agent_server.persistence import (
     PersistedSettings,
-    get_llm_profile_store,
-    get_settings_store,
+    ServerStores,
+    run_store,
 )
 from openhands.sdk import Message
 from openhands.sdk.conversation.request import (
@@ -67,11 +68,12 @@ from openhands.sdk.errors import (
     UpstreamTimeout,
 )
 from openhands.sdk.launch import AgentLaunchError, LaunchStoreError
-from openhands.sdk.llm import Metrics
 from openhands.sdk.llm.message import ImageContent, TextContent
 from openhands.sdk.llm.utils.metrics import TokenUsage
 from openhands.sdk.profiles import OpenHandsAgentProfile
 from openhands.sdk.profiles.resolver import ProfileNotFound
+from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.pydantic_secrets import client_context
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -102,15 +104,23 @@ class OpenAIAgentRunResult:
     usage: TokenUsage | None
 
 
+class GatewayConflict(Conflict):
+    """The gateway refused the request before saving its message."""
+
+    retry_safe = True
+
+
 def _profile_name_from_model(model: str) -> str:
     if model.startswith(_MODEL_PREFIX) and len(model) > len(_MODEL_PREFIX):
         return model[len(_MODEL_PREFIX) :]
     raise NotFound(f"Unknown OpenHands model '{model}'. Use GET /v1/models.")
 
 
-def _require_llm_profile(profile_name: str, config: Config) -> None:
+def _require_llm_profile(
+    profile_name: str, stores: ServerStores, cipher: Cipher | None
+) -> None:
     try:
-        get_llm_profile_store().load(profile_name, cipher=config.cipher)
+        stores.llm_profiles.load(profile_name, cipher=cipher)
     except FileNotFoundError:
         raise NotFound(f"Profile '{profile_name}' not found")
     except TimeoutError:
@@ -248,14 +258,15 @@ def _create_conversation_request(
     system_text: str,
     user_content: list[TextContent | ImageContent],
     config: Config,
+    stores: ServerStores,
     conversation_id: UUID | None,
 ) -> StartConversationRequest:
     llm_profile = _profile_name_from_model(model)
-    _require_llm_profile(llm_profile, config)
-    profile = active_agent_profile(config, config.cipher)
+    _require_llm_profile(llm_profile, stores, config.cipher)
+    profile = active_agent_profile(stores, config.cipher)
     if profile is None:
         raise Conflict("No active Agent Profile; activate one to use the gateway")
-    settings = get_settings_store(config).load() or PersistedSettings()
+    settings = stores.settings.load() or PersistedSettings()
     try:
         additions = AgentLaunchAdditions(
             # An ACP server runs its own model.
@@ -285,6 +296,7 @@ def _conversation_request(
     *,
     request: OpenAIChatCompletionRequest,
     config: Config,
+    stores: ServerStores,
     conversation_id: UUID | None,
 ) -> StartConversationRequest:
     user_message = _latest_user_message(request.messages)
@@ -293,6 +305,7 @@ def _conversation_request(
         system_text=_system_text(request.messages),
         user_content=_content_to_sdk_parts(user_message),
         config=config,
+        stores=stores,
         conversation_id=conversation_id,
     )
 
@@ -302,6 +315,7 @@ def _response_conversation_request(
     request: OpenAIResponseRequest,
     user_content: list[TextContent | ImageContent],
     config: Config,
+    stores: ServerStores,
     conversation_id: UUID | None,
 ) -> StartConversationRequest:
     return _create_conversation_request(
@@ -309,6 +323,7 @@ def _response_conversation_request(
         system_text=_response_system_text(request),
         user_content=user_content,
         config=config,
+        stores=stores,
         conversation_id=conversation_id,
     )
 
@@ -344,7 +359,12 @@ async def _wait_for_reused_conversation_completion(
         state = await event_service.get_state()
         last_status = state.execution_status
         enough_new_events = len(state.events) > min_event_count
-        if last_status == ConversationExecutionStatus.RUNNING:
+        run_task = event_service._run_task
+        # A run that was just scheduled has not replaced the status the
+        # previous run left behind (paused, error) yet.
+        if last_status == ConversationExecutionStatus.RUNNING or (
+            run_task is not None and not run_task.done()
+        ):
             observed_run = True
         elif (last_status.is_terminal() or last_status in _STOPPED_RUN_STATUSES) and (
             observed_run or enough_new_events
@@ -491,9 +511,9 @@ def iter_openai_chat_completion_sse(
     yield "data: [DONE]\n\n"
 
 
-async def list_openai_models() -> OpenAIModelListResponse:
+async def list_openai_models(stores: ServerStores) -> OpenAIModelListResponse:
     try:
-        profiles = await asyncio.to_thread(get_llm_profile_store().list_summaries)
+        profiles = await run_store(stores.llm_profiles.list_summaries)
     except TimeoutError:
         raise Unavailable("Profile store is busy. Please retry.")
     data = [
@@ -508,6 +528,59 @@ async def list_openai_models() -> OpenAIModelListResponse:
     ]
     data.sort(key=lambda model: model.id)
     return OpenAIModelListResponse(data=data)
+
+
+async def _run_reused_local_agent(
+    event_service: EventService,
+    conversation_id: UUID,
+    user_content: list[TextContent | ImageContent],
+) -> OpenAIAgentRunResult:
+    async with event_service._gateway_run_lock:
+        run_task = event_service._run_task
+        if (
+            event_service._active_gateway_runs == 0
+            and run_task is not None
+            and not run_task.done()
+        ):
+            raise GatewayConflict("Conversation run in progress; message not saved")
+        event_service._active_gateway_runs += 1
+    try:
+        state_before = await event_service.get_state()
+        min_event_count = len(state_before.events) + 1
+        usage_baseline = state_before.stats.get_combined_metrics().deep_copy()
+        # Claim capacity before saving the message: a 429 must leave nothing
+        # behind so an OpenAI client can retry the same request.
+        run_slot = await event_service.reserve_run_slot()
+        try:
+            await event_service.send_message(
+                Message(role="user", content=user_content),
+                run=True,
+                run_slot=run_slot,
+            )
+        finally:
+            if run_slot is not None:
+                run_slot.release()
+        try:
+            status_value = await _wait_for_reused_conversation_completion(
+                event_service,
+                min_event_count=min_event_count,
+                timeout_seconds=_GATEWAY_TIMEOUT_SECONDS,
+            )
+        except UpstreamTimeout as exc:
+            raise GatewayTimeout(
+                retry_safe=False, conversation_id=conversation_id
+            ) from exc
+        _raise_for_terminal_error(status_value)
+        state = await event_service.get_state()
+        final_response = await event_service.get_agent_final_response()
+        metrics = state.stats.get_combined_metrics()
+        return OpenAIAgentRunResult(
+            conversation_id=conversation_id,
+            final_response=final_response,
+            usage=metrics.diff(usage_baseline).accumulated_token_usage,
+        )
+    finally:
+        event_service._active_gateway_runs -= 1
 
 
 async def _run_agent(
@@ -548,69 +621,59 @@ async def _run_agent(
         raise Unavailable("Docker conversation runtime is unavailable")
     event_service = None
     conversation_id = reusable_conversation_id
-    min_event_count: int | None = None
-    usage_baseline = Metrics()
-
     if reusable_conversation_id is not None:
         event_service = await conversation_service.get_event_service(
             reusable_conversation_id
         )
         if event_service is not None:
-            state_before = await event_service.get_state()
-            min_event_count = len(state_before.events) + 1
-            usage_baseline = state_before.stats.get_combined_metrics().deep_copy()
-            # Claim capacity before saving the message: a 429 must leave
-            # nothing behind so an OpenAI client can retry the same request.
-            run_slot = await event_service.reserve_run_slot()
-            try:
-                await event_service.send_message(
-                    Message(role="user", content=user_content),
-                    run=True,
-                    run_slot=run_slot,
-                )
-            finally:
-                if run_slot is not None:
-                    run_slot.release()
-    started_new_conversation = event_service is None
-
-    if event_service is None:
-        try:
-            conversation_info, _ = await conversation_service.start_conversation(
-                start_request
+            return await _run_reused_local_agent(
+                event_service, reusable_conversation_id, user_content
             )
-        except (ProfileNotFound, AgentLaunchError, LaunchStoreError) as exc:
-            raise launch_error(exc) from exc
-        conversation_id = conversation_info.id
-        event_service = await conversation_service.get_event_service(
-            conversation_info.id
+
+    try:
+        conversation_info, created = await conversation_service.start_conversation(
+            start_request, gateway_run=True
         )
+    except (ProfileNotFound, AgentLaunchError, LaunchStoreError) as exc:
+        raise launch_error(exc) from exc
+    conversation_id = conversation_info.id
+    created_event_service = None
+    if created:
+        # Capture the registration before the lookup can wait on a lifecycle lock.
+        event_services = conversation_service._event_services
+        if event_services is None or conversation_id not in event_services:
+            raise OperationFailed("Conversation did not start")
+        created_event_service = event_services[conversation_id]
+
+    try:
+        event_service = await conversation_service.get_event_service(conversation_id)
         if event_service is None:
             raise OperationFailed("Conversation did not start")
-
-    if started_new_conversation:
+        if not created:
+            return await _run_reused_local_agent(
+                event_service, conversation_id, user_content
+            )
         try:
             status_value = await event_service.wait_for_run_completion(
                 timeout=_GATEWAY_TIMEOUT_SECONDS
             )
         except TimeoutError:
-            raise UpstreamTimeout("Agent run timed out") from None
-    else:
-        assert min_event_count is not None
-        status_value = await _wait_for_reused_conversation_completion(
-            event_service,
-            min_event_count=min_event_count,
+            raise GatewayTimeout(
+                retry_safe=False, conversation_id=conversation_id
+            ) from None
+        _raise_for_terminal_error(status_value)
+        state = await event_service.get_state()
+        final_response = await event_service.get_agent_final_response()
+        usage = state.stats.get_combined_metrics().accumulated_token_usage
+        assert conversation_id is not None
+        return OpenAIAgentRunResult(
+            conversation_id=conversation_id,
+            final_response=final_response,
+            usage=usage,
         )
-    _raise_for_terminal_error(status_value)
-    state = await event_service.get_state()
-    final_response = await event_service.get_agent_final_response()
-    metrics = state.stats.get_combined_metrics()
-    usage = metrics.diff(usage_baseline).accumulated_token_usage
-    assert conversation_id is not None
-    return OpenAIAgentRunResult(
-        conversation_id=conversation_id,
-        final_response=final_response,
-        usage=usage,
-    )
+    finally:
+        if created_event_service is not None:
+            created_event_service._active_gateway_runs -= 1
 
 
 async def _run_docker_agent(
@@ -640,7 +703,7 @@ async def _run_docker_agent(
             }
         )
         status_code, _, conversation_id = await start_docker_conversation(
-            docker_request.model_dump(mode="json", context={"expose_secrets": True}),
+            docker_request.model_dump(mode="json", context=client_context("plaintext")),
             registry,
         )
         if status_code >= 400:
@@ -664,6 +727,12 @@ async def _run_docker_agent(
                 ).model_dump(mode="json"),
             )
         if response.is_error:
+            if response.status_code == 504:
+                if response.headers.get("x-should-retry") != "true":
+                    raise GatewayTimeout(
+                        retry_safe=False, conversation_id=conversation_id
+                    )
+                raise GatewayTimeout(retry_safe=True)
             if response.status_code == 404:
                 try:
                     detail = response.json().get("detail")
@@ -690,7 +759,12 @@ async def _run_docker_agent(
             ),
         )
     except httpx.TimeoutException as exc:
-        raise UpstreamTimeout("Conversation runtime timed out") from exc
+        if isinstance(exc, (ConnectTimeout, PoolTimeout)):
+            raise UpstreamTimeout("Conversation runtime timed out") from exc
+        raise GatewayTimeout(
+            retry_safe=False, conversation_id=conversation_id, runtime_timeout=True
+        ) from exc
+
     except httpx.HTTPError as exc:
         raise UpstreamFailed("Conversation container unreachable") from exc
     finally:
@@ -701,6 +775,7 @@ async def run_chat_completion(
     *,
     request: OpenAIChatCompletionRequest,
     config: Config,
+    stores: ServerStores,
     conversation_service: ConversationService,
     reusable_conversation_id: UUID | None,
     observability_overrides: dict[str, object] | None = None,
@@ -710,9 +785,12 @@ async def run_chat_completion(
         # SSE streaming needs incremental agent-event forwarding; add it separately.
         raise Invalid("Streaming chat completions are not supported yet")
 
-    start_request = _conversation_request(
+    # Reads the profile and settings stores.
+    start_request = await run_store(
+        _conversation_request,
         request=request,
         config=config,
+        stores=stores,
         conversation_id=reusable_conversation_id,
     )
     if observability_overrides:
@@ -755,6 +833,7 @@ async def run_response(
     *,
     request: OpenAIResponseRequest,
     config: Config,
+    stores: ServerStores,
     conversation_service: ConversationService,
     observability_overrides: dict[str, object] | None = None,
     registry: DockerConversationRegistry | None = None,
@@ -772,10 +851,13 @@ async def run_response(
         )
 
     user_content = _response_user_content(request)
-    start_request = _response_conversation_request(
+    # Reads the profile and settings stores.
+    start_request = await run_store(
+        _response_conversation_request,
         request=request,
         user_content=user_content,
         config=config,
+        stores=stores,
         conversation_id=None,
     )
     if observability_overrides:

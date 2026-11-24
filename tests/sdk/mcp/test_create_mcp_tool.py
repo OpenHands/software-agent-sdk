@@ -495,6 +495,8 @@ def test_create_mcp_tools_http_server(http_mcp_server: MCPTestServer):
 
     tools = create_mcp_tools(native_mcp_config(config), timeout=10.0)
 
+    assert tools.mode == "auto"
+    assert tools.initialize_result is None
     assert len(tools) == 2
     tool_names = {t.name for t in tools}
     assert "greet" in tool_names

@@ -16,7 +16,8 @@ Conversations persist there, so each command resumes the one before it.
 Models: a conversation or program with a script uses the SDK's scripted
 `TestLLM` (no key, deterministic). Without one it uses the run's real model
 (`new --llm deepseek-flash`), with the key read from DEEPSEEK_API_KEY at call
-time and never printed or written.
+time (or, with $LLM_BASE_URL and $LLM_API_KEY set, deepseek-flash through that
+LiteLLM proxy) and never printed or written.
 
 Exit codes: 0 ok, 1 action or check failed, 2 usage, 3 blocked (a missing
 prerequisite such as the model key).
@@ -111,6 +112,11 @@ def run_env(run: Path, extra: dict[str, str] | None = None) -> dict[str, str]:
         for k, v in os.environ.items()
         if not k.startswith(SCRUBBED_PREFIXES) and k != RUN_ENV
     }
+    # The LLM proxy, if any, under names the scrub keeps (sdk_verify.model_spec).
+    for url_env, key_env in sdk_verify.PROXY_ENVS[1:]:
+        if os.environ.get(url_env) and os.environ.get(key_env):
+            env["SDK_VERIFY_LLM_BASE_URL"] = os.environ[url_env]
+            env["SDK_VERIFY_LLM_API_KEY"] = os.environ[key_env]
     env.update(
         {
             RUN_ENV: str(run),
@@ -157,7 +163,7 @@ def cmd_new(args: argparse.Namespace) -> dict[str, Any]:
         (run / sub).mkdir(parents=True, exist_ok=True)
     config = {"run": str(run), "llm": args.llm, "created": time.time()}
     (run / "run.json").write_text(json.dumps(config, indent=2))
-    key_env = sdk_verify.MODELS.get(args.llm, {}).get("env")
+    key_env = (sdk_verify.model_spec(args.llm) or {}).get("env")
     return {
         "ok": True,
         **config,
@@ -371,7 +377,7 @@ def last_json(text: str) -> Any:
 def model_env(run: Path) -> dict[str, str]:
     """LLM_* variables for example scripts, from the run's real model."""
     name = json.loads((run / "run.json").read_text()).get("llm")
-    spec = sdk_verify.MODELS.get(name or "")
+    spec = sdk_verify.model_spec(name or "")
     if spec is None:
         raise CliError(
             "--model-env needs a run with a real model",
@@ -416,9 +422,10 @@ def run_command(
             else (exc.stdout or "")
         )
         stderr = "timed out"
-    secret = env.get("LLM_API_KEY")
-    if secret:
-        stdout, stderr = stdout.replace(secret, "***"), stderr.replace(secret, "***")
+    for secret in {env.get("LLM_API_KEY"), os.environ.get("LLM_API_KEY")}:
+        if secret:
+            stdout = stdout.replace(secret, "***")
+            stderr = stderr.replace(secret, "***")
     log = run / "state" / "exec.log"
     with log.open("a") as fh:
         fh.write(f"$ {' '.join(command)}\n{stdout}\n{stderr}\n[exit {code}]\n")

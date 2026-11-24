@@ -1,6 +1,6 @@
 # LLM registry, routing, fallback, profiles and model switching
 
-A Python program that uses more than one model meets this family. `LLMRegistry` holds `LLM`s by `usage_id`, gives each one independent metrics, and notifies subscribers; every `LocalConversation` has its own `conversation.llm_registry`, into which it registers every LLM the agent reaches (the agent's, the condenser's, router children), and `conversation_stats` tracks them all. A `RouterLLM` (`MultimodalRouter`, `RandomRouter`) is itself an `LLM` that picks one of `llms_for_routing` per call; `MultimodalRouter` sends a request with images, or one too large for the secondary model, to `primary` and everything else to `secondary`. `LLM(fallback_strategy=FallbackStrategy(fallback_llms=[...]))` retries a call that failed with a transient error on saved profiles, in order, and merges their cost into the primary's metrics. `LLMProfileStore` saves and loads named `LLM` configurations as JSON (default `~/.openhands/profiles`, secrets masked unless asked for). A running conversation can change model with `conversation.switch_profile(name)` or `conversation.switch_llm(llm)`, the agent can do it itself with the `switch_llm` tool, or a classifier LLM can pick a profile through the `route_task_to_model` tool configured by a meta-profile. `LLM.subscription_login(vendor="openai", model=...)` returns an `LLM` backed by a ChatGPT Plus/Pro subscription through OAuth instead of an API key.
+A Python program that uses more than one model meets this family. `LLMRegistry` holds `LLM`s by `usage_id`, gives each one independent metrics, and notifies subscribers; every `LocalConversation` has its own `conversation.llm_registry`, into which it registers every LLM the agent reaches (the agent's, the condenser's, router children), and `conversation_stats` tracks them all, per conversation: an `LLM` object used by two conversations counts each one's usage in that conversation's stats and the total in `llm.metrics`. A `RouterLLM` (`MultimodalRouter`, `RandomRouter`) is itself an `LLM` that picks one of `llms_for_routing` per call; `MultimodalRouter` sends a request with images, or one too large for the secondary model, to `primary` and everything else to `secondary`. The router owns its route table and its selection: in `auto` mode it routes by its policy (the base `RouterLLM` uses its first route) and records the route it chose as `last_route_name`, in `manual` mode every call goes to the pinned route; `router.status()` (a `ModelRouterStatus`) reports both, and on a conversation whose agent LLM is a router `conversation.switch_routed_llm(route)`, `resume_auto_llm_routing()` and `update_model_router_selection(ModelRouterSelection(...))` change the selection without replacing the router, while `conversation.add_model_router_route(profile)` adds a saved profile as a route (wrapping a plain LLM in a `RouterLLM` first). `LLM(fallback_strategy=FallbackStrategy(fallback_llms=[...]))` retries a call that failed with a transient error on saved profiles, in order, and records their cost under the caller's usage. `LLMProfileStore` saves and loads named `LLM` configurations as JSON (default `~/.openhands/profiles`, secrets masked unless asked for). A running conversation can change model with `conversation.switch_profile(name)` or `conversation.switch_llm(llm)`, the agent can do it itself with the `switch_llm` tool, or a classifier LLM can pick a profile (or, when the agent LLM is a router, a route) through the `route_task_to_model` tool configured by a meta-profile. `LLM.subscription_login(vendor="openai", model=...)` returns an `LLM` backed by a ChatGPT Plus/Pro subscription through OAuth instead of an API key.
 
 Source: `openhands-sdk/openhands/sdk/llm/llm_registry.py`, `openhands-sdk/openhands/sdk/llm/router/`, `openhands-sdk/openhands/sdk/llm/fallback_strategy.py`, `openhands-sdk/openhands/sdk/llm/llm_profile_store.py`, `openhands-sdk/openhands/sdk/llm/meta_profile_store.py`, `openhands-sdk/openhands/sdk/llm/provider_connection_store.py`, `openhands-sdk/openhands/sdk/llm/auth/`, `openhands-sdk/openhands/sdk/llm/llm.py`, `openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py`, `openhands-sdk/openhands/sdk/conversation/conversation_stats.py`, `openhands-sdk/openhands/sdk/tool/builtins/switch_llm.py`, `openhands-sdk/openhands/sdk/tool/builtins/classify_and_switch_llm.py`, `openhands-sdk/openhands/sdk/settings/model.py`
 
@@ -12,15 +12,20 @@ Examples: `examples/01_standalone_sdk/05_use_llm_registry.py`, `examples/01_stan
 
 - `S03.registry-crud`: `LLMRegistry.add(llm)` keys by `usage_id` and refuses a duplicate, `get(usage_id)` returns the same instance or raises `KeyError`, `remove` and `list_usage_ids` work, and each registry has a unique id. Unit: `tests/sdk/llm/test_llm_registry.py`. Example: `examples/01_standalone_sdk/05_use_llm_registry.py`. Real-LLM: none.
 - `S03.registry-independent-metrics`: an `LLM` copied from another and added to a registry gets its own `Metrics` and telemetry, so costs do not double-count; independent LLMs keep their metrics. Unit: `tests/sdk/llm/test_llm_registry.py::test_llm_registry_ensures_independent_metrics_for_copied_llms`, `::test_llm_registry_ensures_independent_telemetry_for_copied_llms`, `::test_llm_registry_does_not_reset_metrics_for_independent_llms`. Example: none. Real-LLM: none.
+- `S03.session-per-conversation`: one `LLM` object used as the agent's LLM of two conversations keeps their usage apart: each conversation's `conversation_stats.usage_to_metrics[usage_id]` counts only that conversation's calls, while `llm.metrics` counts every call made through the object. Unit: `tests/sdk/conversation/local/test_llm_session_isolation.py::test_conversations_sharing_an_llm_keep_their_usage_apart`, `::test_single_conversation_reports_through_the_llm_object`, `tests/sdk/llm/test_llm_session.py`. Example: none. Real-LLM: none.
 - `S03.registry-stats-wiring`: the conversation subscribes `conversation_stats` to its registry, so any LLM added later (e.g. `conversation.llm_registry.add(LLM(usage_id="x"))`) shows up in `usage_to_metrics`; a failing subscriber does not break `add`. Unit: `tests/sdk/conversation/test_conversation_stats.py::test_llm_registry_notifications`, `tests/sdk/llm/test_llm_registry.py::test_llm_registry_notify_exception_handling`. Example: `examples/01_standalone_sdk/21_generate_extraneous_conversation_costs.py`. Real-LLM: none.
 - `S03.agent-llm-discovery`: the conversation finds every `LLM` field reachable from the agent (condenser, custom fields, router children), registers each `usage_id` once and dedupes duplicates. Unit: `tests/sdk/agent/test_agent_llms_are_discoverable.py`, `tests/sdk/conversation/test_switch_model.py::test_duplicate_usage_ids_in_registration_loop_are_silently_deduped`. Example: none. Real-LLM: none.
 - `S03.multimodal-router-images`: `Agent(llm=MultimodalRouter(llms_for_routing={"primary": ..., "secondary": ...}))` sends a turn with an image to `primary`, and the non-vision guard does not pre-empt the router. Unit: `tests/sdk/agent/test_non_multimodal_image_input.py::test_image_input_guard_does_not_preempt_multimodal_router`. Example: `examples/01_standalone_sdk/19_llm_routing.py`. Real-LLM: none.
 - `S03.multimodal-router-text`: text-only turns go to `secondary`, and turns whose token count exceeds the secondary's `effective_max_input_tokens` go to `primary`. Unit: **none (untested)**. Example: `examples/01_standalone_sdk/19_llm_routing.py` (text turns before and after the image turn). Real-LLM: none.
 - `S03.router-validation`: `MultimodalRouter` without a `primary` or `secondary` key and any `RouterLLM` with empty `llms_for_routing` fail validation. Unit: **none (untested)**. Example: none. Real-LLM: none.
 - `S03.random-router`: `RandomRouter` picks a random entry of `llms_for_routing` per call. Unit: **none (untested)**. Example: none. Real-LLM: none.
+- `S03.model-router-selection`: on a conversation whose agent LLM is a `RouterLLM`, `router.status()` reports `enabled`, the `selection` (`auto`, no route) and every route's `name`, `model` and `label`; an `auto` turn goes to the first route and sets `last_route_name`; `conversation.switch_routed_llm(route)` pins a route (the agent keeps the router, `state.agent` follows, `base_state.json` stores the selection) and the next turn goes there; an unknown route raises `ValueError` and keeps the selection; `resume_auto_llm_routing()` returns to the first route; `ModelRouterSelection` refuses `manual` without a route and `auto` with one; a plain-LLM conversation raises `ValueError: Current agent LLM is not a RouterLLM.`; a resumed conversation runs on the router the program passes, not the stored selection. Unit: `tests/sdk/llm/test_router_llm.py`, `tests/sdk/conversation/test_switch_model.py::test_switch_routed_llm_updates_agent_and_state`, `::test_resume_auto_llm_routing_updates_agent_and_state`, `::test_switch_routed_llm_survives_state_roundtrip`, `::test_switch_routed_llm_rejects_non_router`. Example: none. Real-LLM: none.
+- `S03.model-router-add-route`: `conversation.add_model_router_route(profile, route_name=None, base_route_name="default")` wraps a plain agent LLM in a `RouterLLM` (the old LLM becomes route `base_route_name`) or extends an existing router (keeping its class, e.g. `MultimodalRouter`), registers the profile's LLM as `profile:<name>`, returns the new `ModelRouterStatus` and stays in `auto` mode; once selected the route serves the turn and its cost is recorded under `profile:<name>`; a duplicate route name raises `ValueError`, a missing profile `FileNotFoundError`, and a later edit of the saved profile does not change the route. Unit: `tests/sdk/conversation/test_switch_model.py::test_add_model_router_route_wraps_plain_llm`, `::test_add_model_router_route_extends_existing_router`, `::test_add_model_router_route_rejects_duplicate_name`, `::test_add_model_router_route_rejects_missing_profile`, `::test_added_model_router_route_survives_profile_change`. Example: none. Real-LLM: none.
+- `S03.model-router-switch-replaces`: `conversation.switch_profile(name)` and `switch_llm(llm)` on a router conversation install the plain LLM in place of the router (status `enabled: false`, route selection then raises `ValueError`), and the next turn runs on it; the router's own `switch_llm(route)` / `with_manual_route`, `resume_auto_routing()` and `with_route` return changed copies and leave the original alone, refusing an unknown or duplicate route with `ValueError`. Unit: `tests/sdk/llm/test_router_llm.py::test_router_manual_switch_returns_copy_and_routes_to_key`, `::test_router_with_route_rejects_duplicate_key`. Example: none. Real-LLM: none.
+- `S03.model-router-before-first-run`: a route added with `add_model_router_route` and selected before the conversation's first message serves the first turn, and that turn's cost is recorded in `conversation_stats` under the route's `profile:<name>`. Unit: **none (untested)**. Example: none. Real-LLM: none.
 - `S03.fallback-transient`: after the primary exhausts its retries on a transient error (rate limit, timeout, connection, service unavailable, transient HTTP status) the fallback profiles are tried in order; the first success is returned; if all fail the primary's error is raised; each new call starts on the primary again. Chat and Responses, sync and async. Unit: `tests/sdk/llm/test_llm_fallback.py`. Example: `examples/01_standalone_sdk/39_llm_fallback.py`. Real-LLM: none.
 - `S03.fallback-skip`: non-transient errors (bad request, auth, context window) and budget denials do not fall back; quota exhaustion fails over without retrying the primary. Unit: `tests/sdk/llm/test_llm_fallback.py::test_non_transient_error_skips_fallback`, `::test_budget_denial_stops_retries_and_fallbacks`, `::test_quota_exhaustion_fails_over_without_retries`. Example: none. Real-LLM: none.
-- `S03.fallback-metrics`: cost and token usage of a fallback call are merged into the primary LLM's metrics; caller kwargs and the conversation call context are forwarded to the fallback. Unit: `tests/sdk/llm/test_llm_fallback.py::test_metrics_merged_from_fallback`, `::test_fallback_forwards_caller_kwargs`, `::test_completion_fallback_receives_call_context`. Example: `examples/01_standalone_sdk/39_llm_fallback.py`. Real-LLM: none.
+- `S03.fallback-metrics`: cost and token usage of a fallback call are recorded in the caller's usage session (the primary's `llm.metrics`, and the primary's `usage_id` in `conversation_stats` when the call belongs to a conversation), and each cost entry's `model` names the model that served the call, so a fallback's entry carries the fallback model; caller kwargs and the conversation call context are forwarded to the fallback. Unit: `tests/sdk/llm/test_llm_fallback.py::test_metrics_merged_from_fallback`, `::test_fallback_forwards_caller_kwargs`, `::test_completion_fallback_receives_call_context`, `tests/sdk/llm/test_llm_fallback_sessions.py::test_fallback_preserves_caller_accounting`. Example: `examples/01_standalone_sdk/39_llm_fallback.py`. Real-LLM: none.
 - `S03.fallback-profile-resolution`: `fallback_llms` names are loaded from `LLMProfileStore(profile_store_dir)` lazily on first fallback. Unit: `tests/sdk/llm/test_llm_fallback.py::test_fallback_profiles_resolved_via_store`. Example: `examples/01_standalone_sdk/39_llm_fallback.py`. Real-LLM: none.
 - `S03.profile-save-load`: `LLMProfileStore(base_dir).save(name, llm)` writes `<name>.json` atomically with a schema version, `load(name)` returns the `LLM`, `list()`, `list_summaries()`, `delete()`, `rename()` work; invalid names, missing and corrupted profiles raise with the available names listed. Unit: `tests/sdk/llm/test_llm_profile_store.py`. Example: `examples/01_standalone_sdk/37_llm_profile_store/main.py`. Real-LLM: none.
 - `S03.profile-secrets`: `save` masks the API key unless `include_secrets=True`; with a `cipher` secrets are encrypted at rest and decrypted on `load`; `list_summaries` reports whether a key is set without exposing it. Unit: `tests/sdk/llm/test_llm_profile_store.py::test_save_without_secrets`, `::test_save_with_secrets`, `tests/sdk/conversation/test_switch_model.py::test_switch_profile_decrypts_with_cipher`. Example: `examples/01_standalone_sdk/37_llm_profile_store/main.py`. Real-LLM: none.
@@ -29,19 +34,20 @@ Examples: `examples/01_standalone_sdk/05_use_llm_registry.py`, `examples/01_stan
 - `S03.provider-connections`: a profile can reference a saved provider connection (`provider_connection_id`) whose credentials are resolved at load time from a sibling `provider-connections` store. Unit: `tests/sdk/llm/test_provider_connection_store.py`, `tests/sdk/llm/test_llm_profile_store.py::test_default_provider_store_is_sibling_of_base_dir`. Example: none. Real-LLM: none.
 - `S03.switch-profile`: `conversation.switch_profile(name)` loads the profile (cached in the registry as `profile:<name>`), swaps the agent's LLM, updates persisted state, keeps the prompt cache key, and raises for a missing profile; later messages use the new model and both models' costs appear in the stats. Unit: `tests/sdk/conversation/test_switch_model.py`. Example: `examples/01_standalone_sdk/44_model_switching_in_convo.py`. Real-LLM: none.
 - `S03.switch-llm-object`: `conversation.switch_llm(llm)` swaps to an `LLM` object without touching the profile store, installs the posted object even when its `usage_id` is already registered (#5779), refreshes an LLM condenser that shared the agent's credentials while leaving an independently configured one alone, and `ask_agent` follows the switch. Unit: `tests/sdk/conversation/test_switch_model.py::test_switch_llm_swaps_when_store_empty`, `::test_switch_llm_refreshes_llm_condenser_credentials`, `::test_switch_llm_preserves_independent_condenser_profile`, `tests/sdk/conversation/test_ask_agent.py::test_ask_agent_llm_refreshes_after_switch_llm`. Example: none. Real-LLM: none.
+- `S03.switch-keeps-usage`: usage stays with the role (`usage_id`) in `conversation_stats` across `switch_llm`: the costs recorded before the switch remain, and what the condenser and `ask_agent` spend on the new model is added under their own `usage_id`s (`condenser`, `ask-agent-llm`), each cost entry naming the model that served it. Unit: `tests/sdk/conversation/local/test_llm_session_isolation.py::test_condenser_usage_is_counted_after_switch_llm`, `::test_ask_agent_usage_is_counted_after_every_switch`, `::test_stats_callback_keeps_firing_after_switch_llm`. Example: none. Real-LLM: none.
 - `S03.switch-llm-tool`: with `SwitchLLMTool` among the agent's tools (`include_default_tools=["FinishTool", "SwitchLLMTool"]`, or `OpenHandsAgentSettings.create_agent()`, which adds it when `tools` is left unset), the model calls `switch_llm(profile_name=...)`; the tool description lists saved profiles, the conversation switches, and a missing profile or load error comes back as an error observation. The tool is exempt from `filter_tools_regex` and does not deadlock under `arun()`. Unit: `tests/sdk/tool/test_switch_llm.py`, `tests/sdk/conversation/test_switch_model.py::test_switch_llm_tool_during_arun_does_not_deadlock`. Example: `examples/01_standalone_sdk/49_switch_llm_tool.py`. Real-LLM: none.
-- `S03.route-task-to-model`: with `OpenHandsAgentSettings(enable_classify_and_switch_llm_tool=True, meta_profile=..., active_meta_profile=...)` the agent gets `route_task_to_model`; calling it sends recent conversation text to the classifier profile, which returns a class index (structured `classes`) or a model name (`prompt_template` with `{{ instance_text }}` and `{{ model_table }}`), and the conversation switches to that profile. Classifier cost lands in the conversation stats under one usage bucket; unknown classes, missing classifier or target profiles produce error observations. Unit: `tests/sdk/tool/test_classify_and_switch_llm.py`. Example: `examples/01_standalone_sdk/59_route_task_to_model.py`. Real-LLM: none.
+- `S03.route-task-to-model`: with `OpenHandsAgentSettings(enable_classify_and_switch_llm_tool=True, meta_profile=..., active_meta_profile=...)` the agent gets `route_task_to_model`; calling it sends recent conversation text to the classifier profile, which returns a class index (structured `classes`) or a model name (`prompt_template` with `{{ instance_text }}` and `{{ model_table }}`), and the conversation switches to that profile. When the agent LLM is a `RouterLLM`, the classifier is shown the router's route names (with each route's label, model and matching class description) instead of profiles, may answer a route name or a model that only one route uses, and the tool pins that route with `switch_routed_llm`, keeping the router as the agent LLM; an answer that names no route is an error observation and leaves the selection unchanged. Classifier cost lands in the conversation stats under one usage bucket; unknown classes, missing classifier or target profiles produce error observations. Unit: `tests/sdk/tool/test_classify_and_switch_llm.py`. Example: `examples/01_standalone_sdk/59_route_task_to_model.py`. Real-LLM: none.
 - `S03.meta-profile-store`: `MetaProfileStore` saves, lists, loads and deletes meta-profiles under `OH_PERSISTENCE_DIR` (or `~/.openhands`), validates direct-prompt templates (requires `{{ instance_text }}`, no `classes`), and enforces `max_profiles`. Unit: `tests/sdk/llm/test_meta_profile_store.py`. Example: none. Real-LLM: none.
 - `S03.subscription-login`: `LLM.subscription_login(vendor="openai", model=..., auth_method="browser"|"device_code", force_login=False, open_browser=True)` runs an OAuth PKCE browser flow or a device-code flow, caches credentials under `~/.openhands/auth/`, refreshes expired tokens, asks for consent once, and returns an `LLM` pointed at the Codex Responses endpoint; models outside the supported set are rejected. Unit: `tests/sdk/llm/auth/test_openai.py`, `tests/sdk/llm/auth/test_credentials.py`. Example: `examples/01_standalone_sdk/35_subscription_login.py`. Real-LLM: none.
 - `S03.subscription-requests`: a subscription `LLM` omits parameters the Codex endpoint rejects or mishandles (`prompt_cache_retention`, `include`, `reasoning`, `temperature`, `max_output_tokens`), adds no temperature on retry, keeps `is_subscription` across serialization, and rehydrates from `LLM.load_from_env`. Unit: `tests/sdk/llm/test_subscription_mode.py`, `tests/sdk/test_settings.py::test_llm_load_from_env_rehydrates_subscription_runtime`. Example: none. Real-LLM: none.
 
 ## How to get to it (agent POV)
 
-- `LLMRegistry()` from `openhands.sdk`: `add`, `get`, `remove`, `list_usage_ids`, `subscribe`; `conversation.llm_registry` is the conversation's own instance. Covers `S03.registry-*`, `S03.agent-llm-discovery`.
-- `MultimodalRouter(usage_id=..., llms_for_routing={"primary": llm_a, "secondary": llm_b})` from `openhands.sdk.llm.router`, passed as `Agent(llm=router)`; `RandomRouter` from `openhands.sdk.llm.router.impl.random`; subclass `RouterLLM` and implement `select_llm(messages) -> key` for a custom router. Covers `S03.*router*`.
+- `LLMRegistry()` from `openhands.sdk`: `add`, `get`, `remove`, `list_usage_ids`, `subscribe`; `conversation.llm_registry` is the conversation's own instance. `conversation.conversation_stats.usage_to_metrics[usage_id]` is the conversation's ledger for a role and `llm.metrics` the LLM object's own. Covers `S03.registry-*`, `S03.agent-llm-discovery`, `S03.session-per-conversation`.
+- `MultimodalRouter(usage_id=..., llms_for_routing={"primary": llm_a, "secondary": llm_b})` from `openhands.sdk.llm.router`, passed as `Agent(llm=router)`; `RandomRouter` from `openhands.sdk.llm.router.impl.random`; subclass `RouterLLM` and override `select_llm(messages) -> route name` for a custom router (the base class routes to its first route). Router state: `router.status()`, `router.selection`, `router.last_selected_route_name`, `router.active_route_name`, and the copy-returning `with_selection`, `with_manual_route` / `switch_llm(route)`, `with_auto_routing` / `resume_auto_routing()`, `with_route(name, llm)`; models `ModelRouterSelection`, `ModelRouteInfo`, `ModelRouterStatus`, `ModelRouterUpdateRequest` from `openhands.sdk.llm`. On `LocalConversation`: `switch_routed_llm(route)`, `resume_auto_llm_routing()`, `update_model_router_selection(selection)`, `add_model_router_route(profile, route_name=None, base_route_name="default")` (the agent server's `/model_router` routes and `RemoteConversation`'s methods of the same names call these; that side is `F09.model-router-*` in the agent-server map). Covers `S03.*router*`.
 - `LLM(..., fallback_strategy=FallbackStrategy(fallback_llms=["p1", "p2"], profile_store_dir=...))` with `FallbackStrategy` from `openhands.sdk.llm`. Covers `S03.fallback-*`.
 - `LLMProfileStore(base_dir=None)` from `openhands.sdk`: `save(name, llm, include_secrets=False, cipher=None)`, `load(name, cipher=None)`, `list()`, `list_summaries()`, `delete()`, `rename()`; default directory `$OH_PERSISTENCE_DIR/profiles` or `~/.openhands/profiles`. Covers `S03.profile-*`, `S03.provider-connections`.
-- `conversation.switch_profile(name)`, `conversation.switch_llm(llm)` on `LocalConversation`; `conversation.switch_acp_model(model)` is the ACP-agent counterpart (ACP family). Covers `S03.switch-profile`, `S03.switch-llm-object`.
+- `conversation.switch_profile(name)`, `conversation.switch_llm(llm)` on `LocalConversation`; `conversation.switch_acp_model(model)` is the ACP-agent counterpart (ACP family). Covers `S03.switch-profile`, `S03.switch-llm-object`, `S03.switch-keeps-usage`.
 - Tools: `Agent(include_default_tools=["FinishTool", "SwitchLLMTool"])`; `OpenHandsAgentSettings(tools=..., enable_classify_and_switch_llm_tool=True, active_meta_profile=..., meta_profile=MetaProfile(...), meta_profile_llms={...}).create_agent()` (the switch tool is included when `tools` is None or selects `switch_llm`; the old `enable_switch_llm_tool` is a read-only, deprecated property); `MetaProfile`, `MetaProfileClass`, `MetaProfileStore` from `openhands.sdk.llm.meta_profile_store`. Covers `S03.switch-llm-tool`, `S03.route-task-to-model`, `S03.meta-profile-store`.
 - `LLM.subscription_login(...)`; files in `~/.openhands/auth/` (credentials, consent marker). Covers `S03.subscription-*`.
 - Env vars: `OH_PERSISTENCE_DIR` (moves profiles, meta-profiles and auth; must be set before importing `openhands.sdk`), example-only `LLM_ROUTING_SECONDARY_MODEL`, `LLM_FALLBACK_MODEL_1/2`, `LLM_FALLBACK_API_KEY_1/2`, `LLM_FALLBACK_BASE_URL_1/2`, `OPENHANDS_SUBSCRIPTION_MODEL`, `OPENHANDS_SUBSCRIPTION_AUTH_METHOD`, `OPENHANDS_SUBSCRIPTION_FORCE_LOGIN`, `SUBSCRIPTION_LOGIN_ONLY`.
@@ -75,7 +81,17 @@ Every model in the scripted bullets is a real `LLM` answering from its own local
     --check first_run.secondary_in_registry eq true --check first_run.usage_ids contains secondary \
     --check first_run.secondary_cost eq 0.14 --check first_run.combined_cost eq 0.42
   ```
-  Known failure (reproduced 2026-10-13, still failing 2026-11-09, [#5639](https://github.com/OpenHands/software-agent-sdk/issues/5639)): an LLM added to `conversation.llm_registry` before the first `send_message` never reaches `conversation_stats`. The conversation subscribes the stats to its registry only when it initializes the agent (on the first message), and `subscribe` does not replay LLMs already registered, so `secondary` sits in the registry while `usage_to_metrics` has only `agent`, and its 0.14 is missing from the combined cost (0.28).
+  Known failure (reproduced 2026-11-17, [#5639](https://github.com/OpenHands/software-agent-sdk/issues/5639)): an LLM added to `conversation.llm_registry` before the first `send_message` never reaches `conversation_stats`. The conversation subscribes the stats to its registry only when it initializes the agent (on the first message), and `subscribe` does not replay LLMs already registered, so `secondary` sits in the registry while `usage_to_metrics` has only `agent`, and its 0.14 is missing from the combined cost (0.28).
+- **One LLM object in two conversations (`S03.session-per-conversation`).** The same priced `LLM` is the agent's LLM of two conversations; the first runs one turn, the second two (0.14 per call).
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  control-sdk program S03/switching --arg shared-llm \
+    --check requests eq 3 --check statuses.0 eq finished --check statuses.1 eq finished \
+    --check llm_after_first.cost eq 0.14 \
+    --check first.calls eq 1 --check first.cost eq 0.14 --check first_combined_cost eq 0.14 \
+    --check second.calls eq 2 --check second.cost eq 0.28 --check second_combined_cost eq 0.28 \
+    --check llm.calls eq 3 --check llm.cost eq 0.42
+  ```
 - **Every LLM the agent reaches is registered (`S03.agent-llm-discovery`).** An agent whose LLM is a `MultimodalRouter` and whose condenser has its own LLM; then an agent and condenser that share a `usage_id`.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
@@ -104,21 +120,90 @@ Every model in the scripted bullets is a real `LLM` answering from its own local
     --check errors.empty_random eq ValidationError --check errors.valid missing
   control-sdk program S03/routing --arg random --check calls eq 20 --check from_a gt 0 --check from_b gt 0
   ```
+- **Route selection on a router conversation (`S03.model-router-selection`).** A persisted conversation whose agent LLM is a base `RouterLLM` with routes `first` (`openai/gpt-4.1`) and `second` (`openai/gpt-4.1-mini`): an `auto` turn, `switch_routed_llm("second")` and a turn, an unknown route, `resume_auto_llm_routing()` and a turn; then `update_model_router_selection(manual second)`, close, and resume with a fresh `auto` router; refused selections and a plain-LLM conversation.
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  control-sdk program S03/model_router --arg selection \
+    --check initial.enabled eq true --check initial.selection.mode eq auto --check initial.last_route_name eq null \
+    --check initial.routes.0.name eq first --check initial.routes.1.model eq openai/gpt-4.1-mini --check initial.routes.1.label eq second \
+    --check after_auto_turn.last_route_name eq first \
+    --check after_manual.selection.manual_route_name eq second --check router_kept eq RouterLLM --check state_agent_follows eq true \
+    --check after_manual_turn.last_route_name eq second \
+    --check persisted.router_name eq base_router --check persisted.selection.mode eq manual --check persisted.selection.manual_route_name eq second \
+    --check unknown_route_error contains "LLM route 'missing' was not found" --check after_unknown_route.manual_route_name eq second \
+    --check after_resume_turn.selection.mode eq auto --check after_resume_turn.last_route_name eq first \
+    --check requests.first eq 2 --check requests.second eq 1 --check costs.route-first eq 0.28 --check costs.route-second eq 0.14 \
+    --check persisted_before_resume.manual_route_name eq second --check resumed_type eq RouterLLM \
+    --check resumed.selection.mode eq auto --check resumed.last_route_name eq null \
+    --check manual_without_route contains 'manual_route_name is required' --check auto_with_route contains 'only valid in manual' \
+    --check update_request_without_selection contains 'Field required' \
+    --check plain_switch_error eq 'ValueError: Current agent LLM is not a RouterLLM.' --check plain_resume_error contains 'not a RouterLLM' \
+    --check plain_status.enabled eq false --check plain_status.routes len-eq 0
+  ```
+  Three turns, served first, second, first: the agent's LLM stays a `RouterLLM` through every selection change, and costs land under each route's own `usage_id`. `base_state.json` stores the router (`router_name`, routes, `selection`); resuming with a fresh router runs on that router's `auto` selection, because on resume the program's agent, LLM included, wins over the stored one (`AgentBase.load` only checks the agent class and tools), so a program that wants the stored pin passes a router that carries it.
+- **Routes from saved profiles (`S03.model-router-add-route`).** A conversation on model A (`usage_id` `agent`) runs a turn, adds the saved profile `qa-reviewer` (model R) as route `reviewer`, runs an `auto` turn, pins `reviewer` and runs again; then a duplicate route, a missing profile and an edit of the profile; then a `MultimodalRouter` conversation and a plain one with `base_route_name="main"`.
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  control-sdk program S03/model_router --arg add-route \
+    --check agent_llm_type eq RouterLLM --check returned.enabled eq true --check returned.selection.mode eq auto \
+    --check returned.routes.0.name eq default --check returned.routes.0.model eq openai/gpt-4.1 \
+    --check returned.routes.1.name eq reviewer --check returned.routes.1.model eq openai/gpt-4.1-mini \
+    --check route_usage_ids.default eq agent --check route_usage_ids.reviewer eq profile:qa-reviewer \
+    --check registry contains profile:qa-reviewer --check registry_holds_route eq true \
+    --check after_auto_turn.last_route_name eq default --check after_reviewer_turn.last_route_name eq reviewer \
+    --check requests.agent eq 2 --check requests.reviewer eq 1 \
+    --check costs.agent eq 0.28 --check costs.profile:qa-reviewer eq 0.14 \
+    --check duplicate_route_error eq 'ValueError: Model router route already exists: default' \
+    --check missing_profile_error contains FileNotFoundError --check routes_after_errors len-eq 2 \
+    --check route_model_after_profile_edit eq openai/gpt-4.1-mini \
+    --check multimodal_type eq MultimodalRouter --check multimodal_routes.2 eq qa-reviewer --check multimodal_routes len-eq 3 \
+    --check named_base_routes.0 eq main --check named_base_routes.1 eq qa-reviewer
+  ```
+  Adding a route does not change what runs: the `auto` turn still goes to `default` (the wrapped model A, which keeps its `usage_id`); after the pin, R serves the turn and its 0.14 is recorded under `profile:qa-reviewer`. The route is a snapshot of the profile at the time it was added, `route_name` defaults to the profile name, and `base_route_name` is used only when a plain LLM is wrapped.
+- **Switching away from a router (`S03.model-router-switch-replaces`).** Two conversations on a `RouterLLM` pinned to `second`: one `switch_profile("qa-plain-b")`, one `switch_llm` to model C, each followed by a turn; then the router's own switch methods.
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  control-sdk program S03/model_router --arg switch-replaces \
+    --check after_switch_profile.type eq LLM --check after_switch_profile.usage_id eq profile:qa-plain-b \
+    --check after_switch_profile.status.enabled eq false --check select_after_switch_profile contains 'not a RouterLLM' \
+    --check after_switch_llm.type eq LLM --check after_switch_llm.model eq openai/gpt-4.1-nano --check after_switch_llm.status.enabled eq false \
+    --check requests.b eq 1 --check requests.c eq 1 --check requests.routes eq 0 \
+    --check router_switch_llm.copy eq true --check router_switch_llm.original.mode eq auto \
+    --check router_switch_llm.copy_selection.manual_route_name eq second --check router_switch_llm.active_route_name eq second \
+    --check router_switch_llm.resumed.mode eq auto \
+    --check router_switch_unknown contains "LLM route 'missing' was not found" \
+    --check router_with_route_duplicate contains 'already exists: first'
+  ```
+  `switch_profile` and `switch_llm` replace the whole agent LLM, router included: the routes and the pin are gone and the turn runs on the switched model, never on a route. To change routes and keep the router, use the route-selection methods above.
+- **A route chosen before the first message (`S03.model-router-before-first-run`).** A conversation on an endpoint that answers nothing adds the saved profile `qa-early-route` as route `early` and pins it before its first message, then runs one turn.
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  control-sdk program S03/model_router --arg before-first-run \
+    --check status eq finished --check requests.base eq 0 --check requests.route eq 1 --check last_route_name eq early \
+    --check costs.profile:qa-early-route eq 0.14
+  ```
+  The turn finishes on the `early` route (the base endpoint gets no request). Expected: its 0.14 is recorded in `conversation_stats` under `profile:qa-early-route`, as it is when the route is added after the first message (`S03.model-router-add-route`).
+  Known failure (reproduced 2026-11-19, [#5639](https://github.com/OpenHands/software-agent-sdk/issues/5639)): `costs` is `{}`; the route's LLM is registered before the conversation subscribes its stats to the registry on the first message, so the turn's cost never reaches `conversation_stats`.
 - **Fallback (`S03.fallback-transient`, `S03.fallback-skip`, `S03.fallback-metrics`, `S03.fallback-profile-resolution`).** A rate-limited primary with two fallback profiles (the first also rate-limited; the second saved after the primary was built), then a bad request, a budget denial, quota exhaustion, every model failing, the Responses path and `acompletion`.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
   control-sdk program S03/routing --arg fallback \
     --check transient.text eq "from fallback 2" --check transient.fallback1_requests eq 1 \
     --check transient.fallback2_requests eq 1 --check transient.primary_cost eq 0.14 \
+    --check transient.cost_models.0 eq openai/gpt-4.1-mini --check transient.cost_models len-eq 1 \
     --check next_call.text eq "primary again" --check next_call.primary_requests eq 2 \
+    --check next_call.primary_cost eq 0.28 --check next_call.cost_models.1 eq openai/gpt-4o-mini \
     --check non_transient.error eq LLMBadRequestError --check non_transient.fallback_requests eq 0 \
     --check budget_denial.fallback_requests eq 0 \
     --check quota.text eq "from quota fallback" --check quota.primary_requests eq 1 \
     --check all_fail.error eq LLMRateLimitError --check all_fail.fallback_requests eq 1 \
     --check responses.text eq "responses fallback" --check responses.paths.0 eq /v1/responses \
-    --check async.text eq "async fallback"
+    --check async.text eq "async fallback" \
+    --check in_conversation.status eq finished --check in_conversation.fallback_requests eq 1 \
+    --check in_conversation.usage_ids len-eq 1 --check in_conversation.primary_cost eq 0.14 \
+    --check in_conversation.cost_models.0 eq openai/gpt-4.1-mini
   ```
-  The fallback's cost lands in the primary's metrics (0.14); quota exhaustion fails over on the first attempt although the primary allows three.
+  The fallback's cost lands in the caller's usage (0.14 in the primary's `llm.metrics`, and under the `primary` usage id of a conversation's stats) with the fallback's model (`openai/gpt-4.1-mini`) on the cost entry; quota exhaustion fails over on the first attempt although the primary allows three.
 - **The profile store (`S03.profile-save-load`, `S03.profile-secrets`, `S03.profile-concurrency-limits`, `S03.profile-migration`).**
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
@@ -170,6 +255,20 @@ Every model in the scripted bullets is a real `LLM` answering from its own local
     --check condenser_model eq openai/gpt-4.1-nano --check condenser_base_url_is_c eq true \
     --check independent_condenser_model eq anthropic/claude-sonnet-4-5-20250929
   ```
+- **Usage after a switch (`S03.switch-keeps-usage`).** A conversation with an LLM condenser runs a turn and an `ask_agent` on model A, switches with `switch_llm` to model B (another `usage_id`), then runs a turn, an `ask_agent` and `conversation.condense()`.
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  control-sdk program S03/switching --arg switch-usage \
+    --check status eq finished --check requests.a eq 2 --check requests.b eq 3 \
+    --check before_switch.ask-agent-llm.calls eq 1 --check before_switch.condenser.calls eq 0 \
+    --check after_switch.agent.cost eq 0.14 --check after_switch.other.cost eq 0.14 \
+    --check after_switch.ask-agent-llm.calls eq 2 --check after_switch.ask-agent-llm.cost eq 0.28 \
+    --check after_switch.ask-agent-llm.models contains openai/gpt-4.1-mini \
+    --check after_switch.condenser.calls eq 1 --check after_switch.condenser.cost eq 0.14 \
+    --check after_switch.condenser.models.0 eq openai/gpt-4.1-mini \
+    --check combined_cost eq 0.7
+  ```
+  Five requests, five costs: nothing recorded before the switch is lost and nothing spent after it is missed.
 - **The `switch_llm` tool (`S03.switch-llm-tool`).** The model asks for a missing profile, then for `model-b`; `filter_tools_regex="^(finish|terminal)$"` is set; once with `run()` and once with `arun()`.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
@@ -195,6 +294,19 @@ Every model in the scripted bullets is a real `LLM` answering from its own local
   control-sdk program S03/switching --arg route-direct \
     --check status eq finished --check active_model eq openai/gpt-4.1-nano --check requests.cheap eq 1 \
     --check stats contains classifier:classifier --check bad_class.error eq true
+  ```
+- **`route_task_to_model` on a router conversation (`S03.route-task-to-model`).** The agent LLM is a base `RouterLLM` with routes `planner` (first, so `auto` sends the first turn there) and `strong` (`openai/gpt-4.1`), and the tool comes from `Tool(name="ClassifyAndSwitchLLMTool", params={...})`; the classifier answers `{"route": "strong"}`, then the model `openai/gpt-4.1`, then a route that does not exist.
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  control-sdk program S03/switching --arg route-router \
+    --check by_route.status eq finished --check by_route.agent_llm eq RouterLLM \
+    --check by_route.selection.mode eq manual --check by_route.selection.manual_route_name eq strong \
+    --check by_route.requests.strong eq 1 --check by_route.classifier_saw_routes eq true \
+    --check by_route.observation.text contains "switched to RouterLLM route 'strong'" \
+    --check by_model.agent_llm eq RouterLLM --check by_model.selection.manual_route_name eq strong \
+    --check by_model.requests.strong eq 1 \
+    --check unknown.observation.error eq true --check unknown.observation.text contains "did not resolve to an available RouterLLM route" \
+    --check unknown.selection.mode eq auto --check unknown.requests.strong eq 0
   ```
 - **Meta-profiles (`S03.meta-profile-store`).**
   ```sh
@@ -249,5 +361,6 @@ Every model in the scripted bullets is a real `LLM` answering from its own local
 - Fallback only triggers after the primary's own retries are exhausted (`num_retries=5`, backoff up to 64 s), so forcing a fallback by pointing the primary at a dead endpoint is slow; lower `num_retries` and `retry_*_wait` on the primary.
 - `OH_PERSISTENCE_DIR` is read into module-level constants at import time; setting it after `import openhands.sdk` has no effect on the default profile directory.
 - An LLM added to `conversation.llm_registry` before the first `send_message` is not tracked in `conversation_stats` (the stats subscribe to the registry when the agent is initialized, with no replay); add extra LLMs after the first message.
+- A `RouterLLM`'s own `model` is a placeholder (its `router_name`, e.g. `base_router` or `multimodal_router`) and its `usage_id` is the router's, not a route's; a route keeps its LLM's `usage_id` (`profile:<name>` for an added profile), so costs and `conversation_stats` are per route, never under the router. `router.status().last_route_name` is only set by a call, and `active_llm` falls back to it in `auto` mode.
 - `LLMProfileStore.list()` returns file names with the `.json` suffix, while `load`/`delete`/`switch_profile` take the bare name.
 - `prompt_cache_key` is only sent for models LiteLLM marks as supporting it (sent for `gpt-4.1`, not for `gpt-4o-mini`), so a switch between such models changes whether the key appears at all.

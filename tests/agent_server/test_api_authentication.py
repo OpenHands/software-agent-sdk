@@ -4,14 +4,20 @@ Tests the complete authentication flow through the FastAPI application.
 """
 
 import json
+from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from openhands.agent_server.api import _find_http_exception, create_app
+from openhands.agent_server.bash_service import BashEventService
 from openhands.agent_server.config import Config
-from openhands.agent_server.dependencies import get_conversation_service
+from openhands.agent_server.dependencies import (
+    get_conversation_service,
+    get_server_bash_event_service,
+)
 from openhands.agent_server.errors import status_for
 from openhands.agent_server.openai.router import _parse_observability_overrides
 from openhands.sdk.errors import DomainError
@@ -124,15 +130,7 @@ def test_api_server_details_no_auth_required(client_with_auth):
     assert response.status_code != 401
 
 
-def test_openai_routes_accept_bearer_session_key(client_with_auth, monkeypatch):
-    class EmptyProfileStore:
-        def list_summaries(self) -> list[dict[str, object]]:
-            return []
-
-    monkeypatch.setattr(
-        "openhands.agent_server.openai.service.get_llm_profile_store", EmptyProfileStore
-    )
-
+def test_openai_routes_accept_bearer_session_key(client_with_auth):
     response = client_with_auth.get("/v1/models")
     assert response.status_code == 401
 
@@ -294,6 +292,10 @@ def test_api_websocket_authentication():
     """Test that WebSocket connections also respect authentication."""
     config = Config(session_api_keys=["test-key"])
     app = create_app(config)
+    bash_service = MagicMock(spec=BashEventService)
+    bash_service.subscribe_to_events = AsyncMock(return_value=uuid4())
+    bash_service.unsubscribe_from_events = AsyncMock(return_value=True)
+    app.dependency_overrides[get_server_bash_event_service] = lambda: bash_service
     client = TestClient(app)
 
     # Without authentication -> should fail
@@ -341,6 +343,10 @@ def test_api_websocket_no_auth_required():
     """Test that WebSocket connections work when auth is disabled."""
     config = Config(session_api_keys=[])
     app = create_app(config)
+    bash_service = MagicMock(spec=BashEventService)
+    bash_service.subscribe_to_events = AsyncMock(return_value=uuid4())
+    bash_service.unsubscribe_from_events = AsyncMock(return_value=True)
+    app.dependency_overrides[get_server_bash_event_service] = lambda: bash_service
     client = TestClient(app)
 
     with client.websocket_connect("/sockets/bash-events"):

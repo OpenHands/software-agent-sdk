@@ -4,14 +4,20 @@ import json
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, Request, Response
+from fastapi import APIRouter, Depends, Header, Response
 from fastapi.responses import StreamingResponse
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import TypeAdapter, ValidationError
 
 from openhands.agent_server.config import Config
+from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.conversation_service import ConversationService
-from openhands.agent_server.dependencies import get_conversation_service
+from openhands.agent_server.dependencies import (
+    get_config,
+    get_conversation_registry,
+    get_conversation_service,
+    get_stores,
+)
 from openhands.agent_server.docker_runtime.registry import DockerConversationRegistry
 from openhands.agent_server.openai.models import (
     OpenAIChatCompletionRequest,
@@ -26,12 +32,13 @@ from openhands.agent_server.openai.service import (
     run_chat_completion,
     run_response,
 )
+from openhands.agent_server.persistence import ServerStores
 from openhands.sdk.conversation.types import (
     ConversationObservabilityMetadata,
     ConversationObservabilitySpanName,
     ConversationObservabilityTags,
 )
-from openhands.sdk.errors import Unauthenticated, Unavailable, Unprocessable
+from openhands.sdk.errors import Unauthenticated, Unprocessable
 
 
 openai_router = APIRouter(tags=["OpenAI Compatibility"])
@@ -44,7 +51,7 @@ _OBSERVABILITY_METADATA_ADAPTER = TypeAdapter(ConversationObservabilityMetadata)
 
 
 def check_openai_api_key(
-    request: Request,
+    config: Config = Depends(get_config),
     session_api_key: str | None = Depends(_SESSION_API_KEY_HEADER),
     authorization: HTTPAuthorizationCredentials | None = Depends(_AUTHORIZATION_HEADER),
 ) -> None:
@@ -57,10 +64,9 @@ def check_openai_api_key(
     system. When no session keys are configured, the local server remains
     unauthenticated like the existing agent-server API.
 
-    Reads config from ``request.app.state`` at request time so that keys
-    delivered via ``POST /api/init`` take effect immediately.
+    Reads the config at request time so that keys delivered via
+    ``POST /api/init`` take effect immediately.
     """
-    config: Config = request.app.state.config
     if not config.session_api_keys:
         return
     bearer_token = authorization.credentials if authorization else None
@@ -71,15 +77,9 @@ def check_openai_api_key(
     raise Unauthenticated()
 
 
-def _get_config(request: Request) -> Config:
-    config = getattr(request.app.state, "config", None)
-    if not isinstance(config, Config):
-        raise Unavailable("Agent server config is not available")
-    return config
-
-
-def _get_docker_registry(request: Request) -> DockerConversationRegistry | None:
-    registry = getattr(request.app.state, "conversation_registry", None)
+def _get_docker_registry(
+    registry: ConversationRegistry,
+) -> DockerConversationRegistry | None:
     return registry if isinstance(registry, DockerConversationRegistry) else None
 
 
@@ -118,9 +118,10 @@ def _parse_observability_overrides(
 
 
 @openai_router.get("/v1/models", response_model=OpenAIModelListResponse)
-async def get_openai_models(request: Request) -> OpenAIModelListResponse:
-    _get_config(request)
-    return await list_openai_models()
+async def get_openai_models(
+    stores: ServerStores = Depends(get_stores),
+) -> OpenAIModelListResponse:
+    return await list_openai_models(stores)
 
 
 @openai_router.post(
@@ -130,7 +131,6 @@ async def get_openai_models(request: Request) -> OpenAIModelListResponse:
 )
 async def create_chat_completion(
     body: OpenAIChatCompletionRequest,
-    request: Request,
     response: Response,
     x_openhands_server_conversation_id: Annotated[
         UUID | None, Header(alias="X-OpenHands-ServerConversation-ID")
@@ -148,13 +148,17 @@ async def create_chat_completion(
         str | None, Header(alias="X-OpenHands-Observability-Parent-Span-Context")
     ] = None,
     conversation_service: ConversationService = Depends(get_conversation_service),
+    config: Config = Depends(get_config),
+    stores: ServerStores = Depends(get_stores),
+    conversation_registry: ConversationRegistry = Depends(get_conversation_registry),
 ) -> OpenAIChatCompletionResponse | StreamingResponse:
     result = await run_chat_completion(
         request=body.model_copy(update={"stream": False}) if body.stream else body,
-        config=_get_config(request),
+        config=config,
+        stores=stores,
         conversation_service=conversation_service,
         reusable_conversation_id=x_openhands_server_conversation_id,
-        registry=_get_docker_registry(request),
+        registry=_get_docker_registry(conversation_registry),
         observability_overrides=_parse_observability_overrides(
             span_name=x_openhands_observability_span_name,
             tags=x_openhands_observability_tags,
@@ -187,7 +191,6 @@ async def create_chat_completion(
 )
 async def create_response(
     body: OpenAIResponseRequest,
-    request: Request,
     response: Response,
     x_openhands_observability_span_name: Annotated[
         str | None, Header(alias="X-OpenHands-Observability-Span-Name")
@@ -202,12 +205,16 @@ async def create_response(
         str | None, Header(alias="X-OpenHands-Observability-Parent-Span-Context")
     ] = None,
     conversation_service: ConversationService = Depends(get_conversation_service),
+    config: Config = Depends(get_config),
+    stores: ServerStores = Depends(get_stores),
+    conversation_registry: ConversationRegistry = Depends(get_conversation_registry),
 ) -> OpenAIResponse:
     result = await run_response(
         request=body,
-        config=_get_config(request),
+        config=config,
+        stores=stores,
         conversation_service=conversation_service,
-        registry=_get_docker_registry(request),
+        registry=_get_docker_registry(conversation_registry),
         observability_overrides=_parse_observability_overrides(
             span_name=x_openhands_observability_span_name,
             tags=x_openhands_observability_tags,
