@@ -247,3 +247,37 @@ async def test_anthropic_default_output_budget_is_bounded(endpoint, use_async, m
         llm.completion(inputs)
     assert len(requests) == 1
     assert 0 < requests[0]["max_tokens"] <= 16384
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_async", [False, True], ids=["sync", "async"])
+@pytest.mark.parametrize("drop_params", [True, False])
+@pytest.mark.parametrize(
+    ("model", "limit_key"),
+    [
+        ("zai/glm-5.3", "max_tokens"),
+        ("openai/glm-5.3", "max_completion_tokens"),
+    ],
+)
+async def test_output_limit_reaches_http_boundary(
+    endpoint, use_async, drop_params, model, limit_key
+):
+    base, requests = endpoint
+    llm = LLM(
+        model=model,
+        base_url=base,
+        api_key="local-test",
+        num_retries=0,
+        reasoning_effort=None,
+        max_output_tokens=1234,
+        drop_params=drop_params,
+    )
+    inputs = messages("user")[:1] + [
+        Message(role="user", content=[TextContent(text="hi")])
+    ]
+    if use_async:
+        await llm.acompletion(inputs)
+    else:
+        llm.completion(inputs)
+    assert len(requests) == 1
+    assert requests[0][limit_key] == 1234

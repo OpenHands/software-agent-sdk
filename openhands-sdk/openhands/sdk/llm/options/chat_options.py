@@ -12,6 +12,7 @@ from openhands.sdk.llm.options.common import (
     apply_extra_headers,
     is_openrouter,
 )
+from openhands.sdk.llm.utils.model_features import requires_max_tokens_param
 
 
 if TYPE_CHECKING:
@@ -39,8 +40,7 @@ def select_chat_options(
     }
     out = apply_defaults_if_absent(user_kwargs, defaults)
 
-    # Azure -> uses max_tokens instead
-    if llm.model.startswith("azure"):
+    if llm.model.startswith("azure") or requires_max_tokens_param(llm.model):
         if "max_completion_tokens" in out:
             out["max_tokens"] = out.pop("max_completion_tokens")
 
