@@ -1,5 +1,4 @@
 import base64
-import mimetypes
 import os
 import tempfile
 from collections.abc import Iterator
@@ -35,6 +34,7 @@ from openhands.tools.file_editor.utils.encoding import (
     with_encoding,
 )
 from openhands.tools.file_editor.utils.history import FileHistoryManager
+from openhands.tools.file_editor.utils.image import image_view
 
 
 logger = get_logger(__name__)
@@ -134,11 +134,18 @@ class FileEditor:
         old_str: str | None = None,
         new_str: str | None = None,
         insert_line: int | None = None,
+        image_region: list[int] | None = None,
     ) -> FileEditorObservation:
         _path = Path(path)
         self.validate_path(command, _path)
+        if image_region is not None and (
+            command != "view"
+            or _path.suffix.lower() not in IMAGE_EXTENSIONS
+            or _path.is_dir()
+        ):
+            raise ToolError("image_region requires an image file and the view command")
         if command == "view":
-            return self.view(_path, view_range)
+            return self.view(_path, view_range, image_region=image_region)
         elif command == "create":
             if file_text is None:
                 raise EditorToolParameterMissingError(command, "file_text")
@@ -300,7 +307,11 @@ class FileEditor:
         )
 
     def view(
-        self, path: Path, view_range: list[int] | None = None
+        self,
+        path: Path,
+        view_range: list[int] | None = None,
+        *,
+        image_region: list[int] | None = None,
     ) -> FileEditorObservation:
         """
         View the contents of a file or a directory.
@@ -350,18 +361,12 @@ class FileEditor:
         # Check if the file is an image
         file_extension = path.suffix.lower()
         if file_extension in IMAGE_EXTENSIONS:
-            # Read image file as base64
             try:
-                with open(path, "rb") as f:
-                    image_bytes = f.read()
-                image_base64 = base64.b64encode(image_bytes).decode("utf-8")
-
-                mime_type, _ = mimetypes.guess_type(str(path))
-                if not mime_type or not mime_type.startswith("image/"):
-                    mime_type = "image/png"
-                output_msg = (
-                    f"Image file {path} read successfully. Displaying image content."
-                )
+                with path.open("rb") as source:
+                    image_bytes, mime_type, output_msg = image_view(
+                        source, str(path), image_region
+                    )
+                image_base64 = base64.b64encode(image_bytes).decode("ascii")
                 image_url = f"data:{mime_type};base64,{image_base64}"
                 return FileEditorObservation(
                     command="view",

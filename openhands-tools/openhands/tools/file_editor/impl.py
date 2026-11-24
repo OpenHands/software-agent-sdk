@@ -61,6 +61,7 @@ class FileEditorExecutor(ToolExecutor):
                 path=action.path,
                 file_text=action.file_text,
                 view_range=action.view_range,
+                image_region=action.image_region,
                 old_str=action.old_str,
                 new_str=action.new_str,
                 insert_line=action.insert_line,
@@ -81,6 +82,7 @@ def file_editor(
     old_str: str | None = None,
     new_str: str | None = None,
     insert_line: int | None = None,
+    image_region: list[int] | None = None,
 ) -> FileEditorObservation:
     """A global FileEditor instance to be used by the tool."""
 
@@ -95,6 +97,7 @@ def file_editor(
             path=path,
             file_text=file_text,
             view_range=view_range,
+            image_region=image_region,
             old_str=old_str,
             new_str=new_str,
             insert_line=insert_line,
