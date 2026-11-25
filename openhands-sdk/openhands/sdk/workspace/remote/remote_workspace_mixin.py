@@ -42,17 +42,13 @@ class RemoteWorkspaceMixin(BaseModel):
     api_key: str | None = Field(
         default=None, description="API key for authenticating with the remote host."
     )
-    working_dir: Annotated[
-        str,
-        BeforeValidator(_convert_path_to_str),
-        Field(
-            description=(
-                "The working directory for agent operations and tool execution. "
-                "Accepts both string paths and Path objects. "
-                "Path objects are automatically converted to strings."
-            )
-        ),
-    ]
+    working_dir: Annotated[str, BeforeValidator(_convert_path_to_str)] = Field(
+        description=(
+            "The working directory for agent operations and tool execution. "
+            "Accepts both string paths and Path objects. "
+            "Path objects are automatically converted to strings."
+        )
+    )
     read_timeout: float = Field(
         default=600.0,
         description="Timeout in seconds for reading operations of httpx.Client.",

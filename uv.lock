@@ -2783,7 +2783,7 @@ wheels = [
 
 [[package]]
 name = "openhands-agent-server"
-version = "1.64.0"
+version = "1.64.1"
 source = { editable = "openhands-agent-server" }
 dependencies = [
     { name = "aiosqlite" },
@@ -2827,7 +2827,7 @@ provides-extras = ["posthog"]
 
 [[package]]
 name = "openhands-sdk"
-version = "1.64.0"
+version = "1.64.1"
 source = { editable = "openhands-sdk" }
 dependencies = [
     { name = "agent-client-protocol" },
@@ -2893,7 +2893,7 @@ provides-extras = ["boto3", "toolshield", "vertex"]
 
 [[package]]
 name = "openhands-tools"
-version = "1.64.0"
+version = "1.64.1"
 source = { editable = "openhands-tools" }
 dependencies = [
     { name = "binaryornot" },
@@ -2930,7 +2930,7 @@ requires-dist = [
 
 [[package]]
 name = "openhands-workspace"
-version = "1.64.0"
+version = "1.64.1"
 source = { editable = "openhands-workspace" }
 dependencies = [
     { name = "certifi" },
