@@ -12,7 +12,7 @@ dependencies = [
     # 4.x requires mcp>=2; browser-use 0.11.x runs on it through the decorator
     # shim in openhands-tools browser_use/logging_fix.py (#5152)
     "fastmcp>=4.2.0,<5",
-    "filelock>=4.2.10",
+    "filelock>=4.2.11",
     "httpx[socks]>=0.28.1",
     "jsonschema>=4.26.0",
     "joserfc>=1.8.0",
