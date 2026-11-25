@@ -14,7 +14,7 @@ SPEC.loader.exec_module(updater)
 NOW = datetime(2026, 10, 8, tzinfo=UTC)
 
 
-def test_observation_window_major_prerelease_and_deprecation() -> None:
+def test_major_crossing_is_an_explicit_opt_in() -> None:
     versions = {
         "11.19.1": {},
         "11.21.0": {},
@@ -28,8 +28,22 @@ def test_observation_window_major_prerelease_and_deprecation() -> None:
         "time": dict.fromkeys(versions, "2026-10-01T00:00:00Z"),
     }
     metadata["time"]["11.22.0"] = "2026-10-01T00:00:01Z"
+    # Default policy stays on the current major.
     assert updater.select_version(metadata, "11.19.1", NOW) == "11.21.0"
     assert updater.select_version(metadata, "11.25.0", NOW) == "11.25.0"
+    # The scheduled workflow opts in explicitly (ALLOW_MAJOR_UPGRADE=true);
+    # only that path may cross to the newest observed stable major.
+    assert (
+        updater.select_version(metadata, "11.19.1", NOW, allow_major=True) == "12.2.0"
+    )
+    assert (
+        updater.select_version(metadata, "11.25.0", NOW, allow_major=True) == "12.2.0"
+    )
+
+    metadata["time"]["12.2.0"] = "2026-10-01T00:00:01Z"
+    assert (
+        updater.select_version(metadata, "11.19.1", NOW, allow_major=True) == "11.21.0"
+    )
 
 
 def test_update_is_idempotent_and_requires_exactly_one_pin() -> None:

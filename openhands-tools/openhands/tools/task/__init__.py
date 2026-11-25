@@ -24,9 +24,11 @@ from openhands.tools.task.definition import (
     TaskToolSet,
 )
 from openhands.tools.task.impl import TaskExecutor
+from openhands.tools.task.visualizer import DelegationVisualizer
 
 
 __all__ = [
+    "DelegationVisualizer",
     "TaskAction",
     "TaskExecutor",
     "TaskObservation",

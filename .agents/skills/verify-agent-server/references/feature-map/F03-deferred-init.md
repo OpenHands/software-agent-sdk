@@ -48,6 +48,7 @@ Routes: `GET /api/init`, `POST /api/init`
 - `F03.init-delivered-webhooks`: `webhooks` delivered at init (on a pod that booted with none) receive the new conversation's `ConversationInfo` at `{base_url}/conversations`, with the delivered headers and the delivered session key.
 - `F03.init-enforces-session-keys`: after init, `/api/*` rejects a missing or wrong key with 401 and accepts the delivered session key with 200, on a pod that booted without keys.
 - `F03.init-applies-env`: `env` entries delivered at init reach `os.environ` and therefore the bash subprocesses, and the delivered `bash_events_dir` receives the events.
+- `F03.init-failure-restores-env`: `env` entries sent only in a failed init are taken back with it: after the successful retry bash subprocesses do not see them, while the retry's own entries are there.
 - `F03.init-keys-gate-bash-socket`: after init, `/sockets/bash-events` closes with 4001 for a client without the delivered key and runs commands for one with it.
 - `F03.init-opens-events-socket-and-v1`: after init, the conversation events socket that was refused while dormant opens and replays the conversation's state with the delivered key (4001 without it), and `GET /v1/models` answers 401 without a key and 200 with the delivered key as a Bearer token.
 - `F03.init-web-url-root-path`: a delivered `web_url` with a path becomes the root path: prefixed URLs serve and the OpenAPI document advertises the prefix.
@@ -99,10 +100,12 @@ Routes: `GET /api/init`, `POST /api/init`
   capacity), and a CORS preflight `OPTIONS /api/settings` with an `Origin`
   (CORS allowlist); the delivered webhook's deliveries are read from an HTTP
   sink.
-- SDK / TypeScript client: no consumer method calls `/api/init`; only the
-  generated TypeScript types describe it
-  (`clients/typescript/src/generated/agent-server-schema.ts`). The caller is a
-  warm-pool orchestrator.
+- TypeScript client: `InitClient.getStatus()` (`GET /api/init`) and
+  `InitClient.initialize(request, {initApiKey})` (`POST /api/init`, sending
+  `initApiKey` as `X-Init-API-Key`), also reachable as
+  `AgentServerClient.init` and `ConversationManager.init`; driven against a
+  dormant server by `F34.init-client`. The Python SDK has no method for
+  `/api/init`. The usual caller is a warm-pool orchestrator.
 
 ## Driving it with control-agent-server
 
@@ -173,8 +176,8 @@ Preconditions:
   rewritten by the 5xx handler, so assert on the status and on `exception`,
   which carries `server is in deferred-init state 'dormant'; call POST
   /api/init first`. The workspace file route is mounted on its own `/api`
-  router (cookie auth), which carries the same gate since #5700, so it no
-  longer reaches the missing conversation service.
+  router (cookie auth), which carries the same gate, so it never reaches
+  the missing conversation service.
 - **Dormant sockets (`F03.dormant-gates-sockets`).** Every WebSocket is refused at the handshake while dormant.
   ```sh
   F03_ZERO=00000000-0000-0000-0000-0000000000f3
@@ -248,7 +251,7 @@ Preconditions:
 - **Failure rollback (`F03.init-failure-rollback`).** A failing init returns 500 and returns to dormant with the error recorded.
   ```sh
   control-agent-server api POST /api/init --auth none --header "X-Init-API-Key: $SK" \
-    --json '{"conversations_path":"/proc/oh-cannot-create-f03"}' --expect 500 \
+    --json '{"conversations_path":"/proc/oh-cannot-create-f03","env":{"QA_F03_FAILED_ONLY":"qa-failed-attempt"}}' --expect 500 \
     --check exception contains oh-cannot-create-f03 --save F03.init-failure-rollback/failure
   control-agent-server api GET /api/init --auth none --check state eq dormant --check error contains oh-cannot-create-f03
   control-agent-server api GET /api/settings --auth none --expect 503
@@ -257,7 +260,9 @@ Preconditions:
   rolls the state back to `dormant`, keeps the gate closed, and stores
   `<ExceptionType>: <message>` under `error` (on Linux
   `FileNotFoundError: [Errno 2] ... '/proc/oh-cannot-create-f03'`), so an
-  orchestrator can retry. The successful retry is the next bullet.
+  orchestrator can retry. The body also carries an `env` entry that no later
+  init sends (`F03.init-failure-restores-env` reads it back). The successful
+  retry is the next bullet.
 - **Successful init (`F03.init-success`).** A valid body flips the pod to `ready`; conversations land in the delivered directory. The body delivers every field the later bullets read back.
   ```sh
   BODY="$(python3 -c "import json,os,sys;r=os.environ['AGENT_SERVER_VERIFY_RUN']+'/fixtures/';print(json.dumps({'session_api_keys':['qa-user-key'],'secret_key':'qa-f03-delivered-secret','conversations_path':r+'conv','bash_events_dir':r+'bash','conversation_worktree_root':r+'qa-f03-worktrees','webhooks':[{'base_url':sys.argv[1],'headers':{'X-QA-F03':'delivered-hook'},'flush_delay':1}],'web_url':'http://qa-f03.invalid/rt/qa-f03','allow_cors_origins':['https://qa-f03.example'],'max_concurrent_runs':1,'env':{'PROBE_VAR':'qa-hello'}}))" "$F03_HOOKS")"
@@ -306,6 +311,18 @@ Preconditions:
   ```
   The command prints `PROBE=qa-hello` (the init-delivered env), and the
   delivered bash-events directory now holds the command and output events.
+- **A failed init takes its env back (`F03.init-failure-restores-env`).** The failed attempt carried `QA_F03_FAILED_ONLY`; the successful one carried only `PROBE_VAR`.
+
+  Requires: `F03.init-failure-rollback`, `F03.init-success`
+  ```sh
+  control-agent-server api POST /api/bash/execute_bash_command --auth none --header 'X-Session-API-Key: qa-user-key' \
+    --json '{"command":"echo \"PROBE=$PROBE_VAR FAILED_ONLY=[${QA_F03_FAILED_ONLY-unset}]\""}' --expect 200 \
+    --check stdout contains 'PROBE=qa-hello' --check stdout contains 'FAILED_ONLY=[unset]' --save F03.init-failure-restores-env/env
+  ```
+  One command prints both: `PROBE=qa-hello`, the entry of the successful
+  init (the positive control), and `FAILED_ONLY=[unset]`, because the failed
+  attempt's entry was removed from the server's environment when that attempt
+  was rolled back.
 - **Delivered keys gate the bash socket (`F03.init-keys-gate-bash-socket`).** After init the socket authenticates with the delivered keys.
   ```sh
   SOCK_PROBE="$AGENT_SERVER_VERIFY_RUN/fixtures/qa-f03-ws-after-init.txt"
@@ -557,11 +574,9 @@ Preconditions:
   client as an HTTP 403 handshake rejection (`ws listen --expect-reject 403`),
   not as a 1013 close frame. An unknown socket path is also a 403, so pair
   the dormant check with the same socket opening after init.
-- The gate precedes every auth check since #5700 (`F03.gate-before-auth`), so
+- The gate precedes every auth check (`F03.gate-before-auth`) and covers the
+  workspace static-file routes, the sockets, `/v1` and `/app-backends`, so
   while dormant a 503 says nothing about the key; prove a key only after init.
-  Before #5700 the workspace static-file routes, the sockets, `/v1` and
-  `/app-backends` were outside the gate (#5661, #5700 closed them); a baseline
-  checkout older than those PRs answers those recipes differently.
 - The bootstrap `X-Init-API-Key` is the dormant `secret_key`, which defaults to
   the first session key when `OH_SECRET_KEY` is unset and is **open to anyone**
   when neither is set (`F03.init-open-without-secret`). `control-agent-server
@@ -580,11 +595,10 @@ Preconditions:
   the init body sets `secret_key`, or if the dormant config had none and
   session keys are delivered, the bootstrap key changes and a retry with the old
   key is 401 instead of 400.
-- A failed init rolls back only the state: `env` entries it applied stay in
-  `os.environ` (observed: a variable sent only in a failed attempt is visible
-  to bash after the successful retry), and the bash service it entered before
-  failing is not exited. `InitRequest.env` documents the `os.environ.update`,
-  not a rollback; resend the full env on retry.
+- A failed init is all-or-nothing: the state returns to `dormant`, the
+  services it started are stopped, and the `env` entries it applied are put
+  back to their previous values (`F03.init-failure-restores-env`). Nothing
+  of a failed attempt carries over, so resend the full env on retry.
 - `OH_DEFERRED_INIT` must be `1`/`true` (case-insensitive); `yes` parses as
   False.
 - An init-delivered `allow_cors_origins` is a no-op

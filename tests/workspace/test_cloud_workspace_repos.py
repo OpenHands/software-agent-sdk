@@ -87,14 +87,21 @@ class TestRepoSource:
         assert repo.provider is None
         assert repo.get_provider() == GitProvider.AZURE_DEVOPS
 
-    def test_azure_devops_clone_dialog_url(self):
-        """The URL Azure DevOps shows in its Clone dialog names the organization."""
-        repo = RepoSource(url="https://org@dev.azure.com/org/project/_git/repo")
-        assert repo.get_provider() == GitProvider.AZURE_DEVOPS
-
-    def test_azure_devops_legacy_host(self):
-        """Organizations on {org}.visualstudio.com are Azure DevOps too."""
-        repo = RepoSource(url="https://org.visualstudio.com/project/_git/repo")
+    @pytest.mark.parametrize(
+        "url",
+        [
+            # The URL Azure DevOps shows in its Clone dialog names the organization.
+            pytest.param(
+                "https://org@dev.azure.com/org/project/_git/repo", id="clone_dialog_url"
+            ),
+            # Organizations on {org}.visualstudio.com are Azure DevOps too.
+            pytest.param(
+                "https://org.visualstudio.com/project/_git/repo", id="legacy_host"
+            ),
+        ],
+    )
+    def test_azure_devops_url_variant(self, url):
+        repo = RepoSource(url=url)
         assert repo.get_provider() == GitProvider.AZURE_DEVOPS
 
     def test_git_ssh_url(self):
@@ -112,30 +119,35 @@ class TestRepoSource:
         repo = RepoSource(url="https://github.com/owner/repo", provider="gitlab")
         assert repo.get_provider() == GitProvider.GITLAB
 
-    def test_provider_github_token_name(self):
-        """Test GitHub token name."""
-        repo = RepoSource(url="owner/repo", provider="github")
-        assert repo.get_token_name() == "github_token"
-
-    def test_provider_gitlab_token_name(self):
-        """Test GitLab token name."""
-        repo = RepoSource(url="owner/repo", provider="gitlab")
-        assert repo.get_token_name() == "gitlab_token"
-
-    def test_provider_bitbucket_token_name(self):
-        """Test Bitbucket token name."""
-        repo = RepoSource(url="owner/repo", provider="bitbucket")
-        assert repo.get_token_name() == "bitbucket_token"
+    @pytest.mark.parametrize(
+        ("provider", "expected"),
+        [
+            pytest.param("github", "GITHUB_TOKEN", id="github"),
+            pytest.param("gitlab", "GITLAB_TOKEN", id="gitlab"),
+            pytest.param("bitbucket", "BITBUCKET_TOKEN", id="bitbucket"),
+        ],
+    )
+    def test_provider_token_name(self, provider, expected):
+        repo = RepoSource(url="owner/repo", provider=provider)
+        assert repo.get_token_name() == expected
 
     def test_provider_azure_devops_token_name(self):
         """Test Azure DevOps token name."""
         repo = RepoSource(url="https://dev.azure.com/org/project/_git/repo")
         assert repo.get_token_name() == "azure_devops_token"
 
-    def test_short_url_with_azure_devops_rejected(self):
-        """Azure DevOps needs org/project/repo, so owner/repo is refused."""
+    @pytest.mark.parametrize(
+        ("url", "provider"),
+        [
+            # Azure DevOps needs org/project/repo, so owner/repo is refused.
+            pytest.param("owner/repo", "azure_devops", id="azure_devops"),
+            # Data Center has no public host, so PROJ/repo alone cannot be cloned.
+            pytest.param("PROJ/repo", "bitbucket_data_center", id="bitbucket_dc"),
+        ],
+    )
+    def test_short_url_rejected_for_provider_without_public_host(self, url, provider):
         with pytest.raises(ValueError, match="need a full URL"):
-            RepoSource(url="owner/repo", provider="azure_devops")
+            RepoSource(url=url, provider=provider)
 
     def test_bitbucket_dc_token_name(self):
         """A Bitbucket Data Center repo uses its own token, not Bitbucket Cloud's."""
@@ -145,11 +157,6 @@ class TestRepoSource:
         )
         assert repo.get_provider() == GitProvider.BITBUCKET_DATA_CENTER
         assert repo.get_token_name() == "bitbucket_data_center_token"
-
-    def test_short_url_with_bitbucket_dc_rejected(self):
-        """Data Center has no public host, so PROJ/repo alone cannot be cloned."""
-        with pytest.raises(ValueError, match="need a full URL"):
-            RepoSource(url="PROJ/repo", provider="bitbucket_data_center")
 
     def test_bitbucket_dc_url_not_detected_without_provider(self):
         """A Data Center host is not recognized, so it never gets a token unasked."""
@@ -164,15 +171,16 @@ class TestRepoSource:
         with pytest.raises(ValueError, match="URL must be"):
             RepoSource(url="invalid-url-format", provider="github")
 
-    def test_url_with_dots_allowed(self):
-        """Test that URLs with dots in repo name are allowed."""
-        repo = RepoSource(url="owner/repo.name", provider="github")
-        assert repo.url == "owner/repo.name"
-
-    def test_url_with_dashes_allowed(self):
-        """Test that URLs with dashes are allowed."""
-        repo = RepoSource(url="my-org/my-repo", provider="github")
-        assert repo.url == "my-org/my-repo"
+    @pytest.mark.parametrize(
+        "url",
+        [
+            pytest.param("owner/repo.name", id="dots"),
+            pytest.param("my-org/my-repo", id="dashes"),
+        ],
+    )
+    def test_url_with_punctuation_allowed(self, url):
+        repo = RepoSource(url=url, provider="github")
+        assert repo.url == url
 
     def test_http_url_credentials_redacted_in_warning(self, caplog):
         """The http->https normalization warning must not leak embedded creds."""
@@ -289,66 +297,114 @@ class TestHelperFunctions:
         existing = {"repo", "repo_1", "repo_2"}
         assert _get_unique_dir_name("repo", existing) == "repo_3"
 
-    def test_build_clone_url_github_owner_repo_no_token(self):
-        """Test building clone URL from owner/repo without token."""
-        url = _build_clone_url("owner/repo", GitProvider.GITHUB, None)
-        assert url == "https://github.com/owner/repo.git"
+    @pytest.mark.parametrize(
+        ("repo_url", "provider", "token", "expected"),
+        [
+            pytest.param(
+                "owner/repo",
+                GitProvider.GITHUB,
+                None,
+                "https://github.com/owner/repo.git",
+                id="github_owner_repo_no_token",
+            ),
+            pytest.param(
+                "owner/repo",
+                GitProvider.GITHUB,
+                "ghtoken123",
+                "https://ghtoken123@github.com/owner/repo.git",
+                id="github_owner_repo_with_token",
+            ),
+            pytest.param(
+                "https://github.com/owner/repo",
+                GitProvider.GITHUB,
+                "ghtoken123",
+                "https://ghtoken123@github.com/owner/repo",
+                id="github_https_with_token",
+            ),
+            pytest.param(
+                "owner/repo",
+                GitProvider.GITLAB,
+                "gltoken123",
+                "https://oauth2:gltoken123@gitlab.com/owner/repo.git",
+                id="gitlab_owner_repo_with_token",
+            ),
+            pytest.param(
+                "https://gitlab.com/owner/repo",
+                GitProvider.GITLAB,
+                "gltoken123",
+                "https://oauth2:gltoken123@gitlab.com/owner/repo",
+                id="gitlab_https_with_token",
+            ),
+            pytest.param(
+                "owner/repo",
+                GitProvider.BITBUCKET,
+                "bbtoken123",
+                "https://x-token-auth:bbtoken123@bitbucket.org/owner/repo.git",
+                id="bitbucket_with_token",
+            ),
+            pytest.param(
+                "https://github.com/owner/repo",
+                GitProvider.GITHUB,
+                None,
+                "https://github.com/owner/repo",
+                id="no_token_passthrough",
+            ),
+            # A URL naming only a user keeps it and gets the token as its password.
+            pytest.param(
+                "https://someone@github.com/owner/repo",
+                GitProvider.GITHUB,
+                "ghtoken123",
+                "https://someone:ghtoken123@github.com/owner/repo",
+                id="user_only_url_gets_token_as_password",
+            ),
+        ],
+    )
+    def test_build_clone_url(self, repo_url, provider, token, expected):
+        assert _build_clone_url(repo_url, provider, token) == expected
 
-    def test_build_clone_url_github_owner_repo_with_token(self):
-        """Test building clone URL from owner/repo with GitHub token."""
-        url = _build_clone_url("owner/repo", GitProvider.GITHUB, "ghtoken123")
-        assert url == "https://ghtoken123@github.com/owner/repo.git"
-
-    def test_build_clone_url_github_https_with_token(self):
-        """Test building clone URL from GitHub HTTPS URL with token."""
+    @pytest.mark.parametrize(
+        ("repo_url", "explicit_provider", "expected"),
+        [
+            pytest.param(
+                "https://gitlab.mycompany.com/owner/repo",
+                True,
+                "https://oauth2:gltoken123@gitlab.mycompany.com/owner/repo",
+                id="self_hosted_gitlab_with_explicit_provider",
+            ),
+            # An auto-detected provider must not inject a token into an
+            # unrelated host.
+            pytest.param(
+                "https://gitlab.mycompany.com/owner/repo",
+                False,
+                "https://gitlab.mycompany.com/owner/repo",
+                id="self_hosted_host_without_explicit_provider",
+            ),
+            # Host case and non-default port survive token injection.
+            pytest.param(
+                "https://GitLab.MyCompany.com:8443/owner/repo",
+                True,
+                "https://oauth2:gltoken123@gitlab.mycompany.com:8443/owner/repo",
+                id="self_hosted_host_is_normalized",
+            ),
+            # A URL that already carries credentials keeps its own.
+            pytest.param(
+                "https://oauth2:embedded@gitlab.mycompany.com/owner/repo",
+                True,
+                "https://oauth2:embedded@gitlab.mycompany.com/owner/repo",
+                id="existing_credentials_preserved",
+            ),
+        ],
+    )
+    def test_build_clone_url_self_hosted_gitlab(
+        self, repo_url, explicit_provider, expected
+    ):
         url = _build_clone_url(
-            "https://github.com/owner/repo", GitProvider.GITHUB, "ghtoken123"
-        )
-        assert url == "https://ghtoken123@github.com/owner/repo"
-
-    def test_build_clone_url_gitlab_owner_repo_with_token(self):
-        """Test building clone URL from owner/repo for GitLab with token."""
-        url = _build_clone_url("owner/repo", GitProvider.GITLAB, "gltoken123")
-        assert url == "https://oauth2:gltoken123@gitlab.com/owner/repo.git"
-
-    def test_build_clone_url_gitlab_https_with_token(self):
-        """Test building clone URL from GitLab URL with token."""
-        url = _build_clone_url(
-            "https://gitlab.com/owner/repo", GitProvider.GITLAB, "gltoken123"
-        )
-        assert url == "https://oauth2:gltoken123@gitlab.com/owner/repo"
-
-    def test_build_clone_url_bitbucket_with_token(self):
-        """Test building clone URL for Bitbucket with token."""
-        url = _build_clone_url("owner/repo", GitProvider.BITBUCKET, "bbtoken123")
-        assert url == "https://x-token-auth:bbtoken123@bitbucket.org/owner/repo.git"
-
-    def test_build_clone_url_no_token_passthrough(self):
-        """Test that full URLs without token pass through unchanged."""
-        url = _build_clone_url(
-            "https://github.com/owner/repo", GitProvider.GITHUB, None
-        )
-        assert url == "https://github.com/owner/repo"
-
-    def test_build_clone_url_self_hosted_gitlab_with_explicit_provider(self):
-        """A self-hosted GitLab host gets the token when provider is explicit."""
-        url = _build_clone_url(
-            "https://gitlab.mycompany.com/owner/repo",
+            repo_url,
             GitProvider.GITLAB,
             "gltoken123",
-            explicit_provider=True,
+            explicit_provider=explicit_provider,
         )
-        assert url == "https://oauth2:gltoken123@gitlab.mycompany.com/owner/repo"
-
-    def test_build_clone_url_self_hosted_host_without_explicit_provider(self):
-        """An auto-detected provider must not inject a token into an unrelated host."""
-        url = _build_clone_url(
-            "https://gitlab.mycompany.com/owner/repo",
-            GitProvider.GITLAB,
-            "gltoken123",
-            explicit_provider=False,
-        )
-        assert url == "https://gitlab.mycompany.com/owner/repo"
+        assert url == expected
 
     @pytest.mark.parametrize("explicit_provider", [False, True])
     def test_build_clone_url_lookalike_host_not_injected(self, explicit_provider):
@@ -361,59 +417,31 @@ class TestHelperFunctions:
         )
         assert url == "https://github.com.evil.com/owner/repo"
 
-    def test_build_clone_url_self_hosted_host_is_normalized(self):
-        """Host case and non-default port survive token injection."""
-        url = _build_clone_url(
-            "https://GitLab.MyCompany.com:8443/owner/repo",
-            GitProvider.GITLAB,
-            "gltoken123",
-            explicit_provider=True,
-        )
-        assert url == "https://oauth2:gltoken123@gitlab.mycompany.com:8443/owner/repo"
-
-    def test_build_clone_url_existing_credentials_preserved(self):
-        """A URL that already carries credentials keeps its own."""
-        url = _build_clone_url(
-            "https://oauth2:embedded@gitlab.mycompany.com/owner/repo",
-            GitProvider.GITLAB,
-            "gltoken123",
-            explicit_provider=True,
-        )
-        assert url == "https://oauth2:embedded@gitlab.mycompany.com/owner/repo"
-
-    def test_build_clone_url_user_only_url_gets_token_as_password(self):
-        """A URL naming only a user keeps it and gets the token as its password."""
-        url = _build_clone_url(
-            "https://someone@github.com/owner/repo", GitProvider.GITHUB, "ghtoken123"
-        )
-        assert url == "https://someone:ghtoken123@github.com/owner/repo"
-
-    def test_build_clone_url_azure_devops_with_token(self):
-        """Test building clone URL for Azure DevOps with token."""
-        url = _build_clone_url(
-            "https://dev.azure.com/org/project/_git/repo",
-            GitProvider.AZURE_DEVOPS,
-            "adotoken",
-        )
-        assert url == "https://oauth2:adotoken@dev.azure.com/org/project/_git/repo"
-
-    def test_build_clone_url_azure_devops_keeps_organization_user(self):
-        """The Clone dialog's organization user stays, with the token as password."""
-        url = _build_clone_url(
-            "https://org@dev.azure.com/org/project/_git/repo",
-            GitProvider.AZURE_DEVOPS,
-            "adotoken",
-        )
-        assert url == "https://org:adotoken@dev.azure.com/org/project/_git/repo"
-
-    def test_build_clone_url_azure_devops_legacy_host(self):
-        """An {org}.visualstudio.com host is Azure DevOps' own and gets the token."""
-        url = _build_clone_url(
-            "https://org.visualstudio.com/project/_git/repo",
-            GitProvider.AZURE_DEVOPS,
-            "adotoken",
-        )
-        assert url == "https://oauth2:adotoken@org.visualstudio.com/project/_git/repo"
+    @pytest.mark.parametrize(
+        ("repo_url", "expected"),
+        [
+            pytest.param(
+                "https://dev.azure.com/org/project/_git/repo",
+                "https://oauth2:adotoken@dev.azure.com/org/project/_git/repo",
+                id="with_token",
+            ),
+            # The Clone dialog's organization user stays, with the token as password.
+            pytest.param(
+                "https://org@dev.azure.com/org/project/_git/repo",
+                "https://org:adotoken@dev.azure.com/org/project/_git/repo",
+                id="keeps_organization_user",
+            ),
+            # An {org}.visualstudio.com host is Azure DevOps' own and gets the token.
+            pytest.param(
+                "https://org.visualstudio.com/project/_git/repo",
+                "https://oauth2:adotoken@org.visualstudio.com/project/_git/repo",
+                id="legacy_host",
+            ),
+        ],
+    )
+    def test_build_clone_url_azure_devops(self, repo_url, expected):
+        url = _build_clone_url(repo_url, GitProvider.AZURE_DEVOPS, "adotoken")
+        assert url == expected
 
     @pytest.mark.parametrize(
         "url",
@@ -676,7 +704,7 @@ class TestCloneRepos:
         mock_run.return_value = MagicMock(returncode=1, stderr=leaky_stderr)
 
         def token_fetcher(name: str) -> str | None:
-            return token if name == "github_token" else None
+            return token if name == "GITHUB_TOKEN" else None
 
         with tempfile.TemporaryDirectory() as tmpdir:
             repos = [RepoSource(url="owner/repo", provider="github")]
@@ -694,7 +722,7 @@ class TestCloneRepos:
         mock_run.return_value = MagicMock(returncode=0, stderr="")
 
         def token_fetcher(name: str) -> str | None:
-            if name == "github_token":
+            if name == "GITHUB_TOKEN":
                 return "ghtoken123"
             return None
 
@@ -709,6 +737,63 @@ class TestCloneRepos:
             # Check that token was included in clone URL
             call_args = mock_run.call_args[0][0]
             assert any("ghtoken123" in str(arg) for arg in call_args)
+
+    @pytest.mark.parametrize(
+        ("provider", "secret_name"),
+        [
+            ("github", "GITHUB_TOKEN"),
+            ("gitlab", "GITLAB_TOKEN"),
+            ("bitbucket", "BITBUCKET_TOKEN"),
+        ],
+    )
+    @patch("subprocess.run")
+    def test_clone_authenticates_with_token_stored_under_env_var_name(
+        self, mock_run, provider, secret_name
+    ):
+        """The provider token is stored under its conventional env var name."""
+        mock_run.return_value = MagicMock(returncode=0, stderr="")
+        token = "provider-token-value"
+
+        def token_fetcher(name: str) -> str | None:
+            return token if name == secret_name else None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repos = [RepoSource(url="owner/repo", provider=provider)]
+            clone_repos(repos, Path(tmpdir), token_fetcher=token_fetcher)
+
+        clone_cmd = mock_run.call_args[0][0]
+        assert any(token in str(arg) for arg in clone_cmd)
+
+    @patch("subprocess.run")
+    def test_clone_falls_back_to_lowercase_token_name(self, mock_run):
+        """App servers that predate the uppercase names serve ``github_token``."""
+        mock_run.return_value = MagicMock(returncode=0, stderr="")
+        fetched: list[str] = []
+
+        def token_fetcher(name: str) -> str | None:
+            fetched.append(name)
+            return "legacy-token" if name == "github_token" else None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repos = [RepoSource(url="owner/repo", provider="github")]
+            clone_repos(repos, Path(tmpdir), token_fetcher=token_fetcher)
+
+        clone_cmd = mock_run.call_args[0][0]
+        assert any("legacy-token" in str(arg) for arg in clone_cmd)
+        assert fetched == ["GITHUB_TOKEN", "github_token"]
+
+    @patch("subprocess.run")
+    def test_clone_prefers_uppercase_token_name(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stderr="")
+        tokens = {"GITHUB_TOKEN": "current-token", "github_token": "legacy-token"}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repos = [RepoSource(url="owner/repo", provider="github")]
+            clone_repos(repos, Path(tmpdir), token_fetcher=tokens.get)
+
+        clone_cmd = " ".join(str(arg) for arg in mock_run.call_args[0][0])
+        assert "current-token" in clone_cmd
+        assert "legacy-token" not in clone_cmd
 
     @patch("subprocess.run")
     def test_clone_with_provider_specific_token(self, mock_run):
@@ -728,9 +813,9 @@ class TestCloneRepos:
             ]
             clone_repos(repos, Path(tmpdir), token_fetcher=token_fetcher)
 
-            # Should have fetched github_token and gitlab_token
-            assert "github_token" in fetched_tokens
-            assert "gitlab_token" in fetched_tokens
+            # Should have fetched GITHUB_TOKEN and GITLAB_TOKEN
+            assert "GITHUB_TOKEN" in fetched_tokens
+            assert "GITLAB_TOKEN" in fetched_tokens
 
     @patch("subprocess.run")
     def test_clone_self_hosted_gitlab_with_token(self, mock_run):
@@ -739,7 +824,7 @@ class TestCloneRepos:
         mock_run.return_value = MagicMock(returncode=0, stderr="")
 
         def token_fetcher(name: str) -> str | None:
-            return "gltoken123" if name == "gitlab_token" else None
+            return "gltoken123" if name == "GITLAB_TOKEN" else None
 
         with tempfile.TemporaryDirectory() as tmpdir:
             repos = [

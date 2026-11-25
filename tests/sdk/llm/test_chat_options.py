@@ -382,7 +382,8 @@ def test_chat_options_omits_prompt_cache_key_when_unset():
     )
 
 
-def test_chat_options_omits_prompt_cache_key_for_unsupported_provider():
+@pytest.mark.parametrize("model", ["claude-opus-4-5-20251101", "gemini/gemini-2.5-pro"])
+def test_chat_options_omits_prompt_cache_key_for_unsupported_provider(model: str):
     """Anthropic/Gemini reject `prompt_cache_key` with 400; must not be sent.
 
     Regression test for the UnsupportedParamsError reported on Anthropic models
@@ -390,11 +391,10 @@ def test_chat_options_omits_prompt_cache_key_for_unsupported_provider():
     is OpenAI-specific and must be gated on provider support, unlike
     `supports_prompt_cache` which gates Anthropic `cache_control` breakpoints.
     """
-    for model in ("claude-opus-4-5-20251101", "gemini/gemini-2.5-pro"):
-        llm = DummyLLM(model=model)
-        with llm_call_context_scope(LLMCallContext(prompt_cache_key="conv-abc123")):
-            out = select_chat_options(llm, user_kwargs={}, has_tools=True)
-        assert "prompt_cache_key" not in out, model
+    llm = DummyLLM(model=model)
+    with llm_call_context_scope(LLMCallContext(prompt_cache_key="conv-abc123")):
+        out = select_chat_options(llm, user_kwargs={}, has_tools=True)
+    assert "prompt_cache_key" not in out
 
 
 def test_chat_options_forwards_prompt_cache_key_when_override_enabled():
@@ -517,19 +517,19 @@ def test_chat_options_explicit_session_id_wins_over_conversation_id():
     assert out["extra_body"]["session_id"] == "caller-chosen"
 
 
-def test_chat_options_omits_openrouter_session_id_for_other_providers():
+@pytest.mark.parametrize(
+    "model", ["gpt-4o", "claude-opus-4-5-20251101", "gemini/gemini-2.5-pro"]
+)
+def test_chat_options_omits_openrouter_session_id_for_other_providers(model: str):
     """Non-OpenRouter providers must not receive an OpenRouter-only field."""
-    for model in ("gpt-4o", "claude-opus-4-5-20251101", "gemini/gemini-2.5-pro"):
-        llm = DummyLLM(model=model)
-        out = select_chat_options(
-            llm,
-            user_kwargs={},
-            has_tools=True,
-            call_context=LLMCallContext(session_id="conv-abc123"),
-        )
-        assert "extra_body" not in out or "session_id" not in out.get(
-            "extra_body", {}
-        ), model
+    llm = DummyLLM(model=model)
+    out = select_chat_options(
+        llm,
+        user_kwargs={},
+        has_tools=True,
+        call_context=LLMCallContext(session_id="conv-abc123"),
+    )
+    assert "extra_body" not in out or "session_id" not in out.get("extra_body", {})
 
 
 def test_chat_options_omits_openrouter_session_id_when_no_session():

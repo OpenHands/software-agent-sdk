@@ -110,6 +110,14 @@ export interface ACPProviderInfo {
   readonly data_dir_env_var: string | null;
   /** Env vars this provider's own credentials must not coexist with. */
   readonly env_conflicts: readonly ACPEnvConflictSpec[];
+  /**
+   * Session config option that sets reasoning effort, or `null`. When set, an
+   * `acp_model` of the form `<model>/<effort>` is split into a model selection
+   * plus this option.
+   */
+  readonly effort_config_id: string | null;
+  /** Effort values accepted as a `/<effort>` model-id suffix. */
+  readonly effort_levels: readonly string[];
 }
 
 export const ACP_PROVIDERS: Readonly<Record<ACPProviderKey, ACPProviderInfo>> =
@@ -137,6 +145,7 @@ export const ACP_SETTINGS_KEYS: readonly string[] = [
   'acp_args',
   'acp_env',
   'acp_model',
+  'acp_effort',
   'acp_session_mode',
   'acp_prompt_timeout',
   'acp_server',

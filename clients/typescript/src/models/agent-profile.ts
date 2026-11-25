@@ -29,6 +29,12 @@ export interface ProfileVerificationSettings {
   critic_model_name: string | null;
 }
 
+/** Sandbox launch metadata read by the host that provisions sandboxes. */
+export interface ProfileSandboxSettings {
+  /** Id of a sandbox spec advertised by the host. */
+  spec_id: string;
+}
+
 /** A tool selected by name, with optional `create()` params. */
 export interface ProfileToolSpec {
   name: string;
@@ -62,6 +68,8 @@ interface AgentProfileBase {
    * `[]` = none; a non-null list = filter to the named integrations.
    */
   integration_refs?: string[] | null;
+  /** `null` or absent leaves image selection to the host's defaults. */
+  sandbox?: ProfileSandboxSettings | null;
 }
 
 /** `agent_kind="openhands"` variant — references an LLM profile by name. */
@@ -97,6 +105,8 @@ export interface ACPAgentProfile extends AgentProfileBase {
   /** ACP provider key, or `'custom'` for a user-supplied command. */
   acp_server: ACPServerKind;
   acp_model: string | null;
+  /** Reasoning effort; `null` or omitted lets the ACP server pick its default. */
+  acp_effort?: string | null;
   acp_session_mode: string | null;
   acp_prompt_timeout: number;
   /** Timeout (seconds) for ACP server startup. */

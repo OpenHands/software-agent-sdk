@@ -1,4 +1,27 @@
 {
+  "antigravity": {
+    "agent_name_patterns": [
+      "antigravity"
+    ],
+    "api_key_env_var": "GEMINI_API_KEY",
+    "base_url_env_var": null,
+    "binary_name": "agy",
+    "data_dir_env_var": "HOME",
+    "default_command": [
+      "agy",
+      "acp"
+    ],
+    "default_session_mode": "default",
+    "display_name": "Google Antigravity",
+    "effort_config_id": null,
+    "effort_levels": [],
+    "env_conflicts": [],
+    "file_secrets": [],
+    "key": "antigravity",
+    "session_meta_key": null,
+    "supports_runtime_model_switch": true,
+    "supports_set_session_model": true
+  },
   "claude-code": {
     "agent_name_patterns": [
       "claude-agent"
@@ -11,10 +34,18 @@
       "npx",
       "-y",
       "--prefer-offline",
-      "@agentclientprotocol/claude-agent-acp@0.63.0"
+      "@agentclientprotocol/claude-agent-acp@0.99.1"
     ],
     "default_session_mode": "bypassPermissions",
     "display_name": "Claude Code",
+    "effort_config_id": "effort",
+    "effort_levels": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
     "env_conflicts": [
       {
         "dominant": "CLAUDE_CODE_OAUTH_TOKEN",
@@ -46,6 +77,15 @@
     ],
     "default_session_mode": "agent-full-access",
     "display_name": "Codex",
+    "effort_config_id": "reasoning_effort",
+    "effort_levels": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultra"
+    ],
     "env_conflicts": [],
     "file_secrets": [
       {
@@ -79,6 +119,8 @@
     ],
     "default_session_mode": "default",
     "display_name": "Gemini CLI",
+    "effort_config_id": null,
+    "effort_levels": [],
     "env_conflicts": [],
     "file_secrets": [
       {
@@ -115,6 +157,8 @@
     ],
     "default_session_mode": "yolo",
     "display_name": "Kimi Code",
+    "effort_config_id": null,
+    "effort_levels": [],
     "env_conflicts": [],
     "file_secrets": [
       {
@@ -148,6 +192,8 @@
     ],
     "default_session_mode": "build",
     "display_name": "OpenCode",
+    "effort_config_id": null,
+    "effort_levels": [],
     "env_conflicts": [],
     "file_secrets": [],
     "key": "opencode",
@@ -173,6 +219,8 @@
     ],
     "default_session_mode": null,
     "display_name": "Pi",
+    "effort_config_id": null,
+    "effort_levels": [],
     "env_conflicts": [],
     "file_secrets": [
       {

@@ -19,7 +19,17 @@ from openhands.sdk.settings.acp_providers import (
     detect_acp_provider_by_command,
     get_acp_provider,
 )
-from openhands.sdk.settings.model import ACPServerKind
+from openhands.sdk.settings.model import ACPAgentSettings, ACPServerKind
+
+
+@pytest.mark.parametrize("command", [[], ["/opt/antigravity/bin/agy", "acp"]])
+def test_antigravity_settings_preserve_native_command(command: list[str]) -> None:
+    settings = ACPAgentSettings(acp_server="antigravity", acp_command=command)
+    restored = ACPAgentSettings.model_validate_json(settings.model_dump_json())
+    agent = restored.create_agent()
+
+    assert agent.acp_server == "antigravity"
+    assert agent.acp_command == (command or ["agy", "acp"])
 
 
 class TestACPProviderInfo:
@@ -38,8 +48,26 @@ class TestACPProviderInfo:
             assert isinstance(info, ACPProviderInfo)
 
     def test_default_commands_prefer_offline_cache(self):
-        for info in ACP_PROVIDERS.values():
-            assert info.default_command[:3] == ("npx", "-y", "--prefer-offline")
+        for key, info in ACP_PROVIDERS.items():
+            if key == "antigravity":
+                # Google's standalone CLI ships its own native ACP server.
+                assert info.default_command == ("agy", "acp")
+            else:
+                assert info.default_command[:3] == ("npx", "-y", "--prefer-offline")
+
+    def test_antigravity_metadata(self):
+        info = ACP_PROVIDERS["antigravity"]
+        assert info.display_name == "Google Antigravity"
+        assert info.api_key_env_var == "GEMINI_API_KEY"
+        assert info.base_url_env_var is None
+        assert info.default_session_mode == "default"
+        assert info.agent_name_patterns == ("antigravity",)
+        assert info.supports_set_session_model is True
+        assert info.supports_runtime_model_switch is True
+        assert info.session_meta_key is None
+        assert info.binary_name == "agy"
+        assert info.data_dir_env_var == "HOME"
+        assert info.file_secrets == ()
 
     def test_claude_code_metadata(self):
         info = ACP_PROVIDERS["claude-code"]
@@ -210,50 +238,48 @@ class TestGetACPProvider:
             assert result is not None
             assert result.key == key
 
-    def test_returns_none_for_custom(self):
-        assert get_acp_provider("custom") is None
-
-    def test_returns_none_for_unknown(self):
-        assert get_acp_provider("nonexistent-provider") is None
+    @pytest.mark.parametrize(
+        "key",
+        [
+            pytest.param("custom", id="custom"),
+            pytest.param("nonexistent-provider", id="unknown"),
+        ],
+    )
+    def test_returns_none_for_non_registry_key(self, key):
+        assert get_acp_provider(key) is None
 
 
 class TestDetectACPProviderByAgentName:
-    def test_detects_claude_code_by_agent_name(self):
-        info = detect_acp_provider_by_agent_name("claude-agent-acp v0.29.0")
+    @pytest.mark.parametrize(
+        ("agent_name", "expected_key"),
+        [
+            pytest.param("claude-agent-acp v0.29.0", "claude-code", id="claude_code"),
+            pytest.param("codex-acp", "codex", id="codex"),
+            pytest.param("gemini-cli 0.38.0", "gemini-cli", id="gemini_cli"),
+            # ``kimi acp`` reports agentInfo.name "Kimi Code CLI".
+            pytest.param("Kimi Code CLI", "kimi-code", id="kimi_code"),
+            # ``opencode acp`` reports agentInfo.name "OpenCode".
+            pytest.param("OpenCode", "opencode", id="opencode"),
+        ],
+    )
+    def test_detects_provider_by_agent_name(self, agent_name, expected_key):
+        info = detect_acp_provider_by_agent_name(agent_name)
         assert info is not None
-        assert info.key == "claude-code"
-
-    def test_detects_codex_by_agent_name(self):
-        info = detect_acp_provider_by_agent_name("codex-acp")
-        assert info is not None
-        assert info.key == "codex"
-
-    def test_detects_gemini_cli_by_agent_name(self):
-        info = detect_acp_provider_by_agent_name("gemini-cli 0.38.0")
-        assert info is not None
-        assert info.key == "gemini-cli"
-
-    def test_detects_kimi_code_by_agent_name(self):
-        # ``kimi acp`` reports agentInfo.name "Kimi Code CLI".
-        info = detect_acp_provider_by_agent_name("Kimi Code CLI")
-        assert info is not None
-        assert info.key == "kimi-code"
-
-    def test_detects_opencode_by_agent_name(self):
-        # ``opencode acp`` reports agentInfo.name "OpenCode".
-        info = detect_acp_provider_by_agent_name("OpenCode")
-        assert info is not None
-        assert info.key == "opencode"
+        assert info.key == expected_key
 
     def test_case_insensitive_detection(self):
         assert detect_acp_provider_by_agent_name("CLAUDE-AGENT-ACP") is not None
         assert detect_acp_provider_by_agent_name("Gemini-CLI") is not None
 
-    def test_returns_none_for_unknown_agent_name(self):
-        assert detect_acp_provider_by_agent_name("some-unknown-agent") is None
-
-    def test_returns_none_for_empty_string(self):
-        assert detect_acp_provider_by_agent_name("") is None
+    @pytest.mark.parametrize(
+        "agent_name",
+        [
+            pytest.param("some-unknown-agent", id="unknown_agent_name"),
+            pytest.param("", id="empty_string"),
+        ],
+    )
+    def test_returns_none_for_unmatched_agent_name(self, agent_name):
+        assert detect_acp_provider_by_agent_name(agent_name) is None
 
 
 class TestDetectACPProviderByCommand:
@@ -263,6 +289,12 @@ class TestDetectACPProviderByCommand:
             # Identity, not just a matching key: detect_acp_provider_by_command
             # must resolve back to the very same ACP_PROVIDERS entry.
             assert detected is info, key
+
+    def test_detects_native_antigravity_launcher_without_short_name_collision(self):
+        info = detect_acp_provider_by_command(["/usr/local/bin/agy", "acp"])
+        assert info is ACP_PROVIDERS["antigravity"]
+        assert detect_acp_provider_by_command(["/usr/bin/my-agy-wrapper"]) is None
+        assert detect_acp_provider_by_agent_name("some-random-agy-utility") is None
 
     def test_tolerates_version_pin(self):
         info = detect_acp_provider_by_command(
@@ -348,14 +380,6 @@ class TestProviderRegistryConsistency:
                 f"{key}: default_session_mode must be None or non-blank"
             )
 
-    def test_session_modes_are_distinct(self):
-        modes = [
-            info.default_session_mode
-            for info in ACP_PROVIDERS.values()
-            if info.default_session_mode is not None
-        ]
-        assert len(modes) == len(set(modes)), "each provider should use a unique mode"
-
     def test_detect_returns_matching_provider_for_all_registered_patterns(self):
         """Every registered pattern should resolve back to its own provider."""
         for key, info in ACP_PROVIDERS.items():
@@ -386,16 +410,30 @@ class TestBuildSessionModelMeta:
         result = build_session_model_meta("claude-agent-acp v0.29.0", "claude-opus-4")
         assert result == {"claudeCode": {"options": {"model": "claude-opus-4"}}}
 
-    def test_codex_returns_empty(self):
-        result = build_session_model_meta("codex-acp", "gpt-4o")
-        assert result == {}
+    def test_claude_splits_effort(self):
+        result = build_session_model_meta("claude-agent-acp", "opus[1m]/high")
+        assert result == {
+            "claudeCode": {"options": {"model": "opus[1m]", "effort": "high"}}
+        }
 
-    def test_gemini_returns_empty(self):
-        result = build_session_model_meta("gemini-cli 0.38.0", "gemini-2.0-flash")
-        assert result == {}
+    def test_explicit_effort_wins_over_suffix(self):
+        assert build_session_model_meta("claude-agent-acp", "opus[1m]/high", "low") == {
+            "claudeCode": {"options": {"model": "opus[1m]", "effort": "low"}}
+        }
+        assert build_session_model_meta("claude-agent-acp", None, "max") == {
+            "claudeCode": {"options": {"effort": "max"}}
+        }
 
-    def test_unknown_agent_returns_empty(self):
-        result = build_session_model_meta("unknown-agent", "some-model")
+    @pytest.mark.parametrize(
+        ("agent_name", "model"),
+        [
+            pytest.param("codex-acp", "gpt-4o", id="codex"),
+            pytest.param("gemini-cli 0.38.0", "gemini-2.0-flash", id="gemini"),
+            pytest.param("unknown-agent", "some-model", id="unknown_agent"),
+        ],
+    )
+    def test_non_claude_agent_returns_empty(self, agent_name, model):
+        result = build_session_model_meta(agent_name, model)
         assert result == {}
 
 

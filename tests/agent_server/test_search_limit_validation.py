@@ -14,6 +14,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from openhands.agent_server.api import add_domain_error_handler
 from openhands.agent_server.bash_router import bash_router
 from openhands.agent_server.conversation_router import conversation_router
 from openhands.agent_server.dependencies import get_event_service
@@ -32,6 +33,7 @@ SEARCH_ROUTES = [
 
 def _limit_schema(router, path: str) -> dict:
     app = FastAPI()
+    add_domain_error_handler(app)
     app.include_router(router, prefix="/api")
     parameters = app.openapi()["paths"][path]["get"]["parameters"]
     limit = next(p for p in parameters if p["name"] == "limit")
@@ -55,6 +57,7 @@ def test_search_limit_bounds_are_published_in_the_schema(router, path):
 def test_search_events_rejects_out_of_range_limit(limit):
     """An out-of-range ``limit`` is a client error, not a server fault."""
     app = FastAPI()
+    add_domain_error_handler(app)
     app.include_router(event_router, prefix="/api")
     service = AsyncMock(spec=EventService)
     service.search_events = AsyncMock(return_value={"items": [], "next_page_id": None})
@@ -71,6 +74,7 @@ def test_search_events_rejects_out_of_range_limit(limit):
 
 def test_search_events_accepts_the_maximum_limit():
     app = FastAPI()
+    add_domain_error_handler(app)
     app.include_router(event_router, prefix="/api")
     service = AsyncMock(spec=EventService)
     service.search_events = AsyncMock(return_value={"items": [], "next_page_id": None})

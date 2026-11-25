@@ -375,8 +375,11 @@ def test_llm_kimi_k3_auto_inlines_http_url(model: str):
     with _stub_get(url):
         formatted = llm.format_messages_for_llm([message])
 
+    # ``openhands/*`` models may gain a prepended proxy-identity system
+    # message; locate the user message explicitly.
+    user_block = next(item for item in formatted if item["role"] == "user")
     image_blocks = [
-        item for item in formatted[0]["content"] if item.get("type") == "image_url"
+        item for item in user_block["content"] if item.get("type") == "image_url"
     ]
     expected = "data:image/png;base64," + base64.b64encode(_TINY_PNG).decode("ascii")
     assert image_blocks[0]["image_url"]["url"] == expected

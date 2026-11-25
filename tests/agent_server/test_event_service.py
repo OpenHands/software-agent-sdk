@@ -7,6 +7,7 @@ import shutil
 import threading
 import time
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,14 +19,21 @@ import pytest
 import pytest_asyncio
 from pydantic import SecretStr
 
+from openhands.agent_server import (
+    event_router,
+    event_service as event_service_module,
+    server_details_router as sdr,
+)
 from openhands.agent_server.conversation_lease import LEASE_FILE_NAME
 from openhands.agent_server.conversation_service import ConversationService
+from openhands.agent_server.errors import status_for
+from openhands.agent_server.event_router import run_gateway_message
 from openhands.agent_server.event_service import (
-    CondensationUnavailable,
     EventService,
     RunSlot,
     _log_emit_failure,
 )
+from openhands.agent_server.exceptions import CondensationUnavailable, ServiceInactive
 from openhands.agent_server.file_router import _create_zip_from_directory
 from openhands.agent_server.models import (
     ConfirmationResponseRequest,
@@ -36,6 +44,7 @@ from openhands.agent_server.models import (
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.sdk import LLM, Agent, AgentBase, Conversation, Message
 from openhands.sdk.agent import ACPAgent
+from openhands.sdk.context import AgentContext
 from openhands.sdk.context.condenser import NoOpCondenser
 from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.conversation.exceptions import ConversationRunError
@@ -45,11 +54,13 @@ from openhands.sdk.conversation.impl.local_conversation import (
     ACP_SUPERSEDE_INFLIGHT_PROMPT,
     LocalConversation,
 )
+from openhands.sdk.conversation.message_request import SendMessageRequest
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
 from openhands.sdk.credential import CredentialSyncError
+from openhands.sdk.errors import DomainError
 from openhands.sdk.event import AgentErrorEvent, Event
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
@@ -61,9 +72,11 @@ from openhands.sdk.event.llm_convertible import (
 from openhands.sdk.io.local import LocalFileStore
 from openhands.sdk.io.memory import InMemoryFileStore
 from openhands.sdk.llm import MessageToolCall, TextContent
+from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.mcp.config import coerce_mcp_config
 from openhands.sdk.secret import StaticSecret
 from openhands.sdk.security.confirmation_policy import NeverConfirm
+from openhands.sdk.skills import Skill
 from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
 from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
@@ -81,6 +94,17 @@ from tests.agent_server.stress.scripts import (
 # EventService separately.
 def _sample_agent() -> Agent:
     return Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[])
+
+
+def _status_tracking_mock() -> MagicMock:
+    """A mocked ConversationState whose transition() sets execution_status."""
+    state = MagicMock()
+
+    def transition(to: ConversationExecutionStatus, reason: str) -> None:
+        state.execution_status = to
+
+    state.transition.side_effect = transition
+    return state
 
 
 @pytest.fixture
@@ -111,6 +135,26 @@ def event_service(sample_stored_conversation, sample_agent):
         conversations_dir=Path("test_conversation_dir"),
     )
     return service
+
+
+@pytest.mark.asyncio
+async def test_gateway_does_not_save_while_a_previous_run_remains_active(
+    event_service, monkeypatch
+):
+    monkeypatch.setattr(event_router, "_GATEWAY_RUN_TIMEOUT_SECONDS", 0.02)
+    previous_run = asyncio.create_task(asyncio.Event().wait())
+    event_service._run_task = previous_run
+    event_service.send_message = AsyncMock()
+    try:
+        with pytest.raises(DomainError) as error:
+            await run_gateway_message(SendMessageRequest(), event_service)
+    finally:
+        previous_run.cancel()
+        with suppress(asyncio.CancelledError):
+            await previous_run
+
+    assert status_for(error.value) == 504
+    event_service.send_message.assert_not_awaited()
 
 
 @pytest.fixture
@@ -221,7 +265,7 @@ class TestEventServiceSearchEvents:
         """Test that search_events raises ValueError when conversation is not active."""
         event_service._conversation = None
 
-        with pytest.raises(ValueError, match="inactive_service"):
+        with pytest.raises(ServiceInactive):
             await event_service.search_events()
 
     @pytest.mark.asyncio
@@ -704,7 +748,7 @@ class TestEventServiceCountEvents:
         """Test that count_events raises ValueError when service is inactive."""
         event_service._conversation = None
 
-        with pytest.raises(ValueError, match="inactive_service"):
+        with pytest.raises(ServiceInactive):
             await event_service.count_events()
 
     @pytest.mark.asyncio
@@ -771,16 +815,31 @@ class TestEventServiceCountEvents:
         assert await event_service.count_events(source="user") == 2
 
     @pytest.mark.asyncio
-    async def test_count_events_timestamp_gte_filter(
-        self, event_service, mock_conversation_with_timestamped_events
+    @pytest.mark.parametrize(
+        ("filter_time", "expected"),
+        [
+            pytest.param(datetime(2025, 1, 1, 12, 0, 0), 3, id="gte_filter"),
+            # Event timestamps are naive (server local time); the REST/WebSocket
+            # layer normalizes timezone-aware datetimes to naive via
+            # normalize_datetime_to_server_timezone() before filtering.
+            pytest.param(
+                datetime(2025, 1, 1, 12, 0, 0), 3, id="filter_with_timezone_aware"
+            ),
+            pytest.param(datetime(2025, 1, 1, 15, 0, 0), 0, id="filter_no_matches"),
+            pytest.param(datetime(2025, 1, 1, 9, 0, 0), 5, id="filter_all_events"),
+        ],
+    )
+    async def test_count_events_timestamp_gte(
+        self,
+        event_service,
+        mock_conversation_with_timestamped_events,
+        filter_time,
+        expected,
     ):
-        """Test counting events with timestamp__gte filter."""
         event_service._conversation = mock_conversation_with_timestamped_events
 
-        # Count events >= 12:00:00 (should return 3)
-        filter_time = datetime(2025, 1, 1, 12, 0, 0)
         result = await event_service.count_events(timestamp__gte=filter_time)
-        assert result == 3
+        assert result == expected
 
     @pytest.mark.asyncio
     async def test_count_events_timestamp_lt_filter(
@@ -809,47 +868,6 @@ class TestEventServiceCountEvents:
         )
         assert result == 2
 
-    @pytest.mark.asyncio
-    async def test_count_events_timestamp_filter_with_timezone_aware(
-        self, event_service, mock_conversation_with_timestamped_events
-    ):
-        """Test counting events with timezone-aware datetime requires normalization.
-
-        Event timestamps are naive (server local time), so callers must normalize
-        timezone-aware datetimes to naive before filtering. This is done by the
-        REST/WebSocket API layer via normalize_datetime_to_server_timezone().
-        """
-        event_service._conversation = mock_conversation_with_timestamped_events
-
-        # Count events >= 12:00:00 (naive, as if normalized by API layer)
-        filter_time = datetime(2025, 1, 1, 12, 0, 0)  # naive datetime
-        result = await event_service.count_events(timestamp__gte=filter_time)
-        assert result == 3
-
-    @pytest.mark.asyncio
-    async def test_count_events_timestamp_filter_no_matches(
-        self, event_service, mock_conversation_with_timestamped_events
-    ):
-        """Test counting events with timestamps that don't match any events."""
-        event_service._conversation = mock_conversation_with_timestamped_events
-
-        # Count events >= 15:00:00 (should return 0)
-        filter_time = datetime(2025, 1, 1, 15, 0, 0)
-        result = await event_service.count_events(timestamp__gte=filter_time)
-        assert result == 0
-
-    @pytest.mark.asyncio
-    async def test_count_events_timestamp_filter_all_events(
-        self, event_service, mock_conversation_with_timestamped_events
-    ):
-        """Test counting events with timestamps that include all events."""
-        event_service._conversation = mock_conversation_with_timestamped_events
-
-        # Count events >= 09:00:00 (should return 5)
-        filter_time = datetime(2025, 1, 1, 9, 0, 0)
-        result = await event_service.count_events(timestamp__gte=filter_time)
-        assert result == 5
-
 
 class TestEventServiceSendMessage:
     """Test cases for EventService.send_message method."""
@@ -864,7 +882,7 @@ class TestEventServiceSendMessage:
         event_service._conversation = None
         message = Message(role="user", content=[])
 
-        with pytest.raises(ValueError, match="inactive_service"):
+        with pytest.raises(ServiceInactive):
             await event_service.send_message(message)
 
     @pytest.mark.asyncio
@@ -929,6 +947,28 @@ class TestEventServiceSendMessage:
             )
             # Verify run was NOT called since run=False
             assert mock_loop.run_in_executor.call_count == 1  # Only send_message call
+
+    @pytest.mark.asyncio
+    async def test_send_message_records_sender(self, event_service):
+        """A sender is passed on to the conversation, which saves it."""
+        conversation = MagicMock()
+        conversation.send_message = MagicMock()
+        event_service._conversation = conversation
+        message = Message(role="user", content=[])
+
+        with patch("asyncio.get_running_loop") as mock_get_loop:
+            mock_loop = MagicMock()
+            mock_get_loop.return_value = mock_loop
+            mock_loop.run_in_executor.side_effect = lambda *args: self._mock_executor()
+
+            await event_service.send_message(
+                message, run=False, sender="conversation:abc"
+            )
+
+        (_, send, sent), _ = mock_loop.run_in_executor.call_args
+        assert sent is message
+        assert send.func is conversation.send_message
+        assert send.keywords == {"sender": "conversation:abc"}
 
     @pytest.mark.asyncio
     async def test_send_message_with_run_true_agent_already_running(
@@ -1546,7 +1586,7 @@ class TestEventServiceSendMessage:
         surfaces the failure instead of a stale IDLE/RUNNING status (issue
         #1024)."""
         conversation = MagicMock()
-        state = MagicMock()
+        state = _status_tracking_mock()
         # Status never advanced past IDLE because the failure happened in
         # _ensure_agent_ready() before the run loop set RUNNING.
         state.execution_status = ConversationExecutionStatus.IDLE
@@ -1596,7 +1636,7 @@ class TestEventServiceSendMessage:
         """A failure that escapes run()/arun()'s own emission must be surfaced
         by the backstop as a ConversationErrorEvent (issue #16686)."""
         conversation = MagicMock()
-        state = MagicMock()
+        state = _status_tracking_mock()
         state.execution_status = ConversationExecutionStatus.IDLE
         state.__enter__ = MagicMock(return_value=state)
         state.__exit__ = MagicMock(return_value=None)
@@ -1721,7 +1761,7 @@ class TestEventServiceSendMessage:
         """Runtime plugin loads require an active conversation."""
         event_service._conversation = None
 
-        with pytest.raises(ValueError, match="inactive_service"):
+        with pytest.raises(ServiceInactive):
             await event_service.load_plugin("plugin@team")
 
 
@@ -1762,7 +1802,7 @@ class TestEventServiceRespondToConfirmation:
         """Rejecting pending actions should fail when service is inactive."""
         event_service._conversation = None
 
-        with pytest.raises(ValueError, match="inactive_service"):
+        with pytest.raises(ServiceInactive):
             await event_service.reject_pending_actions("any reason")
 
     @pytest.mark.asyncio
@@ -2022,7 +2062,7 @@ class TestEventServiceRun:
         """Test that run raises ValueError when conversation is not active."""
         event_service._conversation = None
 
-        with pytest.raises(ValueError, match="inactive_service"):
+        with pytest.raises(ServiceInactive):
             await event_service.run()
 
     @pytest.mark.asyncio
@@ -2160,6 +2200,127 @@ class TestEventServiceRun:
 
         # State update should still be published (in finally block)
         event_service._publish_state_update.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_run_heartbeat_survives_cancellation_of_legacy_thread_pool_worker(
+        self, event_service, monkeypatch
+    ):
+        """EventService.run()'s legacy (non-native-async) thread-pool path
+        (#5384 / #7105 follow-up, PR review comment
+        https://github.com/OpenHands/software-agent-sdk/pull/7105#pullrequestreview-6042227819):
+
+        A ``has_native_arun=False`` conversation runs its blocking ``run()``
+        in a real ``ThreadPoolExecutor`` thread, awaited via
+        ``asyncio.shield``. Cancelling the ``_run_task`` (the asyncio waiter)
+        raises ``CancelledError`` inside ``_run_and_publish()`` while that
+        real thread keeps executing -- ``asyncio.shield`` only protects the
+        inner future from the cancellation, not the other way around.
+
+        This reproduces, at the ``EventService.run()`` level (this file's
+        existing sync-only ``event_service``/``sample_agent`` fixtures, no
+        real LLM or ConversationService), the two specific gaps a leaked or
+        premature heartbeat stop would reintroduce:
+          1. the heartbeat must keep pulsing *through* that cancellation,
+             because the real worker thread is still doing real work; and
+          2. once the worker genuinely finishes, the heartbeat must actually
+             stop so idle_time resumes climbing (no leaked background task).
+        """
+        monkeypatch.setattr(event_service_module, "ACTIVITY_SIGNAL_INTERVAL", 0.05)
+        last_event_time_before_test = sdr._last_event_time
+
+        entered = threading.Event()
+        gate = threading.Event()
+
+        def blocking_run() -> None:
+            entered.set()
+            gate.wait(timeout=10.0)
+
+        conversation = MagicMock(spec=Conversation)
+        state = MagicMock(spec=ConversationState)
+        state.execution_status = ConversationExecutionStatus.IDLE
+        state.__enter__ = MagicMock(return_value=state)
+        state.__exit__ = MagicMock(return_value=None)
+        conversation._state = state
+        conversation.run = blocking_run
+
+        event_service._conversation = conversation
+        event_service._publish_state_update = AsyncMock()
+
+        try:
+            await event_service.run()
+            run_task = event_service._run_task
+            assert run_task is not None
+
+            started = await asyncio.to_thread(entered.wait, 5.0)
+            assert started, "thread-pool worker never started"
+
+            # Cancel the asyncio waiter while the real worker thread is still
+            # blocked on the gate -- this is the scenario the thread-pool
+            # done-callback (not the coroutine's own cancellation) must cover.
+            run_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await run_task
+
+            # The worker is still genuinely running: confirm the heartbeat
+            # kept refreshing idle_time past the 1-second truncation boundary
+            # instead of stopping the moment the asyncio side gave up. One
+            # reset here, then a single sleep past that boundary: if nothing
+            # pulses in between, idle_time reads >= 1; if the heartbeat is
+            # still pulsing every 0.05s, it never leaves 0. (A second manual
+            # reset mid-window would mask a heartbeat that already stopped,
+            # since idle_time truncates to whole seconds.)
+            sdr.update_last_execution_time()
+            await asyncio.sleep(1.5)
+            still_pulsing_idle_time = sdr.build_server_info().idle_time
+            assert still_pulsing_idle_time == 0, (
+                f"idle_time={still_pulsing_idle_time}s grew after the run's "
+                f"asyncio waiter was cancelled while its real thread-pool "
+                f"worker was still executing -- the heartbeat stopped too "
+                f"early instead of pulsing until the worker actually finished."
+            )
+
+            # Release the real worker thread and wait on the heartbeat task
+            # itself (bounded) rather than a fixed scheduling sleep, so the
+            # done-callback chain it depends on has actually run. Plain
+            # asyncio.wait(), not wait_for(): wait_for() cancels the task on
+            # timeout, which would quietly "fix" a leaked heartbeat here
+            # instead of letting the assertion below catch it.
+            gate.set()
+            heartbeat_task = event_service._run_heartbeat_task
+            if heartbeat_task is not None:
+                await asyncio.wait({heartbeat_task}, timeout=2.0)
+
+            # With nothing left running, idle_time must resume climbing: a
+            # leaked heartbeat task would keep idle_time pinned below the
+            # budget here, which is exactly what would make this fail.
+            sdr.update_last_execution_time()
+            await asyncio.sleep(1.2)
+            recovered_idle_time = sdr.build_server_info().idle_time
+            assert recovered_idle_time >= 1, (
+                f"idle_time={recovered_idle_time}s stayed at 0 a full second "
+                f"after the thread-pool worker genuinely finished -- the "
+                f"run-level heartbeat task leaked past completion instead of "
+                f"stopping."
+            )
+        finally:
+            # Always unblock the real worker thread and settle/cancel a
+            # still-pending run or heartbeat task, even on an early
+            # assertion failure above -- without letting cleanup itself
+            # raise and mask that original failure.
+            gate.set()
+            run_task = event_service._run_task
+            if run_task is not None and not run_task.done():
+                run_task.cancel()
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                if run_task is not None:
+                    await asyncio.wait_for(run_task, timeout=2.0)
+            heartbeat_task = event_service._run_heartbeat_task
+            if heartbeat_task is not None and not heartbeat_task.done():
+                heartbeat_task.cancel()
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                if heartbeat_task is not None:
+                    await asyncio.wait_for(heartbeat_task, timeout=2.0)
+            sdr._last_event_time = last_event_time_before_test
 
 
 class _PausingWriter:
@@ -2392,13 +2553,14 @@ class TestEventServiceSaveMeta:
         assert "agent" not in json.loads(meta_file.read_text())
 
     @pytest.mark.asyncio
-    async def test_switch_acp_model_inactive_service_raises_value_error(self, tmp_path):
-        """An inactive service (no live conversation) raises the shared
-        ``inactive_service`` ValueError — consistent with the other
-        event-service methods — which the router maps to 400. It is no longer a
-        RuntimeError: the SDK now defers (rather than rejects) a switch before
-        the first run(), so the only failure mode here is a closed/never-started
-        service.
+    async def test_switch_acp_model_inactive_service_raises_service_inactive(
+        self, tmp_path
+    ):
+        """An inactive service (no live conversation) raises ServiceInactive,
+        like the other event-service methods, which the router maps to 400.
+        It is no longer a RuntimeError: the SDK now defers (rather than
+        rejects) a switch before the first run(), so the only failure mode
+        here is a closed/never-started service.
         """
 
         stored = StoredConversation(
@@ -2412,7 +2574,7 @@ class TestEventServiceSaveMeta:
         # _conversation defaults to None (service not started).
         assert service._conversation is None
 
-        with pytest.raises(ValueError, match="inactive_service"):
+        with pytest.raises(ServiceInactive):
             await service.switch_acp_model("new-model")
 
 
@@ -2447,7 +2609,7 @@ class TestEventServiceStartWithRunningStatus:
             "openhands.agent_server.event_service.LocalConversation"
         ) as MockConversation:
             mock_conv = MagicMock()
-            mock_state = MagicMock()
+            mock_state = _status_tracking_mock()
             mock_agent = MagicMock()
 
             # Create an unmatched action event (action without observation)
@@ -2525,7 +2687,7 @@ class TestEventServiceStartWithRunningStatus:
             "openhands.agent_server.event_service.LocalConversation"
         ) as MockConversation:
             mock_conv = MagicMock()
-            mock_state = MagicMock()
+            mock_state = _status_tracking_mock()
             mock_agent = MagicMock()
 
             # Set up mock state with RUNNING status but no events (no unmatched actions)
@@ -2626,7 +2788,7 @@ class TestEventServiceStartWithRunningStatus:
             "openhands.agent_server.event_service.LocalConversation"
         ) as MockConversation:
             mock_conv = MagicMock()
-            mock_state = MagicMock()
+            mock_state = _status_tracking_mock()
             mock_agent = MagicMock()
 
             unmatched_action = ActionEvent(
@@ -2796,6 +2958,111 @@ class TestEventServiceConcurrentSubscriptions:
 
         conversation._state = state
         return conversation
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "wait_on_state_lock",
+        [
+            pytest.param(
+                lambda service: service._get_execution_status(), id="execution-status"
+            ),
+            pytest.param(
+                lambda service: service.subscribe_to_events(AsyncMock()),
+                id="websocket-subscribe",
+            ),
+        ],
+    )
+    async def test_state_lock_waiters_leave_default_executor_free(
+        self, event_service, mock_conversation_with_real_lock, wait_on_state_lock
+    ):
+        """A run holds the state lock across whole tool steps. Requests waiting
+        on it must not park default-executor threads: lock-free work (event
+        reads of every conversation, tool calls) needs that pool."""
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(ThreadPoolExecutor(max_workers=1))
+        event_service._conversation = mock_conversation_with_real_lock
+        event_service._state_executor = ThreadPoolExecutor(max_workers=2)
+        lock = mock_conversation_with_real_lock._state._lock
+        held, release = threading.Event(), threading.Event()
+
+        def hold_lock():
+            with lock:
+                held.set()
+                release.wait()
+
+        holder = threading.Thread(target=hold_lock)
+        holder.start()
+        held.wait()
+        waiter = asyncio.create_task(wait_on_state_lock(event_service))
+        try:
+            await asyncio.sleep(0.05)
+            free = await asyncio.wait_for(
+                loop.run_in_executor(None, lambda: "free"), timeout=2
+            )
+            assert free == "free"
+        finally:
+            release.set()
+            holder.join()
+        await asyncio.wait_for(waiter, timeout=2)
+        event_service._state_executor.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_initial_state_leaves_out_skill_bodies(
+        self, event_service, mock_conversation_with_real_lock
+    ):
+        state = mock_conversation_with_real_lock._state
+        state.model_dump.return_value = {
+            "execution_status": "idle",
+            "agent": {
+                "llm": {"model": "gpt-4o-mini"},
+                "agent_context": {
+                    "skills": [{"name": "big", "content": "x" * 100_000}],
+                    "system_message_suffix": "kept",
+                },
+            },
+        }
+        event_service._conversation = mock_conversation_with_real_lock
+        received: list[Event] = []
+
+        class Recorder(Subscriber[Event]):
+            async def __call__(self, event: Event):
+                received.append(event)
+
+        await event_service.subscribe_to_events(Recorder())
+
+        snapshot = cast(ConversationStateUpdateEvent, received[0])
+        assert snapshot.key == "full_state"
+        assert snapshot.value["agent"]["agent_context"] == {
+            "skills": [],
+            "system_message_suffix": "kept",
+        }
+        assert snapshot.value["agent"]["llm"] == {"model": "gpt-4o-mini"}
+        assert snapshot.value["execution_status"] == "idle"
+
+    @pytest.mark.asyncio
+    async def test_agent_update_leaves_out_skill_bodies(self, event_service):
+        agent = _sample_agent().model_copy(
+            update={
+                "agent_context": AgentContext(
+                    skills=[Skill(name="big", content="x" * 100_000)],
+                    system_message_suffix="kept",
+                )
+            }
+        )
+        received: list[Event] = []
+
+        class Recorder(Subscriber[Event]):
+            async def __call__(self, event: Event):
+                received.append(event)
+
+        event_service._pub_sub.subscribe(Recorder())
+        update = ConversationStateUpdateEvent(key="agent", value=agent)
+        await event_service._publish_to_subscribers(update)
+
+        sent = cast(ConversationStateUpdateEvent, received[0])
+        assert sent.value["agent_context"]["skills"] == []
+        assert sent.value["agent_context"]["system_message_suffix"] == "kept"
+        assert len(update.value.agent_context.skills) == 1
 
     @pytest.mark.asyncio
     async def test_concurrent_subscriptions_no_deadlock(
@@ -3587,15 +3854,8 @@ class TestStatsCallbackNoDeadlock:
         service._emit_event_from_thread = MagicMock(name="_emit_event_from_thread")
 
         callbacks: list = []
-        service._setup_stats_streaming(
-            MagicMock(
-                get_all_llms=lambda: [
-                    MagicMock(
-                        telemetry=MagicMock(set_stats_update_callback=callbacks.append)
-                    )
-                ]
-            )
-        )
+        conversation.llm_registry.set_stats_update_callback = callbacks.append
+        service._setup_stats_streaming(conversation)
         assert len(callbacks) == 1, "stats_callback must be registered exactly once"
         return service, state, callbacks[0]
 
@@ -3910,8 +4170,8 @@ def test_llm_log_callback_swallows_emit_failures(
     event_service: EventService, caplog
 ) -> None:
     callbacks = []
-    llm = MagicMock(log_completions=True, usage_id="test-usage", model="gpt-4o")
-    llm.telemetry.set_log_completions_callback.side_effect = callbacks.append
+    conversation = MagicMock()
+    conversation.llm_registry.set_log_completions_callback = callbacks.append
 
     object.__setattr__(
         event_service,
@@ -3920,12 +4180,38 @@ def test_llm_log_callback_swallows_emit_failures(
     )
 
     with caplog.at_level("ERROR"):
-        event_service._setup_llm_log_streaming(MagicMock(get_all_llms=lambda: [llm]))
-        callbacks[0]("completion.json", "{}")
+        event_service._setup_llm_log_streaming(conversation)
+        callbacks[0]("completion.json", "{}", "test-usage", "gpt-4o")
 
     emit_mock = cast(MagicMock, event_service._emit_event_from_thread)
     emit_mock.assert_called_once()
     assert "Failed to emit LLM completion log event" in caplog.text
+
+
+@pytest.mark.parametrize("option", ["log_completions", "log_completions_to_file"])
+@pytest.mark.parametrize("enabled", [False, True])
+def test_llm_log_streaming_accepts_both_logging_names(event_service, option, enabled):
+    """Both the canonical and deprecated field names wire the same session.
+
+    ``_setup_llm_log_streaming`` registers its callback on the registry
+    unconditionally (every session of the conversation, including those a
+    later ``switch_llm`` opens); whether a completion is actually logged is
+    gated by ``Telemetry.completion_logging_enabled`` at log time, not by
+    registration. So the alias must set that flag the same way regardless of
+    which field name was used to construct the ``LLM``.
+    """
+    llm = LLM.model_validate(
+        {"model": "openai/gpt-4o-mini", "usage_id": "test-usage", option: enabled}
+    )
+    registry = LLMRegistry()
+    registry.add(llm)
+    conversation = MagicMock(llm_registry=registry)
+    with patch.object(
+        type(llm.session.telemetry), "set_log_completions_callback"
+    ) as register:
+        event_service._setup_llm_log_streaming(conversation)
+    register.assert_called_once()
+    assert llm.session.telemetry.completion_logging_enabled is enabled
 
 
 def _make_stored(tmp_path: Path) -> StoredConversation:
@@ -3988,6 +4274,115 @@ async def test_event_service_creates_lease_with_custom_ttl(tmp_path: Path) -> No
     assert service._lease is not None
     assert service._lease._ttl_seconds == 10.0
     assert (tmp_path / stored.id.hex / LEASE_FILE_NAME).exists()
+
+
+@pytest.mark.asyncio
+async def test_event_service_checks_the_workspace_repo_off_the_event_loop(
+    tmp_path: Path,
+) -> None:
+    stored = _make_stored(tmp_path)
+    service = EventService(
+        stored=stored, agent=_sample_agent(), conversations_dir=tmp_path
+    )
+    loop_thread = threading.get_ident()
+    threads: list[int] = []
+    real_check = EventService._prepare_workspace_dir
+
+    def recording_check(working_dir: Path) -> None:
+        threads.append(threading.get_ident())
+        real_check(working_dir)
+
+    with (
+        patch(
+            "openhands.agent_server.event_service.LocalConversation",
+            return_value=_make_mock_conv(),
+        ),
+        patch.object(
+            EventService,
+            "_prepare_workspace_dir",
+            staticmethod(recording_check),
+        ),
+    ):
+        await service.start()
+
+    assert len(threads) == 1
+    assert threads[0] != loop_thread
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "wait_on_state_lock",
+    [
+        pytest.param(
+            lambda service: service.subscribe_to_events(AsyncMock()),
+            id="websocket-subscribe",
+        ),
+        pytest.param(
+            lambda service: service.send_message(
+                Message(role="user", content=[TextContent(text="hi")])
+            ),
+            id="send-message",
+        ),
+        pytest.param(lambda service: service.pause(), id="pause"),
+    ],
+)
+async def test_state_lock_waiters_leave_the_default_executor_free(
+    tmp_path: Path, wait_on_state_lock
+) -> None:
+    """A run holds the state lock for a whole tool step. Requests waiting on it
+    must not take default-executor threads: lock-free work, such as the event
+    reads of every conversation, needs that pool (#6553)."""
+    loop = asyncio.get_running_loop()
+    loop.set_default_executor(ThreadPoolExecutor(max_workers=1))
+    service = EventService(
+        stored=_make_stored(tmp_path), agent=_sample_agent(), conversations_dir=tmp_path
+    )
+    await service.start()
+    state = service.get_conversation()._state
+    held, release = threading.Event(), threading.Event()
+
+    def hold_state_lock() -> None:  # stands in for a run inside a tool step
+        with state:
+            held.set()
+            release.wait()
+
+    holder = threading.Thread(target=hold_state_lock)
+    holder.start()
+    held.wait()
+    waiter = asyncio.create_task(wait_on_state_lock(service))
+    try:
+        await asyncio.sleep(0.1)  # let the request reach the lock
+        probe = loop.run_in_executor(None, lambda: "free")
+        assert await asyncio.wait_for(probe, timeout=2) == "free"
+    finally:
+        release.set()
+        holder.join()
+        await asyncio.wait_for(waiter, timeout=5)
+        await service.close()
+
+
+def test_concurrent_repo_checks_on_a_new_directory_all_succeed(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    directories = [tmp_path / f"workspace-{i}" for i in range(10)]
+    for directory in directories:
+        directory.mkdir()
+
+    def check_all(barrier: threading.Barrier) -> None:
+        barrier.wait()
+        for directory in directories:
+            EventService._prepare_workspace_dir(directory)
+
+    barrier = threading.Barrier(8)
+    workers = [threading.Thread(target=check_all, args=(barrier,)) for _ in range(8)]
+    with caplog.at_level(logging.WARNING):
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join()
+
+    assert "Failed to initialize git repository" not in caplog.text
+    assert all((directory / ".git").is_dir() for directory in directories)
 
 
 @pytest.mark.asyncio

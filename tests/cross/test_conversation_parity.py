@@ -205,6 +205,12 @@ def _interrupt_during_tool(conversation: BaseConversation) -> dict[str, Any]:
     try:
         assert TOOL_ENTERED.wait(timeout=10), "the tool never started"
         conversation.interrupt()
+        # Let the cancellation land before unblocking the tool. Otherwise the
+        # tool can return its observation first and the run continues into the
+        # next LLM call, which consumes a scripted reply instead of taking the
+        # interrupt path -- and local and remote schedule the cancel
+        # differently, so the two sides diverge.
+        runner.join(timeout=10)
     finally:
         TOOL_RELEASED.set()
         runner.join(timeout=10)

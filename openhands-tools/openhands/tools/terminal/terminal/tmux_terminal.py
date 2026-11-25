@@ -9,13 +9,16 @@ import uuid
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager, suppress
 from pathlib import Path
+from typing import Final
 
 import libtmux
 from filelock import FileLock
+from libtmux.exc import LibTmuxException
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.redact import redact_api_key_literals
 from openhands.tools.terminal.constants import (
+    CMD_OUTPUT_PS1_END,
     HISTORY_LIMIT,
     TMUX_SESSION_HEIGHT,
     TMUX_SESSION_WIDTH,
@@ -116,6 +119,38 @@ def mark_socket_owner(server: libtmux.Server) -> None:
         )
 
 
+# tmux rejects a client message above ~16 KiB ("command too long").
+_TMUX_BATCH_BYTES = 8000
+
+
+def run_tmux_commands(server: libtmux.Server, commands: list[list[str]]) -> None:
+    """Run tmux commands in as few tmux processes as the size limit allows.
+
+    tmux reads an argument ending in ``;`` as a command separator, so a command
+    with such an argument runs on its own, exactly as a single call would.
+    """
+    batch: list[str] = []
+
+    def run(args: list[str]) -> None:
+        if args:
+            result = server.cmd(*args)
+            if result.stderr:
+                raise ValueError(f"tmux {args[0]} stderr: {result.stderr}")
+
+    for command in commands:
+        if any(arg.endswith(";") for arg in command):
+            run(batch[:-1])
+            batch = []
+            run(command)
+            continue
+        size = sum(len(os.fsencode(a)) + 1 for a in batch + command)
+        if batch and size > _TMUX_BATCH_BYTES:
+            run(batch[:-1])
+            batch = []
+        batch += [*command, ";"]
+    run(batch[:-1])
+
+
 def _new_owned_session(
     env: Mapping[str, str],
     *,
@@ -161,8 +196,13 @@ def _new_owned_session(
         mark_socket_owner(server)
     # A tmux server starts with this process's environment rather than *env*,
     # and new windows inherit it, so unset what sanitization removed.
-    for key in os.environ.keys() - env.keys():
-        server.unset_environment(key)
+    run_tmux_commands(
+        server,
+        [
+            ["set-environment", "-g", "-u", key]
+            for key in os.environ.keys() - env.keys()
+        ],
+    )
     return server, session
 
 
@@ -184,6 +224,10 @@ _TMUX_SPECIALS: dict[str, str] = {
     "C-D": "C-d",
     "C-C": "C-c",
 }
+_SHELL_PROMPT_TIMEOUT_SECONDS = 10
+# How long clear_screen waits for the prompt to be redrawn (a slow
+# PROMPT_COMMAND delays it) before handing the pane to the next command.
+_CLEAR_PROMPT_TIMEOUT_SECONDS: Final[float] = 5
 
 
 class TmuxTerminal(TerminalInterface):
@@ -239,8 +283,13 @@ class TmuxTerminal(TerminalInterface):
             x=TMUX_SESSION_WIDTH,
             y=TMUX_SESSION_HEIGHT,
         )
-        for k, v in env.items():
-            self.session.set_environment(k, v)
+        run_tmux_commands(
+            self.server,
+            [
+                ["set-environment", "-t", str(self.session.session_id), k, v]
+                for k, v in env.items()
+            ],
+        )
 
         # Set history limit to a large number to avoid losing history
         # https://unix.stackexchange.com/questions/43414/unlimited-history-in-tmux
@@ -260,16 +309,45 @@ class TmuxTerminal(TerminalInterface):
         logger.debug(f"pane: {self.pane}; history_limit: {self.session.history_limit}")
         _initial_window.kill()
 
-        # Configure bash to use simple PS1 and disable PS2
-        # Disable history expansion to avoid ! mangling
-        self.pane.send_keys(
-            f'set +H; export PROMPT_COMMAND=\'export PS1="{self.PS1}"\'; export PS2=""'
-        )
-        time.sleep(0.1)  # Wait for command to take effect
+        try:
+            self._initialize_shell()
+        except Exception:
+            self.session.kill()
+            raise
 
         logger.debug(f"Tmux terminal initialized with work dir: {self.work_dir}")
         self._initialized: bool = True
-        self.clear_screen()
+
+    def _initialize_shell(self) -> None:
+        """Configure Bash and wait until its prompt is ready for input."""
+        command = (
+            f"set +H; export PROMPT_COMMAND='export PS1=\"{self.PS1}\"'; "
+            'export PS2=""; clear'
+        )
+        self._run_shell_command_and_wait(command)
+        self.pane.cmd("clear-history")
+
+    def _run_shell_command_and_wait(self, command: str) -> None:
+        marker_id = uuid.uuid4().hex
+        marker_start = f"__OH_TMUX_READY_{marker_id}_"
+        marker_end = "__"
+        self.pane.send_keys(
+            f'{command}; printf "%s%s\\n" "{marker_start}" "{marker_end}" > /dev/tty'
+        )
+
+        deadline = time.monotonic() + _SHELL_PROMPT_TIMEOUT_SECONDS
+        marker = marker_start + marker_end
+        while time.monotonic() < deadline:
+            content = self._capture_pane(self.pane)
+            marker_position = content.find(marker)
+            if (
+                marker_position >= 0
+                and content.find(CMD_OUTPUT_PS1_END, marker_position + len(marker)) >= 0
+            ):
+                return
+            time.sleep(0.01)
+
+        raise RuntimeError("Timed out waiting for the tmux shell prompt")
 
     def close(self) -> None:
         """Clean up the tmux session."""
@@ -283,6 +361,13 @@ class TmuxTerminal(TerminalInterface):
             # (e.g., "can't find session" error from tmux)
             # Also handles ImportError during Python shutdown
             logger.debug(f"Error closing tmux session (may already be dead): {e}")
+        # This terminal owns its server, which outlives the session when
+        # exit-empty is off.
+        try:
+            if hasattr(self, "server"):
+                self.server.kill()
+        except Exception as e:
+            logger.debug(f"Error killing tmux server (may already be dead): {e}")
         self._closed: bool = True
 
     def send_keys(self, text: str, enter: bool = True) -> None:
@@ -318,9 +403,39 @@ class TmuxTerminal(TerminalInterface):
 
         # 3) Plain text — use literal=True so tmux doesn't split on
         #    whitespace or interpret special tokens.
-        self.pane.send_keys(text, enter=False, literal=True)
         if enter and not text.endswith("\n"):
-            self.pane.send_keys("Enter", enter=False)
+            self._send_then_enter("-l", "--", text)
+        else:
+            self.pane.send_keys(text, enter=False, literal=True)
+
+    def _send_then_enter(self, *send_keys_args: str) -> None:
+        """Send keys and then Enter in one tmux process.
+
+        tmux would read a last argument ending in ``;`` as a command separator,
+        so such text takes two processes, as ``pane.send_keys`` does.
+        """
+        assert isinstance(self.pane, libtmux.Pane)
+        if send_keys_args[-1].endswith(";"):
+            self.pane.cmd("send-keys", *send_keys_args)
+            self.pane.enter()
+            return
+        self.pane.cmd(
+            "send-keys",
+            *send_keys_args,
+            ";",
+            "send-keys",
+            "-t",
+            str(self.pane.pane_id),
+            "Enter",
+        )
+
+    @staticmethod
+    def _capture_pane(pane: libtmux.Pane) -> str:
+        result = pane.cmd("capture-pane", "-J", "-pS", "-")
+        if result.stderr:
+            # E.g. the shell exited and took the pane (or the server) with it.
+            raise LibTmuxException(*result.stderr)
+        return "\n".join(line.rstrip() for line in result.stdout)
 
     def read_screen(self) -> str:
         """Read the current tmux pane content.
@@ -331,14 +446,7 @@ class TmuxTerminal(TerminalInterface):
         if not self._initialized or not isinstance(self.pane, libtmux.Pane):
             raise RuntimeError("Tmux terminal is not initialized")
 
-        content = "\n".join(
-            map(
-                # avoid double newlines
-                lambda line: line.rstrip(),
-                self.pane.cmd("capture-pane", "-J", "-pS", "-").stdout,
-            )
-        )
-        return content
+        return self._capture_pane(self.pane)
 
     def clear_screen(self) -> None:
         """Clear the tmux pane screen and history.
@@ -353,9 +461,28 @@ class TmuxTerminal(TerminalInterface):
         if not self._initialized or not isinstance(self.pane, libtmux.Pane):
             raise RuntimeError("Tmux terminal is not initialized")
 
-        self.pane.send_keys("clear", enter=True)
+        self._send_then_enter("clear")
         time.sleep(0.1)
         self.pane.cmd("clear-history")
+        # Bash redraws the prompt only after PROMPT_COMMAND returns. If the
+        # next command read the screen before then, it would see no prompt and
+        # mistake this late one for its own completion, losing its output.
+        deadline = time.monotonic() + _CLEAR_PROMPT_TIMEOUT_SECONDS
+        while True:
+            try:
+                screen = self.read_screen()
+            except LibTmuxException:
+                # The shell is gone; the next command reports that itself.
+                break
+            if screen.rstrip().endswith(CMD_OUTPUT_PS1_END.rstrip()):
+                break
+            if time.monotonic() >= deadline:
+                logger.debug(
+                    "Prompt did not reappear within %ss after clear",
+                    _CLEAR_PROMPT_TIMEOUT_SECONDS,
+                )
+                break
+            time.sleep(0.01)
 
     def interrupt(self) -> bool:
         """Send interrupt signal (Ctrl+C) to the tmux pane.
@@ -384,8 +511,6 @@ class TmuxTerminal(TerminalInterface):
         try:
             content = self.read_screen()
             # If the screen ends with our PS1 prompt, no command is running
-            from openhands.tools.terminal.constants import CMD_OUTPUT_PS1_END
-
             return not content.rstrip().endswith(CMD_OUTPUT_PS1_END.rstrip())
         except Exception:
             return False

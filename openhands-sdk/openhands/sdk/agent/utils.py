@@ -27,6 +27,10 @@ from openhands.sdk.context.view import View
 from openhands.sdk.event.base import LLMConvertibleEvent
 from openhands.sdk.event.condenser import Condensation
 from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.llm.mixins.fn_call_converter import (
+    TERMINAL_COMMAND_PREFIX_ALIASES,
+    TOOL_NAME_ALIASES,
+)
 
 
 # Regex matching raw ASCII control characters (U+0000–U+001F) that are
@@ -186,7 +190,11 @@ def fix_malformed_tool_arguments(
 
             origin = get_origin(expected_type)
             if origin is Union or origin is types.UnionType:
-                type_args = get_args(expected_type)
+                # Unwrap Annotated members too, e.g. Annotated[list[int], ...] | None
+                type_args = [
+                    get_args(arg)[0] if get_origin(arg) is Annotated else arg
+                    for arg in get_args(expected_type)
+                ]
                 expected_origins = [get_origin(arg) or arg for arg in type_args]
             else:
                 expected_origins = [origin or expected_type]
@@ -240,17 +248,6 @@ def fix_malformed_tool_arguments(
     return fixed_arguments
 
 
-TOOL_NAME_ALIASES: dict[str, str] = {
-    "bash": "terminal",
-    "command": "terminal",
-    "execute": "terminal",
-    "execute_bash": "terminal",
-    "git": "terminal",
-    "reset": "terminal",
-    "str_replace": "file_editor",
-    "str_replace_editor": "file_editor",
-}
-
 # Regex to detect malformed tool names (e.g., "str_replace </parameter"
 # or "str_replace</function>"). These occur when LLMs emit XML/HTML
 # tag fragments in tool names. The leading identifier is extracted and
@@ -269,12 +266,6 @@ def _extract_tool_name_base(tool_name: str) -> str:
     match = _MALFORMED_TOOL_NAME_RE.match(tool_name)
     return match.group(1) if match else tool_name
 
-
-# Terminal aliases that prepend the tool name to the command argument.
-# Unlike 'bash' which passes through the command directly, these tools
-# (e.g., 'git', 'reset') are themselves commands that should be combined
-# with their arguments (e.g., 'git status', 'reset clear').
-_TERMINAL_COMMAND_PREFIX_ALIASES = frozenset({"git", "reset"})
 
 # This fallback is intentionally tiny: it only accepts exact, bare command names
 # that are useful as read-only defaults when some models emit them as tool names.
@@ -506,7 +497,7 @@ def normalize_tool_call(
             # For terminal alias with prefix, combine tool name with command
             if (
                 alias_target == "terminal"
-                and base_name in _TERMINAL_COMMAND_PREFIX_ALIASES
+                and base_name in TERMINAL_COMMAND_PREFIX_ALIASES
             ):
                 original_command = arguments.get("command")
                 normalized_arguments = {

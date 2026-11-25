@@ -237,60 +237,39 @@ def test_format_exception_includes_exception_group_details() -> None:
     )
 
 
-def test_validate_workflow_script_rejects_missing_async_main() -> None:
-    with pytest.raises(WorkflowScriptError, match="async main"):
-        validate_workflow_script("def main(wf):\n    return 'nope'\n")
-
-
-def test_validate_workflow_script_rejects_unsafe_calls() -> None:
-    script = """
-async def main(wf):
-    return open('secrets.txt').read()
-"""
-
-    with pytest.raises(WorkflowScriptError, match="open"):
-        validate_workflow_script(script)
-
-
-def test_validate_workflow_script_rejects_private_wf_access() -> None:
-    script = """
-async def main(wf):
-    return wf._parent_conversation
-"""
-
-    with pytest.raises(WorkflowScriptError, match="private wf attributes"):
-        validate_workflow_script(script)
-
-
-def test_validate_workflow_script_rejects_wf_close() -> None:
-    script = """
-async def main(wf):
-    wf.close()
-"""
-
-    with pytest.raises(WorkflowScriptError, match="wf.close"):
-        validate_workflow_script(script)
-
-
-def test_validate_workflow_script_rejects_unsafe_module_access() -> None:
-    script = """
-async def main(wf):
-    os.system('echo nope')
-"""
-
-    with pytest.raises(WorkflowScriptError, match="unsafe modules"):
-        validate_workflow_script(script)
-
-
-def test_validate_workflow_script_rejects_imports() -> None:
-    script = """
-import os
-
-async def main(wf):
-    return 'nope'
-"""
-
-    with pytest.raises(WorkflowScriptError, match="import"):
+@pytest.mark.parametrize(
+    ("script", "match"),
+    [
+        pytest.param(
+            "def main(wf):\n    return 'nope'\n", "async main", id="missing_async_main"
+        ),
+        pytest.param(
+            "\nasync def main(wf):\n    return open('secrets.txt').read()\n",
+            "open",
+            id="unsafe_calls",
+        ),
+        pytest.param(
+            "\nasync def main(wf):\n    return wf._parent_conversation\n",
+            "private wf attributes",
+            id="private_wf_access",
+        ),
+        pytest.param(
+            "\nasync def main(wf):\n    wf.close()\n", "wf.close", id="wf_close"
+        ),
+        pytest.param(
+            "\nasync def main(wf):\n    os.system('echo nope')\n",
+            "unsafe modules",
+            id="unsafe_module_access",
+        ),
+        pytest.param(
+            "\nimport os\n\nasync def main(wf):\n    return 'nope'\n",
+            "import",
+            id="imports",
+        ),
+    ],
+)
+def test_validate_workflow_script_rejects(script: str, match: str) -> None:
+    with pytest.raises(WorkflowScriptError, match=match):
         validate_workflow_script(script)
 
 

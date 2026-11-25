@@ -1,9 +1,12 @@
 # state.py
 import bisect
+import itertools
 import operator
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, nullcontext
 from typing import Final, SupportsIndex, overload
+
+from pydantic import ValidationError
 
 from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.persistence_const import (
@@ -12,6 +15,7 @@ from openhands.sdk.conversation.persistence_const import (
     EVENTS_DIR,
 )
 from openhands.sdk.event import Event, EventID
+from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.types import ROOT_PARENT_ID
 from openhands.sdk.io import FileStore
 from openhands.sdk.logger import get_logger
@@ -19,6 +23,9 @@ from openhands.sdk.utils.path import posix_path_name
 
 
 logger = get_logger(__name__)
+
+# ``code`` of the stand-in event for an event file that cannot be read.
+UNREADABLE_EVENT_FILE_CODE: Final[str] = "UnreadableEventFile"
 
 LOCK_FILE_NAME = ".eventlog.lock"
 LOCK_TIMEOUT_SECONDS = 30
@@ -66,6 +73,7 @@ class EventLog(EventsListBase):
         self._next_disk_idx = 0
         self._reported_lost = 0
         self._reported_missing: set[EventID] = set()
+        self._reported_unreadable: set[str] = set()
         self._event_cache: dict[int, Event] = {}
         self._lock_path = f"{dir_path}/{LOCK_FILE_NAME}"
         self._write_guard = None
@@ -166,10 +174,29 @@ class EventLog(EventsListBase):
         ancestor whose file was lost is bridged (see ``_effective_parent_id``);
         a ``leaf_id`` missing from the log yields ``[]``.
         """
-        chain: list[Event] = []
+        chain = list(itertools.islice(self.walk_back(leaf_id), limit))
+        return chain[::-1]
+
+    def walk_back(
+        self, leaf_id: EventID | None, *, until: EventID | None = None
+    ) -> Iterator[Event]:
+        """The branch ending at ``leaf_id``, newest first, read as it goes.
+
+        A caller that stops early reads only the events it walked past, not
+        the whole branch. With ``until``, the walk ends at that event (the last
+        one yielded) or, when it is not on this branch, as soon as it is behind
+        it: an event's ancestors all come before it in the log, so the walk
+        never goes further back than ``until``. An ``until`` missing from the
+        log yields nothing. Raises ValueError on a cycle, like ``path_to_root``.
+        """
+        stop_idx: int | None = None
+        if until is not None:
+            stop_idx = self._id_to_idx.get(until)
+            if stop_idx is None:
+                return
         seen: set[EventID] = set()
         cur_id: EventID | None = leaf_id
-        while cur_id is not None and (limit is None or len(chain) < limit):
+        while cur_id is not None:
             if cur_id in seen:
                 raise ValueError(f"Cycle in event tree at {cur_id}")
             seen.add(cur_id)
@@ -177,10 +204,14 @@ class EventLog(EventsListBase):
             if idx is None:
                 # Only the leaf can be unknown: ancestors are bridged.
                 self._report_missing(cur_id)
-                break
-            chain.append(evt := self[idx])
+                return
+            if stop_idx is not None and idx < stop_idx:
+                return
+            evt = self[idx]
+            yield evt
+            if idx == stop_idx:
+                return
             cur_id = self._effective_parent_id(idx, evt)
-        return chain[::-1]
 
     @overload
     def __getitem__(self, idx: int) -> Event: ...
@@ -214,12 +245,58 @@ class EventLog(EventsListBase):
             if i >= self._length:
                 raise IndexError("Event index out of range")
             path = self._path(i)
-        txt = self._fs.read(path)
-        if not txt:
-            raise FileNotFoundError(f"Missing event file: {path}")
-        evt = Event.model_validate_json(txt)
+        evt = self._read_event(i, path)
         self._event_cache[i] = evt
         return evt
+
+    def _read_event(self, i: int, path: str) -> Event:
+        """Read event ``i`` from ``path``, or a stand-in if it is unreadable."""
+        try:
+            txt = self._fs.read(path)
+        except FileNotFoundError:
+            txt, reason = None, "missing"
+        except UnicodeDecodeError:
+            txt, reason = None, "not UTF-8"
+        else:
+            reason = "empty"
+        if txt:
+            try:
+                return Event.model_validate_json(txt)
+            except ValidationError as exc:
+                first = exc.errors()[0] if exc.errors() else {}
+                reason = f"unreadable ({first.get('msg', 'invalid event')})"
+        return self._unreadable_stand_in(i, path, reason)
+
+    def _unreadable_stand_in(self, i: int, path: str, reason: str) -> Event:
+        """A placeholder for an event file a crash or a bad copy damaged.
+
+        Failing every read over one empty or truncated file would make the
+        whole conversation unopenable. The stand-in keeps the event's id and
+        its place in the log (so indexes, seqs and the tree stay intact; its
+        parent falls back to the previous event), is not sent to the LLM, and
+        says what was lost. The file itself is left as it is.
+        """
+        if path not in self._reported_unreadable:
+            self._reported_unreadable.add(path)
+            logger.warning(
+                "Event file %s is %s; using a stand-in, the other events stay "
+                "readable.",
+                path,
+                reason,
+            )
+        stand_in = ConversationErrorEvent(
+            source="environment",
+            code=UNREADABLE_EVENT_FILE_CODE,
+            detail=(
+                f"Event file {posix_path_name(path)} is {reason}; its event is lost."
+            ),
+        )
+        update: dict[str, str] = {}
+        if (evt_id := self._idx_to_id.get(i)) is not None:
+            update["id"] = evt_id
+        if (previous := self._event_cache.get(i - 1)) is not None:
+            update["timestamp"] = previous.timestamp
+        return stand_in.model_copy(update=update) if update else stand_in
 
     def __iter__(self) -> Iterator[Event]:
         for i in range(self._length):
@@ -227,10 +304,7 @@ class EventLog(EventsListBase):
             if cached is not None:
                 yield cached
                 continue
-            txt = self._fs.read(self._path(i))
-            if not txt:
-                continue
-            evt = Event.model_validate_json(txt)
+            evt = self._read_event(i, self._path(i))
             evt_id = evt.id
             if i not in self._idx_to_id:
                 self._idx_to_id[i] = evt_id
@@ -285,6 +359,8 @@ class EventLog(EventsListBase):
                 # depend on the event ids.
                 disk_idx = max(idx, self._next_disk_idx)
                 with write_guard:
+                    # A rename can succeed even if the subsequent fsync fails.
+                    self._fs.delete(self._marker_path(idx))
                     self._fs.write(self._file_path(disk_idx, evt_id), payload)
                 if disk_idx != idx:
                     self._disk_idx[idx] = disk_idx
@@ -293,7 +369,7 @@ class EventLog(EventsListBase):
                 self._id_to_idx[evt_id] = idx
                 self._event_cache[idx] = event
                 self._length += 1
-                self._advance_length_marker(idx)
+                self._write_length_marker()
                 return idx
         except TimeoutError:
             logger.error(
@@ -317,14 +393,8 @@ class EventLog(EventsListBase):
             logger.warning("Error reading event count marker in %s: %s", self._dir, e)
             return False
 
-    def _advance_length_marker(self, previous_length: int) -> None:
-        """Move the marker from ``previous_length`` to the current length.
-
-        Deleting first is deliberate: an interrupted update leaves no marker
-        rather than a stale one claiming to be current.
-        """
+    def _write_length_marker(self) -> None:
         try:
-            self._fs.delete(self._marker_path(previous_length))
             self._fs.write(self._marker_path(self._length), "")
         except Exception as e:
             logger.warning("Error updating event count marker in %s: %s", self._dir, e)
@@ -339,11 +409,7 @@ class EventLog(EventsListBase):
         except Exception as e:
             logger.warning("Error listing event directory %s: %s", self._dir, e)
             return 0
-        return sum(
-            1
-            for p in paths
-            if posix_path_name(p).startswith("event-") and p.endswith(".json")
-        )
+        return sum(1 for p in paths if EVENT_NAME_RE.match(posix_path_name(p)))
 
     def _sync_from_disk(self, disk_length: int) -> None:
         """Sync state for events written by other processes.

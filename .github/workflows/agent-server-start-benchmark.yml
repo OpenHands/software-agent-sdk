@@ -1,0 +1,133 @@
+---
+name: Agent Server Start Benchmark
+
+on:
+    pull_request:
+        paths:
+            - openhands-agent-server/**
+            - openhands-tools/**
+            - openhands-sdk/openhands/sdk/**
+            - '**/pyproject.toml'
+            - uv.lock
+            - scripts/agent_server_benchmarks/**
+            - .github/workflows/agent-server-start-benchmark.yml
+
+concurrency:
+    group: agent-server-start-benchmark-${{ github.event.pull_request.number }}
+    cancel-in-progress: true
+
+permissions:
+    contents: read
+    pull-requests: write
+
+jobs:
+    benchmark:
+        runs-on: blacksmith-2vcpu-ubuntu-2404
+        timeout-minutes: 40
+        # Fork and Dependabot PRs get a read-only token; their report stays in the
+        # job summary and artifact.
+        env:
+            CAN_COMMENT: ${{ github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]' }}
+        steps:
+            - name: Checkout PR (merge commit)
+              uses: actions/checkout@v7.0.1
+              with:
+                  path: head
+                  fetch-depth: 2
+                  persist-credentials: false
+
+            # The merge commit's first parent, not pull_request.base.sha, which can
+            # lag behind the base branch the merge commit was built on.
+            - name: Checkout PR base
+              run: git -C head worktree add --detach ../base HEAD^1
+
+            - name: Checkout public extensions
+              uses: actions/checkout@v7.0.1
+              with:
+                  repository: OpenHands/extensions
+                  path: extensions
+                  persist-credentials: false
+
+            - name: Install uv
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+              with:
+                  enable-cache: true
+                  python-version: '3.13'
+
+            # Precompiled bytecode keeps the first server start of each side from
+            # paying for .pyc generation, which skewed one sample per side.
+            - name: Install base and head
+              env:
+                  UV_COMPILE_BYTECODE: '1'
+              run: |
+                  (cd base && uv sync --frozen --group dev)
+                  (cd head && uv sync --frozen --group dev)
+                  tmux -V
+
+            # A step timeout fails the step, so the comment step still reports it;
+            # a job timeout would cancel the job and skip that step.
+            - name: Run benchmark
+              timeout-minutes: 30
+              env:
+                  BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
+                  HEAD_REF: ${{ github.sha }}
+              run: |
+                  BASE_REF="$BASE_BRANCH@$(git -C head rev-parse HEAD^1)"
+                  head/.venv/bin/python head/scripts/agent_server_benchmarks/conversation_start.py compare \
+                    --base-python base/.venv/bin/python \
+                    --head-python head/.venv/bin/python \
+                    --base-ref "${BASE_REF:0:60}" --head-ref "merge ${HEAD_REF:0:10}" \
+                    --extensions-path "$PWD/extensions" \
+                    --rounds 5 \
+                    --report report.md
+                  cat report.md >> "$GITHUB_STEP_SUMMARY"
+
+            - name: Upload results
+              if: always()
+              uses: actions/upload-artifact@v7
+              with:
+                  name: agent-server-start-benchmark
+                  path: |
+                      report.md
+                      report.json
+
+            - name: Post or update PR comment
+              # Not on cancel: a newer push to the PR replaces this run.
+              if: (success() || failure()) && env.CAN_COMMENT == 'true'
+              uses: actions/github-script@v9
+              env:
+                  BENCHMARK_FAILED: ${{ job.status != 'success' }}
+              with:
+                  script: |
+                      const fs = require('fs');
+                      const marker = '<!-- agent-server-conversation-start-benchmark -->';
+                      const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+                      const body = process.env.BENCHMARK_FAILED === 'true' || !fs.existsSync('report.md')
+                        ? `${marker}\n### Agent-server conversation start benchmark\n\n` +
+                          `The benchmark failed for \`${context.sha.slice(0, 10)}\`; see [the run](${run}). ` +
+                          `Earlier numbers on this PR are not for the latest commit.`
+                        : fs.readFileSync('report.md', 'utf8');
+                      const comments = await github.paginate(github.rest.issues.listComments, {
+                        owner: context.repo.owner,
+                        repo: context.repo.repo,
+                        issue_number: context.issue.number,
+                        per_page: 100,
+                      });
+                      const existing = comments.find(
+                        c => c.user.type === 'Bot' && c.body.startsWith(marker),
+                      );
+                      if (existing) {
+                        await github.rest.issues.updateComment({
+                          owner: context.repo.owner,
+                          repo: context.repo.repo,
+                          comment_id: existing.id,
+                          body,
+                        });
+                      } else {
+                        await github.rest.issues.createComment({
+                          owner: context.repo.owner,
+                          repo: context.repo.repo,
+                          issue_number: context.issue.number,
+                          body,
+                        });
+                      }

@@ -5,7 +5,7 @@ Each record captures the static properties that are known at configuration time
 
 - ``key``                   settings discriminator (``ACPAgentSettings.acp_server``)
 - ``display_name``          human-readable label for UI display
-- ``default_command``       default ``npx``-based launch command
+- ``default_command``       default ACP launch command (npm or native)
 - ``api_key_env_var``       env var the subprocess expects for its API key
 - ``base_url_env_var``      env var for proxy/base-URL routing (or ``None``)
 - ``default_session_mode``  ACP mode ID that disables permission prompts,
@@ -18,6 +18,8 @@ Each record captures the static properties that are known at configuration time
 - ``supports_runtime_model_switch``  whether the server supports a protocol-level
                                   model switch for runtime, mid-conversation use
 - ``session_meta_key``      top-level ``_meta`` key for model selection (or ``None``)
+- ``effort_config_id``      config option that sets reasoning effort (or ``None``)
+- ``effort_levels``         effort suffixes split off a ``<model>/<effort>`` id
 - ``file_secrets``          reserved "file-content" credential secrets the
                             provider authenticates from (Codex ``auth.json``,
                             Gemini Vertex SA JSON); see :class:`ACPFileSecretSpec`
@@ -306,6 +308,31 @@ class ACPProviderInfo:
     them — see :class:`ACPEnvConflictSpec`.
     """
 
+    effort_config_id: str | None = field(default=None, compare=False)
+    """Session config option that sets reasoning effort, or ``None``.
+
+    When set, an ``acp_model`` of the form ``<model>/<effort>`` (with ``effort``
+    in :attr:`effort_levels`) is split into a ``model`` selection plus this
+    config option — e.g. codex-acp ``reasoning_effort``, claude-agent-acp
+    ``effort``. See :meth:`split_model_effort`.
+    """
+
+    effort_levels: tuple[str, ...] = field(default=(), compare=False)
+    """Effort values accepted as a ``/<effort>`` model-id suffix."""
+
+    def split_model_effort(self, model: str) -> tuple[str, str | None]:
+        """Split ``<model>/<effort>`` into ``(model, effort)``.
+
+        Ids without a known effort suffix, or providers without an
+        :attr:`effort_config_id`, are returned unchanged with ``None``.
+        """
+        if self.effort_config_id is None:
+            return model, None
+        base_model, sep, effort = model.rpartition("/")
+        if sep and base_model and effort in self.effort_levels:
+            return base_model, effort
+        return model, None
+
 
 # ---------------------------------------------------------------------------
 # Reserved file-content credential secrets for the built-in providers.
@@ -394,6 +421,8 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             supports_set_session_model=True,
             supports_runtime_model_switch=True,
             session_meta_key="claudeCode",
+            effort_config_id="effort",
+            effort_levels=("low", "medium", "high", "xhigh", "max"),
             binary_name=ACP_INSTALL_CATALOG["claude-code"].binary_name,
             data_dir_env_var="CLAUDE_CONFIG_DIR",
             # Keyed on the credential itself, NOT on CLAUDE_CONFIG_DIR: the
@@ -419,6 +448,8 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             supports_set_session_model=True,
             supports_runtime_model_switch=True,
             session_meta_key=None,
+            effort_config_id="reasoning_effort",
+            effort_levels=("low", "medium", "high", "xhigh", "max", "ultra"),
             file_secrets=_CODEX_FILE_SECRETS,
             binary_name=ACP_INSTALL_CATALOG["codex"].binary_name,
             data_dir_env_var="CODEX_HOME",
@@ -442,6 +473,24 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             binary_name=ACP_INSTALL_CATALOG["gemini-cli"].binary_name,
             # Gemini CLI has no dedicated config-dir var; it hard-codes
             # ``~/.gemini`` (ignoring XDG), so only HOME relocates its state.
+            data_dir_env_var="HOME",
+        ),
+        "antigravity": ACPProviderInfo(
+            key="antigravity",
+            display_name="Google Antigravity",
+            # The official CLI includes a native ACP server from v1.5.0.
+            # It must be installed by the user; do not bake its large
+            # non-npm binary into the default agent-server image.
+            default_command=("agy", "acp"),
+            api_key_env_var="GEMINI_API_KEY",
+            base_url_env_var=None,
+            default_session_mode="default",
+            agent_name_patterns=("antigravity",),
+            supports_set_session_model=True,
+            supports_runtime_model_switch=True,
+            session_meta_key=None,
+            binary_name="agy",
+            # The Google sign-in cache is stored under ~/.gemini/.
             data_dir_env_var="HOME",
         ),
         "kimi-code": ACPProviderInfo(
@@ -579,7 +628,9 @@ def detect_acp_provider_by_command(
 
     Each provider's :attr:`~ACPProviderInfo.agent_name_patterns` fragments
     (``"codex-acp"``, ``"claude-agent"``, ``"gemini-cli"``, ``"pi-acp"``) are
-    prefixes of its npm-package / binary basename, so we can pick the provider
+    prefixes of its npm-package / binary basename. Native launchers whose
+    name differs from ``agentInfo.name`` are also matched by exact binary
+    basename (e.g. ``agy`` for Antigravity), so we can pick the provider
     *before* the server starts and reports its name (when the subprocess
     environment, e.g. a relocated data dir, must already be set).
 
@@ -608,22 +659,38 @@ def detect_acp_provider_by_command(
             base.startswith(pat) for base in bases for pat in info.agent_name_patterns
         ):
             return info
+        # Native, non-npm launchers may have a short binary name that must
+        # not be used as a substring of the runtime agent name (e.g. "agy").
+        # Match that launcher exactly instead.
+        launcher = info.default_command[0].rsplit("/", 1)[-1].lower()
+        if launcher != "npx" and launcher in bases:
+            return info
     return None
 
 
-def build_session_model_meta(agent_name: str, acp_model: str | None) -> dict[str, Any]:
-    """Build ACP session ``_meta`` content for model selection.
+def build_session_model_meta(
+    agent_name: str, acp_model: str | None, acp_effort: str | None = None
+) -> dict[str, Any]:
+    """Build ACP session ``_meta`` content for model and effort selection.
 
     Returns the dict to spread into ``new_session()`` kwargs for providers
     that select their model via ``_meta`` (i.e. those whose
-    :attr:`~ACPProviderInfo.session_meta_key` is not ``None``).
+    :attr:`~ACPProviderInfo.session_meta_key` is not ``None``). ``acp_effort``
+    wins over a ``<model>/<effort>`` suffix on ``acp_model``.
 
-    Returns an empty dict when *acp_model* is ``None`` or when the detected
+    Returns an empty dict when there is nothing to select or when the detected
     provider uses the ``set_session_model`` protocol call instead.
     """
-    if not acp_model:
-        return {}
     provider = detect_acp_provider_by_agent_name(agent_name)
     if provider is None or provider.session_meta_key is None:
         return {}
-    return {provider.session_meta_key: {"options": {"model": acp_model}}}
+    options: dict[str, str] = {}
+    suffix_effort = None
+    if acp_model:
+        options["model"], suffix_effort = provider.split_model_effort(acp_model)
+    effort = acp_effort or suffix_effort
+    if effort and provider.effort_config_id is not None:
+        options[provider.effort_config_id] = effort
+    if not options:
+        return {}
+    return {provider.session_meta_key: {"options": options}}
