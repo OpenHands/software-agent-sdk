@@ -78,8 +78,8 @@ class LaunchStores:
         if self.cipher is not None:
             warn_deprecated(
                 "LaunchStores(cipher=...)",
-                deprecated_in="1.63.0",
-                removed_in="1.68.0",
+                deprecated_in="1.65.0",
+                removed_in="1.70.0",
                 details="Bind the cipher on the LLM profile store instead: "
                 "LLMProfileStore(cipher=...).",
                 stacklevel=4,

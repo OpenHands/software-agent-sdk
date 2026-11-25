@@ -194,8 +194,8 @@ class LLMProfileStore:
             return self._cipher
         warn_deprecated(
             f"LLMProfileStore.{method}(cipher=...)",
-            deprecated_in="1.63.0",
-            removed_in="1.68.0",
+            deprecated_in="1.65.0",
+            removed_in="1.70.0",
             details="Bind the cipher once with LLMProfileStore(cipher=...) "
             "or LLMProfileStore.with_cipher(cipher).",
             stacklevel=4,

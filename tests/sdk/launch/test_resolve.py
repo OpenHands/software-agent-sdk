@@ -372,7 +372,7 @@ def test_a_custom_acp_profile_without_a_command_is_rejected():
 
 @pytest.fixture
 def deprecation_active(monkeypatch):
-    monkeypatch.setattr(deprecation, "_current_version", lambda: "1.63.0")
+    monkeypatch.setattr(deprecation, "_current_version", lambda: "1.65.0")
 
 
 def test_the_deprecated_stores_cipher_still_decrypts_llm_profiles(

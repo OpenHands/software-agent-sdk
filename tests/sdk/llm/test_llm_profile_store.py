@@ -895,7 +895,7 @@ def test_per_call_cipher_is_deprecated(tmp_path: Path, monkeypatch: pytest.Monke
     from openhands.sdk.utils import deprecation
     from openhands.sdk.utils.cipher import Cipher
 
-    monkeypatch.setattr(deprecation, "_current_version", lambda: "1.63.0")
+    monkeypatch.setattr(deprecation, "_current_version", lambda: "1.65.0")
     store = LLMProfileStore(base_dir=tmp_path)
     store.save("plain", LLM(usage_id="plain", model="openai/gpt-4o"))
 
