@@ -3,7 +3,6 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Annotated, Any
 
-import httpx
 from pydantic import BeforeValidator, Field, PrivateAttr
 
 from openhands.sdk.conversation.exceptions import ConversationRunError
@@ -12,6 +11,7 @@ from openhands.sdk.git.models import GitChange, GitDiff
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import observability_headers_from_env
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
+from openhands.sdk.workspace.completion_callback import post_completion_callback
 from openhands.sdk.workspace.models import CommandResult, FileOperationResult
 
 
@@ -101,7 +101,9 @@ class BaseWorkspace(DiscriminatedUnionMixin, ABC):
         Includes ``conversation_id`` and ``cost`` when registered. On failure,
         ``error`` is the existing structured ``ConversationErrorEvent`` carried
         by ``ConversationRunError``, or a classified fallback event for errors
-        outside a conversation.
+        outside a conversation. Transport errors, 429, and 5xx are retried on
+        the same payload within a short budget. Any 2xx or 409 stops at once.
+        The call never raises.
 
         Args:
             exc_type: Exception type if an exception was raised, None otherwise
@@ -145,15 +147,16 @@ class BaseWorkspace(DiscriminatedUnionMixin, ABC):
         if self._accumulated_cost is not None:
             payload["cost"] = self._accumulated_cost
 
-        try:
-            headers = observability_headers_from_env()
-            if callback_api_key:
-                headers["Authorization"] = f"Bearer {callback_api_key}"
-            with httpx.Client(timeout=10.0) as cb_client:
-                resp = cb_client.post(callback_url, json=payload, headers=headers)
-                logger.info(f"Completion callback sent ({status}): {resp.status_code}")
-        except Exception as e:
-            logger.warning(f"Completion callback failed: {e}")
+        headers = observability_headers_from_env()
+        if callback_api_key:
+            headers["Authorization"] = f"Bearer {callback_api_key}"
+        post_completion_callback(
+            url=callback_url,
+            payload=payload,
+            headers=headers,
+            status=status,
+            logger=logger,
+        )
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         """Exit the workspace context and cleanup resources.
