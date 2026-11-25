@@ -1,6 +1,8 @@
 import asyncio
+import errno
 import os
 import shutil
+import socket
 import sys
 import tempfile
 import threading
@@ -185,10 +187,10 @@ def _ensure_server_tmux_tmpdir() -> tuple[Path, bool, bool]:
     return tmux_tmpdir, True, created
 
 
-def _isolated_socket_names(socket_dir: Path) -> list[str]:
-    """Return per-instance socket names present in *socket_dir*."""
+def _isolated_socket_paths(socket_dir: Path) -> list[Path]:
+    """Return per-instance socket paths present in *socket_dir*."""
     return [
-        path.name
+        path
         for path in socket_dir.glob(f"{TMUX_SOCKET_NAME}-" + "[0-9a-f]" * 32)
         if path.is_socket()
     ]
@@ -200,6 +202,43 @@ def _kill_sessions(server: libtmux.Server) -> None:
             session.kill()
         except Exception as e:
             logger.warning("Failed to kill tmux session %s: %s", session, e)
+
+
+# A connect to a Unix socket with no listener fails with one of these; any
+# other failure is treated as "server still live" so a busy sibling is never
+# reclaimed by mistake.
+_DEAD_SOCKET_ERRNOS: frozenset[int] = frozenset(
+    {errno.ENOENT, errno.ECONNREFUSED, errno.ECONNABORTED}
+)
+
+
+def _socket_has_listener(socket_path: Path) -> bool:
+    """Return whether a live process is accepting connections on *socket_path*.
+
+    Probing with a connect is deliberately cheap: a host with a long-lived
+    ``TMUX_TMPDIR`` can accumulate thousands of dead socket files, and the
+    previous approach of spawning a ``tmux`` client per socket (to read its
+    owner option) made startup scale with that leak.
+    """
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    probe.settimeout(0.5)
+    try:
+        probe.connect(str(socket_path))
+        return True
+    except OSError as e:
+        return e.errno not in _DEAD_SOCKET_ERRNOS
+    finally:
+        probe.close()
+
+
+def _remove_socket_file(socket_path: Path) -> None:
+    """Unlink a leftover socket file, tolerating one that is already gone."""
+    try:
+        socket_path.unlink()
+    except FileNotFoundError:
+        return
+    except OSError as e:
+        logger.warning("Failed to remove stale tmux socket %s: %s", socket_path, e)
 
 
 def _socket_owner_pid(server: libtmux.Server) -> int | None:
@@ -219,26 +258,43 @@ def _socket_owner_pid(server: libtmux.Server) -> int | None:
 
 
 def _reclaim_stale_tmux_sockets(socket_dir: Path) -> None:
-    """Reclaim the legacy socket and any isolated socket whose owner is gone."""
+    """Reclaim the legacy socket and any isolated socket whose owner is gone.
+
+    A socket whose tmux server has already exited (for example, one killed
+    with ``SIGKILL`` and so never unlinked its own socket) has nothing to kill;
+    its file must be removed explicitly or it lingers forever in a persistent
+    ``TMUX_TMPDIR``.
+    """
+    legacy_path = socket_dir / TMUX_SOCKET_NAME
     try:
         _kill_sessions(libtmux.Server(socket_name=TMUX_SOCKET_NAME))
     except Exception as e:
         logger.warning("Failed to cleanup tmux socket %s: %s", TMUX_SOCKET_NAME, e)
+    _remove_socket_file(legacy_path)
 
-    for socket_name in _isolated_socket_names(socket_dir):
+    for socket_path in _isolated_socket_paths(socket_dir):
         try:
-            server = libtmux.Server(socket_name=socket_name)
+            if not _socket_has_listener(socket_path):
+                # The tmux server is gone; there is nothing left but the file.
+                _remove_socket_file(socket_path)
+                continue
+            server = libtmux.Server(socket_name=socket_path.name)
             owner_pid = _socket_owner_pid(server)
             if owner_pid is not None and _is_pid_alive(owner_pid):
                 logger.debug(
                     "Leaving tmux socket %s alone; owner pid %s is alive",
-                    socket_name,
+                    socket_path.name,
                     owner_pid,
                 )
                 continue
             _kill_sessions(server)
+            # This socket is stale (its owner is gone), so drop the file too.
+            # Do not wait for the dying server to unlink it: tmux exits
+            # asynchronously, and the whole point is to stop the file from
+            # accumulating in a persistent TMUX_TMPDIR.
+            _remove_socket_file(socket_path)
         except Exception as e:
-            logger.warning("Failed to cleanup tmux socket %s: %s", socket_name, e)
+            logger.warning("Failed to cleanup tmux socket %s: %s", socket_path.name, e)
 
 
 def _cleanup_stale_tmux_sessions() -> None:

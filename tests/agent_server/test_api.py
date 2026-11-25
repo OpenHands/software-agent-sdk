@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import socket
 import subprocess
 import sys
 import tempfile
@@ -208,7 +209,8 @@ def test_cleanup_stale_tmux_sessions_spares_live_sibling_socket(monkeypatch):
 
         # Legacy and non-OpenHands sockets share the directory.
         legacy = libtmux.Server(socket_name="openhands")
-        unrelated = libtmux.Server(socket_name="unrelated")
+        unrelated_socket = "unrelated"
+        unrelated = libtmux.Server(socket_name=unrelated_socket)
         legacy.new_session(session_name="test")
         unrelated.new_session(session_name="test")
         try:
@@ -242,10 +244,48 @@ def test_cleanup_stale_tmux_sessions_spares_live_sibling_socket(monkeypatch):
             assert not orphan_server.sessions
             assert not legacy.sessions
             assert unrelated.sessions
+
+            # The reclaimed sockets' files are removed, not just their
+            # sessions: another tmux server may already be gone entirely, and
+            # a persistent TMUX_TMPDIR must not accumulate its dead files.
+            uid_dir = Path(socket_dir) / f"tmux-{os.getuid()}"
+            assert not (uid_dir / orphan_socket).exists()
+            assert not (uid_dir / "openhands").exists()
+            assert (uid_dir / unrelated_socket).exists()
         finally:
             pool_a.close()
             legacy.cmd("kill-server")
             unrelated.cmd("kill-server")
+
+
+@pytest.mark.skipif(os.name != "posix", reason="tmux requires Unix")
+def test_cleanup_stale_tmux_sessions_removes_socket_file_without_server(
+    monkeypatch,
+):
+    """A leftover socket file whose tmux server is gone must be unlinked.
+
+    Regression: a tmux server killed with SIGKILL never unlinks its own socket,
+    and cleanup used to only kill the sessions of a still-running server. With
+    a persistent, shared ``TMUX_TMPDIR`` (as on an Agent Canvas host) those dead
+    files accumulated forever, and the per-socket ``tmux`` probe made every
+    startup scan slower as the pile grew.
+    """
+    with tempfile.TemporaryDirectory(prefix="oh-dead-socket-", dir="/tmp") as root:
+        monkeypatch.setenv("TMUX_TMPDIR", root)
+        socket_dir = Path(root) / f"tmux-{os.getuid()}"
+        socket_dir.mkdir()
+        dead_path = socket_dir / f"openhands-{'a' * 32}"
+
+        # Bind and close without unlinking: the file remains, the listener is
+        # gone -- exactly what a SIGKILLed tmux server leaves behind.
+        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        probe.bind(str(dead_path))
+        probe.close()
+        assert dead_path.is_socket()
+
+        _cleanup_stale_tmux_sessions()
+
+        assert not dead_path.exists()
 
 
 # Pause a real TmuxPanePool.initialize() inside the creation lock, after the
