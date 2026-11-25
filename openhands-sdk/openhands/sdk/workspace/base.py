@@ -103,7 +103,7 @@ class BaseWorkspace(DiscriminatedUnionMixin, ABC):
         by ``ConversationRunError``, or a classified fallback event for errors
         outside a conversation. Transport errors, 429, and 5xx are retried on
         the same payload within a short budget. Any 2xx or 409 stops at once.
-        The call never raises.
+        Building the payload or headers is part of this call. It never raises.
 
         Args:
             exc_type: Exception type if an exception was raised, None otherwise
@@ -117,46 +117,53 @@ class BaseWorkspace(DiscriminatedUnionMixin, ABC):
         run_id = os.environ.get("AUTOMATION_RUN_ID")
 
         status = "COMPLETED" if exc_type is None else "FAILED"
-        payload: dict[str, Any] = {"status": status}
-        if run_id:
-            payload["run_id"] = run_id
-        if exc_val is not None:
-            error = (
-                exc_val.conversation_error
-                if isinstance(exc_val, ConversationRunError)
-                else None
-            )
-            if error is None:
-                cause = (
-                    exc_val.original_exception
+        try:
+            payload: dict[str, Any] = {"status": status}
+            if run_id:
+                payload["run_id"] = run_id
+            if exc_val is not None:
+                error = (
+                    exc_val.conversation_error
                     if isinstance(exc_val, ConversationRunError)
-                    else exc_val
+                    else None
                 )
-                error = ConversationErrorEvent(
-                    source="environment",
-                    code=type(cause).__name__,
-                    detail=str(cause),
-                )
-            payload["error"] = error.model_dump(mode="json")
+                if error is None:
+                    cause = (
+                        exc_val.original_exception
+                        if isinstance(exc_val, ConversationRunError)
+                        else exc_val
+                    )
+                    error = ConversationErrorEvent(
+                        source="environment",
+                        code=type(cause).__name__,
+                        detail=str(cause),
+                    )
+                payload["error"] = error.model_dump(mode="json")
 
-        # Include conversation_id if one was registered
-        if self._conversation_id is not None:
-            payload["conversation_id"] = self._conversation_id
+            # Include conversation_id if one was registered
+            if self._conversation_id is not None:
+                payload["conversation_id"] = self._conversation_id
 
-        # Include accumulated LLM cost if one was registered
-        if self._accumulated_cost is not None:
-            payload["cost"] = self._accumulated_cost
+            # Include accumulated LLM cost if one was registered
+            if self._accumulated_cost is not None:
+                payload["cost"] = self._accumulated_cost
 
-        headers = observability_headers_from_env()
-        if callback_api_key:
-            headers["Authorization"] = f"Bearer {callback_api_key}"
-        post_completion_callback(
-            url=callback_url,
-            payload=payload,
-            headers=headers,
-            status=status,
-            logger=logger,
-        )
+            headers = observability_headers_from_env()
+            if callback_api_key:
+                headers["Authorization"] = f"Bearer {callback_api_key}"
+            post_completion_callback(
+                url=callback_url,
+                payload=payload,
+                headers=headers,
+                status=status,
+                logger=logger,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Completion callback failed (%s): %s",
+                status,
+                type(exc).__name__,
+            )
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         """Exit the workspace context and cleanup resources.
