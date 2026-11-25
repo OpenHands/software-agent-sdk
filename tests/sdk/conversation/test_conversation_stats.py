@@ -140,6 +140,26 @@ def test_get_combined_metrics_mixed_models_keep_default_fallback(
     assert len(combined.costs) == 2
 
 
+def test_get_combined_metrics_keeps_default_when_child_rollup_is_mixed(
+    conversation_stats,
+):
+    """A parent's rollup stays "default" when a child entry is already a mixed
+    rollup, instead of attributing the child's usage to the parent's model.
+    """
+    parent = Metrics(model_name="anthropic/claude-sonnet-4-5")
+    parent.add_cost(0.05)
+    child_mixed = Metrics(model_name="default")
+    child_mixed.add_cost(0.02)
+    conversation_stats.usage_to_metrics["main"] = parent
+    conversation_stats.usage_to_metrics["task:task_00000001"] = child_mixed
+
+    combined = conversation_stats.get_combined_metrics()
+
+    assert combined.model_name == "default"
+    assert combined.accumulated_cost == 0.07
+    assert len(combined.costs) == 2
+
+
 def test_get_combined_metrics_snapshot_preserves_model_attribution(
     conversation_stats,
 ):
