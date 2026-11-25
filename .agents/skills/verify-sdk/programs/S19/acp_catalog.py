@@ -16,6 +16,7 @@ from sdk_verify import blocked, emit
 
 from openhands.sdk.settings import (
     ACP_PROVIDERS,
+    ACPAgentSettings,
     default_acp_file_secrets,
     detect_acp_provider_by_agent_name,
     get_acp_provider,
@@ -39,10 +40,26 @@ out["commands_pin_catalog"] = {
     for key, info in ACP_PROVIDERS.items()
     if key in ACP_INSTALL_CATALOG
 }
+out["native_commands"] = {
+    key: list(info.default_command)
+    for key, info in ACP_PROVIDERS.items()
+    if info.default_command[0] != "npx"
+}
+out["catalog_is_npm_providers"] = set(ACP_INSTALL_CATALOG) == {
+    key for key, info in ACP_PROVIDERS.items() if info.default_command[0] == "npx"
+}
 out["api_key_env"] = {k: v.api_key_env_var for k, v in ACP_PROVIDERS.items()}
 out["by_agent_name"] = {
     name: getattr(detect_acp_provider_by_agent_name(name), "key", None)
-    for name in ("claude-agent-acp", "Codex-ACP", "gemini-cli", "my-own-agent")
+    for name in (
+        "claude-agent-acp",
+        "Codex-ACP",
+        "gemini-cli",
+        "Antigravity",
+        "some-random-agy-utility",
+        "legacy",
+        "my-own-agent",
+    )
 }
 out["by_command"] = {
     label: getattr(detect_acp_provider_by_command(cmd), "key", None)
@@ -51,8 +68,33 @@ out["by_command"] = {
         ("bin_claude", ["/opt/node_modules/.bin/claude-agent-acp"]),
         ("wrapper", ["my-codex-acp-wrapper"]),
         ("custom", ["python", "fake_acp.py"]),
+        ("agy", ["agy", "acp"]),
+        ("bin_agy", ["/usr/local/bin/agy", "acp"]),
+        ("agy_wrapper", ["/usr/bin/my-agy-wrapper"]),
+        ("legacy", ["legacy", "acp"]),
     )
 }
+# A native provider: the settings resolve its own launcher, and an explicit
+# path survives a JSON round trip.
+antigravity = {}
+for label, command in (
+    ("default", []),
+    ("explicit", ["/opt/antigravity/bin/agy", "acp"]),
+):
+    settings = ACPAgentSettings(acp_server="antigravity", acp_command=command)
+    restored = ACPAgentSettings.model_validate_json(settings.model_dump_json())
+    agent = restored.create_agent()
+    antigravity[label] = {
+        "server": agent.acp_server,
+        "command": agent.acp_command,
+        "detected": getattr(
+            detect_acp_provider_by_command(agent.acp_command), "key", None
+        ),
+    }
+antigravity["api_key_env"] = ACP_PROVIDERS["antigravity"].api_key_env_var
+antigravity["session_mode"] = ACP_PROVIDERS["antigravity"].default_session_mode
+antigravity["in_install_catalog"] = "antigravity" in ACP_INSTALL_CATALOG
+out["antigravity"] = antigravity
 out["file_secrets"] = {
     k: [s.secret_name for s in v.file_secrets]
     for k, v in ACP_PROVIDERS.items()

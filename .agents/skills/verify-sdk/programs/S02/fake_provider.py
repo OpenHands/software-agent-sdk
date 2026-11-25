@@ -35,6 +35,11 @@ Steps (one per request):
                                                     .cache_write_tokens)
   {"reasoning": "...", "stream_summary": true}       Responses stream: summary
                                                     text deltas
+  {"end_turn": false, ...}                          provider turn marker: a
+                                                    top-level `end_turn` on the
+                                                    chat reply, the final chat
+                                                    stream chunk and the
+                                                    Responses reply
 A request whose body has `"stream": true` is answered as server-sent events.
 """
 
@@ -235,6 +240,8 @@ class FakeProvider:
                 },
             },
         }
+        if "end_turn" in step:
+            base["end_turn"] = step["end_turn"]
         if step.get("empty"):
             return {**base, "choices": []}
         calls = _calls(step)
@@ -333,6 +340,8 @@ class FakeProvider:
             "total_tokens": usage["prompt_tokens"] + usage["completion_tokens"],
             "prompt_tokens_details": {"cached_tokens": usage["cached"]},
         }
+        if "end_turn" in step:
+            last["end_turn"] = step["end_turn"]
         out.append((None, last))
         return out
 
@@ -427,7 +436,9 @@ class FakeProvider:
 
     def responses_reply(self, step: dict[str, Any]) -> dict[str, Any]:
         usage = _usage(step)
+        marker = {"end_turn": step["end_turn"]} if "end_turn" in step else {}
         return {
+            **marker,
             "id": f"resp_{len(self.requests)}",
             "object": "response",
             "created_at": int(time.time()),
