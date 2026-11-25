@@ -36,7 +36,7 @@ Documentation = "https://docs.openhands.dev/sdk"
 "Bug Tracker" = "https://github.com/OpenHands/software-agent-sdk/issues"
 
 [project.optional-dependencies]
-boto3 = ["boto3>=1.44.4"]
+boto3 = ["boto3>=1.44.5"]
 toolshield = ["toolshield>=0.1.3,<0.2"]
 vertex = ["google-cloud-aiplatform>=2.9.0"]
 
