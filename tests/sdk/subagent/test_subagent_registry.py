@@ -1018,6 +1018,67 @@ def test_register_file_agents_passes_mcp_config_to_agent(tmp_path: Path) -> None
     }
 
 
+def test_file_agent_applies_condenser_tuning_at_spawn(tmp_path: Path) -> None:
+    agents = tmp_path / ".agents" / "agents"
+    agents.mkdir(parents=True)
+    (agents / "tuned.md").write_text(
+        "---\nname: tuned\n"
+        "condenser: {max_size: 600, keep_first: 8, max_tokens: 5000}\n"
+        "---\n\nFocus.\n"
+    )
+
+    assert "tuned" in register_file_agents(tmp_path)
+    factory = get_agent_factory("tuned")
+    agent = factory.factory_func(_make_test_llm())
+    condenser = agent.condenser
+    assert isinstance(condenser, LLMSummarizingCondenser)
+    assert (condenser.max_size, condenser.keep_first, condenser.max_tokens) == (
+        600,
+        8,
+        5000,
+    )
+    assert condenser.llm.usage_id == "condenser"
+    assert condenser.llm.model == agent.llm.model
+    assert condenser.llm.metrics is not agent.llm.metrics
+    another = factory.factory_func(_make_test_llm()).condenser
+    assert isinstance(another, LLMSummarizingCondenser)
+    assert another.llm.metrics is not condenser.llm.metrics
+
+
+def test_file_agent_can_disable_condenser_in_tuning(tmp_path: Path) -> None:
+    agents = tmp_path / ".agents" / "agents"
+    agents.mkdir(parents=True)
+    (agents / "disabled.md").write_text(
+        "---\nname: disabled\ncondenser: {enabled: false}\n---\n\nFocus.\n"
+    )
+
+    assert "disabled" in register_file_agents(tmp_path)
+    agent = get_agent_factory("disabled").factory_func(_make_test_llm())
+    assert isinstance(agent.condenser, NoOpCondenser)
+
+
+def test_invalid_file_agent_condenser_names_file(tmp_path: Path) -> None:
+    agents = tmp_path / ".agents" / "agents"
+    agents.mkdir(parents=True)
+    (agents / "invalid.md").write_text(
+        "---\nname: invalid\ncondenser: {max_tokens: -1}\n---\n\nFocus.\n"
+    )
+    with pytest.raises(ValueError, match=r"invalid\.md.*condenser"):
+        register_file_agents(tmp_path)
+
+
+def test_unbuildable_file_agent_condenser_names_file(tmp_path: Path) -> None:
+    agents = tmp_path / ".agents" / "agents"
+    agents.mkdir(parents=True)
+    (agents / "bad-size.md").write_text(
+        "---\nname: bad-size\ncondenser: {max_size: 10, keep_first: 8}\n---\n\nFocus.\n"
+    )
+    assert "bad-size" in register_file_agents(tmp_path)
+    factory = get_agent_factory("bad-size")
+    with pytest.raises(ValueError, match=r"bad-size\.md.*condenser"):
+        factory.factory_func(_make_test_llm())
+
+
 def test_factory_attaches_default_condenser() -> None:
     """Sub-agents get a summarizing condenser by default (parity with the top-level
     agent) so deep runs auto-compact instead of erroring on context overflow."""
