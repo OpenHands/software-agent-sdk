@@ -135,7 +135,9 @@ Supported YAML frontmatter keys (see `AgentDefinition.load` in `schema.py`):
 - `permission_mode` (optional): `always_confirm`, `never_confirm`, or `confirm_risky`;
   omission inherits the parent confirmation policy
 - `condenser` (optional): omission uses the default summarizing condenser; `none` or
-  `false` disables condensation; a mapping configures a condenser
+  `false` disables condensation; a mapping without `kind` can override `max_size`,
+  `keep_first`, and `max_tokens` using the agent's LLM (`enabled: false` disables
+  it). A mapping with `kind` specifies a full condenser.
 
 **Unknown keys are preserved** in `AgentDefinition.metadata`.
 

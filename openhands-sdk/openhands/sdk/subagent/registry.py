@@ -35,7 +35,7 @@ from openhands.sdk.subagent.load import (
     load_project_agents,
     load_user_agents,
 )
-from openhands.sdk.subagent.schema import AgentDefinition
+from openhands.sdk.subagent.schema import AgentDefinition, SubagentCondenserTuning
 from openhands.sdk.utils.deprecation import warn_deprecated
 
 
@@ -211,7 +211,9 @@ def agent_definition_to_factory(
         from openhands.sdk.agent.agent import Agent
         from openhands.sdk.context.agent_context import AgentContext
         from openhands.sdk.context.condenser import (
+            CondenserBase,
             LLMSummarizingCondenser,
+            NoOpCondenser,
             default_condenser,
         )
         from openhands.sdk.tool.registry import list_registered_tools
@@ -258,7 +260,27 @@ def agent_definition_to_factory(
         # top-level agent) so deep runs auto-compact instead of erroring on context
         # overflow. The condenser LLM needs a distinct usage_id or its tokens are
         # reported together with the agent's. A NoOpCondenser disables condensation.
-        if agent_def.condenser is not None:
+        condenser: CondenserBase
+        if isinstance(agent_def.condenser, SubagentCondenserTuning):
+            tuning = agent_def.condenser
+            if not tuning.enabled:
+                condenser = NoOpCondenser()
+            else:
+                fresh_llm = llm.model_copy(update={"usage_id": "condenser"})
+                fresh_llm.reset_metrics()
+                try:
+                    condenser = default_condenser(
+                        fresh_llm,
+                        max_size=tuning.max_size,
+                        keep_first=tuning.keep_first,
+                        max_tokens=tuning.max_tokens,
+                    )
+                except ValueError as exc:
+                    source = agent_def.source or agent_def.name
+                    raise ValueError(
+                        f"{source}: invalid condenser configuration: {exc}"
+                    ) from exc
+        elif agent_def.condenser is not None:
             condenser = agent_def.condenser
             if isinstance(condenser, LLMSummarizingCondenser):
                 # Freshen per spawn: a distinct LLM with its own metrics (so
