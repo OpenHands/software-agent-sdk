@@ -245,6 +245,27 @@ def create_mock_model_response(content: str) -> ModelResponse:
 
 
 @patch("openhands.sdk.llm.llm.LLM._transport_call", autospec=True)
+def test_ask_agent_reuses_normal_tool_schemas(mock_transport, tmp_path, agent):
+    mock_transport.return_value = create_mock_model_response("Done.")
+    conv = Conversation(
+        agent=Agent(llm=agent.llm, tools=[], include_default_tools=["SwitchLLMTool"]),
+        workspace=str(tmp_path),
+        visualizer=None,
+    )
+    try:
+        conv.send_message("Check in.")
+        conv.run()
+        normal_tools = mock_transport.call_args.kwargs["tools"]
+        conv.ask_agent("How is it going?")
+        question_tools = mock_transport.call_args.kwargs["tools"]
+    finally:
+        conv.close()
+
+    assert any(tool["function"]["name"] == "switch_llm" for tool in normal_tools)
+    assert question_tools == normal_tools
+
+
+@patch("openhands.sdk.llm.llm.LLM._transport_call", autospec=True)
 def test_ask_agent_disables_streaming_when_llm_streams(mock_transport, tmp_path):
     """Regression test (sibling of PR #3901): a ``stream=True`` agent LLM must
     still answer ask_agent even though the path passes no ``on_token`` callback.

@@ -9,6 +9,7 @@ categories; they never build ``HTTPException`` (a guard test enforces it).
 
 from collections.abc import Mapping
 from typing import Any
+from uuid import UUID
 
 from fastapi import status
 
@@ -25,6 +26,7 @@ from openhands.sdk.errors import (
     NotSupported,
     OperationFailed,
     RateLimited,
+    TooLarge,
     Unauthenticated,
     Unavailable,
     Unprocessable,
@@ -40,6 +42,7 @@ ERROR_STATUS: Mapping[type[DomainError], int] = {
     NotFound: status.HTTP_404_NOT_FOUND,
     Conflict: status.HTTP_409_CONFLICT,
     Gone: status.HTTP_410_GONE,
+    TooLarge: status.HTTP_413_CONTENT_TOO_LARGE,
     Misdirected: status.HTTP_421_MISDIRECTED_REQUEST,
     Unprocessable: status.HTTP_422_UNPROCESSABLE_CONTENT,
     RateLimited: status.HTTP_429_TOO_MANY_REQUESTS,
@@ -75,6 +78,28 @@ class ForwardedStatus(DomainError):
     ) -> None:
         super().__init__(detail, retry_after=retry_after)
         self.status_code = status_code
+
+
+class GatewayTimeout(UpstreamTimeout):
+    """A gateway timeout whose turn may still run.
+
+    ``retry_safe`` is true only when no user message was saved.
+    """
+
+    def __init__(
+        self,
+        *,
+        retry_safe: bool,
+        conversation_id: UUID | None = None,
+        runtime_timeout: bool = False,
+    ) -> None:
+        super().__init__(
+            "Conversation runtime timed out"
+            if runtime_timeout
+            else "Agent run timed out"
+        )
+        self.retry_safe = retry_safe
+        self.conversation_id = conversation_id
 
 
 def _category_status(error_type: type[DomainError]) -> int:

@@ -2738,6 +2738,21 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             **kwargs,
         }
 
+    @staticmethod
+    def _combine_chat_stream(
+        chunks: list[ModelResponseStream], messages: list[dict[str, Any]]
+    ) -> ModelResponse:
+        response = litellm.stream_chunk_builder(chunks, messages=messages)
+        assert isinstance(response, ModelResponse), (
+            f"Expected ModelResponse, got {type(response)}"
+        )
+        # LiteLLM's builder drops extra fields from its streamed chunks.
+        for chunk in reversed(chunks):
+            end_turn = (chunk.model_extra or {}).get("end_turn")
+            if isinstance(end_turn, bool):
+                return response.model_copy(update={"end_turn": end_turn})
+        return response
+
     def _transport_call(
         self,
         *,
@@ -2766,7 +2781,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 for chunk in stream:
                     on_token(chunk)
                     chunks.append(chunk)
-                ret = litellm.stream_chunk_builder(chunks, messages=messages)
+                ret = self._combine_chat_stream(chunks, messages)
 
             assert isinstance(ret, ModelResponse), (
                 f"Expected ModelResponse, got {type(ret)}"
@@ -2819,7 +2834,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         for chunk in synced_chunks:
                             await _invoke_token_callback(on_token, chunk)
                             chunks.append(chunk)
-                    ret = litellm.stream_chunk_builder(chunks, messages=messages)
+                    ret = self._combine_chat_stream(chunks, messages)
 
                 assert isinstance(ret, ModelResponse), (
                     f"Expected ModelResponse, got {type(ret)}"

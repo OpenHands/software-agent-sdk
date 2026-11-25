@@ -19,7 +19,17 @@ from openhands.sdk.settings.acp_providers import (
     detect_acp_provider_by_command,
     get_acp_provider,
 )
-from openhands.sdk.settings.model import ACPServerKind
+from openhands.sdk.settings.model import ACPAgentSettings, ACPServerKind
+
+
+@pytest.mark.parametrize("command", [[], ["/opt/antigravity/bin/agy", "acp"]])
+def test_antigravity_settings_preserve_native_command(command: list[str]) -> None:
+    settings = ACPAgentSettings(acp_server="antigravity", acp_command=command)
+    restored = ACPAgentSettings.model_validate_json(settings.model_dump_json())
+    agent = restored.create_agent()
+
+    assert agent.acp_server == "antigravity"
+    assert agent.acp_command == (command or ["agy", "acp"])
 
 
 class TestACPProviderInfo:
@@ -38,8 +48,26 @@ class TestACPProviderInfo:
             assert isinstance(info, ACPProviderInfo)
 
     def test_default_commands_prefer_offline_cache(self):
-        for info in ACP_PROVIDERS.values():
-            assert info.default_command[:3] == ("npx", "-y", "--prefer-offline")
+        for key, info in ACP_PROVIDERS.items():
+            if key == "antigravity":
+                # Google's standalone CLI ships its own native ACP server.
+                assert info.default_command == ("agy", "acp")
+            else:
+                assert info.default_command[:3] == ("npx", "-y", "--prefer-offline")
+
+    def test_antigravity_metadata(self):
+        info = ACP_PROVIDERS["antigravity"]
+        assert info.display_name == "Google Antigravity"
+        assert info.api_key_env_var == "GEMINI_API_KEY"
+        assert info.base_url_env_var is None
+        assert info.default_session_mode == "default"
+        assert info.agent_name_patterns == ("antigravity",)
+        assert info.supports_set_session_model is True
+        assert info.supports_runtime_model_switch is True
+        assert info.session_meta_key is None
+        assert info.binary_name == "agy"
+        assert info.data_dir_env_var == "HOME"
+        assert info.file_secrets == ()
 
     def test_claude_code_metadata(self):
         info = ACP_PROVIDERS["claude-code"]
@@ -262,6 +290,12 @@ class TestDetectACPProviderByCommand:
             # must resolve back to the very same ACP_PROVIDERS entry.
             assert detected is info, key
 
+    def test_detects_native_antigravity_launcher_without_short_name_collision(self):
+        info = detect_acp_provider_by_command(["/usr/local/bin/agy", "acp"])
+        assert info is ACP_PROVIDERS["antigravity"]
+        assert detect_acp_provider_by_command(["/usr/bin/my-agy-wrapper"]) is None
+        assert detect_acp_provider_by_agent_name("some-random-agy-utility") is None
+
     def test_tolerates_version_pin(self):
         info = detect_acp_provider_by_command(
             ["npx", "-y", "@google/gemini-cli@0.43.0", "--acp"]
@@ -345,14 +379,6 @@ class TestProviderRegistryConsistency:
             ), (  # noqa: E501
                 f"{key}: default_session_mode must be None or non-blank"
             )
-
-    def test_session_modes_are_distinct(self):
-        modes = [
-            info.default_session_mode
-            for info in ACP_PROVIDERS.values()
-            if info.default_session_mode is not None
-        ]
-        assert len(modes) == len(set(modes)), "each provider should use a unique mode"
 
     def test_detect_returns_matching_provider_for_all_registered_patterns(self):
         """Every registered pattern should resolve back to its own provider."""

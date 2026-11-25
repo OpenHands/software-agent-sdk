@@ -1,13 +1,15 @@
-"""Built-in tool that classifies the current task and switches LLM profile.
+"""Built-in tool that classifies the current task and switches LLM route.
 
 The tool reads the *active meta-profile* (see
 :class:`~openhands.sdk.llm.meta_profile_store.MetaProfile`), asks the
 meta-profile's ``classifier_model`` to categorize the current task using the
-last few conversation messages, and switches the conversation to the LLM
-profile mapped to the chosen class. When the classifier produces no usable
-answer, the tool fails loudly (returns an error observation) so the miss is
-visible and retryable, instead of silently routing to a default model.
+last few conversation messages, and switches the conversation to the chosen
+LLM profile or RouterLLM route. When the classifier produces no usable answer,
+the tool fails loudly (returns an error observation) so the miss is visible and
+retryable, instead of silently routing to a default model.
 """
+
+from __future__ import annotations
 
 import json
 import re
@@ -34,6 +36,7 @@ from openhands.sdk.tool.tool import (
 if TYPE_CHECKING:
     from openhands.sdk.conversation.impl.local_conversation import LocalConversation
     from openhands.sdk.conversation.state import ConversationState
+    from openhands.sdk.llm.router.base import RouterLLM
 
 
 logger = get_logger(__name__)
@@ -64,11 +67,13 @@ class ClassifyAndSwitchLLMObservation(Observation):
     )
     model: str | None = Field(
         default=None,
-        description="Name of the LLM profile that was activated.",
+        description="Name of the LLM profile or RouterLLM route that was activated.",
     )
     active_model: str | None = Field(
         default=None,
-        description="Model configured by the activated profile, when available.",
+        description=(
+            "Underlying model configured by the activated target, when available."
+        ),
     )
 
     @property
@@ -122,7 +127,12 @@ def parse_class_index(text: str, num_classes: int) -> int:
     return 0
 
 
-def render_direct_prompt(meta: MetaProfile, instance_text: str) -> str:
+def render_direct_prompt(
+    meta: MetaProfile,
+    instance_text: str,
+    *,
+    model_table: str | None = None,
+) -> str:
     """Render the direct-routing prompt body (without the system prefix).
 
     Only the minimal placeholders supported by meta-profiles are substituted.
@@ -135,7 +145,7 @@ def render_direct_prompt(meta: MetaProfile, instance_text: str) -> str:
     prompt = meta.prompt_template or ""
     values = {
         "instance_text": instance_text,
-        "model_table": meta.model_table or "",
+        "model_table": (meta.model_table or "") if model_table is None else model_table,
     }
 
     def replace(match: re.Match[str]) -> str:
@@ -180,27 +190,86 @@ def build_classifier_messages(meta: MetaProfile, transcript: str) -> list[Messag
     ]
 
 
-def parse_direct_model(text: str, available_models: Sequence[str]) -> str | None:
-    """Parse a direct-routing classifier reply into a saved profile name.
+def _router_route_table(router: RouterLLM, meta: MetaProfile) -> str:
+    class_descriptions = {cls.model: cls.description for cls in meta.classes}
+    lines: list[str] = []
+    for route in router.route_infos():
+        details: list[str] = []
+        if route.label and route.label != route.name:
+            details.append(route.label)
+        if route.model:
+            details.append(f"model: {route.model}")
+        if route.name in class_descriptions:
+            details.append(class_descriptions[route.name])
+        suffix = f" — {'; '.join(details)}" if details else ""
+        lines.append(f"- {route.name}{suffix}")
+    return "\n".join(lines)
 
-    The expected contract is JSON with a ``model`` field, but the parser also
-    scans the raw response for an allowed profile name to tolerate fenced JSON
-    or small formatting mistakes. Matching is case-insensitive, but the returned
-    value is the canonical saved profile name from ``available_models``.
-    """
+
+def build_router_classifier_messages(
+    meta: MetaProfile,
+    transcript: str,
+    router: RouterLLM,
+) -> list[Message]:
+    """Build classifier messages for choosing an active RouterLLM route."""
+    route_table = _router_route_table(router, meta)
+    if meta.prompt_template is not None:
+        prompt = render_direct_prompt(meta, transcript, model_table=route_table)
+    else:
+        prompt = (
+            "Based on the recent conversation, pick the single RouterLLM route "
+            "that should handle the current task.\n\n"
+            f"Routes:\n{route_table}\n\n"
+            f"Recent conversation:\n{transcript}\n\n"
+            "Respond with ONLY JSON: "
+            '{"route": "<exact route name>", "reason": "<short>"}. '
+            "If none of the routes clearly apply, use an empty route string."
+        )
+    return [
+        Message(
+            role="system",
+            content=[TextContent(text=_CLASSIFIER_SYSTEM_PREFIX)],
+        ),
+        Message(role="user", content=[TextContent(text=prompt)]),
+    ]
+
+
+def _active_model_name(conversation: LocalConversation) -> str | None:
+    from openhands.sdk.llm.router.base import RouterLLM
+
+    llm = conversation.agent.llm
+    if isinstance(llm, RouterLLM) and llm.active_llm is not None:
+        return llm.active_llm.model
+    return llm.model
+
+
+def _classifier_reply_parts(text: str) -> tuple[str, str]:
+    """Return normalized reply text and an optional JSON model/route candidate."""
     raw = (text or "").strip()
     raw = re.sub(r"^```[a-zA-Z]*\n?", "", raw)
     raw = re.sub(r"\n?```$", "", raw).strip()
-    profile_by_casefold = {model.casefold(): model for model in available_models}
 
     candidate = ""
     try:
         match = re.search(r"\{.*\}", raw, re.DOTALL)
         if match:
             obj = json.loads(match.group(0))
-            candidate = str(obj.get("model", "")).strip()
+            candidate = str(obj.get("model") or obj.get("route") or "").strip()
     except Exception:  # noqa: BLE001
         candidate = ""
+    return raw, candidate
+
+
+def parse_direct_model(text: str, available_models: Sequence[str]) -> str | None:
+    """Parse a direct-routing classifier reply into a target name.
+
+    The expected contract is JSON with a ``model`` or ``route`` field, but the
+    parser also scans the raw response for an allowed target name to tolerate
+    fenced JSON or small formatting mistakes. Matching is case-insensitive, but
+    the returned value is the canonical name from ``available_models``.
+    """
+    raw, candidate = _classifier_reply_parts(text)
+    profile_by_casefold = {model.casefold(): model for model in available_models}
 
     if candidate:
         return profile_by_casefold.get(candidate.casefold())
@@ -212,13 +281,57 @@ def parse_direct_model(text: str, available_models: Sequence[str]) -> str | None
     return None
 
 
-def _saved_profile_names(conversation: "LocalConversation") -> list[str]:
+def parse_router_route(text: str, router: RouterLLM) -> str | None:
+    """Parse a classifier reply into a RouterLLM route name.
+
+    Route names are authoritative, but classifiers often return the underlying
+    provider model (for example ``openhands/gpt-5.5``) or a display label. Accept
+    those aliases only when they map to exactly one route so ambiguous duplicate
+    model IDs still fail visibly instead of silently choosing the wrong route.
+    """
+    target = parse_direct_model(text, router.available_routes())
+    if target is not None:
+        return target
+
+    raw, candidate = _classifier_reply_parts(text)
+    alias_to_routes: dict[str, set[str]] = {}
+    alias_display: dict[str, str] = {}
+    for route in router.route_infos():
+        for alias in (route.label, route.model):
+            alias = (alias or "").strip()
+            if not alias or alias == route.name:
+                continue
+            key = alias.casefold()
+            alias_to_routes.setdefault(key, set()).add(route.name)
+            alias_display[key] = alias
+
+    def unique_route_for_alias(alias: str) -> str | None:
+        routes = alias_to_routes.get(alias.casefold())
+        if routes is None or len(routes) != 1:
+            return None
+        return next(iter(routes))
+
+    if candidate:
+        target = unique_route_for_alias(candidate)
+        if target is not None:
+            return target
+
+    scan = raw.casefold()
+    for key in sorted(alias_display, key=lambda k: len(alias_display[k]), reverse=True):
+        if key in scan:
+            target = unique_route_for_alias(alias_display[key])
+            if target is not None:
+                return target
+    return None
+
+
+def _saved_profile_names(conversation: LocalConversation) -> list[str]:
     """Return saved LLM profile names without ``.json`` suffixes."""
     return [name.removesuffix(".json") for name in conversation._profile_store.list()]
 
 
 def _recent_messages_text(
-    conversation: "LocalConversation", limit: int = _RECENT_MESSAGE_LIMIT
+    conversation: LocalConversation, limit: int = _RECENT_MESSAGE_LIMIT
 ) -> str:
     """Return a transcript of the last ``limit`` conversation messages.
 
@@ -310,7 +423,7 @@ class ClassifyAndSwitchLLMExecutor(ToolExecutor):
     def __call__(
         self,
         action: ClassifyAndSwitchLLMAction,  # noqa: ARG002
-        conversation: "LocalConversation | None" = None,
+        conversation: LocalConversation | None = None,
     ) -> ClassifyAndSwitchLLMObservation:
         from openhands.sdk.llm import content_to_str
 
@@ -355,9 +468,19 @@ class ClassifyAndSwitchLLMExecutor(ToolExecutor):
             )
             conversation.llm_registry.add(classifier_llm)
 
-        # 2) Single classifier call over the recent conversation.
+        # 2) Single classifier call over the recent conversation. If the active
+        #    LLM is a RouterLLM, classify across its route names instead of saved
+        #    profile names so the router remains the conversation LLM.
         transcript = _recent_messages_text(conversation) or "(no messages yet)"
-        messages = build_classifier_messages(meta, transcript)
+        from openhands.sdk.llm.router.base import RouterLLM
+
+        router_llm = conversation.agent.llm
+        use_router_routes = isinstance(router_llm, RouterLLM)
+        messages = (
+            build_router_classifier_messages(meta, transcript, router_llm)
+            if use_router_routes
+            else build_classifier_messages(meta, transcript)
+        )
         try:
             response = classifier_llm.completion(
                 messages,
@@ -371,9 +494,47 @@ class ClassifyAndSwitchLLMExecutor(ToolExecutor):
 
         reply = "\n".join(content_to_str(response.message.content))
 
-        # 3) Resolve the target profile (chosen class or direct model). No
-        #    silent fallback: when the classifier produces no usable answer the
-        #    tool returns an error observation so the miss is visible/retryable.
+        # 3a) RouterLLM mode: resolve and pin an existing router route.
+        if use_router_routes:
+            target_route = parse_router_route(reply, router_llm)
+            if target_route is None:
+                return ClassifyAndSwitchLLMObservation.from_text(
+                    text=(
+                        "Classifier reply did not resolve to an available RouterLLM "
+                        f"route (reply: {reply!r}); refusing to silently route to "
+                        "a default. Retry the tool or update the router route table."
+                    ),
+                    is_error=True,
+                )
+            chosen_class = f"route: {target_route}"
+            try:
+                conversation.switch_routed_llm(target_route)
+            except Exception as exc:
+                return ClassifyAndSwitchLLMObservation.from_text(
+                    text=(
+                        f"Failed to switch to RouterLLM route '{target_route}': "
+                        f"{type(exc).__name__}: {exc}"
+                    ),
+                    is_error=True,
+                    model=target_route,
+                    chosen_class=chosen_class,
+                )
+
+            active_model = _active_model_name(conversation)
+            return ClassifyAndSwitchLLMObservation.from_text(
+                text=(
+                    f"Classified task as '{chosen_class}' and switched to "
+                    f"RouterLLM route '{target_route}' (model '{active_model}'). "
+                    "Future agent steps will use this route."
+                ),
+                chosen_class=chosen_class,
+                model=target_route,
+                active_model=active_model,
+            )
+
+        # 3b) Profile mode: resolve the target profile (chosen class or direct
+        #     model). No silent fallback: when the classifier produces no usable
+        #     answer the tool returns an error observation so the miss is visible.
         if meta.prompt_template is None:
             index = parse_class_index(reply, len(meta.classes))
             if index == 0:
@@ -436,7 +597,7 @@ class ClassifyAndSwitchLLMExecutor(ToolExecutor):
                 chosen_class=chosen_class,
             )
 
-        active_model = conversation.agent.llm.model
+        active_model = _active_model_name(conversation)
         label = chosen_class or target_profile
         return ClassifyAndSwitchLLMObservation.from_text(
             text=(
@@ -452,12 +613,12 @@ class ClassifyAndSwitchLLMExecutor(ToolExecutor):
 
 _DESCRIPTION = (
     "Classify the current task and switch this conversation to the most "
-    "suitable saved LLM profile.\n\n"
+    "suitable saved LLM profile or RouterLLM route.\n\n"
     "Use this near the start of a task (or when the task changes) to route "
     "the work to the best model. A classifier model inspects the recent "
-    "conversation and picks a category from the active meta-profile; the "
-    "conversation then switches to that category's LLM profile. The switch "
-    "takes effect on the next LLM call."
+    "conversation and, when the active conversation LLM is a RouterLLM, picks "
+    "one of that router's route names. Otherwise it picks a target profile from "
+    "the active meta-profile. The switch takes effect on the next LLM call."
 )
 
 
@@ -472,7 +633,7 @@ class ClassifyAndSwitchLLMTool(
     @classmethod
     def create(
         cls,
-        conv_state: "ConversationState | None" = None,  # noqa: ARG003
+        conv_state: ConversationState | None = None,  # noqa: ARG003
         active_meta_profile: str | None = None,
         meta_profile: MetaProfile | Mapping[str, object] | None = None,
         meta_profile_llms: Mapping[str, LLM | Mapping[str, object]] | None = None,

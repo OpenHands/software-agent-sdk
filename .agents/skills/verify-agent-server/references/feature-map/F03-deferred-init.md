@@ -100,10 +100,12 @@ Routes: `GET /api/init`, `POST /api/init`
   capacity), and a CORS preflight `OPTIONS /api/settings` with an `Origin`
   (CORS allowlist); the delivered webhook's deliveries are read from an HTTP
   sink.
-- SDK / TypeScript client: no consumer method calls `/api/init`; only the
-  generated TypeScript types describe it
-  (`clients/typescript/src/generated/agent-server-schema.ts`). The caller is a
-  warm-pool orchestrator.
+- TypeScript client: `InitClient.getStatus()` (`GET /api/init`) and
+  `InitClient.initialize(request, {initApiKey})` (`POST /api/init`, sending
+  `initApiKey` as `X-Init-API-Key`), also reachable as
+  `AgentServerClient.init` and `ConversationManager.init`; driven against a
+  dormant server by `F34.init-client`. The Python SDK has no method for
+  `/api/init`. The usual caller is a warm-pool orchestrator.
 
 ## Driving it with control-agent-server
 

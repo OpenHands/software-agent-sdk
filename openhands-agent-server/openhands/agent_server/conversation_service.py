@@ -1,4 +1,5 @@
 import asyncio
+import contextvars
 import importlib
 import json
 import logging
@@ -7,6 +8,8 @@ from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID, uuid4
@@ -18,13 +21,19 @@ from pydantic import BaseModel
 from openhands.agent_server.config import ACPSkillSourcing, Config, WebhookSpec
 from openhands.agent_server.conversation_lease import (
     DEFAULT_LEASE_TTL_SECONDS,
+    ConversationLease,
     ConversationLeaseHeldError,
 )
 from openhands.agent_server.event_service import (
     LEASE_RENEW_INTERVAL_SECONDS,
     EventService,
     RunSlot,
+)
+from openhands.agent_server.exceptions import (
+    CredentialBindingActivationRequired,
+    InvalidParentConversation,
     ServiceInactive,
+    UnavailableAgentTool,
 )
 from openhands.agent_server.experimental_features import (
     experimental_feature_tools,
@@ -44,7 +53,9 @@ from openhands.agent_server.local_storage import (
 from openhands.agent_server.mcp_oauth_store import (
     create_settings_backed_mcp_tool_provider,
 )
+from openhands.agent_server.message_sender import sender_message_line
 from openhands.agent_server.models import (
+    BrokenConversationInfo,
     ConversationInfo,
     ConversationPage,
     ConversationSortOrder,
@@ -60,6 +71,8 @@ from openhands.agent_server.persistence import (
     ServerStores,
     run_store,
 )
+from openhands.agent_server.project_service import ProjectService
+from openhands.agent_server.project_wake import project_sender_line
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.agent_server.telemetry import (
@@ -74,7 +87,9 @@ from openhands.agent_server.utils import safe_rmtree, utc_now
 from openhands.sdk import LLM, Event, Message, TextContent
 from openhands.sdk.agent import ACPAgent
 from openhands.sdk.agent.acp_file_credentials import CODEX_AUTH_SECRET_NAME
-from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.agent.base import (
+    AgentBase,
+)
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.persistence_const import BASE_STATE
 from openhands.sdk.conversation.request import ConversationWorktreeOptions
@@ -86,17 +101,21 @@ from openhands.sdk.conversation.title_utils import (
     extract_message_text,
     generate_title_from_message,
 )
+from openhands.sdk.conversation.types import (
+    PROJECT_TAG_KEY,
+    conversation_sender,
+)
 from openhands.sdk.credential import (
     CredentialAuthorizationRejected,
     CredentialBindingError,
     VersionedCredentialBinding,
 )
-from openhands.sdk.errors import Conflict
 from openhands.sdk.event import MessageEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.launch import LaunchedAgent, LaunchStoreError, LaunchStores, finalize
+from openhands.sdk.launch.finalize import ProjectRole
 from openhands.sdk.llm.call_context import LLMCallContext
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.mcp.utils import MCPToolProvider
@@ -118,13 +137,6 @@ _AUTOMATION_TAG_KEYS = ("automationtrigger", "automationid", "automationrunid")
 # before the sandbox freezes.
 CONVERSATION_DELETED_WS_CLOSE = (4004, "Conversation deleted")
 SERVER_SHUTDOWN_WS_CLOSE = (1012, "Server shutting down")
-
-
-class CredentialBindingActivationRequired(Conflict, RuntimeError):
-    """A runtime credential binding must be activated first; retry after it."""
-
-    def __init__(self, detail: str) -> None:
-        super().__init__(detail, extra={"retryable": True})
 
 
 def _build_worktree_guidance(
@@ -335,16 +347,6 @@ def _create_conversation_worktree(plan: _WorktreePlan) -> LocalWorkspace:
 logger = logging.getLogger(__name__)
 
 
-class InvalidParentConversation(ValueError):
-    """``parent_conversation_id`` is unknown, self-referential, or in
-    a different workspace."""
-
-
-class UnavailableAgentTool(ValueError):
-    """The agent names a tool whose ``tool_module_qualnames`` module the server
-    cannot import, so the agent could never be built."""
-
-
 def _same_workspace(a: LocalWorkspace, b: LocalWorkspace) -> bool:
     return Path(a.working_dir).resolve() == Path(b.working_dir).resolve()
 
@@ -423,8 +425,13 @@ def _compose_conversation_info(
     supports_runtime_model_switch = bool(
         agent_state.get("acp_supports_runtime_model_switch", False)
     )
+    state_fields = state.model_dump(mode="json", context={"use_snapshot": True})
+    # A tag PATCH writes ``meta.json`` first, then waits for the state lock to
+    # set the state's tags, which a run can hold for a whole LLM step. Rows
+    # composed meanwhile (from ``base_state.json``) must show the new tags.
+    state_fields["tags"] = dict(stored.tags)
     return ConversationInfo(
-        **state.model_dump(mode="json", context={"use_snapshot": True}),
+        **state_fields,
         title=stored.title,
         metrics=stored.metrics,
         created_at=stored.created_at,
@@ -534,6 +541,7 @@ def _stored_metadata_signature(stored: StoredConversation) -> int:
         mode="json",
         include={
             "title",
+            "tags",
             "metrics",
             "created_at",
             "updated_at",
@@ -615,6 +623,9 @@ class ConversationService:
     _conversation_records: dict[UUID, _ConversationRecord] = field(
         default_factory=dict, init=False
     )
+    _broken_metadata: dict[UUID, BrokenConversationInfo] = field(
+        default_factory=dict, init=False
+    )
     _lifecycle_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
     _worktree_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
     _lifecycle_condition: asyncio.Condition = field(
@@ -630,62 +641,88 @@ class ConversationService:
     )
     _lease_renewal_task: asyncio.Task | None = field(default=None, init=False)
     _eviction_task: asyncio.Task | None = field(default=None, init=False)
+    # Set by get_instance(), once the projects store has its config: catch up
+    # on coordinator updates a restart left undelivered.
+    reconcile_projects_on_start: bool = False
+    projects: ProjectService = field(init=False)
     _run_executor: ThreadPoolExecutor | None = field(default=None, init=False)
     _run_semaphore: asyncio.Semaphore | None = field(default=None, init=False)
     _credential_bindings: dict[UUID, dict[str, VersionedCredentialBinding]] = field(
         default_factory=dict, init=False
     )
 
+    def __post_init__(self) -> None:
+        self.projects = ProjectService(self)
+
+    def ensure_active(self) -> None:
+        """Raise :class:`ServiceInactive` unless the service is running."""
+        if self._event_services is None:
+            raise ServiceInactive()
+
     def _load_catalog_sync(
         self, conversation_id: UUID | None = None
-    ) -> dict[UUID, _ConversationRecord]:
+    ) -> tuple[dict[UUID, _ConversationRecord], dict[UUID, BrokenConversationInfo]]:
         records: dict[UUID, _ConversationRecord] = {}
+        broken: dict[UUID, BrokenConversationInfo] = {}
         directories = (
             [self.conversations_dir / conversation_id.hex]
             if conversation_id is not None
             else self.conversations_dir.iterdir()
         )
         for conversation_dir in directories:
-            meta_file = conversation_dir / "meta.json"
-            if not meta_file.exists():
-                continue
             try:
+                directory_id = UUID(conversation_dir.name)
+            except ValueError:
+                continue
+            if (
+                directory_id.hex != conversation_dir.name
+                or conversation_dir.is_symlink()
+            ):
+                continue
+            meta_file = conversation_dir / "meta.json"
+            base_state_path = str(conversation_dir / BASE_STATE)
+            raw_metadata = b""
+            try:
+                raw_metadata = meta_file.read_bytes()
                 stored = StoredConversation.model_validate_json(
-                    meta_file.read_text(),
-                    context=cipher_context(
-                        self._cipher_for(UUID(conversation_dir.name))
-                    ),
+                    raw_metadata,
+                    context=cipher_context(self._cipher_for(directory_id)),
                 )
-                execution_status = ConversationExecutionStatus.IDLE
-                base_state_file = conversation_dir / BASE_STATE
-                base_state_path = str(base_state_file)
-                # Signature before read, so a racing write leaves a stale
-                # signature and the next query re-reads rather than trusting it.
-                signature = _state_signature(base_state_path)
-                if base_state_file.exists():
-                    # Strict on purpose: a corrupt base state still drops the
-                    # conversation from the catalog and logs below.
-                    payload = json.loads(base_state_file.read_text())
-                    execution_status = ConversationExecutionStatus(
-                        payload.get(
-                            "execution_status", ConversationExecutionStatus.IDLE.value
-                        )
-                    )
-                else:
-                    signature = None
-                records[stored.id] = _ConversationRecord(
-                    stored=stored,
-                    execution_status=execution_status,
-                    state_signature=signature,
-                    base_state_path=base_state_path,
+                if stored.id != directory_id:
+                    raise ValueError("Conversation ID does not match its directory")
+            except (OSError, ValueError, TypeError):
+                signature = _state_signature(str(meta_file)) or _state_signature(
+                    base_state_path
                 )
-            except Exception:
-                logger.exception(
-                    "error_loading_conversation_catalog:%s",
-                    conversation_dir,
-                    stack_info=True,
+                if signature is None:
+                    continue
+                timestamp = datetime.fromtimestamp(signature[0] / 1e9, UTC)
+                title = None
+                with suppress(ValueError):
+                    metadata = json.loads(raw_metadata)
+                    if isinstance(metadata, dict) and isinstance(
+                        metadata.get("title"), str
+                    ):
+                        title = metadata["title"]
+                broken[directory_id] = BrokenConversationInfo(
+                    id=directory_id,
+                    title=title,
+                    created_at=timestamp,
+                    updated_at=timestamp,
+                    reason="metadata",
                 )
-        return records
+                logger.warning("Unreadable conversation metadata: %s", directory_id)
+                continue
+
+            signature = _state_signature(base_state_path)
+            execution_status = _read_execution_status_sync(base_state_path)
+            records[directory_id] = _ConversationRecord(
+                stored=stored,
+                execution_status=execution_status or ConversationExecutionStatus.IDLE,
+                state_signature=signature if execution_status is not None else None,
+                base_state_path=base_state_path,
+            )
+        return records, broken
 
     def _base_state_path(
         self, conversation_id: UUID, record: _ConversationRecord
@@ -1051,20 +1088,23 @@ class ConversationService:
         event_services = self._event_services
         if event_services is None:
             raise ServiceInactive()
-        disk_records = await asyncio.to_thread(self._load_catalog_sync, conversation_id)
-        if conversation_id not in disk_records:
+        async with self._conversation_lifecycle(conversation_id):
             event_service = event_services.get(conversation_id)
-            if event_service is None or not event_service.is_open():
+            if event_service is not None and event_service.is_open():
+                return
+            disk_records, broken = await asyncio.to_thread(
+                self._load_catalog_sync, conversation_id
+            )
+            self._broken_metadata.pop(conversation_id, None)
+            self._broken_metadata.update(broken)
+            record = disk_records.get(conversation_id)
+            if record is None:
                 self._conversation_records.pop(conversation_id, None)
-            return
-        record = disk_records[conversation_id]
-        event_service = event_services.get(conversation_id)
-        if event_service is not None and event_service.is_open():
-            return
-        existing = self._conversation_records.setdefault(conversation_id, record)
-        if existing.stored != record.stored:
-            existing.stored = record.stored
-            existing.cached_info = None
+                return
+            existing = self._conversation_records.setdefault(conversation_id, record)
+            if existing.stored != record.stored:
+                existing.stored = record.stored
+                existing.cached_info = None
 
     async def _reconcile_active_records(self) -> None:
         """Add injected live services to the in-memory catalog."""
@@ -1220,7 +1260,31 @@ class ConversationService:
             return _compose_conversation_info(
                 event_service.stored, state, self._children_of(conversation_id)
             )
-        return await self._conversation_info(conversation_id, record)
+        item = await self._catalog_item(conversation_id, record)
+        return item if isinstance(item, ConversationInfo) else None
+
+    async def _catalog_item(
+        self,
+        conversation_id: UUID,
+        record: _ConversationRecord,
+        children_index: dict[UUID, list[UUID]] | None = None,
+    ) -> ConversationInfo | BrokenConversationInfo:
+        try:
+            info = await self._conversation_info(
+                conversation_id, record, children_index
+            )
+            if info is not None:
+                return info
+        except (OSError, ValueError, TypeError):
+            pass
+        return BrokenConversationInfo(
+            id=conversation_id,
+            title=record.stored.title,
+            created_at=record.stored.created_at,
+            updated_at=record.stored.updated_at,
+            tags=record.stored.tags or {},
+            reason="state",
+        )
 
     async def get_acp_conversation(
         self, conversation_id: UUID
@@ -1234,44 +1298,7 @@ class ConversationService:
         execution_status: ConversationExecutionStatus | None = None,
         sort_order: ConversationSortOrder = ConversationSortOrder.CREATED_AT_DESC,
     ) -> ConversationPage:
-        items, next_page_id = await self._search_conversations(
-            page_id=page_id,
-            limit=limit,
-            execution_status=execution_status,
-            sort_order=sort_order,
-        )
-        return ConversationPage(
-            items=items,
-            next_page_id=next_page_id,
-        )
-
-    async def search_acp_conversations(
-        self,
-        page_id: str | None = None,
-        limit: int = 100,
-        execution_status: ConversationExecutionStatus | None = None,
-        sort_order: ConversationSortOrder = ConversationSortOrder.CREATED_AT_DESC,
-    ) -> ConversationPage:
-        items, next_page_id = await self._search_conversations(
-            page_id=page_id,
-            limit=limit,
-            execution_status=execution_status,
-            sort_order=sort_order,
-        )
-        return ConversationPage(
-            items=items,
-            next_page_id=next_page_id,
-        )
-
-    async def _search_conversations(
-        self,
-        page_id: str | None,
-        limit: int,
-        execution_status: ConversationExecutionStatus | None,
-        sort_order: ConversationSortOrder,
-    ) -> tuple[list[ConversationInfo], str | None]:
-        if self._event_services is None:
-            raise ServiceInactive()
+        self.ensure_active()
         await self._reconcile_active_records()
 
         if execution_status is not None:
@@ -1281,24 +1308,41 @@ class ConversationService:
             # only for the page items.
             await self._refresh_execution_statuses()
 
-        records = [
+        records: list[tuple[UUID, _ConversationRecord | BrokenConversationInfo]] = [
             (conversation_id, record)
             for conversation_id, record in self._conversation_records.items()
             if execution_status is None or record.execution_status == execution_status
         ]
-        if sort_order in (
+        if execution_status is None:
+            records.extend(
+                (conversation_id, broken)
+                for conversation_id, broken in self._broken_metadata.items()
+                if conversation_id not in self._conversation_records
+            )
+
+        sort_by_created = sort_order in (
             ConversationSortOrder.CREATED_AT,
             ConversationSortOrder.CREATED_AT_DESC,
-        ):
-            records.sort(
-                key=lambda item: item[1].stored.created_at,
-                reverse=sort_order == ConversationSortOrder.CREATED_AT_DESC,
+        )
+
+        def timestamp(
+            item: tuple[UUID, _ConversationRecord | BrokenConversationInfo],
+        ) -> datetime:
+            record = item[1]
+            metadata = (
+                record.stored if isinstance(record, _ConversationRecord) else record
             )
-        else:
-            records.sort(
-                key=lambda item: item[1].stored.updated_at,
-                reverse=sort_order == ConversationSortOrder.UPDATED_AT_DESC,
-            )
+            date = metadata.created_at if sort_by_created else metadata.updated_at
+            return date if date.tzinfo is not None else date.replace(tzinfo=UTC)
+
+        records.sort(
+            key=timestamp,
+            reverse=sort_order
+            in (
+                ConversationSortOrder.CREATED_AT_DESC,
+                ConversationSortOrder.UPDATED_AT_DESC,
+            ),
+        )
 
         start_index = 0
         if page_id:
@@ -1307,20 +1351,36 @@ class ConversationService:
                     start_index = i
                     break
 
-        items: list[ConversationInfo] = []
-        next_page_id = None
+        page = ConversationPage(items=[])
         children_index = self._children_index()
         for conversation_id, record in records[start_index:]:
-            if len(items) >= limit:
-                next_page_id = conversation_id.hex
+            if len(page.items) + len(page.broken_items) >= limit:
+                page.next_page_id = conversation_id.hex
                 break
-            conversation_info = await self._conversation_info(
-                conversation_id, record, children_index
-            )
-            if conversation_info is not None:
-                items.append(conversation_info)
+            if isinstance(record, BrokenConversationInfo):
+                if self._broken_metadata.get(conversation_id) is record:
+                    page.broken_items.append(record)
+                continue
+            item = await self._catalog_item(conversation_id, record, children_index)
+            if conversation_id not in self._conversation_records:
+                continue
+            if isinstance(item, ConversationInfo):
+                page.items.append(item)
+            elif execution_status is None:
+                page.broken_items.append(item)
 
-        return items, next_page_id
+        return page
+
+    async def search_acp_conversations(
+        self,
+        page_id: str | None = None,
+        limit: int = 100,
+        execution_status: ConversationExecutionStatus | None = None,
+        sort_order: ConversationSortOrder = ConversationSortOrder.CREATED_AT_DESC,
+    ) -> ConversationPage:
+        return await self.search_conversations(
+            page_id, limit, execution_status, sort_order
+        )
 
     async def count_conversations(
         self,
@@ -1338,7 +1398,7 @@ class ConversationService:
         await self._reconcile_active_records()
 
         if execution_status is None:
-            return len(self._conversation_records)
+            return len(self._conversation_records.keys() | self._broken_metadata.keys())
 
         await self._refresh_execution_statuses()
         return sum(
@@ -1560,9 +1620,18 @@ class ConversationService:
             return await asyncio.to_thread(fn, *args, **kwargs)
 
     async def start_conversation(
-        self, request: StartConversationRequest, *, gateway_run: bool = False
+        self,
+        request: StartConversationRequest,
+        *,
+        gateway_run: bool = False,
+        project_role: ProjectRole | None = None,
     ) -> tuple[ConversationInfo, bool]:
-        return await self._start_conversation(request, gateway_run=gateway_run)
+        """Start a conversation. ``project_role`` gives a project's
+        coordinator or worker its prompt, project context and tools; only the
+        server sets it."""
+        return await self._start_conversation(
+            request, gateway_run=gateway_run, project_role=project_role
+        )
 
     async def start_acp_conversation(
         self, request: StartConversationRequest
@@ -1574,6 +1643,7 @@ class ConversationService:
         request: StartConversationRequest,
         *,
         gateway_run: bool = False,
+        project_role: ProjectRole | None = None,
     ) -> tuple[ConversationInfo, bool]:
         """Start a local event_service and return its id."""
         if self._event_services is None:
@@ -1586,11 +1656,13 @@ class ConversationService:
                 )
 
         with await RunSlot.acquire(self._run_semaphore) as run_slot:
-            if gateway_run:
-                return await self._create_conversation(
-                    request, conversation_id, run_slot, gateway_run=True
-                )
-            return await self._create_conversation(request, conversation_id, run_slot)
+            return await self._create_conversation(
+                request,
+                conversation_id,
+                run_slot,
+                gateway_run=gateway_run,
+                project_role=project_role,
+            )
 
     async def _create_conversation(
         self,
@@ -1599,6 +1671,7 @@ class ConversationService:
         run_slot: RunSlot,
         *,
         gateway_run: bool = False,
+        project_role: ProjectRole | None = None,
     ) -> tuple[ConversationInfo, bool]:
         # The link is immutable after creation, so cycles beyond self-parent are
         # impossible; allowing reparenting would require a real ancestor walk.
@@ -1619,6 +1692,24 @@ class ConversationService:
                     f"Parent conversation {request.parent_conversation_id} belongs "
                     f"to a different workspace"
                 )
+
+        initial_message = request.initial_message
+        first_message: Message | None = None
+        initial_sender: str | None = None
+        if initial_message is not None:
+            content = list(initial_message.content)
+            sender_id = initial_message.sender_conversation_id
+            if sender_id is not None:
+                sender_line = await sender_message_line(
+                    self, sender_id, conversation_id
+                )
+                sender_line = (
+                    await project_sender_line(self, sender_id, request.tags)
+                    or sender_line
+                )
+                content.insert(0, TextContent(text=sender_line))
+                initial_sender = conversation_sender(sender_id)
+            first_message = Message(role=initial_message.role, content=content)
 
         runtime_profile = os.getenv("OH_RUNTIME_LAUNCHED_PROFILE")
         runtime_launched_profile = (
@@ -1707,6 +1798,7 @@ class ConversationService:
                 experimental_feature_tools=experimental_feature_tools(
                     experimental_features
                 ),
+                project_role=project_role,
                 load_memory=load_memory,
                 managed_secrets=(
                     [CODEX_AUTH_SECRET_NAME] if managed_codex_credential else ()
@@ -1797,17 +1889,13 @@ class ConversationService:
                 launched_agent_profile=launched_agent_profile,
                 **request_data,
             )
-        initial_message = request.initial_message
         return await self._launch_prepared_conversation(
             stored,
             launched,
             run_slot=run_slot,
             gateway_run=gateway_run,
-            initial_message=(
-                Message(role=initial_message.role, content=initial_message.content)
-                if initial_message
-                else None
-            ),
+            initial_message=first_message,
+            initial_sender=initial_sender,
             reuse_request=request,
             max_budget_per_run=request.max_budget_per_run,
         )
@@ -1819,6 +1907,7 @@ class ConversationService:
         *,
         run_slot: RunSlot,
         initial_message: Message | None,
+        initial_sender: str | None = None,
         reuse_request: StartConversationRequest | None = None,
         max_budget_per_run: float | None = None,
         gateway_run: bool = False,
@@ -1859,7 +1948,9 @@ class ConversationService:
             )
         try:
             if initial_message is not None:
-                await event_service.send_message(initial_message, False)
+                await event_service.send_message(
+                    initial_message, False, sender=initial_sender
+                )
                 await event_service.run(run_slot=run_slot)
 
             state = await event_service.get_state()
@@ -1913,16 +2004,57 @@ class ConversationService:
             self.conversation_worktree_root, stored.workspace.working_dir
         )
 
+    def _delete_broken_conversation_dir(self, conversation_id: UUID) -> bool:
+        conversation_dir = self.conversations_dir / conversation_id.hex
+        if not conversation_dir.is_dir() or conversation_dir.is_symlink():
+            return False
+
+        lease = None
+        generation = None
+        if self.lease_ttl_seconds > 0:
+            lease = ConversationLease(
+                conversation_dir=conversation_dir,
+                owner_instance_id=self.owner_instance_id,
+                ttl_seconds=self.lease_ttl_seconds,
+            )
+            try:
+                generation = lease.claim().generation
+            except ConversationLeaseHeldError:
+                return False
+
+        if safe_rmtree(
+            conversation_dir, f"conversation directory for {conversation_id}"
+        ):
+            return True
+        if lease is not None and generation is not None:
+            lease.release(generation)
+        raise OSError(f"Could not delete conversation {conversation_id}")
+
     async def delete_conversation(self, conversation_id: UUID) -> bool:
         event_services = self._event_services
         if event_services is None:
             raise ServiceInactive()
-        if (
-            conversation_id not in event_services
-            and conversation_id not in self._conversation_records
-        ):
-            return False
         async with self._conversation_lifecycle(conversation_id):
+            event_service = event_services.get(conversation_id)
+            record = self._conversation_records.get(conversation_id)
+            if event_service is None or not event_service.is_open():
+                broken = conversation_id in self._broken_metadata
+                if record is not None:
+                    item = await self._catalog_item(conversation_id, record)
+                    broken = isinstance(item, BrokenConversationInfo)
+                if broken:
+                    if not await asyncio.to_thread(
+                        self._delete_broken_conversation_dir, conversation_id
+                    ):
+                        return False
+                    event_services.pop(conversation_id, None)
+                    self._broken_metadata.pop(conversation_id, None)
+                    self._conversation_records.pop(conversation_id, None)
+                    self._credential_bindings.pop(conversation_id, None)
+                    return True
+                if event_service is None and record is None:
+                    return False
+
             event_service = await self._get_or_load_event_service_locked(
                 conversation_id,
                 require_runtime_bindings=False,
@@ -2000,7 +2132,6 @@ class ConversationService:
         if event_service is None:
             return False
 
-        loop = asyncio.get_running_loop()
         state = await event_service.get_state()
         update: dict[str, Any] = {"updated_at": utc_now()}
         if request.title is not None:
@@ -2015,8 +2146,8 @@ class ConversationService:
         if request.tags is not None:
             # Keep the persisted ConversationState update under the state lock so
             # autosave and state-change callbacks observe a consistent mutation.
-            state = await loop.run_in_executor(
-                None, _update_state_tags_sync, state, request.tags
+            state = await event_service.run_state_op(
+                _update_state_tags_sync, state, request.tags
             )
         if budget_updated:
             # base_state.json owns the budget; the event service is loaded
@@ -2030,8 +2161,8 @@ class ConversationService:
         # Notify conversation webhooks about the updated conversation. Compose the
         # full-state snapshot under the state lock, but do the synchronous wait in a
         # worker thread so metadata updates cannot block the FastAPI event loop.
-        conversation_info = await loop.run_in_executor(
-            None, _compose_webhook_conversation_info_sync, event_service.stored, state
+        conversation_info = await event_service.run_state_op(
+            _compose_webhook_conversation_info_sync, event_service.stored, state
         )
         await self._notify_conversation_webhooks(conversation_info)
 
@@ -2048,6 +2179,29 @@ class ConversationService:
             ", ".join(updated_fields),
         )
         return True
+
+    async def list_tagged_conversations(
+        self, key: str, value: str
+    ) -> list[tuple[StoredConversation, ConversationExecutionStatus]]:
+        """Return conversations whose tag ``key`` equals ``value``.
+
+        Reads the in-memory catalog with refreshed execution statuses, as the
+        status-filtered search does, so no full ``ConversationState`` is
+        loaded. Results are newest-updated first; deleting conversations are
+        left out.
+        """
+        if self._event_services is None:
+            raise ServiceInactive()
+        await self._reconcile_active_records()
+        await self._refresh_execution_statuses()
+        matches = [
+            (record.stored, record.execution_status)
+            for record in self._conversation_records.values()
+            if record.stored.tags.get(key) == value
+            and record.execution_status != ConversationExecutionStatus.DELETING
+        ]
+        matches.sort(key=lambda item: item[0].updated_at, reverse=True)
+        return matches
 
     async def get_event_service(self, conversation_id: UUID) -> EventService | None:
         return await self._get_or_load_event_service(conversation_id)
@@ -2146,12 +2300,15 @@ class ConversationService:
                 raise ValueError(f"Conversation with id {fork_id} already exists")
 
             # fork() deep-copies events and state into ``fork_dir``.
-            fork_conv = await asyncio.to_thread(
-                source_conversation.fork,
-                conversation_id=fork_conv_id,
-                tags=tags,
-                reset_metrics=reset_metrics,
-                from_event_id=from_event_id,
+            fork_conv = await source_service.run_state_op(
+                partial(
+                    contextvars.copy_context().run,
+                    source_conversation.fork,
+                    conversation_id=fork_conv_id,
+                    tags=tags,
+                    reset_metrics=reset_metrics,
+                    from_event_id=from_event_id,
+                )
             )
             # Extract the persisted data, then discard the temporary conversation.
             fork_agent = cast(AgentBase, fork_conv.agent)
@@ -2216,6 +2373,10 @@ class ConversationService:
         shares the parent's directory. The link is recorded via
         ``parent_conversation_id``.
 
+        In a project, the coordinator starts workers instead (see
+        :meth:`ProjectService.start_worker`): a worker runs an agent profile,
+        not a copy of the coordinator's agent.
+
         Returns ``None`` when *parent_id* does not exist.
 
         Raises:
@@ -2228,6 +2389,11 @@ class ConversationService:
         parent_service = await self._get_or_load_event_service(parent_id)
         if parent_service is None:
             return None
+
+        # Only a member of an existing project, with Projects on, starts
+        # workers; any other conversation starts an ordinary child.
+        if await self.projects.member_of(parent_service.stored.tags) is not None:
+            return await self.projects.start_worker(parent_service, request)
 
         # Admission first, as in a normal start: a full server refuses the
         # launch before a worktree or the child's persistence directory exists.
@@ -2290,6 +2456,8 @@ class ConversationService:
                 initial_message=Message(
                     role="user", content=[TextContent(text=request.task)]
                 ),
+                # The parent's agent wrote the task, not the user.
+                initial_sender=conversation_sender(parent_id),
             )
 
         return StartChildConversationResponse(
@@ -2332,7 +2500,9 @@ class ConversationService:
         )
         self._run_semaphore = asyncio.Semaphore(self.max_concurrent_runs)
         self._event_services = {}
-        self._conversation_records = await asyncio.to_thread(self._load_catalog_sync)
+        self._conversation_records, self._broken_metadata = await asyncio.to_thread(
+            self._load_catalog_sync
+        )
 
         # Initialize conversation webhook subscribers
         self._conversation_webhook_subscribers = [
@@ -2369,6 +2539,8 @@ class ConversationService:
             self._eviction_task = asyncio.create_task(
                 self._evict_idle_conversations_loop()
             )
+        if self.reconcile_projects_on_start:
+            self.projects.catch_up()
 
         return self
 
@@ -2458,6 +2630,7 @@ class ConversationService:
                         pending.setdefault(secret_name, binding)
 
     async def __aexit__(self, exc_type, exc_value, traceback):
+        await self.projects.close()
         if self._eviction_task is not None:
             self._eviction_task.cancel()
             with suppress(asyncio.CancelledError):
@@ -2559,6 +2732,7 @@ class ConversationService:
             conversation_worktree_root=config.conversation_worktree_root,
             acp_skill_sourcing=config.acp_skill_sourcing,
             enable_browser=config.enable_browser,
+            reconcile_projects_on_start=True,
         )
 
     async def _start_event_service(
@@ -2609,6 +2783,8 @@ class ConversationService:
             await event_service.subscribe_to_events(
                 _EventSubscriber(service=event_service)
             )
+            if PROJECT_TAG_KEY in stored.tags:
+                await self.projects.watch(event_service)
             if stored.autotitle and stored.title is None:
                 await event_service.subscribe_to_events(
                     AutoTitleSubscriber(
@@ -2902,6 +3078,7 @@ class WebhookSubscriber(Subscriber):
     session_api_key: str | None = None
     queue: list[Event] = field(default_factory=list)
     _flush_timer: asyncio.Task | None = field(default=None, init=False)
+    _post_task: asyncio.Task | None = field(default=None, init=False)
     _post_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
     _queue_sizes: list[int] = field(default_factory=list, init=False)
     _queue_bytes: int = field(default=0, init=False)
@@ -2925,14 +3102,17 @@ class WebhookSubscriber(Subscriber):
         self._enqueue(event)
 
         if self._buffer_full():
-            if self._post_lock.locked():
-                # The in-flight _post_events re-checks the buffer when it is
-                # done and re-arms the timer if a post fails.
+            if self._post_lock.locked() or self._post_in_flight():
                 self._start_flush_timer()
                 return
             # Cancel timer since we're flushing due to buffer size
             self._cancel_flush_timer()
-            await self._post_events()
+            # Post in the background: the event's publish future must not wait
+            # for the receiver, because a run's wrap-up waits for pending
+            # publishes before it clears itself, and a slow receiver would keep
+            # a finished conversation answering 409 to POST /run.
+            self._post_task = asyncio.create_task(self._post_events())
+            self._post_task.add_done_callback(self._log_post_failure)
         elif self.queue:
             self._start_flush_timer()
 
@@ -2942,8 +3122,26 @@ class WebhookSubscriber(Subscriber):
         # Cancel any pending flush timer
         self._cancel_flush_timer()
 
+        # Let a background post finish so close() still delivers in order.
+        post_task = self._post_task
+        if post_task is not None and not post_task.done():
+            await asyncio.wait({post_task})
+
         if self.queue:
             await self._post_events()
+
+    def _post_in_flight(self) -> bool:
+        return self._post_task is not None and not self._post_task.done()
+
+    def _log_post_failure(self, task: asyncio.Task) -> None:
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.error(
+                f"Webhook post for conversation {self.conversation_id.hex} failed",
+                exc_info=exc,
+            )
 
     async def _post_events(self):
         """Post bounded batches serially until the queue is empty or a post fails."""

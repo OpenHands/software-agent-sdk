@@ -14,7 +14,11 @@ from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.meta_profile_store import MetaProfile, MetaProfileClass
 from openhands.sdk.llm.provider_connection_store import ProviderConnectionNotFound
 from openhands.sdk.mcp.config import MCPServer
-from openhands.sdk.profiles.agent_profile import ACPAgentProfile, OpenHandsAgentProfile
+from openhands.sdk.profiles.agent_profile import (
+    ACPAgentProfile,
+    OpenHandsAgentProfile,
+    ProfileSandboxSettings,
+)
 from openhands.sdk.profiles.resolver import ProfileNotFound
 from openhands.sdk.settings.model import ACPAgentSettings, OpenHandsAgentSettings
 from openhands.sdk.skills import Skill
@@ -48,6 +52,20 @@ def test_a_stored_profile_resolves_with_its_provenance():
     assert resolved.profile.revision == 4
     assert resolved.profile.secret_refs == ["GITHUB_TOKEN"]
     assert resolved.allowed_secrets == frozenset({"GITHUB_TOKEN"})
+
+
+def test_sandbox_metadata_does_not_change_the_resolved_settings():
+    plain = _profile(name="plain")
+    with_sandbox = _profile(
+        name="plain", sandbox=ProfileSandboxSettings(spec_id="image:custom")
+    )
+
+    def dump(profile: OpenHandsAgentProfile) -> dict:
+        settings = resolve(profile, fakes.stores()).settings.model_dump(mode="json")
+        settings["agent_context"].pop("current_datetime")
+        return settings
+
+    assert dump(with_sandbox) == dump(plain)
 
 
 def test_an_unknown_profile_id_is_not_found():

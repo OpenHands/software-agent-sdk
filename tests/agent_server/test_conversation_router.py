@@ -15,9 +15,11 @@ from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.conversation_router import conversation_router
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
-from openhands.agent_server.event_service import (
+from openhands.agent_server.event_service import EventService
+from openhands.agent_server.exceptions import (
     CondensationUnavailable,
-    EventService,
+    ConversationAlreadyRunning,
+    GoalAlreadyRunning,
     ServiceInactive,
 )
 from openhands.agent_server.launch import launch_source
@@ -30,6 +32,7 @@ from openhands.agent_server.models import (
     SendMessageRequest,
     StartConversationRequest,
 )
+from openhands.agent_server.project_service import ProjectService
 from openhands.agent_server.utils import utc_now
 from openhands.sdk import LLM, Agent, TextContent, Tool
 from openhands.sdk.agent.acp_agent import ACPAgent
@@ -38,10 +41,12 @@ from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.launch import LaunchRuntime, LaunchStores, finalize
 from openhands.sdk.llm import llm_profile_store
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+from openhands.sdk.llm.router import MultimodalRouter
 from openhands.sdk.marketplace.registry import (
     PluginNotFoundError,
     PluginResolutionError,
 )
+from openhands.sdk.mcp.exceptions import MCPServerStartError
 from openhands.sdk.plugin import PluginFetchError
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.settings import AGENT_SETTINGS_SCHEMA_VERSION
@@ -96,6 +101,8 @@ def sample_conversation_info():
 def mock_conversation_service():
     """Create a mock ConversationService for testing."""
     service = AsyncMock(spec=ConversationService)
+    service.projects = AsyncMock(spec=ProjectService)
+    service.projects.member_of.return_value = None
     return service
 
 
@@ -1377,7 +1384,7 @@ def test_start_goal_in_conversation_rejects_busy_loop(
 ):
     """/goal returns 409 when a goal loop or conversation run is active."""
     mock_conversation_service.get_event_service.return_value = mock_event_service
-    mock_event_service.start_goal_loop.side_effect = ValueError("goal_already_running")
+    mock_event_service.start_goal_loop.side_effect = GoalAlreadyRunning()
 
     client.app.dependency_overrides[get_conversation_service] = lambda: (
         mock_conversation_service
@@ -1662,7 +1669,7 @@ def test_run_conversation_already_running(
 
     # Mock the service responses
     mock_conversation_service.get_event_service.return_value = mock_event_service
-    mock_event_service.run.side_effect = ValueError("conversation_already_running")
+    mock_event_service.run.side_effect = ConversationAlreadyRunning()
 
     client.app.dependency_overrides[get_conversation_service] = lambda: (
         mock_conversation_service
@@ -1831,6 +1838,31 @@ def test_add_conversation_mcp_servers_invalid(
         client.app.dependency_overrides.clear()
 
 
+def test_add_conversation_mcp_servers_start_failure_is_invalid(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.add_mcp_servers.side_effect = MCPServerStartError(
+        "dies", "Could not start MCP server dies: Connection closed"
+    )
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/mcp",
+            json={"mcp_servers": {"dies": {"command": "true"}}},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == (
+            "Could not start MCP server dies: Connection closed"
+        )
+    finally:
+        client.app.dependency_overrides.clear()
+
+
 def test_update_conversation_secrets_success(
     client, mock_conversation_service, mock_event_service, sample_conversation_id
 ):
@@ -1971,7 +2003,9 @@ def test_update_conversation_success(
     """Test update_conversation endpoint with successful update."""
 
     # Mock the service response - update successful
-    mock_conversation_service.update_conversation.return_value = True
+    mock_conversation_service.projects.update_conversation_from_client.return_value = (
+        True
+    )
 
     client.app.dependency_overrides[get_conversation_service] = lambda: (
         mock_conversation_service
@@ -1989,8 +2023,10 @@ def test_update_conversation_success(
         assert data["success"] is True
 
         # Verify service was called with correct parameters
-        mock_conversation_service.update_conversation.assert_called_once()
-        call_args = mock_conversation_service.update_conversation.call_args
+        mock_conversation_service.projects.update_conversation_from_client.assert_called_once()
+        call_args = (
+            mock_conversation_service.projects.update_conversation_from_client.call_args
+        )
         assert call_args[0][0] == sample_conversation_id
         assert call_args[0][1].title == "Updated Conversation Title"
     finally:
@@ -2002,7 +2038,9 @@ def test_update_conversation_not_found(
 ):
     """An unknown conversation is 404, not 200 with success=false."""
 
-    mock_conversation_service.update_conversation.return_value = False
+    mock_conversation_service.projects.update_conversation_from_client.return_value = (
+        False
+    )
 
     client.app.dependency_overrides[get_conversation_service] = lambda: (
         mock_conversation_service
@@ -2018,7 +2056,7 @@ def test_update_conversation_not_found(
         assert response.status_code == 404
 
         # Verify service was called
-        mock_conversation_service.update_conversation.assert_called_once()
+        mock_conversation_service.projects.update_conversation_from_client.assert_called_once()
     finally:
         client.app.dependency_overrides.clear()
 
@@ -3072,6 +3110,243 @@ def test_switch_conversation_llm_missing_provider_connection_rejects_before_swit
         client.app.dependency_overrides.clear()
 
 
+# --- model_router endpoint tests ---
+
+
+def _server_test_router() -> MultimodalRouter:
+    return MultimodalRouter(
+        llms_for_routing={
+            MultimodalRouter.PRIMARY_MODEL_KEY: LLM(model="primary-model"),
+            MultimodalRouter.SECONDARY_MODEL_KEY: LLM(model="secondary-model"),
+        }
+    ).with_manual_route(MultimodalRouter.SECONDARY_MODEL_KEY)
+
+
+def test_get_conversation_model_router_status(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    mock_conversation = MagicMock()
+    mock_conversation.agent = Agent(llm=_server_test_router(), tools=[])
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.get_conversation.return_value = mock_conversation
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.get(
+            f"/api/conversations/{sample_conversation_id}/model_router"
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "enabled": True,
+            "selection": {
+                "mode": "manual",
+                "manual_route_name": "secondary",
+            },
+            "last_route_name": None,
+            "routes": [
+                {"name": "primary", "model": "primary-model", "label": "primary"},
+                {"name": "secondary", "model": "secondary-model", "label": "secondary"},
+            ],
+        }
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_update_conversation_model_router_manual_selection(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    mock_conversation = MagicMock()
+    mock_conversation.agent = Agent(llm=_server_test_router(), tools=[])
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.get_conversation.return_value = mock_conversation
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.patch(
+            f"/api/conversations/{sample_conversation_id}/model_router",
+            json={
+                "selection": {
+                    "mode": "manual",
+                    "manual_route_name": "primary",
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        mock_conversation.update_model_router_selection.assert_called_once()
+        selection = mock_conversation.update_model_router_selection.call_args.args[0]
+        assert selection.mode == "manual"
+        assert selection.manual_route_name == "primary"
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_update_conversation_model_router_auto_selection(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    mock_conversation = MagicMock()
+    mock_conversation.agent = Agent(llm=_server_test_router(), tools=[])
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.get_conversation.return_value = mock_conversation
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.patch(
+            f"/api/conversations/{sample_conversation_id}/model_router",
+            json={"selection": {"mode": "auto"}},
+        )
+
+        assert response.status_code == 200
+        mock_conversation.update_model_router_selection.assert_called_once()
+        selection = mock_conversation.update_model_router_selection.call_args.args[0]
+        assert selection.mode == "auto"
+        assert selection.manual_route_name is None
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_add_conversation_model_router_route(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    mock_conversation = MagicMock()
+    mock_conversation.agent = Agent(
+        llm=_server_test_router().with_route("reviewer", LLM(model="reviewer-model")),
+        tools=[],
+    )
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.get_conversation.return_value = mock_conversation
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/model_router/routes",
+            json={"profile_name": "reviewer-profile", "route_name": "reviewer"},
+        )
+
+        assert response.status_code == 200
+        mock_event_service.add_model_router_route.assert_awaited_once()
+        assert mock_event_service.add_model_router_route.call_args.args == (
+            "reviewer-profile",
+        )
+        assert mock_event_service.add_model_router_route.call_args.kwargs == {
+            "route_name": "reviewer",
+            "base_route_name": "default",
+        }
+        assert response.json()["routes"][-1] == {
+            "name": "reviewer",
+            "model": "reviewer-model",
+            "label": "reviewer",
+        }
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_add_conversation_model_router_route_defaults_route_name(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    mock_conversation = MagicMock()
+    mock_conversation.agent = Agent(
+        llm=_server_test_router().with_route(
+            "reviewer-profile", LLM(model="reviewer-model")
+        ),
+        tools=[],
+    )
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.get_conversation.return_value = mock_conversation
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/model_router/routes",
+            json={"profile_name": "reviewer-profile"},
+        )
+
+        assert response.status_code == 200
+        assert mock_event_service.add_model_router_route.call_args.args == (
+            "reviewer-profile",
+        )
+        assert (
+            mock_event_service.add_model_router_route.call_args.kwargs["route_name"]
+            == "reviewer-profile"
+        )
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_add_conversation_model_router_route_not_found(
+    client, mock_conversation_service, sample_conversation_id
+):
+    mock_conversation_service.get_event_service.return_value = None
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/model_router/routes",
+            json={"profile_name": "reviewer-profile", "route_name": "reviewer"},
+        )
+
+        assert response.status_code == 404
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_add_conversation_model_router_route_missing_profile(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.add_model_router_route.side_effect = FileNotFoundError()
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/model_router/routes",
+            json={"profile_name": "missing"},
+        )
+
+        assert response.status_code == 404
+        assert "Profile 'missing' not found" in response.json()["detail"]
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_add_conversation_model_router_route_invalid(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.add_model_router_route.side_effect = ValueError(
+        "Model router route already exists: reviewer"
+    )
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/model_router/routes",
+            json={"profile_name": "reviewer-profile", "route_name": "reviewer"},
+        )
+
+        assert response.status_code == 400
+        assert "already exists" in response.json()["detail"]
+    finally:
+        client.app.dependency_overrides.clear()
+
+
 def _provider_connection(connection_id: str, *, api_key: str, base_url: str | None):
     from openhands.sdk.llm.provider_connection_store import ProviderConnection
 
@@ -3317,7 +3592,7 @@ def test_start_conversation_unavailable_agent_tool_returns_422(
     client, mock_conversation_service
 ):
     """An agent tool whose module the server cannot import yields 422, not 500."""
-    from openhands.agent_server.conversation_service import UnavailableAgentTool
+    from openhands.agent_server.exceptions import UnavailableAgentTool
 
     mock_conversation_service.start_conversation.side_effect = UnavailableAgentTool(
         "The agent uses tools whose modules the agent server cannot import: "

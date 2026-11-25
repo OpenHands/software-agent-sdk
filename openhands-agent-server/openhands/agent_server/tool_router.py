@@ -8,8 +8,9 @@ from pydantic import BaseModel
 # Same for ask_user, which the ask_user feature gives to new conversations.
 import openhands.tools.ask_user  # noqa: E402, F401
 
-# Registered only in the agent-server: the tool needs a server to create the
-# child on, so it is deliberately absent from get_default_tools().
+# Registered only in the agent-server: these tools need a server to start a
+# conversation on or to read the project from, so they are deliberately absent from
+# get_default_tools().
 import openhands.tools.child_conversation  # noqa: E402, F401
 
 # Mention tools read this server's conversations, so they live here too.
@@ -18,6 +19,7 @@ import openhands.tools.conversation_mentions  # noqa: E402, F401
 # Reactions and message edits work in any conversation; registering them here
 # makes them available to agents this server runs.
 import openhands.tools.message_edit  # noqa: E402, F401
+import openhands.tools.project  # noqa: E402, F401
 import openhands.tools.reaction  # noqa: E402, F401
 from openhands.agent_server.config import Config
 from openhands.agent_server.dependencies import get_config

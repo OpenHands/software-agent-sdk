@@ -145,3 +145,4 @@ Preconditions:
   one response all apply.
 - Turning the flag off keeps `edit_message` in conversations started while it
   was on, as with reactions.
+- Agent Canvas does not handle `MessageEditEvent` yet (follow-up [OpenHands/OpenHands#19793](https://github.com/OpenHands/OpenHands/issues/19793)).

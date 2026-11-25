@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC
 from datetime import datetime
 from enum import Enum, StrEnum
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, field_validator
@@ -407,9 +407,22 @@ class ConversationInfo(_ConversationInfoBase):
     )
 
 
+class BrokenConversationInfo(BaseModel):
+    id: UUID
+    title: str | None = None
+    created_at: datetime
+    updated_at: datetime
+    tags: dict[str, str] = Field(default_factory=dict)
+    reason: Literal["metadata", "state"]
+
+
 class ConversationPage(BaseModel):
     items: list[ConversationInfo]
     next_page_id: str | None = None
+    broken_items: list[BrokenConversationInfo] = Field(
+        default_factory=list,
+        description="Unreadable conversations in this page of unfiltered results.",
+    )
 
 
 INCLUDE_SKILLS_PARAM_TITLE = (
@@ -508,6 +521,25 @@ class FileUploadResult(Success):
 class EventPage(OpenHandsModel):
     items: list[Event]
     next_page_id: str | None = None
+
+
+class AddModelRouterRouteRequest(BaseModel):
+    """Payload to add a saved LLM profile as a model-router route."""
+
+    profile_name: str = Field(description="Saved LLM profile to install as a route.")
+    route_name: str | None = Field(
+        default=None,
+        description=(
+            "Optional route name to add to the model router. Defaults to profile_name."
+        ),
+    )
+    base_route_name: str = Field(
+        default="default",
+        description=(
+            "Route name assigned to the conversation's current LLM when it must be "
+            "wrapped in a model router."
+        ),
+    )
 
 
 class AddMCPServersRequest(BaseModel):

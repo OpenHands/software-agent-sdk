@@ -1,10 +1,38 @@
 import os
+import stat
 from pathlib import Path
 
 import pytest
 
 from openhands.sdk.utils import files
 from openhands.sdk.utils.files import atomic_write_text, is_temp_file
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Requires directory fsync")
+def test_atomic_write_text_syncs_directory_after_replacing_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "event-00000-abc.json"
+    path.write_text("old")
+    synced: list[str] = []
+    real_fsync = os.fsync
+
+    def record_fsync(fd: int) -> None:
+        descriptor = os.fstat(fd)
+        if stat.S_ISDIR(descriptor.st_mode):
+            assert os.path.samestat(descriptor, tmp_path.stat())
+            assert path.read_text() == "new"
+            synced.append("directory")
+        else:
+            assert path.read_text() == "old"
+            synced.append("file")
+        real_fsync(fd)
+
+    monkeypatch.setattr(files.os, "fsync", record_fsync)
+
+    atomic_write_text(path, "new")
+
+    assert synced == ["file", "directory"]
 
 
 def test_atomic_write_text_temp_file_is_marked_as_a_temp_file(

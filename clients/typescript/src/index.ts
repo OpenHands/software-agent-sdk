@@ -181,6 +181,9 @@ export type {
   LLM as LLMConfig,
   ServerInfo,
   Success,
+  ModelRouteInfo,
+  ModelRouterSelection,
+  ModelRouterStatus,
   EventPage,
   ConversationCallbackType,
   SecretValue,
@@ -245,6 +248,7 @@ export type {
   AgentKind,
   ACPServerKind,
   ProfileVerificationSettings,
+  ProfileSandboxSettings,
   OpenHandsAgentProfile,
   ACPAgentProfile,
   AgentProfile,
@@ -274,6 +278,7 @@ export type { SwitchPlan } from './profiles/derive-switch-plan';
 // Conversation models
 export type {
   ConversationInfo,
+  BrokenConversationInfo,
   ConversationRuntimeStatus,
   ConversationRuntimeError,
   ConversationRuntimeInfo,

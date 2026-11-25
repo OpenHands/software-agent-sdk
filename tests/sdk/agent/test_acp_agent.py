@@ -5,12 +5,16 @@ from __future__ import annotations
 import asyncio
 import gc
 import json
+import os
+import signal
+import sys
 import threading
 import time
 import uuid
 import weakref
 from collections.abc import Mapping
 from concurrent.futures import Future
+from contextlib import suppress
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -90,6 +94,7 @@ from openhands.sdk.settings.acp_install_catalog import (
 from openhands.sdk.settings.acp_providers import ACP_PROVIDERS
 from openhands.sdk.skills import KeywordTrigger, Skill
 from openhands.sdk.tool.builtins.finish import FinishAction
+from openhands.sdk.utils.async_executor import AsyncExecutor
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 from openhands.sdk.workspace.local import LocalWorkspace
@@ -4946,6 +4951,66 @@ class TestACPAgentAskAgent:
         assert mock_client._fork_session_id is None
         assert mock_client._fork_accumulated_text == []
 
+    def test_ask_agent_records_fork_usage_update_without_waiting(self, caplog):
+        """A UsageUpdate for the fork session is billed and releases the wait."""
+        from acp.schema import AgentMessageChunk, TextContentBlock, UsageUpdate
+
+        agent = _make_agent()
+        client = _OpenHandsACPBridge()
+        client._context_window = 200000
+        agent._client = client
+        agent._conn = MagicMock()
+        agent._session_id = "main-session"
+        agent._working_dir = "/workspace"
+
+        mock_fork_response = MagicMock()
+        mock_fork_response.session_id = "fork-session-usage"
+        mock_prompt_response = MagicMock()
+        mock_prompt_response.usage = None
+
+        async def _fake_prompt(*args, **kwargs):
+            await client.session_update(
+                "fork-session-usage",
+                AgentMessageChunk(
+                    session_update="agent_message_chunk",
+                    content=TextContentBlock(type="text", text="Fork answer"),
+                ),
+            )
+            update = MagicMock(spec=UsageUpdate)
+            update.cost = MagicMock()
+            update.cost.amount = 0.05
+            update.size = 150000
+            await client.session_update("fork-session-usage", update)
+            return mock_prompt_response
+
+        def _fake_run_async(coro_fn, **_kwargs):
+            loop = asyncio.new_event_loop()
+            try:
+                _agent_conn(agent).fork_session = AsyncMock(
+                    return_value=mock_fork_response
+                )
+                _agent_conn(agent).prompt = _fake_prompt
+                return loop.run_until_complete(coro_fn())
+            finally:
+                loop.close()
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        t0 = time.monotonic()
+        with caplog.at_level("WARNING"):
+            result = agent.ask_agent("Which files did you list?")
+        elapsed = time.monotonic() - t0
+
+        assert result == "Fork answer"
+        assert agent.llm.metrics.accumulated_cost == pytest.approx(0.05)
+        assert "UsageUpdate not received" not in caplog.text
+        assert elapsed < 1.0
+        # The fork's window does not overwrite the main session's.
+        assert client._context_window == 200000
+        assert "fork-session-usage" not in client._turn_usage_updates
+
 
 # ---------------------------------------------------------------------------
 # Client fork text routing
@@ -5714,8 +5779,8 @@ class TestReapplySessionModelOnResume:
     @pytest.mark.asyncio
     async def test_client_rejection_is_swallowed_on_resume(self):
         # A client/protocol rejection (method-not-found = server doesn't support
-        # the call, or invalid model id) must not break resume — mirrors the
-        # load_session fallback. The error is logged, not raised.
+        # the call, or invalid model id) must not break model reapplication.
+        # The error is logged, not raised.
         conn = AsyncMock()
         conn.set_config_option.side_effect = ACPRequestError(
             code=-32601, message="method not found"
@@ -5731,8 +5796,7 @@ class TestReapplySessionModelOnResume:
     @pytest.mark.asyncio
     async def test_any_request_error_is_swallowed_on_resume(self):
         # Any ACPRequestError (here a -32603 server error) is tolerated on
-        # resume — like the load_session fallback — so a flaky/stale server
-        # can't break session startup; the session keeps the server default.
+        # model reapplication; the resumed session keeps the server default.
         conn = AsyncMock()
         conn.set_session_model.side_effect = ACPRequestError(
             code=-32603, message="internal error"
@@ -6434,7 +6498,7 @@ class TestACPSessionIdPersistence:
         """
         from contextlib import ExitStack
 
-        mock_process = MagicMock(spec=asyncio.subprocess.Process)
+        mock_process = MagicMock(spec=asyncio.subprocess.Process, pid=None)
         mock_process.returncode = None
         mock_process.wait = AsyncMock(return_value=0)
         mock_process.stdin = MagicMock()
@@ -6647,21 +6711,31 @@ class TestACPSessionIdPersistence:
         assert state.agent_state["acp_suffix_installed"] is True
         assert agent._suffix_install_state == "installed"
 
-    def test_load_session_failure_falls_back_to_new_session(self, tmp_path):
-        """ACPRequestError on load_session → new_session is called."""
+    @pytest.mark.parametrize("code", [-32603, -32602, -32000])
+    def test_load_session_failure_preserves_session(self, tmp_path, code):
+        """A failed resume must not discard the provider's conversation history."""
         agent = _make_agent()
         state = _make_state(tmp_path)
         state.agent_state = {**state.agent_state, "acp_session_id": "stale-sess"}
         conn = self._make_conn(
             new_session_id="replacement-sess",
-            load_exc=ACPRequestError(-32602, "unknown session"),
+            load_exc=ACPRequestError(code, "provider failure for stale-sess"),
         )
 
-        self._patched_start_acp_server(agent, state, conn=conn)
+        with (
+            self._transport_patches(conn),
+            pytest.raises(
+                ACPRequestError, match="Could not resume the existing ACP session"
+            ) as exc,
+        ):
+            agent.init_state(state, on_event=lambda _: None)
 
         conn.load_session.assert_awaited_once()
-        conn.new_session.assert_awaited_once()
-        assert agent._session_id == "replacement-sess"
+        conn.new_session.assert_not_awaited()
+        assert exc.value.code == code
+        assert "stale-sess" not in str(exc.value)
+        assert state.agent_state["acp_session_id"] == "stale-sess"
+        assert state.execution_status == ConversationExecutionStatus.ERROR
 
     # ----- explicit acp_resume_session_id (the durable-mirror override) -----
 
@@ -6729,13 +6803,8 @@ class TestACPSessionIdPersistence:
         assert client.before_mask is not None
         assert client.before_mask() is None
 
-    def test_acp_resume_session_id_failure_falls_back_to_new_session(self, tmp_path):
-        """If the server can't load the explicit id, fall back to new_session.
-
-        The ACP server may have lost its own session storage (no PVC, different
-        host …); failing closed by aborting is worse than starting fresh.
-        Matches the existing ``load_session`` failure path.
-        """
+    def test_acp_resume_session_id_failure_preserves_override(self, tmp_path):
+        """An explicit resume must fail rather than silently start fresh."""
         agent = _make_agent(acp_resume_session_id="missing-sess")
         state = _make_state(tmp_path)
         conn = self._make_conn(
@@ -6743,11 +6812,13 @@ class TestACPSessionIdPersistence:
             load_exc=ACPRequestError(-32602, "unknown session"),
         )
 
-        self._patched_start_acp_server(agent, state, conn=conn)
+        with self._transport_patches(conn), pytest.raises(ACPRequestError):
+            agent.init_state(state, on_event=lambda _: None)
 
         conn.load_session.assert_awaited_once()
-        conn.new_session.assert_awaited_once()
-        assert agent._session_id == "replacement-sess"
+        conn.new_session.assert_not_awaited()
+        assert agent.acp_resume_session_id == "missing-sess"
+        assert "acp_session_id" not in state.agent_state
 
     def test_acp_resume_session_id_matches_fs_id_uses_fs_cwd(self, tmp_path):
         """When the explicit id equals the FS id, the FS cwd is reused.
@@ -6799,13 +6870,14 @@ class TestACPSessionIdPersistence:
             new_session_id="replacement",
             load_exc=ACPRequestError(-32602, "unknown session"),
         )
-        with caplog.at_level("WARNING"):
-            self._patched_start_acp_server(agent2, state2, conn=conn2)
-        fail_warnings = "\n".join(
-            rec.getMessage()
-            for rec in caplog.records
-            if "load_session" in rec.getMessage()
-        )
+        with (
+            caplog.at_level("WARNING"),
+            self._transport_patches(conn2),
+            pytest.raises(ACPRequestError),
+        ):
+            agent2.init_state(state2, on_event=lambda _: None)
+        fail_warnings = "\n".join(rec.getMessage() for rec in caplog.records)
+        assert "Could not resume" in fail_warnings
         assert sensitive_explicit not in fail_warnings
 
     def test_fingerprint_session_id_helper(self):
@@ -7182,18 +7254,8 @@ class TestACPSessionIdPersistence:
         assert agent._model_override_applied is False
         assert "acp_current_model_id" not in state.agent_state
 
-    def test_fresh_replacement_clears_stale_model_when_new_session_omits_models(
-        self, tmp_path
-    ):
-        """Fresh replacement (load_session failed → new_session) with no
-        ``models`` block in the response must clear the persisted
-        ``acp_current_model_*`` rather than carry the old session's values
-        forward.
-
-        Otherwise ``acp_session_id`` points at the replacement session while
-        the model fields still describe the dead one — ``ConversationInfo``
-        renders the wrong chip.
-        """
+    def test_failed_resume_preserves_model_and_emits_error(self, tmp_path):
+        """Failed resume retains the session metadata and surfaces a useful error."""
         from openhands.sdk.utils.async_executor import AsyncExecutor
 
         agent = _make_agent()
@@ -7207,30 +7269,31 @@ class TestACPSessionIdPersistence:
                 {"model_id": "claude-opus-4-1", "name": "Opus 4.1"}
             ],
         }
-        # load_session fails → new_session runs; its response has no .models.
-        new_session_response = MagicMock(spec=["session_id"])
-        new_session_response.session_id = "replacement-sess"
+        before = dict(state.agent_state)
         conn = self._make_conn(
-            load_exc=ACPRequestError(-32602, "unknown session"),
+            load_exc=ACPRequestError(-32603, "Internal error", {"reason": "busy"}),
         )
-        conn.new_session = AsyncMock(return_value=new_session_response)
 
         agent._executor = AsyncExecutor()
-        with self._transport_patches(conn):
-            agent.init_state(state, on_event=lambda _: None)
+        events = []
+        with self._transport_patches(conn), pytest.raises(ACPRequestError) as exc:
+            agent.init_state(state, on_event=events.append)
 
-        # Replacement id wins, and the stale model fields are gone.
-        assert state.agent_state["acp_session_id"] == "replacement-sess"
-        assert "acp_current_model_id" not in state.agent_state
-        assert "acp_available_models" not in state.agent_state
+        # Clients that only render str(exc) still see the provider's cause.
+        assert "busy" in str(exc.value)
+        assert state.agent_state == before
+        assert state.execution_status == ConversationExecutionStatus.ERROR
+        errors = [e for e in events if isinstance(e, ConversationErrorEvent)]
+        assert len(errors) == 1
+        assert errors[0].code == "ACPInitError"
+        assert "No new session was started" in errors[0].detail
+        assert "busy" in errors[0].detail
+        conn.new_session.assert_not_awaited()
 
     def test_cwd_mismatch_clears_stale_model_when_new_session_omits_models(
         self, tmp_path
     ):
-        """Same contract as the load_session-failure case, but reached via
-        the cwd-mismatch branch in ``_start_acp_server`` (which sets
-        ``prior_session_id = None`` before falling through to new_session).
-        """
+        """A changed workspace clears stale model state on a fresh session."""
         from openhands.sdk.utils.async_executor import AsyncExecutor
 
         agent = _make_agent()
@@ -7259,11 +7322,8 @@ class TestACPSessionIdPersistence:
         assert "acp_current_model_id" not in state.agent_state
         assert "acp_available_models" not in state.agent_state
 
-    def test_fallback_replacement_id_lands_in_agent_state(self, tmp_path):
-        """When load_session fails and new_session runs, init_state must
-        overwrite state.agent_state['acp_session_id'] with the new id so
-        the next restart doesn't keep trying to resume the stale one.
-        """
+    def test_failed_resume_retains_session_id_in_agent_state(self, tmp_path):
+        """A failed resume must retain the original id for another attempt."""
         from openhands.sdk.utils.async_executor import AsyncExecutor
 
         agent = _make_agent()
@@ -7279,18 +7339,16 @@ class TestACPSessionIdPersistence:
         )
 
         agent._executor = AsyncExecutor()
-        with self._transport_patches(conn):
+        with self._transport_patches(conn), pytest.raises(ACPRequestError):
             agent.init_state(state, on_event=lambda _: None)
 
         conn.load_session.assert_awaited_once()
-        conn.new_session.assert_awaited_once()
-        assert state.agent_state["acp_session_id"] == "replacement-sess"
+        conn.new_session.assert_not_awaited()
+        assert state.agent_state["acp_session_id"] == "stale-sess"
         assert state.agent_state["acp_session_cwd"] == str(tmp_path)
 
-    def test_fallback_replacement_clears_suffix_marker(self, tmp_path):
-        """If load_session fails, the replacement session has not seen any
-        suffix yet, even if the stale session had persisted the marker.
-        """
+    def test_cancel_drain_failed_resume_can_retry_original_session(self, tmp_path):
+        """Retry after a failed restart keeps the original session and suffix."""
         agent = _make_agent(
             agent_context=AgentContext(system_message_suffix="Team rules.")
         )
@@ -7306,15 +7364,23 @@ class TestACPSessionIdPersistence:
             load_exc=ACPRequestError(-32602, "unknown session"),
         )
 
-        with self._transport_patches(conn):
-            agent.init_state(state, on_event=lambda _: None)
+        with self._transport_patches(conn), pytest.raises(ACPRequestError):
+            agent._restart_session_after_drain_timeout(state, on_event=lambda _: None)
 
         conn.load_session.assert_awaited_once()
-        conn.new_session.assert_awaited_once()
-        assert state.agent_state["acp_session_id"] == "replacement-sess"
+        conn.new_session.assert_not_awaited()
+        assert state.agent_state["acp_session_id"] == "stale-sess"
         assert state.agent_state["acp_session_cwd"] == str(tmp_path)
-        assert state.agent_state.get("acp_suffix_installed") is not True
-        assert agent._suffix_install_state == "pending_first_prompt"
+        assert state.agent_state["acp_suffix_installed"] is True
+
+        recovered = self._make_conn()
+        with self._transport_patches(recovered):
+            agent._restart_session_after_drain_timeout(state, on_event=lambda _: None)
+
+        assert recovered.load_session.call_args.kwargs["session_id"] == "stale-sess"
+        recovered.new_session.assert_not_awaited()
+        assert state.agent_state["acp_session_id"] == "stale-sess"
+        assert state.agent_state["acp_suffix_installed"] is True
 
     def test_resume_path_still_applies_session_mode_and_model(self, tmp_path):
         """load_session must be followed by the same set_session_model and
@@ -7593,7 +7659,7 @@ class TestACPSecretsEnvInjection:
         captured: dict = {}
         conn = TestACPSecretsEnvInjection._make_conn()
 
-        mock_process = MagicMock(spec=asyncio.subprocess.Process)
+        mock_process = MagicMock(spec=asyncio.subprocess.Process, pid=None)
         mock_process.returncode = None
         mock_process.wait = AsyncMock(return_value=0)
         mock_process.stdin = MagicMock()
@@ -7751,7 +7817,7 @@ class TestACPSecretRegistryEnvInjection:
         captured: dict = {}
         conn = TestACPSecretsEnvInjection._make_conn()
 
-        mock_process = MagicMock(spec=asyncio.subprocess.Process)
+        mock_process = MagicMock(spec=asyncio.subprocess.Process, pid=None)
         mock_process.returncode = None
         mock_process.wait = AsyncMock(return_value=0)
         mock_process.stdin = MagicMock()
@@ -7987,7 +8053,7 @@ class TestACPEnvConflictSuppression:
         captured: dict = {}
         conn = TestACPEnvConflictSuppression._make_conn()
 
-        mock_process = MagicMock(spec=asyncio.subprocess.Process)
+        mock_process = MagicMock(spec=asyncio.subprocess.Process, pid=None)
         mock_process.returncode = None
         mock_process.wait = AsyncMock(return_value=0)
         mock_process.stdin = MagicMock()
@@ -9171,7 +9237,7 @@ class TestACPFileSecretMaterialisation:
         from openhands.sdk.utils.async_executor import AsyncExecutor
 
         captured: dict[str, Any] = {}
-        mock_process = MagicMock(spec=asyncio.subprocess.Process)
+        mock_process = MagicMock(spec=asyncio.subprocess.Process, pid=None)
         mock_process.returncode = None
         mock_process.wait = AsyncMock(return_value=0)
         mock_process.stdin = MagicMock()
@@ -10492,3 +10558,141 @@ class TestUnperformableAuthMethodLogging:
 
         assert "session creation may fail" in caplog.text
         assert "GEMINI_API_KEY is unset" in caplog.text
+
+
+class TestACPProcessGroupShutdown:
+    @pytest.mark.parametrize("posix", [True, False])
+    def test_spawn_records_only_isolated_process_groups(self, tmp_path, posix):
+        agent = _make_agent()
+        agent._executor = AsyncExecutor()
+        conn = TestACPSessionIdPersistence._make_conn()
+        process = MagicMock()
+        process.pid = 54321
+        process.returncode = 0
+        process.wait = AsyncMock(return_value=0)
+        spawn = AsyncMock(return_value=process)
+        drain = AsyncMock()
+
+        try:
+            with (
+                patch.object(acp_agent_module, "_ACP_POSIX_PROCESS_GROUPS", posix),
+                patch.object(asyncio, "create_subprocess_exec", spawn),
+                patch.object(
+                    acp_agent_module, "_ACPClientConnection", return_value=conn
+                ),
+                patch.object(acp_agent_module, "_filter_jsonrpc_lines", drain),
+                patch.object(acp_agent_module, "_log_acp_subprocess_stderr", drain),
+            ):
+                agent._start_acp_server(_make_state(tmp_path))
+
+            if posix:
+                assert spawn.call_args.kwargs["start_new_session"] is True
+                assert agent._process_group_id == process.pid
+            else:
+                assert "start_new_session" not in spawn.call_args.kwargs
+                assert agent._process_group_id is None
+        finally:
+            with patch.object(ACPAgent, "_signal_process_group", return_value=False):
+                agent.close()
+
+    @pytest.mark.skipif(os.name != "posix", reason="Requires POSIX process groups")
+    @pytest.mark.parametrize(
+        ("leader_group", "own_group", "returncode"),
+        [(54322, 12345, None), (54321, 12345, 0), (54321, 54321, None)],
+    )
+    def test_never_signals_reused_or_caller_process_group(
+        self, leader_group, own_group, returncode
+    ):
+        process = MagicMock()
+        process.returncode = returncode
+
+        with (
+            patch.object(os, "getpgid", return_value=leader_group),
+            patch.object(os, "getpgrp", return_value=own_group),
+            patch.object(os, "killpg") as killpg,
+        ):
+            for sig in (signal.SIGTERM, signal.SIGKILL):
+                assert not ACPAgent._signal_process_group(process, 54321, sig)
+
+        killpg.assert_not_called()
+
+    @pytest.mark.skipif(os.name != "posix", reason="Requires POSIX process groups")
+    @pytest.mark.parametrize("leader_exited", [False, True])
+    @pytest.mark.parametrize("restart", [False, True])
+    def test_releases_descendant_writer_lock(self, tmp_path, leader_exited, restart):
+        fcntl = pytest.importorskip("fcntl")
+        worker = """
+import fcntl, signal, sys
+
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+with open(sys.argv[1], "a") as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    print("ready", flush=True)
+    signal.pause()
+"""
+        leader = """
+import signal, subprocess, sys
+
+child = subprocess.Popen(
+    [sys.executable, "-c", sys.argv[1], sys.argv[2]],
+    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+    text=True,
+)
+assert child.stdout.readline() == "ready\\n"
+print(child.pid, flush=True)
+if sys.argv[3] == "False":
+    signal.pause()
+"""
+        lock_path = tmp_path / "writer.lock"
+        executor = AsyncExecutor()
+        agent = _make_agent()
+        agent._executor = executor
+
+        async def spawn():
+            return await asyncio.create_subprocess_exec(
+                sys.executable,
+                "-c",
+                leader,
+                worker,
+                str(lock_path),
+                str(leader_exited),
+                stdout=asyncio.subprocess.PIPE,
+                start_new_session=True,
+            )
+
+        def assert_lock_released(*args, **kwargs):
+            with lock_path.open("a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+        process = executor.run_async(spawn, timeout=5.0)
+        agent._process = process
+        agent._process_group_id = process.pid
+        child_pid = None
+        try:
+            assert process.stdout is not None
+            child_pid = int(executor.run_async(process.stdout.readline, timeout=5.0))
+            assert os.getpgid(child_pid) == process.pid
+            if leader_exited:
+                assert executor.run_async(process.wait, timeout=5.0) == 0
+            with pytest.raises(BlockingIOError):
+                assert_lock_released()
+
+            if restart:
+                with patch.object(
+                    ACPAgent, "init_state", side_effect=assert_lock_released
+                ) as initialize:
+                    agent._restart_session_after_drain_timeout(
+                        _make_state(tmp_path), on_event=lambda _: None
+                    )
+                initialize.assert_called_once()
+            else:
+                agent.close()
+                assert_lock_released()
+        finally:
+            agent.close()
+            if child_pid is not None:
+                try:
+                    assert_lock_released()
+                except BlockingIOError:
+                    with suppress(ProcessLookupError):
+                        os.kill(child_pid, signal.SIGKILL)
