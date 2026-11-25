@@ -201,3 +201,28 @@ For development setup, testing, and contribution guidelines, see [DEVELOPMENT.md
   <img src="https://assets.openhands.dev/logos/external/black/google.svg" alt="Google" height="17" hspace="5">
 </picture>
 </div>
+
+
+### Bootstrap a remote conversation's terminal
+
+If your server supports the direct terminal API, configure the agent with the
+built-in `terminal` tool and run your trusted setup script before sending the
+first message:
+
+```python
+from openhands.tools.terminal import TerminalAction
+
+result = conversation.execute_tool(
+    "terminal", TerminalAction(command="source .openhands/setup.sh", timeout=30)
+)
+if result.is_error or result.exit_code != 0:
+    raise RuntimeError("Terminal setup did not complete successfully")
+```
+
+`conversation` is a `RemoteConversation`. Use `source` (or your shell's
+corresponding command) rather than spawning a child shell: exported variables
+then remain available to later agent terminal actions. Those actions share one
+shell and run serially until the runtime is recreated. A soft timeout can leave
+the command running; use a follow-up terminal action to finish or interrupt it.
+Direct execution bypasses the agent's tool confirmation, security analysis, and
+tool-use hooks. It does not discover or run repository scripts automatically.

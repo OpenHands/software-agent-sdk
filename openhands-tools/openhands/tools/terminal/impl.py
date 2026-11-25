@@ -119,6 +119,7 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         self._terminal_type = terminal_type
         self._env = normalize_terminal_env(env)
         self._max_panes = max_panes
+        self._persistent_shell = False
         self.full_output_save_dir: str | None = full_output_save_dir
 
         # Pool mode: use TmuxPanePool for parallel execution
@@ -159,6 +160,12 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         """Whether this executor is using the tmux pane pool for concurrency."""
         return self._pool is not None
 
+    def use_persistent_shell(self) -> None:
+        """Keep all later terminal actions in the shell used for setup."""
+        self._persistent_shell = True
+        if self._pool is not None:
+            self._pool.use_single_pane()
+
     def _initialize_pool(self) -> None:
         self._pool = TmuxPanePool(
             self._working_dir,
@@ -167,6 +174,8 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
             max_panes=self._max_panes,
         )
         self._pool.initialize()
+        if self._persistent_shell:
+            self._pool.use_single_pane()
         logger.info(
             f"TerminalExecutor initialized (pool mode) "
             f"working_dir: {self._working_dir}, username: {self._username}, "

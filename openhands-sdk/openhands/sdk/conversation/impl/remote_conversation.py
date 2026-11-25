@@ -23,7 +23,7 @@ from openhands.sdk.utils.pydantic_secrets import client_context
 
 if TYPE_CHECKING:
     from openhands.sdk.conversation.request import StartConversationRequest
-    from openhands.sdk.tool.schema import Action, Observation
+    from openhands.sdk.tool.schema import Action
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.exceptions import (
@@ -79,6 +79,7 @@ from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
 )
 from openhands.sdk.tool.client_tool import ClientTool, ClientToolSpec
+from openhands.sdk.tool.schema import Observation
 from openhands.sdk.utils.redact import http_error_log_content
 from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
 
@@ -2020,26 +2021,39 @@ class RemoteConversation(BaseConversation):
         self._state.refresh_from_server()
 
     def execute_tool(self, tool_name: str, action: "Action") -> "Observation":
-        """Execute a tool directly without going through the agent loop.
+        """Execute a tool directly through the remote conversation's executor.
 
-        Note: This method is not yet supported for RemoteConversation.
-        Tool execution for remote conversations happens on the server side
-        during the normal agent loop.
+        This bypasses the agent loop's confirmation policy and security
+        analyzer. The server restricts direct execution to tools it explicitly
+        allows (currently ``terminal``) and validates the action against that
+        tool's action schema. Call it before the agent run; subsequent terminal
+        actions share one shell and execute serially for this runtime. No tool-use
+        hooks or action/observation events run for the direct call.
 
         Args:
-            tool_name: The name of the tool to execute
-            action: The action to pass to the tool executor
+            tool_name: Name of the tool to execute.
+            action: Action passed to the tool executor.
+
+        Returns:
+            The tool observation, deserialized into its registered observation
+            type when the client has that tool module loaded.
 
         Raises:
-            NotImplementedError: Always, as this feature is not yet supported
-                for remote conversations.
+            httpx.HTTPStatusError: If the server rejects the request, including
+                an unknown conversation (404), a busy conversation (409), or an
+                unknown/unsupported tool or invalid action (422), or exhausted
+                server run capacity (429).
         """
-        raise NotImplementedError(
-            "execute_tool is not yet supported for RemoteConversation. "
-            "Tool execution for remote conversations happens on the server side "
-            "during the normal agent loop. Use LocalConversation for direct "
-            "tool execution."
+        response = _send_request(
+            self._client,
+            "POST",
+            f"{CONVERSATIONS_PATH}/{self._id}/execute_tool",
+            json={
+                "tool_name": tool_name,
+                "action": action.model_dump(mode="json"),
+            },
         )
+        return Observation.model_validate(response.json()["observation"])
 
     def close(self) -> None:
         """Close the conversation and clean up resources.

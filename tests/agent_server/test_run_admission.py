@@ -13,11 +13,16 @@ from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.exceptions import ConversationRunLimitExceeded
 from openhands.agent_server.openai.service import _run_agent
-from openhands.sdk import LLM, Agent, Message, TextContent
+from openhands.sdk import LLM, Agent, Message, TextContent, Tool
 from openhands.sdk.conversation.request import StartConversationRequest
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.testing import TestLLM
 from openhands.sdk.workspace import LocalWorkspace
+from openhands.tools.terminal import (
+    TerminalAction,
+    TerminalExecutor,
+    TerminalObservation,
+)
 from tests.agent_server.stress.scripts import start_conversation_with_test_llm
 
 
@@ -61,10 +66,13 @@ async def _runs(tmp_path, monkeypatch, max_concurrent_runs):
         max_concurrent_runs=max_concurrent_runs,
     ) as owner:
 
-        async def create(mode="async", fail=False):
+        async def create(mode="async", fail=False, *, terminal=False):
             info, _ = await owner.start_conversation(
                 StartConversationRequest(
-                    agent=Agent(llm=LLM(model="gpt-4o", usage_id="test"), tools=[]),
+                    agent=Agent(
+                        llm=LLM(model="gpt-4o", usage_id="test"),
+                        tools=[Tool(name="terminal")] if terminal else [],
+                    ),
                     workspace=LocalWorkspace(working_dir=str(tmp_path)),
                     autotitle=False,
                 )
@@ -449,3 +457,71 @@ async def test_terminal_status_implies_released_permit(tmp_path, monkeypatch):
             await service.wait_for_run_completion(10)
             == ConversationExecutionStatus.FINISHED
         )
+
+
+async def test_direct_terminal_holds_capacity_through_close_and_interrupt(
+    runs_one, monkeypatch
+):
+    direct = await runs_one.create(terminal=True)
+    competitor = await runs_one.create(terminal=True)
+    worker_entered, interrupt_entered = threading.Event(), threading.Event()
+    worker_done, interrupt_done = threading.Event(), threading.Event()
+    real_execute = TerminalExecutor.__call__
+
+    def execute(executor, action, conversation):
+        if action.command != "blocked":
+            return real_execute(executor, action, conversation)
+        worker_entered.set()
+        assert worker_done.wait(10)
+        return TerminalObservation.from_text(text="stopped", command="blocked")
+
+    def interrupt(_executor):
+        interrupt_entered.set()
+        assert interrupt_done.wait(10)
+
+    # Pause the two thread operations independently to test ownership of both.
+    monkeypatch.setattr(TerminalExecutor, "__call__", execute)
+    monkeypatch.setattr(TerminalExecutor, "interrupt", interrupt)
+    action = TerminalAction(command="printf ready")
+    request = asyncio.create_task(
+        direct.execute_terminal(TerminalAction(command="blocked"))
+    )
+    try:
+        await wait_until(worker_entered.is_set)
+        assert not direct.is_idle_evictable()
+        with pytest.raises(ConversationRunLimitExceeded):
+            await competitor.execute_terminal(action)
+        with pytest.raises(ConversationRunLimitExceeded):
+            await competitor.run()
+
+        close = asyncio.create_task(direct.close())
+        await wait_until(interrupt_entered.is_set)
+        close.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await close
+        with pytest.raises(ConversationRunLimitExceeded):
+            await competitor.execute_terminal(action)
+        worker_done.set()
+        # Allow the worker to settle while the interrupt is still in flight.
+        await asyncio.wait((request,), timeout=0.3)
+        assert not request.done()
+        with pytest.raises(ConversationRunLimitExceeded):
+            await competitor.execute_terminal(action)
+    finally:
+        worker_done.set()
+        interrupt_done.set()
+        await direct.close()
+        await request
+    assert (await competitor.execute_terminal(action)).text.strip() == "ready"
+
+
+async def test_direct_terminal_competes_with_running_conversation(runs_one):
+    running = await runs_one.create()
+    direct = await runs_one.create(terminal=True)
+    await running.run()
+    action = TerminalAction(command="printf ready")
+    with pytest.raises(ConversationRunLimitExceeded):
+        await direct.execute_terminal(action)
+    runs_one.release.set()
+    await running.wait_for_run_completion(5)
+    assert (await direct.execute_terminal(action)).text.strip() == "ready"

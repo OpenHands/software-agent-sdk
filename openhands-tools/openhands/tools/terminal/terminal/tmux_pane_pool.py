@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import shlex
 import threading
+import time
 import uuid
 from collections import deque
 from collections.abc import Iterator, Mapping
@@ -109,6 +110,9 @@ class TmuxPanePool:
     )
     _semaphore: threading.Semaphore = field(init=False, repr=False)
 
+    _pane_available: threading.Condition = field(init=False, repr=False)
+    _single_pane: bool = field(default=False, init=False, repr=False)
+
     _initialized: bool = field(default=False, init=False, repr=False)
     _closed: bool = field(default=False, init=False, repr=False)
     _initial_window: libtmux.Window | None = field(default=None, init=False, repr=False)
@@ -118,6 +122,7 @@ class TmuxPanePool:
             raise ValueError(f"max_panes must be >= 1, but got {self.max_panes}.")
         self.env = normalize_terminal_env(self.env)
         self._semaphore = threading.Semaphore(self.max_panes)
+        self._pane_available = threading.Condition(self._lock)
 
     def initialize(self) -> None:
         """Create the tmux session (panes are lazily added on checkout)."""
@@ -165,6 +170,7 @@ class TmuxPanePool:
                 terminal._closed = True
             self._all_panes.clear()
             self._available.clear()
+            self._pane_available.notify_all()
 
         # Kill the entire tmux session (destroys all windows/panes at once).
         # We deliberately skip per-terminal close() because that also calls
@@ -229,6 +235,11 @@ class TmuxPanePool:
         )
         return terminal
 
+    def use_single_pane(self) -> None:
+        """Keep using the first shell so subsequent calls share its state."""
+        with self._lock:
+            self._single_pane = True
+
     def checkout(
         self,
         timeout: float | None = None,
@@ -251,6 +262,7 @@ class TmuxPanePool:
         if not self._initialized or self._closed:
             raise RuntimeError("TmuxPanePool is not initialized or already closed")
 
+        deadline = None if timeout is None else time.monotonic() + timeout
         if timeout is None:
             self._semaphore.acquire()
         elif not self._semaphore.acquire(timeout=timeout):
@@ -259,7 +271,22 @@ class TmuxPanePool:
             )
 
         try:
-            with self._lock:
+            with self._pane_available:
+                if self._single_pane and self._all_panes:
+                    remaining = (
+                        None if deadline is None else deadline - time.monotonic()
+                    )
+                    if not self._pane_available.wait_for(
+                        lambda: self._closed or self._all_panes[0] in self._available,
+                        timeout=remaining,
+                    ):
+                        raise TimeoutError("Persistent terminal pane is busy")
+                    if not self._closed:
+                        terminal = self._all_panes[0]
+                        self._available.remove(terminal)
+                        return terminal
+                if self._closed:
+                    raise RuntimeError("TmuxPanePool is closed")
                 if prefer is not None and prefer in self._available:
                     self._available.remove(prefer)
                     logger.debug("Checked out preferred pane: %s", prefer.pane.pane_id)
@@ -282,10 +309,12 @@ class TmuxPanePool:
         """Return a pane to the pool."""
         with self._lock:
             if terminal not in self._all_panes:
-                logger.warning("Attempted to checkin a pane not from this pool")
-                return
+                if not self._closed:
+                    logger.warning("Attempted to checkin a pane not from this pool")
+                    return
             if not self._closed:
                 self._available.append(terminal)
+                self._pane_available.notify_all()
 
         self._semaphore.release()
         logger.debug("Checked in pane: %s", terminal.pane.pane_id)
@@ -303,10 +332,7 @@ class TmuxPanePool:
             # Create the replacement pane BEFORE killing the old window,
             # because tmux destroys the session when the last window dies.
             new_terminal = self._create_pane()
-            self._all_panes.append(new_terminal)
-
-            if old_terminal in self._all_panes:
-                self._all_panes.remove(old_terminal)
+            self._all_panes[self._all_panes.index(old_terminal)] = new_terminal
             if old_terminal in self._available:
                 self._available.remove(old_terminal)
 
