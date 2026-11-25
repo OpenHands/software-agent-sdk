@@ -2840,6 +2840,7 @@ version = "1.64.0"
 source = { editable = "openhands-sdk" }
 dependencies = [
     { name = "agent-client-protocol" },
+    { name = "authlib" },
     { name = "certifi" },
     { name = "deprecation" },
     { name = "fakeredis", extra = ["lua"] },
@@ -2874,6 +2875,7 @@ vertex = [
 [package.metadata]
 requires-dist = [
     { name = "agent-client-protocol", specifier = ">=1.0.0,<1.1.0" },
+    { name = "authlib", specifier = ">=1.9.5" },
     { name = "boto3", marker = "extra == 'boto3'", specifier = ">=1.44.4" },
     { name = "certifi", specifier = ">=2026.10.19" },
     { name = "deprecation", specifier = ">=2.1.0" },
