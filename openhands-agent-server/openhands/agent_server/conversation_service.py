@@ -1733,6 +1733,13 @@ class ConversationService:
             request,
             lambda: self._launch_stores(settings),
             self.cipher,
+            server_context_compacting=(
+                settings.agent_settings.context_compacting.model_dump(
+                    mode="json", exclude_none=True
+                )
+                if hasattr(settings.agent_settings, "context_compacting")
+                else None
+            ),
         )
         secrets = scoped_secrets(request.secrets, source)
         managed_codex_credential = is_codex_source(source) and (
