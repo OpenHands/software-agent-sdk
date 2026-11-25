@@ -205,9 +205,13 @@ class ApptainerWorkspace(RemoteWorkspace):
 
             # Set host for RemoteWorkspace to use
             object.__setattr__(self, "host", f"http://localhost:{self.host_port}")
-            # Apptainer inherits SESSION_API_KEY from environment by default
-            # We need to match it if present
-            session_api_key = os.environ.get("SESSION_API_KEY")
+            # Send the key the agent server in the container accepts: it reads
+            # OH_SESSION_API_KEYS_0 first and falls back to SESSION_API_KEY only
+            # when that is absent (see `config.py`). Both are forwarded by
+            # `forward_env`.
+            session_api_key = os.environ.get(
+                "OH_SESSION_API_KEYS_0", os.environ.get("SESSION_API_KEY")
+            )
             object.__setattr__(self, "api_key", session_api_key)
 
             # Wait for container to be healthy

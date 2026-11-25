@@ -132,6 +132,32 @@ def test_undrained_logs_do_not_block_server(mock_apptainer_workspace):
     workspace._instance_name = None
 
 
+@pytest.mark.parametrize(
+    ("env", "expected"),
+    [
+        ({}, None),
+        ({"SESSION_API_KEY": "legacy-key"}, "legacy-key"),
+        ({"OH_SESSION_API_KEYS_0": "current-key"}, "current-key"),
+        (
+            {"SESSION_API_KEY": "legacy-key", "OH_SESSION_API_KEYS_0": "current-key"},
+            "current-key",
+        ),
+    ],
+)
+def test_client_key_matches_key_server_accepts(
+    mock_apptainer_workspace, monkeypatch, env, expected
+):
+    """Both key variables are forwarded; the server resolves the V1 one first."""
+    monkeypatch.delenv("SESSION_API_KEY", raising=False)
+    monkeypatch.delenv("OH_SESSION_API_KEYS_0", raising=False)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+
+    workspace, _ = mock_apptainer_workspace()
+
+    assert workspace.api_key == expected
+
+
 def test_failed_health_check_terminates_server_process(monkeypatch, tmp_path):
     from openhands.workspace import ApptainerWorkspace
 
