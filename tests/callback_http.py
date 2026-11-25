@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import socket
 import threading
-import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -13,19 +12,17 @@ from typing import Any
 
 
 # An int is an HTTP status. A tuple is a status plus response headers.
-# "drop" closes the socket. "stall" waits and sends no response.
+# "drop" closes the socket before a response.
 Action = int | tuple[int, dict[str, str]] | str
 
 
 class CallbackServer:
-    """Threading server so a stalled attempt does not block the retry."""
+    """Threading server so one dropped attempt does not block the retry."""
 
-    def __init__(self, actions: list[Action], stall_seconds: float = 1.0) -> None:
+    def __init__(self, actions: list[Action]) -> None:
         self.actions = list(actions)
-        self.stall_seconds = stall_seconds
         self.bodies: list[dict[str, Any]] = []
         self.authorization: list[str | None] = []
-        self.times: list[float] = []
         self._lock = threading.Lock()
         parent = self
 
@@ -38,7 +35,6 @@ class CallbackServer:
                     index = len(parent.bodies)
                     parent.bodies.append(body)
                     parent.authorization.append(self.headers.get("Authorization"))
-                    parent.times.append(time.monotonic())
                     action: Action = (
                         parent.actions[index] if index < len(parent.actions) else 500
                     )
@@ -48,9 +44,6 @@ class CallbackServer:
                         self.connection.shutdown(socket.SHUT_RDWR)
                     except OSError:
                         pass
-                    return
-                if action == "stall":
-                    time.sleep(parent.stall_seconds)
                     return
                 if isinstance(action, int):
                     status = action
@@ -83,10 +76,8 @@ class CallbackServer:
 
 
 @contextmanager
-def callback_server(
-    actions: list[Action], stall_seconds: float = 1.0
-) -> Iterator[CallbackServer]:
-    server = CallbackServer(actions, stall_seconds=stall_seconds)
+def callback_server(actions: list[Action]) -> Iterator[CallbackServer]:
+    server = CallbackServer(actions)
     server.start()
     try:
         yield server

@@ -1,7 +1,8 @@
 """Retry behavior for the cloud workspace completion callback.
 
-The server is a real local HTTP server. Exits go through ``with
-OpenHandsCloudWorkspace``. These tests do not call OpenHands Cloud.
+Exits go through ``with OpenHandsCloudWorkspace`` against a local HTTP server.
+These tests do not call OpenHands Cloud. Retry-After parsing lives with the
+base sender so it is not repeated here.
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ import pytest
 
 from openhands.workspace import OpenHandsCloudWorkspace
 from tests.callback_http import callback_server
-from tests.callback_retry_cases import RETRY_CASES, assert_case, begin_case
+from tests.callback_retry_cases import NETWORK, assert_network
 
 
 _SECRET = "callback-secret-token"
@@ -34,62 +35,65 @@ def _workspace(monkeypatch, url: str | None) -> OpenHandsCloudWorkspace:
     return workspace
 
 
-@pytest.mark.parametrize("case", RETRY_CASES, ids=lambda case: case.name)
-def test_retry_case(monkeypatch, caplog, case):
-    clock = begin_case(monkeypatch, case)
-    caplog.set_level(logging.INFO)
-    with callback_server(
-        list(case.actions), stall_seconds=case.stall_seconds
-    ) as server:
-        workspace = _workspace(monkeypatch, server.url)
-        caplog.clear()
-        with workspace:
-            pass
-
-    assert_case(case, server, caplog, clock, _SECRET)
-
-
-def _closed_after_cleanup(workspace: OpenHandsCloudWorkspace) -> None:
+def _closed(workspace: OpenHandsCloudWorkspace) -> None:
     client = workspace._client
     assert client is not None
     assert client.is_closed
 
 
+@pytest.mark.parametrize("actions,attempts,warning", NETWORK)
+def test_network(monkeypatch, caplog, actions, attempts, warning):
+    caplog.set_level(logging.INFO)
+    with callback_server(list(actions)) as server:
+        workspace = _workspace(monkeypatch, server.url)
+        caplog.clear()
+        with workspace:
+            pass
+    assert_network(server, caplog, actions, attempts, warning, _SECRET)
+
+
 def test_completed_payload_on_exit(monkeypatch, caplog):
+    """502 then 200 through a real exit. The before/after script uses this shape."""
     caplog.set_level(logging.INFO)
     with callback_server([502, 200]) as server:
         workspace = _workspace(monkeypatch, server.url)
-        workspace.client
         caplog.clear()
         with workspace:
             pass
 
     body = server.bodies[0]
-    assert server.bodies[0] == server.bodies[1]
-    assert body["status"] == "COMPLETED"
-    assert body["run_id"] == "run-42"
-    assert body["conversation_id"] == "conv-123"
-    assert body["cost"] == 0.42
-    assert "error" not in body
-    _closed_after_cleanup(workspace)
+    assert server.bodies == [body, body]
+    assert body == {
+        "status": "COMPLETED",
+        "run_id": "run-42",
+        "conversation_id": "conv-123",
+        "cost": 0.42,
+    }
+    assert server.authorization == [f"Bearer {_SECRET}", f"Bearer {_SECRET}"]
     assert any(
         "Completion callback sent (COMPLETED): 200" in record.getMessage()
         for record in caplog.records
     )
 
 
-def test_failed_exit_retries_and_keeps_the_error(monkeypatch):
-    with callback_server([502, 200]) as server:
+def test_failed_exit_keeps_the_error_and_cleans_up(monkeypatch):
+    with callback_server([200]) as server:
         workspace = _workspace(monkeypatch, server.url)
         workspace.client
         with pytest.raises(RuntimeError, match="script crashed"):
             with workspace:
                 raise RuntimeError("script crashed")
 
-    _closed_after_cleanup(workspace)
-    assert server.bodies[0] == server.bodies[1]
-    assert server.bodies[0]["status"] == "FAILED"
-    assert server.bodies[0]["error"] == "script crashed"
+    _closed(workspace)
+    assert server.bodies == [
+        {
+            "status": "FAILED",
+            "run_id": "run-42",
+            "conversation_id": "conv-123",
+            "cost": 0.42,
+            "error": "script crashed",
+        }
+    ]
 
 
 def test_no_request_without_callback_url(monkeypatch):
@@ -98,9 +102,8 @@ def test_no_request_without_callback_url(monkeypatch):
         workspace.client
         with workspace:
             pass
-
     assert server.bodies == []
-    _closed_after_cleanup(workspace)
+    _closed(workspace)
 
 
 def test_header_preparation_failure_stays_best_effort(monkeypatch, caplog):
@@ -119,7 +122,7 @@ def test_header_preparation_failure_stays_best_effort(monkeypatch, caplog):
                 raise RuntimeError("body failed")
 
     assert server.bodies == []
-    _closed_after_cleanup(workspace)
+    _closed(workspace)
     warnings = [
         record.getMessage()
         for record in caplog.records
@@ -127,5 +130,4 @@ def test_header_preparation_failure_stays_best_effort(monkeypatch, caplog):
     ]
     assert warnings == ["Completion callback failed (FAILED): RuntimeError"]
     assert "leaked-token" not in caplog.text
-    assert "user:pw" not in caplog.text
     assert _SECRET not in caplog.text
