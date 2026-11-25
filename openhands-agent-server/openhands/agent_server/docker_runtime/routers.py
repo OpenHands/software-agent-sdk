@@ -60,7 +60,10 @@ from openhands.sdk.agent import ACPAgent
 from openhands.sdk.agent.acp_file_credentials import CODEX_AUTH_SECRET_NAME
 from openhands.sdk.conversation.persistence_const import BASE_STATE
 from openhands.sdk.conversation.request import ConversationContainerOptions
-from openhands.sdk.conversation.state import ConversationState
+from openhands.sdk.conversation.state import (
+    ConversationExecutionStatus,
+    ConversationState,
+)
 from openhands.sdk.credential import (
     CredentialConflict,
     CredentialNeedsReauthentication,
@@ -95,6 +98,15 @@ logger = get_logger(__name__)
 _INTERNAL_SERVER_URL_ENV = "OH_INTERNAL_SERVER_URL"
 _DEFAULT_INTERNAL_SERVER_URL = "http://127.0.0.1:8000"
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "0.0.0.0", "::"})
+_CREDENTIAL_RESTART_SAFE_STATUSES = frozenset(
+    {
+        ConversationExecutionStatus.IDLE,
+        ConversationExecutionStatus.PAUSED,
+        ConversationExecutionStatus.FINISHED,
+        ConversationExecutionStatus.ERROR,
+        ConversationExecutionStatus.STUCK,
+    }
+)
 
 
 class RuntimeCredentialReplacement(BaseModel):
@@ -232,6 +244,23 @@ def _persisted_codex_binding_state(
         return False, required, profile_allows
     is_codex = isinstance(state.agent, ACPAgent) and state.agent.acp_server == "codex"
     return is_codex, required, profile_allows
+
+
+def _persisted_execution_status(
+    registry: DockerConversationRegistry, conversation_id: UUID
+) -> ConversationExecutionStatus | None:
+    """Read the latest durable status before replacing a legacy runtime."""
+    state_file = registry.conversation_dir(conversation_id) / BASE_STATE
+    if not state_file.is_file():
+        return None
+    context = cipher_context(registry.resolve_persisted_cipher(conversation_id))
+    try:
+        state = ConversationState.model_validate_json(
+            state_file.read_text(), context=context
+        )
+    except (OSError, ValueError):
+        return None
+    return state.execution_status
 
 
 async def _activate_runtime_credential_bindings(
@@ -466,9 +495,25 @@ async def start_docker_conversation(
                 and activation_error is not None
                 and activation_error.status_code == 409
             ):
+                execution_status = await asyncio.to_thread(
+                    _persisted_execution_status, registry, conversation_id
+                )
+                if execution_status not in _CREDENTIAL_RESTART_SAFE_STATUSES:
+                    raise Conflict(
+                        "Conversation is active; retry credential sync when it is idle"
+                    )
+                idle_token = registry.idle_token(conversation_id)
                 release()
                 release = None
-                await registry.stop(conversation_id)
+                stopped = await registry.stop_if_idle(
+                    conversation_id,
+                    idle_token,
+                    container=container,
+                )
+                if not stopped:
+                    raise Conflict(
+                        "Runtime is in use; retry credential sync when it is idle"
+                    )
                 container = await registry.get_or_create(conversation_id)
                 release = registry.acquire_lease(conversation_id)
                 activation_error = await _activate_runtime_credential_bindings(
