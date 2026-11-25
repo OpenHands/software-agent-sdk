@@ -5,7 +5,6 @@ leave image selection to DockerWorkspace. No model call is made.
 """
 
 import argparse
-import os
 import platform
 import re
 import subprocess
@@ -46,15 +45,10 @@ def main() -> None:
 
     arch = "arm64" if platform.machine().lower() in {"arm64", "aarch64"} else "amd64"
     docker_platform: PlatformType = "linux/arm64" if arch == "arm64" else "linux/amd64"
-    sha = os.getenv("SDK_SHA") or os.getenv("GITHUB_SHA")
-    ci_image = (
-        f"ghcr.io/openhands/agent-server:{sha[:7]}-python-{arch}" if sha else None
-    )
-    # The launcher owns the catalog; a spec ID is not itself an image name.
-    images = {
-        "python-tools": ci_image or "ghcr.io/openhands/agent-server:latest-python"
-    }
-    image = ci_image
+    # The launcher owns this catalog. Use the published multi-arch alias even
+    # when SDK_SHA is set: fork PRs do not publish agent-server images.
+    images = {"python-tools": "ghcr.io/openhands/agent-server:latest-python-slim"}
+    image = None
     if profile.sandbox is not None:
         selected_spec = profile.sandbox.spec_id
         if selected_spec not in images:
@@ -72,13 +66,13 @@ def main() -> None:
         # Docker defaults the container's hostname to its short ID.
         if result.exit_code != 0 or not re.fullmatch(r"[a-f0-9]{12}", container_id):
             raise RuntimeError(f"Could not identify the sandbox container: {result}")
-        actual_image = subprocess.run(  # noqa: S603, S607
+        image_metadata = subprocess.run(  # noqa: S603, S607
             [
                 "docker",
                 "container",
                 "inspect",
                 "--format",
-                "{{.Config.Image}}",
+                "{{.Config.Image}} {{.Image}}",
                 container_id,
             ],
             check=True,
@@ -86,10 +80,12 @@ def main() -> None:
             text=True,
             timeout=15,
         ).stdout.strip()
+        actual_image, image_id = image_metadata.split()
         expected_image = image or "ghcr.io/openhands/agent-server:latest-python"
         if actual_image != expected_image:
             raise RuntimeError(f"Expected {expected_image}, got {actual_image}")
         print(f"Using Docker image: {actual_image}")
+        print(f"Docker image ID: {image_id}")
     print("EXAMPLE_COST: 0")
 
 
