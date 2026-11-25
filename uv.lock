@@ -3,13 +3,13 @@ revision = 5
 requires-python = ">=3.12"
 resolution-markers = [
     "python_full_version >= '3.15' and platform_machine == 'x86_64' and sys_platform == 'darwin'",
-    "python_full_version >= '3.15' and (platform_machine != 'x86_64' or sys_platform != 'darwin')",
+    "(python_full_version >= '3.15' and platform_machine != 'x86_64') or (python_full_version >= '3.15' and sys_platform != 'darwin')",
     "python_full_version == '3.14.*' and platform_machine == 'x86_64' and sys_platform == 'darwin'",
-    "python_full_version == '3.14.*' and (platform_machine != 'x86_64' or sys_platform != 'darwin')",
+    "(python_full_version == '3.14.*' and platform_machine != 'x86_64') or (python_full_version == '3.14.*' and sys_platform != 'darwin')",
     "python_full_version == '3.13.*' and platform_machine == 'x86_64' and sys_platform == 'darwin'",
-    "python_full_version == '3.13.*' and (platform_machine != 'x86_64' or sys_platform != 'darwin')",
+    "(python_full_version == '3.13.*' and platform_machine != 'x86_64') or (python_full_version == '3.13.*' and sys_platform != 'darwin')",
     "python_full_version < '3.13' and platform_machine == 'x86_64' and sys_platform == 'darwin'",
-    "python_full_version < '3.13' and (platform_machine != 'x86_64' or sys_platform != 'darwin')",
+    "(python_full_version < '3.13' and platform_machine != 'x86_64') or (python_full_version < '3.13' and sys_platform != 'darwin')",
 ]
 
 [options]
@@ -358,11 +358,11 @@ version = "0.22.9"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version == '3.14.*' and platform_machine == 'x86_64' and sys_platform == 'darwin'",
-    "python_full_version == '3.14.*' and (platform_machine != 'x86_64' or sys_platform != 'darwin')",
+    "(python_full_version == '3.14.*' and platform_machine != 'x86_64') or (python_full_version == '3.14.*' and sys_platform != 'darwin')",
     "python_full_version == '3.13.*' and platform_machine == 'x86_64' and sys_platform == 'darwin'",
-    "python_full_version == '3.13.*' and (platform_machine != 'x86_64' or sys_platform != 'darwin')",
+    "(python_full_version == '3.13.*' and platform_machine != 'x86_64') or (python_full_version == '3.13.*' and sys_platform != 'darwin')",
     "python_full_version < '3.13' and platform_machine == 'x86_64' and sys_platform == 'darwin'",
-    "python_full_version < '3.13' and (platform_machine != 'x86_64' or sys_platform != 'darwin')",
+    "(python_full_version < '3.13' and platform_machine != 'x86_64') or (python_full_version < '3.13' and sys_platform != 'darwin')",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/c7/94/1009e248bbfbab11397abca7193bea6626806be9a327d399810d523a07cb/beartype-0.22.9.tar.gz", hash = "sha256:8f82b54aa723a2848a56008d18875f91c1db02c32ef6a62319a002e3e25a975f", size = 1608866, upload-time = "2025-12-13T06:50:30.72Z" }
 wheels = [
@@ -375,7 +375,7 @@ version = "0.23.1"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version >= '3.15' and platform_machine == 'x86_64' and sys_platform == 'darwin'",
-    "python_full_version >= '3.15' and (platform_machine != 'x86_64' or sys_platform != 'darwin')",
+    "(python_full_version >= '3.15' and platform_machine != 'x86_64') or (python_full_version >= '3.15' and sys_platform != 'darwin')",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/79/34/c0cfdaee9c796c8381439fed0fcab62810753b8b0adb1ec88fa7f41eaa5d/beartype-0.23.1.tar.gz", hash = "sha256:8b805f246b32931c74f2b321ea0939fe5bb2ff43c12a3eff19cc4c854b832e1d", size = 1993714, upload-time = "2026-10-11T05:36:55.251Z" }
 wheels = [
@@ -574,11 +574,11 @@ wheels = [
 
 [[package]]
 name = "cachetools"
-version = "8.0.0"
+version = "8.0.1"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/e6/60/ac2d44dbfcca28a35151af27ad9c6236d913a67768b5bb88af90a8c02943/cachetools-8.0.0.tar.gz", hash = "sha256:5ed01bd676800d51f0025605e4fd8ad0891550513e7b0a4c3da478463764e5c3", size = 51146, upload-time = "2026-11-07T07:30:32.369Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/06/ce/d7ce62d82ec620e3b08538ce8948f4b3d7cb33829fc274413560004edd6d/cachetools-8.0.1.tar.gz", hash = "sha256:deb1d376d4d28c2f33f3e3058043b005e0af75c35c094bd54053e27d2906ad95", size = 50746, upload-time = "2026-11-17T20:20:33.613Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a6/bc/2e35dcb4bfb37a5dd98b8b323158d3103cf263f87164ed03702f6fc5483f/cachetools-8.0.0-py3-none-any.whl", hash = "sha256:5af562e5078f0086771a1e3832a9c3dbf5d336b6e2794a2c12a64680a4c9087d", size = 18610, upload-time = "2026-11-07T07:30:30.831Z" },
+    { url = "https://files.pythonhosted.org/packages/ef/42/15781416aedef98a28619024c5218fcd0179723c02b8cf25954bfabb3d12/cachetools-8.0.1-py3-none-any.whl", hash = "sha256:9e54fbdef4b24e8059e8a430893122febbaf9f5673f236fdb82256cdd090d506", size = 19095, upload-time = "2026-11-17T20:20:31.771Z" },
 ]
 
 [[package]]
@@ -870,10 +870,10 @@ name = "cryptography"
 version = "50.0.0"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.15' and (platform_machine != 'x86_64' or sys_platform != 'darwin')",
-    "python_full_version == '3.14.*' and (platform_machine != 'x86_64' or sys_platform != 'darwin')",
-    "python_full_version == '3.13.*' and (platform_machine != 'x86_64' or sys_platform != 'darwin')",
-    "python_full_version < '3.13' and (platform_machine != 'x86_64' or sys_platform != 'darwin')",
+    "(python_full_version >= '3.15' and platform_machine != 'x86_64') or (python_full_version >= '3.15' and sys_platform != 'darwin')",
+    "(python_full_version == '3.14.*' and platform_machine != 'x86_64') or (python_full_version == '3.14.*' and sys_platform != 'darwin')",
+    "(python_full_version == '3.13.*' and platform_machine != 'x86_64') or (python_full_version == '3.13.*' and sys_platform != 'darwin')",
+    "(python_full_version < '3.13' and platform_machine != 'x86_64') or (python_full_version < '3.13' and sys_platform != 'darwin')",
 ]
 dependencies = [
     { name = "cffi", marker = "platform_python_implementation != 'PyPy'" },
@@ -1483,7 +1483,7 @@ version = "3.4.1"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version < '3.13' and platform_machine == 'x86_64' and sys_platform == 'darwin'",
-    "python_full_version < '3.13' and (platform_machine != 'x86_64' or sys_platform != 'darwin')",
+    "(python_full_version < '3.13' and platform_machine != 'x86_64') or (python_full_version < '3.13' and sys_platform != 'darwin')",
 ]
 dependencies = [
     { name = "google-api-core" },
@@ -1504,11 +1504,11 @@ version = "3.11.0"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version >= '3.15' and platform_machine == 'x86_64' and sys_platform == 'darwin'",
-    "python_full_version >= '3.15' and (platform_machine != 'x86_64' or sys_platform != 'darwin')",
+    "(python_full_version >= '3.15' and platform_machine != 'x86_64') or (python_full_version >= '3.15' and sys_platform != 'darwin')",
     "python_full_version == '3.14.*' and platform_machine == 'x86_64' and sys_platform == 'darwin'",
-    "python_full_version == '3.14.*' and (platform_machine != 'x86_64' or sys_platform != 'darwin')",
+    "(python_full_version == '3.14.*' and platform_machine != 'x86_64') or (python_full_version == '3.14.*' and sys_platform != 'darwin')",
     "python_full_version == '3.13.*' and platform_machine == 'x86_64' and sys_platform == 'darwin'",
-    "python_full_version == '3.13.*' and (platform_machine != 'x86_64' or sys_platform != 'darwin')",
+    "(python_full_version == '3.13.*' and platform_machine != 'x86_64') or (python_full_version == '3.13.*' and sys_platform != 'darwin')",
 ]
 dependencies = [
     { name = "google-api-core" },
@@ -3877,7 +3877,7 @@ dependencies = [
     { name = "pyobjc-framework-avkit", marker = "(platform_release >= '13.0' and sys_platform != 'darwin') or (platform_release >= '13' and sys_platform == 'darwin')" },
     { name = "pyobjc-framework-avrouting", marker = "(platform_release >= '22.0' and sys_platform != 'darwin') or (platform_release >= '22' and sys_platform == 'darwin')" },
     { name = "pyobjc-framework-backgroundassets", marker = "(platform_release >= '22.0' and sys_platform != 'darwin') or (platform_release >= '22' and sys_platform == 'darwin')" },
-    { name = "pyobjc-framework-browserenginekit", marker = "platform_release >= '23.4' and (sys_platform != 'darwin' or sys_platform == 'darwin')" },
+    { name = "pyobjc-framework-browserenginekit", marker = "(platform_release >= '23.4' and sys_platform != 'darwin') or (platform_release >= '23.4' and sys_platform == 'darwin')" },
     { name = "pyobjc-framework-businesschat", marker = "(platform_release >= '18.0' and sys_platform != 'darwin') or (platform_release >= '18' and sys_platform == 'darwin')" },
     { name = "pyobjc-framework-calendarstore", marker = "(platform_release >= '9.0' and sys_platform != 'darwin') or (platform_release >= '9' and sys_platform == 'darwin')" },
     { name = "pyobjc-framework-callkit", marker = "(platform_release >= '20.0' and sys_platform != 'darwin') or (platform_release >= '20' and sys_platform == 'darwin')" },
@@ -3924,7 +3924,7 @@ dependencies = [
     { name = "pyobjc-framework-fileproviderui", marker = "(platform_release >= '19.0' and sys_platform != 'darwin') or (platform_release >= '19' and sys_platform == 'darwin')" },
     { name = "pyobjc-framework-findersync", marker = "(platform_release >= '14.0' and sys_platform != 'darwin') or (platform_release >= '14' and sys_platform == 'darwin')" },
     { name = "pyobjc-framework-fsevents", marker = "(platform_release >= '9.0' and sys_platform != 'darwin') or (platform_release >= '9' and sys_platform == 'darwin')" },
-    { name = "pyobjc-framework-fskit", marker = "platform_release >= '24.4' and (sys_platform != 'darwin' or sys_platform == 'darwin')" },
+    { name = "pyobjc-framework-fskit", marker = "(platform_release >= '24.4' and sys_platform != 'darwin') or (platform_release >= '24.4' and sys_platform == 'darwin')" },
     { name = "pyobjc-framework-gamecenter", marker = "(platform_release >= '12.0' and sys_platform != 'darwin') or (platform_release >= '12' and sys_platform == 'darwin')" },
     { name = "pyobjc-framework-gamecontroller", marker = "(platform_release >= '13.0' and sys_platform != 'darwin') or (platform_release >= '13' and sys_platform == 'darwin')" },
     { name = "pyobjc-framework-gamekit", marker = "(platform_release >= '12.0' and sys_platform != 'darwin') or (platform_release >= '12' and sys_platform == 'darwin')" },
@@ -3986,7 +3986,7 @@ dependencies = [
     { name = "pyobjc-framework-safariservices", marker = "(platform_release >= '16.0' and sys_platform != 'darwin') or (platform_release >= '16' and sys_platform == 'darwin')" },
     { name = "pyobjc-framework-safetykit", marker = "(platform_release >= '22.0' and sys_platform != 'darwin') or (platform_release >= '22' and sys_platform == 'darwin')" },
     { name = "pyobjc-framework-scenekit", marker = "(platform_release >= '11.0' and sys_platform != 'darwin') or (platform_release >= '11' and sys_platform == 'darwin')" },
-    { name = "pyobjc-framework-screencapturekit", marker = "platform_release >= '21.4' and (sys_platform != 'darwin' or sys_platform == 'darwin')" },
+    { name = "pyobjc-framework-screencapturekit", marker = "(platform_release >= '21.4' and sys_platform != 'darwin') or (platform_release >= '21.4' and sys_platform == 'darwin')" },
     { name = "pyobjc-framework-screensaver" },
     { name = "pyobjc-framework-screentime", marker = "(platform_release >= '20.0' and sys_platform != 'darwin') or (platform_release >= '20' and sys_platform == 'darwin')" },
     { name = "pyobjc-framework-scriptingbridge", marker = "(platform_release >= '9.0' and sys_platform != 'darwin') or (platform_release >= '9' and sys_platform == 'darwin')" },
@@ -3994,7 +3994,7 @@ dependencies = [
     { name = "pyobjc-framework-security" },
     { name = "pyobjc-framework-securityfoundation" },
     { name = "pyobjc-framework-securityinterface" },
-    { name = "pyobjc-framework-securityui", marker = "platform_release >= '24.4' and (sys_platform != 'darwin' or sys_platform == 'darwin')" },
+    { name = "pyobjc-framework-securityui", marker = "(platform_release >= '24.4' and sys_platform != 'darwin') or (platform_release >= '24.4' and sys_platform == 'darwin')" },
     { name = "pyobjc-framework-sensitivecontentanalysis", marker = "(platform_release >= '23.0' and sys_platform != 'darwin') or (platform_release >= '23' and sys_platform == 'darwin')" },
     { name = "pyobjc-framework-servicemanagement", marker = "(platform_release >= '10.0' and sys_platform != 'darwin') or (platform_release >= '10' and sys_platform == 'darwin')" },
     { name = "pyobjc-framework-sharedwithyou", marker = "(platform_release >= '22.0' and sys_platform != 'darwin') or (platform_release >= '22' and sys_platform == 'darwin')" },
