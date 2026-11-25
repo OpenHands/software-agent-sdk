@@ -44,6 +44,7 @@ Routes: none
 - `F31.config-silent-env`: an `OH_*` boolean other than `1`/`true` is read as false (it overrides a `true` in the configuration file) and a `Literal` variable outside its choices falls back to the default; the server starts either way, while the same invalid choice in the file stops startup.
 - `F31.tmux-dir-cleanup`: a server that defaulted its own per-process `TMUX_TMPDIR` removes that directory when it stops.
 - `F31.storage-retention`: with the Docker runtime, `conversation_storage_retention_days` archives a stopped conversation inactive past the limit (events readable, resume and proxied routes 410, runtime directory gone), and `conversation_storage_disk_budget` sheds a stopped workspace's gitignored directories while keeping its files, ignored individual files and nested Git checkouts; the runtime remains resumable.
+- `F31.search-unreadable-record`: with one conversation's `base_state.json` failing validation and another's `meta.json` not parsing (both damaged on disk while the server was serving), search answers 200 with every readable conversation after a restart, count answers 200, and DELETE removes each damaged conversation's directory while the fork source and the workspace stay.
 
 ## How to get to it (agent POV)
 
@@ -848,6 +849,54 @@ Preconditions:
   individual files and a nested checkout keep their exact content; the
   conversation remains resumable and those files are readable after resume.
   The budget is checked against actual filesystem usage before the test.
+- **Unreadable persisted record (`F31.search-unreadable-record`), known bug #7079.**
+  Two forks of a readable source, one with a `base_state.json` that fails
+  validation (`agent` null) and one with a `meta.json` that is not JSON,
+  written while the three conversations are cold (not loaded, so the
+  graceful restart does not rewrite them).
+  ```sh
+  QA_DMG_WS="$QA_WS/qa-f31-damaged"
+  mkdir -p "$QA_DMG_WS" && echo keep > "$QA_DMG_WS/qa-f31-keep.txt"
+  DP=$(control-agent-server conversation start --tools none --no-autotitle --title 'QA F31 damaged source' --workspace "$QA_DMG_WS" \
+    --prompt qa-f31-damaged --no-run --print-id)
+  DB=$(control-agent-server api POST "/api/conversations/$DP/fork" --expect 201 --field id)
+  DM=$(control-agent-server api POST "/api/conversations/$DP/fork" --expect 201 --field id)
+  control-agent-server api GET /api/conversations/search --query limit=100 --check items contains "$DB" --check items contains "$DM" --quiet
+  control-agent-server restart
+  CONV_DIR="$AGENT_SERVER_VERIFY_RUN/server/workspace/conversations"
+  control-agent-server state ls --conversation "$DB" owner_lease.json --expect-count 0
+  control-agent-server state ls --conversation "$DM" owner_lease.json --expect-count 0
+  printf '{"execution_status":"idle","agent":null}\n' > "$CONV_DIR/${DB//-/}/base_state.json"
+  printf '{not json\n' > "$CONV_DIR/${DM//-/}/meta.json"
+  control-agent-server restart
+  control-agent-server api GET /api/conversations/count --expect 200 --check . ge 1
+  control-agent-server api GET /api/conversations/search --query limit=100 --expect 200 --check items contains "$DP" \
+    --save F31.search-unreadable-record/search  # bug: status eq 500 && response.body.exception contains 'validation errors for ConversationState'
+  control-agent-server api DELETE "/api/conversations/$DB" --expect 200 --check success eq true \
+    --save F31.search-unreadable-record/delete-bad-state  # bug: status eq 500 && response.body.exception contains 'validation errors for ConversationState'
+  test ! -e "$CONV_DIR/${DB//-/}"
+  control-agent-server api DELETE "/api/conversations/$DM" --expect 200 --check success eq true \
+    --save F31.search-unreadable-record/delete-bad-meta  # bug: status eq 404 && response.body.detail eq 'Not Found'
+  test ! -e "$CONV_DIR/${DM//-/}"
+  control-agent-server api GET /api/conversations/search --query limit=100 --expect 200 --check items contains "$DP" \
+    --check items not-contains "$DB" --check items not-contains "$DM" --quiet
+  control-agent-server api GET "/api/conversations/$DP" --expect 200 --check id eq "$DP" --quiet
+  test -f "$QA_DMG_WS/qa-f31-keep.txt"
+  ```
+  Expected: a damaged record costs only itself. Search lists the readable
+  source (and every other readable conversation) with 200, count answers
+  200, and the normal DELETE removes each damaged conversation's directory
+  while the source and the workspace file stay. Today the `base_state.json`
+  that fails `ConversationState` validation makes the whole search page 500
+  (`_search_conversations` composes every row from the full state), and the
+  same validation error makes its DELETE 500 with the directory left on
+  disk (`delete_conversation` loads the conversation first). The fork whose
+  `meta.json` does not parse is dropped from the catalog at startup
+  (`_load_catalog_sync`), so search and count leave it out and its GET and
+  DELETE are 404 while its directory stays. Count answers 200 today; it
+  counts the catalog, so it already omits the unparseable `meta.json` fork.
+  This bullet runs last: until the bug is fixed the two damaged directories
+  stay in this run's catalog and every later search on the run is 500.
 
 ## Gotchas
 
@@ -912,3 +961,10 @@ Preconditions:
   `OH_SECRET_KEY`, settings, secrets and profiles: it does not share the
   owner's cipher, so the bullets above take over only conversations without
   secrets (a takeover of one with encrypted secrets is not mapped).
+- One unreadable conversation directory (a `base_state.json` that fails
+  validation) makes `GET /api/conversations/search` 500 for every caller,
+  and one whose `meta.json` does not parse vanishes from the catalog at the
+  next start; neither can be removed through DELETE
+  ([#7079](https://github.com/OpenHands/software-agent-sdk/issues/7079),
+  `F31.search-unreadable-record`). Recover a run by stopping it and removing
+  the directory by hand.
