@@ -62,6 +62,9 @@ _EXCLUDED_EXAMPLES = {
     "examples/01_standalone_sdk/60_decision_model.py",
     "examples/01_standalone_sdk/61_decision_model_agent_gate.py",
     "examples/01_standalone_sdk/62_decision_model_custom_provider.py",
+    # Require a runtime API deployment; the one CI used has been retired
+    "examples/02_remote_agent_server/04_convo_with_api_sandboxed_server.py",
+    "examples/02_remote_agent_server/09_acp_agent_with_remote_runtime.py",
     # Requires interactive input() which fails in CI with EOFError
     "examples/02_remote_agent_server/05_vscode_with_docker_sandboxed_server.py",
     # Requires a Kubernetes cluster with agent-sandbox and the agent-sandbox extra

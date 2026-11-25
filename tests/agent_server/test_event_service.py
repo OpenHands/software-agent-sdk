@@ -19,7 +19,11 @@ import pytest
 import pytest_asyncio
 from pydantic import SecretStr
 
-from openhands.agent_server import event_router
+from openhands.agent_server import (
+    event_router,
+    event_service as event_service_module,
+    server_details_router as sdr,
+)
 from openhands.agent_server.conversation_lease import LEASE_FILE_NAME
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.errors import status_for
@@ -2197,6 +2201,127 @@ class TestEventServiceRun:
         # State update should still be published (in finally block)
         event_service._publish_state_update.assert_called()
 
+    @pytest.mark.asyncio
+    async def test_run_heartbeat_survives_cancellation_of_legacy_thread_pool_worker(
+        self, event_service, monkeypatch
+    ):
+        """EventService.run()'s legacy (non-native-async) thread-pool path
+        (#5384 / #7105 follow-up, PR review comment
+        https://github.com/OpenHands/software-agent-sdk/pull/7105#pullrequestreview-6042227819):
+
+        A ``has_native_arun=False`` conversation runs its blocking ``run()``
+        in a real ``ThreadPoolExecutor`` thread, awaited via
+        ``asyncio.shield``. Cancelling the ``_run_task`` (the asyncio waiter)
+        raises ``CancelledError`` inside ``_run_and_publish()`` while that
+        real thread keeps executing -- ``asyncio.shield`` only protects the
+        inner future from the cancellation, not the other way around.
+
+        This reproduces, at the ``EventService.run()`` level (this file's
+        existing sync-only ``event_service``/``sample_agent`` fixtures, no
+        real LLM or ConversationService), the two specific gaps a leaked or
+        premature heartbeat stop would reintroduce:
+          1. the heartbeat must keep pulsing *through* that cancellation,
+             because the real worker thread is still doing real work; and
+          2. once the worker genuinely finishes, the heartbeat must actually
+             stop so idle_time resumes climbing (no leaked background task).
+        """
+        monkeypatch.setattr(event_service_module, "ACTIVITY_SIGNAL_INTERVAL", 0.05)
+        last_event_time_before_test = sdr._last_event_time
+
+        entered = threading.Event()
+        gate = threading.Event()
+
+        def blocking_run() -> None:
+            entered.set()
+            gate.wait(timeout=10.0)
+
+        conversation = MagicMock(spec=Conversation)
+        state = MagicMock(spec=ConversationState)
+        state.execution_status = ConversationExecutionStatus.IDLE
+        state.__enter__ = MagicMock(return_value=state)
+        state.__exit__ = MagicMock(return_value=None)
+        conversation._state = state
+        conversation.run = blocking_run
+
+        event_service._conversation = conversation
+        event_service._publish_state_update = AsyncMock()
+
+        try:
+            await event_service.run()
+            run_task = event_service._run_task
+            assert run_task is not None
+
+            started = await asyncio.to_thread(entered.wait, 5.0)
+            assert started, "thread-pool worker never started"
+
+            # Cancel the asyncio waiter while the real worker thread is still
+            # blocked on the gate -- this is the scenario the thread-pool
+            # done-callback (not the coroutine's own cancellation) must cover.
+            run_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await run_task
+
+            # The worker is still genuinely running: confirm the heartbeat
+            # kept refreshing idle_time past the 1-second truncation boundary
+            # instead of stopping the moment the asyncio side gave up. One
+            # reset here, then a single sleep past that boundary: if nothing
+            # pulses in between, idle_time reads >= 1; if the heartbeat is
+            # still pulsing every 0.05s, it never leaves 0. (A second manual
+            # reset mid-window would mask a heartbeat that already stopped,
+            # since idle_time truncates to whole seconds.)
+            sdr.update_last_execution_time()
+            await asyncio.sleep(1.5)
+            still_pulsing_idle_time = sdr.build_server_info().idle_time
+            assert still_pulsing_idle_time == 0, (
+                f"idle_time={still_pulsing_idle_time}s grew after the run's "
+                f"asyncio waiter was cancelled while its real thread-pool "
+                f"worker was still executing -- the heartbeat stopped too "
+                f"early instead of pulsing until the worker actually finished."
+            )
+
+            # Release the real worker thread and wait on the heartbeat task
+            # itself (bounded) rather than a fixed scheduling sleep, so the
+            # done-callback chain it depends on has actually run. Plain
+            # asyncio.wait(), not wait_for(): wait_for() cancels the task on
+            # timeout, which would quietly "fix" a leaked heartbeat here
+            # instead of letting the assertion below catch it.
+            gate.set()
+            heartbeat_task = event_service._run_heartbeat_task
+            if heartbeat_task is not None:
+                await asyncio.wait({heartbeat_task}, timeout=2.0)
+
+            # With nothing left running, idle_time must resume climbing: a
+            # leaked heartbeat task would keep idle_time pinned below the
+            # budget here, which is exactly what would make this fail.
+            sdr.update_last_execution_time()
+            await asyncio.sleep(1.2)
+            recovered_idle_time = sdr.build_server_info().idle_time
+            assert recovered_idle_time >= 1, (
+                f"idle_time={recovered_idle_time}s stayed at 0 a full second "
+                f"after the thread-pool worker genuinely finished -- the "
+                f"run-level heartbeat task leaked past completion instead of "
+                f"stopping."
+            )
+        finally:
+            # Always unblock the real worker thread and settle/cancel a
+            # still-pending run or heartbeat task, even on an early
+            # assertion failure above -- without letting cleanup itself
+            # raise and mask that original failure.
+            gate.set()
+            run_task = event_service._run_task
+            if run_task is not None and not run_task.done():
+                run_task.cancel()
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                if run_task is not None:
+                    await asyncio.wait_for(run_task, timeout=2.0)
+            heartbeat_task = event_service._run_heartbeat_task
+            if heartbeat_task is not None and not heartbeat_task.done():
+                heartbeat_task.cancel()
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                if heartbeat_task is not None:
+                    await asyncio.wait_for(heartbeat_task, timeout=2.0)
+            sdr._last_event_time = last_event_time_before_test
+
 
 class _PausingWriter:
     """Text file handle that runs ``pause`` halfway through each write.
@@ -4182,6 +4307,58 @@ async def test_event_service_checks_the_workspace_repo_off_the_event_loop(
 
     assert len(threads) == 1
     assert threads[0] != loop_thread
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "wait_on_state_lock",
+    [
+        pytest.param(
+            lambda service: service.subscribe_to_events(AsyncMock()),
+            id="websocket-subscribe",
+        ),
+        pytest.param(
+            lambda service: service.send_message(
+                Message(role="user", content=[TextContent(text="hi")])
+            ),
+            id="send-message",
+        ),
+        pytest.param(lambda service: service.pause(), id="pause"),
+    ],
+)
+async def test_state_lock_waiters_leave_the_default_executor_free(
+    tmp_path: Path, wait_on_state_lock
+) -> None:
+    """A run holds the state lock for a whole tool step. Requests waiting on it
+    must not take default-executor threads: lock-free work, such as the event
+    reads of every conversation, needs that pool (#6553)."""
+    loop = asyncio.get_running_loop()
+    loop.set_default_executor(ThreadPoolExecutor(max_workers=1))
+    service = EventService(
+        stored=_make_stored(tmp_path), agent=_sample_agent(), conversations_dir=tmp_path
+    )
+    await service.start()
+    state = service.get_conversation()._state
+    held, release = threading.Event(), threading.Event()
+
+    def hold_state_lock() -> None:  # stands in for a run inside a tool step
+        with state:
+            held.set()
+            release.wait()
+
+    holder = threading.Thread(target=hold_state_lock)
+    holder.start()
+    held.wait()
+    waiter = asyncio.create_task(wait_on_state_lock(service))
+    try:
+        await asyncio.sleep(0.1)  # let the request reach the lock
+        probe = loop.run_in_executor(None, lambda: "free")
+        assert await asyncio.wait_for(probe, timeout=2) == "free"
+    finally:
+        release.set()
+        holder.join()
+        await asyncio.wait_for(waiter, timeout=5)
+        await service.close()
 
 
 def test_concurrent_repo_checks_on_a_new_directory_all_succeed(

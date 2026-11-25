@@ -217,9 +217,8 @@ class ParallelToolExecutor:
         locks are acquired on the worker thread, not the event-loop
         thread.
 
-        When *executor* is ``None`` the asyncio default pool is used
-        (suitable for one-off / single-action calls); batch callers
-        should pass a dedicated pool so concurrent tool calls don't
+        When *executor* is ``None`` the asyncio default pool is used;
+        batch callers should pass a dedicated pool so tool calls don't
         contend with other ``run_in_executor`` users on the shared
         default pool.
 

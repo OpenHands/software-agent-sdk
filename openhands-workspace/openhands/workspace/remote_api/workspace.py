@@ -23,7 +23,7 @@ class APIRemoteWorkspace(RemoteWorkspace):
 
     Example:
         workspace = APIRemoteWorkspace(
-            runtime_api_url="https://runtime.eval.all-hands.dev",
+            runtime_api_url="https://runtime.example.com",
             runtime_api_key="your-api-key",
             server_image="ghcr.io/openhands/agent-server:lastest-python",
         )
