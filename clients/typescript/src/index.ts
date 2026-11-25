@@ -278,6 +278,7 @@ export type { SwitchPlan } from './profiles/derive-switch-plan';
 // Conversation models
 export type {
   ConversationInfo,
+  BrokenConversationInfo,
   ConversationRuntimeStatus,
   ConversationRuntimeError,
   ConversationRuntimeInfo,
