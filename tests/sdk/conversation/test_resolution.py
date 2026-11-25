@@ -248,3 +248,44 @@ def test_the_judge_uses_the_saved_profile_over_the_conversation_llm(tmp_path):
 
     assert judge.llm.model == "openai/judge-model"
     assert store.load(RESOLUTION_JUDGE_PROFILE_NAME).model == "openai/judge-model"
+
+
+def test_the_judge_profile_is_encrypted_under_the_stores_cipher(tmp_path):
+    from openhands.sdk.conversation.resolution import (
+        RESOLUTION_JUDGE_PROFILE_NAME,
+        resolution_judge,
+    )
+    from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+    from openhands.sdk.utils.cipher import Cipher
+
+    store = LLMProfileStore(tmp_path, cipher=Cipher("server-key"))
+    own = LLM(model="openai/own-model", api_key="sk-own", usage_id="agent")
+
+    resolution_judge(own, store)
+    judge = resolution_judge(own, store)  # this call loads the saved profile
+
+    saved = (tmp_path / f"{RESOLUTION_JUDGE_PROFILE_NAME}.json").read_text()
+    assert "sk-own" not in saved
+    assert isinstance(judge.llm.api_key, SecretStr)
+    assert judge.llm.api_key.get_secret_value() == "sk-own"
+
+
+def test_the_judges_deprecated_cipher_argument_still_decrypts(tmp_path, monkeypatch):
+    """``resolution_judge(cipher=...)`` was published in 1.63.0."""
+    from openhands.sdk.conversation.resolution import resolution_judge
+    from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+    from openhands.sdk.utils import deprecation
+    from openhands.sdk.utils.cipher import Cipher
+
+    monkeypatch.setattr(deprecation, "_current_version", lambda: "1.65.0")
+    cipher = Cipher("server-key")
+    own = LLM(model="openai/own-model", api_key="sk-own", usage_id="agent")
+    resolution_judge(own, LLMProfileStore(tmp_path, cipher=cipher))
+
+    with pytest.warns(
+        deprecation.DeprecatedWarning, match=r"resolution_judge\(cipher="
+    ):
+        judge = resolution_judge(own, LLMProfileStore(tmp_path), cipher=cipher)
+
+    assert isinstance(judge.llm.api_key, SecretStr)
+    assert judge.llm.api_key.get_secret_value() == "sk-own"

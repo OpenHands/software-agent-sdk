@@ -2210,7 +2210,7 @@ class LocalConversation(BaseConversation):
         try:
             llm = self.llm_registry.get(usage_id)
         except KeyError:
-            loaded = self._profile_store.load(profile_name, cipher=self._cipher)
+            loaded = self._profile_store.load(profile_name)
             llm = loaded.model_copy(update={"usage_id": usage_id})
         return self._add_model_router_route_llm(
             resolved_route_name,

@@ -40,12 +40,7 @@ def make_resolution_judge(
         server_stores = stores()
         if llm is None or server_stores is None:
             return None
-        model = await run_store(
-            resolution_judge,
-            llm,
-            server_stores.llm_profiles,
-            cipher=server_stores.cipher,
-        )
+        model = await run_store(resolution_judge, llm, server_stores.llm_profiles)
         if context is not None:
             task, earlier = await context()
             state = state.model_copy(update={"task": task, "earlier": earlier})
