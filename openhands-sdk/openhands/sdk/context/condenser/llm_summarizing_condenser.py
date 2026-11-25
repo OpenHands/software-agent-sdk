@@ -559,8 +559,17 @@ _DEFAULT_MAX_SIZE: Final[int] = 80
 _DEFAULT_KEEP_FIRST: Final[int] = 4
 
 
-def default_condenser(llm: LLM) -> LLMSummarizingCondenser:
+def default_condenser(
+    llm: LLM,
+    *,
+    max_size: int | None = None,
+    keep_first: int | None = None,
+    max_tokens: int | None = None,
+) -> LLMSummarizingCondenser:
     """Standard summarizing condenser used by the default agent and sub-agents."""
     return LLMSummarizingCondenser(
-        llm=llm, max_size=_DEFAULT_MAX_SIZE, keep_first=_DEFAULT_KEEP_FIRST
+        llm=llm,
+        max_size=_DEFAULT_MAX_SIZE if max_size is None else max_size,
+        keep_first=_DEFAULT_KEEP_FIRST if keep_first is None else keep_first,
+        max_tokens=max_tokens,
     )
