@@ -230,6 +230,20 @@ class RunSlot:
         self.release()
 
 
+async def _pulse_execution_activity(stop: asyncio.Event) -> None:
+    """Refresh the runtime idle timer every ``ACTIVITY_SIGNAL_INTERVAL`` while a
+    run is in flight, same throttle as the ACP/stream activity signals below.
+
+    Caller must set ``stop`` once the real work is done, not merely once an
+    ``await`` on it returns (a shielded thread-pool worker can outlive that).
+    """
+    while not stop.is_set():
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=ACTIVITY_SIGNAL_INTERVAL)
+        except TimeoutError:
+            update_last_execution_time()
+
+
 def _log_emit_failure(event_kind: str, future: "asyncio.Future[None]") -> None:
     """Log an event emission that failed inside the executor thread."""
     if future.cancelled():
@@ -335,6 +349,9 @@ class EventService:
     _last_active_monotonic: float = field(default_factory=time.monotonic, init=False)
     # Monotonic clock of the last throttled streaming heartbeat.
     _last_stream_activity_signal: float = field(default=float("-inf"), init=False)
+    # Keeps the in-flight run's idle-timer heartbeat task (_pulse_execution_
+    # activity) referenced so asyncio cannot garbage-collect it mid-run.
+    _run_heartbeat_task: asyncio.Task | None = field(default=None, init=False)
     # Subscribers attached at startup; later ones (e.g. websockets) are external.
     _internal_subscriber_ids: set[UUID] = field(default_factory=set, init=False)
 
@@ -1756,6 +1773,7 @@ class EventService:
             slot = owner.share()
 
             worker: asyncio.Future | None = None
+            heartbeat_stop: asyncio.Event | None = None
 
             def settle(done: asyncio.Future | None = None) -> None:
                 # Cancellation of the asyncio waiter does not stop a sync thread.
@@ -1772,7 +1790,7 @@ class EventService:
             run_generation = self._explicit_interrupt_generation
 
             async def _run_and_publish():
-                nonlocal worker
+                nonlocal worker, heartbeat_stop
                 try:
                     # Prefer the native async path when available so the event
                     # loop is free during LLM I/O.  Fall back to thread-pool
@@ -1798,13 +1816,42 @@ class EventService:
                     )
                     if self._explicit_interrupt_generation != run_generation:
                         return
+
+                    # A Task/Delegate dispatch blocks on a child conversation
+                    # without emitting a durable event or touching this
+                    # process's HTTP endpoints, so idle_time would otherwise
+                    # climb for the whole wait (#5384). Pulse it instead for
+                    # the life of the run.
+                    heartbeat_stop = asyncio.Event()
+                    self._run_heartbeat_task = asyncio.create_task(
+                        _pulse_execution_activity(heartbeat_stop)
+                    )
                     if has_native_arun:
-                        await conversation.arun()
+                        try:
+                            await conversation.arun()
+                        finally:
+                            # CAVEAT: on interrupt(), the CancelledError that
+                            # stops arun() stops the heartbeat here too, but
+                            # Task/Delegate have no real interrupt() (default
+                            # is a no-op), so their dispatch thread can keep
+                            # running after this. Fixing that needs a real
+                            # Task/Delegate interrupt() -- out of scope here.
+                            # On normal completion this is exact: every
+                            # dispatched tool call has already finished.
+                            heartbeat_stop.set()
                     else:
                         worker = loop.run_in_executor(
                             self._run_executor, conversation.run
                         )
                         worker.add_done_callback(settle)
+                        # Tied to the worker future itself (not the shielded
+                        # await below) so a cancellation of this coroutine
+                        # can't stop the heartbeat while the worker is still
+                        # running, mirroring settle() above. Bound to a local
+                        # so the closure can't observe heartbeat_stop being
+                        # reset to None elsewhere.
+                        stop = heartbeat_stop
+                        worker.add_done_callback(lambda _f: stop.set())
                         await asyncio.shield(worker)
                 except Exception as exc:
                     # Log the traceback as plain text, not via exc_info: the
@@ -1829,6 +1876,12 @@ class EventService:
                         await self.run_state_op(self._publish_error_event_sync, exc)
                     await self.run_state_op(self._mark_error_status_sync)
                 finally:
+                    # Backstop for exit paths that skip both branches above
+                    # (e.g. an exception before dispatch). Only force it when
+                    # no thread-pool worker is still actually running -- the
+                    # branches' own stop-setting already covers the rest.
+                    if heartbeat_stop is not None and (worker is None or worker.done()):
+                        heartbeat_stop.set()
                     settle()
                     # Wait for all pending events to be published via
                     # AsyncCallbackWrapper before publishing the final state update.

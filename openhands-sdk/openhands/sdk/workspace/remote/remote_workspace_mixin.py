@@ -2,15 +2,16 @@ import logging
 import time
 from collections.abc import Generator
 from pathlib import Path, PureWindowsPath
-from typing import Any
+from typing import Annotated, Any
 from uuid import UUID
 
 import httpx
-from pydantic import BaseModel, Field, TypeAdapter
+from pydantic import BaseModel, BeforeValidator, Field, TypeAdapter
 
 from openhands.sdk.git.models import GitChange, GitDiff
 from openhands.sdk.observability.laminar import observability_headers_from_env
 from openhands.sdk.utils.path import to_posix_path
+from openhands.sdk.workspace.base import _convert_path_to_str
 from openhands.sdk.workspace.models import CommandResult, FileOperationResult
 
 
@@ -41,9 +42,17 @@ class RemoteWorkspaceMixin(BaseModel):
     api_key: str | None = Field(
         default=None, description="API key for authenticating with the remote host."
     )
-    working_dir: str = Field(
-        description="The working directory for agent operations and tool execution."
-    )
+    working_dir: Annotated[
+        str,
+        BeforeValidator(_convert_path_to_str),
+        Field(
+            description=(
+                "The working directory for agent operations and tool execution. "
+                "Accepts both string paths and Path objects. "
+                "Path objects are automatically converted to strings."
+            )
+        ),
+    ]
     read_timeout: float = Field(
         default=600.0,
         description="Timeout in seconds for reading operations of httpx.Client.",
