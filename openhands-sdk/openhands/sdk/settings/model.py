@@ -2618,32 +2618,75 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
                         and nested_key in type(section_default).model_fields
                     ):
                         default_value = dict(section_default).get(nested_key)
-                    field_schema = SettingsFieldSchema(
-                        key=f"{explicit_section_metadata.key}.{nested_key}",
-                        label=(
-                            metadata.label
-                            if metadata.label is not None
-                            else _humanize_name(nested_key)
-                        ),
-                        description=nested_field.description,
-                        section=section.key,
-                        section_label=section.label,
-                        value_type=_infer_value_type(nested_field.annotation),
-                        default=_normalize_default(default_value),
-                        prominence=metadata.prominence,
-                        depends_on=[
-                            f"{explicit_section_metadata.key}.{dependency}"
-                            for dependency in metadata.depends_on
-                        ],
-                        secret=_contains_secret(nested_field.annotation),
-                        choices=_extract_choices(nested_field.annotation),
-                        # Field-level variant falls back to the enclosing
-                        # section's variant — nested fields inherit their
-                        # parent section's variant by default.
-                        variant=metadata.variant or section.variant,
-                    )
-                    seen_nested_fields[nested_key] = field_schema
-                    section.fields.append(field_schema)
+                    # Expand LLM fields into their sub-fields so the UI can
+                    # render them as individual inputs instead of a single
+                    # JSON textarea.
+                    llm_sub_models = [
+                        m for m in _nested_model_types(nested_field.annotation)
+                        if m.__name__ == "LLM"
+                    ]
+                    if llm_sub_models:
+                        for sub_key, sub_field in llm_sub_models[0].model_fields.items():
+                            if sub_field.exclude:
+                                continue
+                            sub_meta = settings_metadata(sub_field)
+                            if sub_meta is None:
+                                continue
+                            sub_default = (
+                                dict(default_value).get(sub_key)
+                                if isinstance(default_value, BaseModel)
+                                else None
+                            )
+                            section.fields.append(
+                                SettingsFieldSchema(
+                                    key=f"{explicit_section_metadata.key}.{nested_key}.{sub_key}",
+                                    label=(
+                                        sub_meta.label
+                                        if sub_meta.label is not None
+                                        else _humanize_name(sub_key)
+                                    ),
+                                    description=sub_field.description,
+                                    section=section.key,
+                                    section_label=section.label,
+                                    value_type=_infer_value_type(sub_field.annotation),
+                                    default=_normalize_default(sub_default),
+                                    prominence=sub_meta.prominence,
+                                    depends_on=[
+                                        f"{explicit_section_metadata.key}.{nested_key}.{dep}"
+                                        for dep in sub_meta.depends_on
+                                    ],
+                                    secret=_contains_secret(sub_field.annotation),
+                                    choices=_extract_choices(sub_field.annotation),
+                                    variant=section.variant,
+                                )
+                            )
+                    else:
+                        field_schema = SettingsFieldSchema(
+                            key=f"{explicit_section_metadata.key}.{nested_key}",
+                            label=(
+                                metadata.label
+                                if metadata.label is not None
+                                else _humanize_name(nested_key)
+                            ),
+                            description=nested_field.description,
+                            section=section.key,
+                            section_label=section.label,
+                            value_type=_infer_value_type(nested_field.annotation),
+                            default=_normalize_default(default_value),
+                            prominence=metadata.prominence,
+                            depends_on=[
+                                f"{explicit_section_metadata.key}.{dependency}"
+                                for dependency in metadata.depends_on
+                            ],
+                            secret=_contains_secret(nested_field.annotation),
+                            choices=_extract_choices(nested_field.annotation),
+                            # Field-level variant falls back to the enclosing
+                            # section's variant — nested fields inherit their
+                            # parent section's variant by default.
+                            variant=metadata.variant or section.variant,
+                        )
+                        seen_nested_fields[nested_key] = field_schema
+                        section.fields.append(field_schema)
             continue
 
         metadata = settings_metadata(field)
