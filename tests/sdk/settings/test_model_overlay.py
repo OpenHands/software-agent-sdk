@@ -63,3 +63,15 @@ def test_read_replaces_empty_map_and_preserves_required_inherited_siblings():
     assert reconcile_model(parent, parent, resolved, {}, local) == {
         "options": {"catalog": {}}
     }
+
+
+def test_callable_discriminator_switch_discards_outgoing_variant_fields():
+    from openhands.sdk.settings import OpenHandsAgentSettings
+    from openhands.sdk.utils.model_overlay import overlay_model
+
+    parent = OpenHandsAgentSettings()
+    switched = overlay_model(parent, {"condenser": {"condenser_kind": "no_op"}})
+    assert switched.condenser.condenser_kind == "no_op"
+    assert overlay_model(switched, {"condenser": {}}) == switched
+    shape = {"condenser": {"condenser_kind": "no_op"}}
+    assert reconcile_model(parent, parent, switched, {}, shape) == shape

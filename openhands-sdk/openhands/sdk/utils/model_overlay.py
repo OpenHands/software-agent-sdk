@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Discriminator
 
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.pydantic_secrets import client_context
@@ -51,6 +51,17 @@ def reconcile_model(
         elif new != old:
             if new == inherited:
                 result.pop(name, None)
+            elif isinstance(new, BaseModel) and isinstance(shape, Mapping):
+                # A different concrete variant replaces the outgoing record.
+                # Keep its explicit shape, not a materialization of SDK defaults.
+                keys = set(shape)
+                if type(old) is type(new) and isinstance(owned.get(name), Mapping):
+                    keys.update(owned[name])
+                result[name] = new.model_dump(
+                    mode="json",
+                    include=keys,
+                    context=client_context("encrypted", cipher),
+                )
             else:
                 result[name] = after.model_dump(
                     mode="json",
@@ -82,6 +93,11 @@ def overlay_model[M: BaseModel](
                     discriminator not in patch
                     or patch[discriminator] == dict(existing).get(discriminator)
                 )
+                if isinstance(discriminator, Discriminator) and callable(
+                    discriminator.discriminator
+                ):
+                    tag = discriminator.discriminator
+                    same_variant = tag(existing) == tag({**dict(existing), **patch})
                 if same_variant:
                     fields[name] = overlay(existing, patch)
                     continue
