@@ -1,7 +1,12 @@
+from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from openhands.sdk.tool import ToolExecutor
+from openhands.tools.utils.path_containment import (
+    PathContainment,
+    PathOutsideWorkspaceError,
+)
 
 
 if TYPE_CHECKING:
@@ -26,8 +31,15 @@ class FileEditorExecutor(ToolExecutor):
         self,
         workspace_root: str | None = None,
         allowed_edits_files: list[str] | None = None,
+        restrict_to_workspace: bool = False,
+        allowed_roots: Sequence[str] | None = None,
     ):
         self.editor: FileEditor = FileEditor(workspace_root=workspace_root)
+        if restrict_to_workspace and workspace_root is None:
+            raise ValueError("restrict_to_workspace requires workspace_root")
+        self.containment: PathContainment | None = PathContainment.from_settings(
+            workspace_root or ".", restrict_to_workspace, allowed_roots
+        )
         self.allowed_edits_files: set[Path] | None = (
             {Path(f).resolve() for f in allowed_edits_files}
             if allowed_edits_files
@@ -39,6 +51,15 @@ class FileEditorExecutor(ToolExecutor):
         action: FileEditorAction,
         conversation: "LocalConversation | None" = None,  # noqa: ARG002
     ) -> FileEditorObservation:
+        # Enforce opt-in workspace containment (before any filesystem access)
+        if self.containment is not None:
+            try:
+                self.containment.check(action.path)
+            except PathOutsideWorkspaceError as e:
+                return FileEditorObservation.from_text(
+                    text=str(e), command=action.command, is_error=True
+                )
+
         # Enforce allowed_edits_files restrictions
         if self.allowed_edits_files is not None and action.command != "view":
             action_path = Path(action.path).resolve()

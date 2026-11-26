@@ -1,10 +1,15 @@
 """Edit tool executor implementation."""
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from openhands.sdk.tool import ToolExecutor
 from openhands.tools.gemini.edit.definition import EditAction, EditObservation
+from openhands.tools.utils.path_containment import (
+    PathContainment,
+    PathOutsideWorkspaceError,
+)
 
 
 if TYPE_CHECKING:
@@ -14,13 +19,24 @@ if TYPE_CHECKING:
 class EditExecutor(ToolExecutor[EditAction, EditObservation]):
     """Executor for edit tool."""
 
-    def __init__(self, workspace_root: str):
+    def __init__(
+        self,
+        workspace_root: str,
+        restrict_to_workspace: bool = False,
+        allowed_roots: Sequence[str] | None = None,
+    ):
         """Initialize executor with workspace root.
 
         Args:
             workspace_root: Root directory for file operations
+            restrict_to_workspace: Reject paths outside the workspace root
+                (and ``allowed_roots``) after resolving symlinks.
+            allowed_roots: Extra absolute directories allowed when restricted.
         """
         self.workspace_root = Path(workspace_root)
+        self.containment: PathContainment | None = PathContainment.from_settings(
+            workspace_root, restrict_to_workspace, allowed_roots
+        )
 
     def __call__(
         self,
@@ -43,6 +59,12 @@ class EditExecutor(ToolExecutor[EditAction, EditObservation]):
         expected_replacements = action.expected_replacements
 
         resolved_path = (self.workspace_root / file_path).resolve()
+
+        if self.containment is not None:
+            try:
+                self.containment.check(resolved_path)
+            except PathOutsideWorkspaceError as e:
+                return EditObservation.from_text(is_error=True, text=str(e))
 
         # Handle file creation (old_string is empty)
         if old_string == "":
