@@ -2,6 +2,7 @@
 
 import json
 from collections.abc import Sequence
+from typing import ClassVar
 from unittest.mock import Mock, patch
 
 import pytest
@@ -12,6 +13,7 @@ from openhands.sdk.agent import Agent
 from openhands.sdk.context.condenser import LLMSummarizingCondenser
 from openhands.sdk.conversation import Conversation
 from openhands.sdk.conversation.impl.remote_conversation import RemoteConversation
+from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event.llm_convertible import (
     ActionEvent,
     MessageEvent,
@@ -26,7 +28,16 @@ from openhands.sdk.llm import (
     MetricsSnapshot,
     TextContent,
 )
-from openhands.sdk.tool import Action, Observation
+from openhands.sdk.security.confirmation_policy import AlwaysConfirm
+from openhands.sdk.testing import TestLLM
+from openhands.sdk.tool import (
+    Action,
+    Observation,
+    Tool,
+    ToolDefinition,
+    ToolExecutor,
+    register_tool,
+)
 from openhands.sdk.workspace import RemoteWorkspace
 from tests.sdk.conversation.conftest import create_mock_http_client
 
@@ -46,6 +57,34 @@ class CondenseTestMockObservation(Observation):
     @property
     def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
         return [TextContent(text=self.result)]
+
+
+class CondenseTestExecutor(
+    ToolExecutor[CondenseTestMockAction, CondenseTestMockObservation]
+):
+    def __call__(
+        self,
+        action: CondenseTestMockAction,
+        conversation=None,  # noqa: ARG002
+    ) -> CondenseTestMockObservation:
+        return CondenseTestMockObservation(result=f"Executed: {action.command}")
+
+
+class CondenseTestTool(
+    ToolDefinition[CondenseTestMockAction, CondenseTestMockObservation]
+):
+    name: ClassVar[str] = "condense_test_tool"
+
+    @classmethod
+    def create(cls, conv_state=None, **params) -> Sequence["CondenseTestTool"]:  # noqa: ARG003
+        return [
+            cls(
+                description="Runs a command",
+                action_type=CondenseTestMockAction,
+                observation_type=CondenseTestMockObservation,
+                executor=CondenseTestExecutor(),
+            )
+        ]
 
 
 def create_test_agent() -> Agent:
@@ -142,7 +181,7 @@ def test_local_conversation_condense_without_condenser(tmp_path, agent):
 def test_local_conversation_condense_with_condenser(
     mock_condense, tmp_path, agent_with_condenser
 ):
-    """condense adds CondensationRequest and calls agent.step() when condenser is configured."""  # noqa: E501
+    """condense adds CondensationRequest and runs the condenser when one is configured."""  # noqa: E501
     # Mock the condenser to avoid actual LLM calls
     from openhands.sdk.event.condenser import Condensation
 
@@ -307,6 +346,57 @@ def test_local_conversation_condense_force_condenser_bypasses_window(tmp_path, a
         ValueError, match="Cannot condense conversation: No condenser configured"
     ):
         conv.condense()
+
+
+def test_local_conversation_condense_does_not_run_pending_actions(tmp_path):
+    """condense leaves an action that awaits confirmation unexecuted."""
+    register_tool(CondenseTestTool.name, CondenseTestTool)
+    tool_call = MessageToolCall(
+        id="call_1",
+        name=CondenseTestTool.name,
+        arguments=json.dumps({"command": "rm -rf build"}),
+        origin="completion",
+    )
+    llm = TestLLM.from_messages(
+        [
+            Message(
+                role="assistant",
+                content=[TextContent(text="Cleaning up.")],
+                tool_calls=[tool_call],
+            )
+        ]
+    )
+    condenser = LLMSummarizingCondenser(
+        llm=TestLLM.from_messages(
+            [Message(role="assistant", content=[TextContent(text="Summary.")])],
+            usage_id="test-condenser-llm",
+        ),
+        max_size=100,
+        keep_first=1,
+    )
+    conv = Conversation(
+        agent=Agent(
+            llm=llm, condenser=condenser, tools=[Tool(name=CondenseTestTool.name)]
+        ),
+        persistence_dir=str(tmp_path),
+        workspace=str(tmp_path),
+    )
+    conv.set_confirmation_policy(AlwaysConfirm())
+    conv.send_message("Clean up the build folder.")
+    conv.run()
+    assert (
+        conv.state.execution_status
+        == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+    )
+
+    conv.condense()
+
+    assert not any(isinstance(e, ObservationEvent) for e in conv.state.events)
+    assert (
+        conv.state.execution_status
+        == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+    )
+    assert [a.tool_call_id for a in conv.state.waiting_actions()] == ["call_1"]
 
 
 # ---------------------------------------------------------------------------
