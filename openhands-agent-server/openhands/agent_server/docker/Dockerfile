@@ -8,7 +8,7 @@ ARG USERNAME=openhands
 ARG UID=10001
 ARG GID=10001
 ARG PORT=8000
-ARG NPM_VERSION=12.2.2
+ARG NPM_VERSION=12.2.3
 # Opt-in build flag for the Vertex AI extra (`openhands-sdk[vertex]`). Off by
 # default to keep the published image lean. Pass `--build-arg ENABLE_VERTEX=1`
 # to bundle google-cloud-aiplatform so the resulting binary supports
