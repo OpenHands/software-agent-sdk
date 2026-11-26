@@ -539,9 +539,9 @@ ENV EDITOR=code \
 # update-version-pins workflow. Keep the two per-architecture digests
 # together with the version, and keep this as the single pinned copy; a CI
 # guard test fails if the version or either digest shape drifts.
-ARG CODE_SERVER_VERSION="4.145.0"
-ARG CODE_SERVER_AMD64_SHA256=771bf6038658034d7caf509fcc44af50f0b8bdac5e738177b6cf9c4181dd3382
-ARG CODE_SERVER_ARM64_SHA256=425d3bc5167c85dc070427d2aa93760083b02aec852ea9ce75c2906c99138f45
+ARG CODE_SERVER_VERSION="4.145.2"
+ARG CODE_SERVER_AMD64_SHA256=2f6db6c3e8b733dd6b3aeee83532e148b2bae2e392353ba85452d03572348962
+ARG CODE_SERVER_ARM64_SHA256=e867a34416e2da4a83496b09580001893e7a4e5bb58a0624c4fcd22819e7d53d
 # code-server's bundled Node must stay at or above the version that fixed
 # the Brotli decoder overflow (CVE-2026-111497). This is a floor, not an
 # exact pin, so upstream patch bumps do not churn the image build.
