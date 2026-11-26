@@ -6,6 +6,7 @@ import pytest
 
 from openhands.sdk.tool.tool import DeclaredResources
 from openhands.tools.gemini.list_directory.definition import (
+    MAX_ENTRIES,
     ListDirectoryAction,
     ListDirectoryObservation,
     ListDirectoryTool,
@@ -220,3 +221,90 @@ def test_list_directory_executor_concurrent(tmp_path):
     assert len(results_b) == 4
     assert all(count == 5 for count in results_a)
     assert all(count == 3 for count in results_b)
+
+
+def _fill(directory, count):
+    for i in range(count):
+        (directory / f"file_{i:04d}.txt").write_text("x")
+
+
+def test_list_directory_exactly_max_entries_is_not_truncated(tmp_path):
+    """A directory that fits the cap exactly is listed in full."""
+    _fill(tmp_path, MAX_ENTRIES)
+
+    executor = ListDirectoryExecutor(workspace_root=str(tmp_path))
+    obs = executor(ListDirectoryAction(dir_path="."))
+
+    assert len(obs.entries) == MAX_ENTRIES
+    assert not obs.is_truncated
+    assert "truncated" not in obs.text
+
+
+def test_list_directory_over_max_entries_is_truncated(tmp_path):
+    """One entry over the cap is reported as truncated."""
+    _fill(tmp_path, MAX_ENTRIES + 1)
+
+    executor = ListDirectoryExecutor(workspace_root=str(tmp_path))
+    obs = executor(ListDirectoryAction(dir_path="."))
+
+    assert len(obs.entries) == MAX_ENTRIES
+    assert obs.is_truncated
+    assert f"truncated to {MAX_ENTRIES}" in obs.text
+
+
+def test_list_directory_recursive_exactly_max_entries_is_not_truncated(tmp_path):
+    """A recursive listing that fits the cap exactly is not truncated."""
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    _fill(tmp_path, MAX_ENTRIES - 11)
+    _fill(sub, 10)
+
+    executor = ListDirectoryExecutor(workspace_root=str(tmp_path))
+    obs = executor(ListDirectoryAction(dir_path=".", recursive=True))
+
+    assert len(obs.entries) == MAX_ENTRIES
+    assert not obs.is_truncated
+
+
+def test_list_directory_recursive_left_out_subdir_is_truncated(tmp_path):
+    """Entries in a subdirectory reached after the cap count as left out."""
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    _fill(tmp_path, MAX_ENTRIES - 1)
+    _fill(sub, 1)
+
+    executor = ListDirectoryExecutor(workspace_root=str(tmp_path))
+    obs = executor(ListDirectoryAction(dir_path=".", recursive=True))
+
+    assert len(obs.entries) == MAX_ENTRIES
+    assert obs.is_truncated
+
+
+def test_list_directory_dangling_symlink_after_cap_is_not_truncated(tmp_path):
+    """An entry that would be skipped anyway does not count as left out."""
+    _fill(tmp_path, MAX_ENTRIES)
+    (tmp_path / "zz_broken_link").symlink_to(tmp_path / "missing_target")
+
+    executor = ListDirectoryExecutor(workspace_root=str(tmp_path))
+    obs = executor(ListDirectoryAction(dir_path="."))
+
+    assert not obs.is_error
+    assert len(obs.entries) == MAX_ENTRIES
+    assert not obs.is_truncated
+
+
+def test_list_directory_recursive_dangling_symlink_after_cap_is_not_truncated(
+    tmp_path,
+):
+    """Same as above, for a subdirectory reached once the cap is full."""
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    _fill(tmp_path, MAX_ENTRIES - 1)
+    (sub / "broken_link").symlink_to(sub / "missing_target")
+
+    executor = ListDirectoryExecutor(workspace_root=str(tmp_path))
+    obs = executor(ListDirectoryAction(dir_path=".", recursive=True))
+
+    assert not obs.is_error
+    assert len(obs.entries) == MAX_ENTRIES
+    assert not obs.is_truncated
