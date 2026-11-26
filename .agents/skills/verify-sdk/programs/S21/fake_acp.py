@@ -17,6 +17,9 @@ Environment (inherited from the program through the SDK):
                           FAKE_ACP_KEY is set
   FAKE_ACP_INIT_SLEEP     seconds to stall in initialize
   FAKE_ACP_LEGACY_MODELS  report models in the UNSTABLE `models` block
+  FAKE_ACP_CHILD          start a helper child process (`sleep 300`) at
+                          startup, as a CLI that spawns workers does; the
+                          start journal entry records its pid
   FAKE_ACP_EFFORT         m1 also offers a reasoning-effort select (id
                           `effort`, category `thought_level`, levels
                           low/medium/high, default medium) that a model
@@ -511,8 +514,15 @@ def main() -> None:
         "CLAUDE_CODE_OAUTH_TOKEN",
     )
     codex_home = os.environ.get("CODEX_HOME")
+    child = None
+    if os.environ.get("FAKE_ACP_CHILD"):
+        import subprocess
+
+        child = subprocess.Popen(["sleep", "300"], stdin=subprocess.DEVNULL)
     journal(
         "start",
+        pgid=os.getpgid(0),
+        child_pid=child.pid if child else None,
         argv=sys.argv[1:],
         cwd=os.getcwd(),
         env={k: os.environ[k] for k in watched if k in os.environ},

@@ -16,7 +16,7 @@ ACP model discovery is a separate pre-conversation request: a throwaway
 session reports the real adapter's models, while a local launch failure
 returns a structured error. Neither creates a persisted conversation.
 
-Source: `openhands-agent-server/openhands/agent_server/llm_router.py`, `openhands-agent-server/openhands/agent_server/provider_connections_router.py`, `openhands-agent-server/openhands/agent_server/acp_router.py`, `openhands-sdk/openhands/sdk/agent/acp_model_discovery.py`, `openhands-sdk/openhands/sdk/llm/provider_connection_store.py`, `openhands-sdk/openhands/sdk/llm/utils/unverified_models.py`, `openhands-sdk/openhands/sdk/llm/utils/verified_models.py`, `clients/typescript/src/client/llm-client.ts`, `clients/typescript/src/client/acp-client.ts`
+Source: `openhands-agent-server/openhands/agent_server/llm_router.py`, `openhands-agent-server/openhands/agent_server/provider_connections_router.py`, `openhands-agent-server/openhands/agent_server/acp_router.py`, `openhands-sdk/openhands/sdk/agent/acp_model_discovery.py`, `openhands-sdk/openhands/sdk/settings/acp_providers.py`, `openhands-sdk/openhands/sdk/llm/provider_connection_store.py`, `openhands-sdk/openhands/sdk/llm/utils/unverified_models.py`, `openhands-sdk/openhands/sdk/llm/utils/verified_models.py`, `clients/typescript/src/client/llm-client.ts`, `clients/typescript/src/client/acp-client.ts`
 
 Needs: `llm`, `node`, `network`
 
@@ -29,6 +29,7 @@ Routes: `GET /api/llm/providers`, `GET /api/llm/models`,
 ## Sub-features
 
 - `F23.acp-discovery-errors`: `POST /api/acp/models` requires a session key, validates `agent_settings`, and reports a missing local executable as HTTP 200 with `error.code: ACPSpawnError`, no models and no new conversation; `refresh: true` reports the same failure; `ACPClient.discoverModels` exposes the same structured errors and rejects unauthorized calls.
+- `F23.acp-discovery-antigravity`: `acp_server: antigravity` (Google Antigravity) is an accepted provider whose default command is the native `agy acp`, not an `npx` package: without `agy` on the server's `PATH`, discovery answers 200 with `error.code: ACPSpawnError` naming `agy`, and an unknown `acp_server` is 422 listing the accepted providers, `antigravity` among them.
 - `F23.acp-discovery-live`: the real Claude Code ACP adapter reports its default and offered models through REST and TypeScript `ACPClient.discoverModels`; a repeated request and `refresh: true` return the same catalog without persisting any conversation or probe directory.
 - `F23.auth-required`: all seven routes answer 401 `{"detail": "Unauthorized"}` without a valid `X-Session-API-Key`, and nothing is created.
 - `F23.providers`: `GET /api/llm/providers` returns LiteLLM's provider names, sorted and unique, including `deepseek`, `openai` and `anthropic`.
@@ -752,6 +753,26 @@ Preconditions:
     --expect-output QA_F23_ACP_ERRORS_OK --save F23.acp-discovery-errors/typescript -- node "$F23/ts_acp_errors.mjs"
   control-agent-server api GET /api/conversations/count --check . eq "$ACP_COUNT"
   ```
+- **Antigravity discovery without its CLI (`F23.acp-discovery-antigravity`).**
+  Google Antigravity's ACP server ships inside its own CLI (`agy`), which
+  the user installs; the server never fetches it. On a host without `agy`
+  the built-in provider fails to launch, and the provider list that
+  validation reports names it.
+  ```sh
+  test -z "$(command -v agy || true)"
+  ACP_COUNT=$(control-agent-server api GET /api/conversations/count --field .)
+  control-agent-server api POST /api/acp/models --json '{"agent_settings":{"agent_kind":"acp","acp_server":"antigravity"}}' --timeout 60 --expect 200 \
+    --check error.code eq ACPSpawnError --check error.detail contains "'agy'" --check available_models len-eq 0 --check agent_name eq null \
+    --save F23.acp-discovery-antigravity/spawn
+  control-agent-server api POST /api/acp/models --json '{"agent_settings":{"agent_kind":"acp","acp_server":"qa-f23-nope"}}' --expect 422 \
+    --check detail.0.loc.2 eq acp_server --check detail.0.msg contains "'antigravity'" --save F23.acp-discovery-antigravity/unknown
+  control-agent-server api GET /api/conversations/count --check . eq "$ACP_COUNT"
+  ```
+  Discovery tries to start `agy acp` and reports `[Errno 2] No such file or
+  directory: 'agy'` as a structured `ACPSpawnError` (no npm download is
+  attempted), with no models and no conversation left behind. The 422 for
+  an unknown provider lists `'claude-code', 'codex', 'gemini-cli',
+  'antigravity', 'kimi-code', 'pi', 'opencode' or 'custom'`.
 - **Real ACP model discovery (`F23.acp-discovery-live`).** Use the real
   Claude Code adapter through its built-in `npx` command. As in F09,
   DeepSeek's Anthropic-compatible endpoint supplies the credentials and
@@ -808,6 +829,11 @@ Preconditions:
 
 ## Gotchas
 
+- Agent Canvas does not offer `antigravity` yet: its ACP preset list has
+  its own five providers, and a profile with `acp_server: antigravity` opens
+  there as Custom with an empty command
+  ([OpenHands/OpenHands#20025](https://github.com/OpenHands/OpenHands/issues/20025)).
+  The server side (`F23.acp-discovery-antigravity`) does not depend on it.
 - Catalog answers depend on the installed `litellm` version (thousands of
   ids, changing with every upgrade) and on `VERIFIED_MODELS` (curated, kept
   to the two latest versions per model line). Assert membership, ordering

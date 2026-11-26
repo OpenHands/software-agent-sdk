@@ -1,10 +1,12 @@
-"""Start every built-in ACP provider's real server the way a launcher does
+"""Start every npm-installed ACP provider's real server the way a launcher does
 (`ACPAgentSettings(acp_server=KEY)` -> its default `npx` command) and ask it
 for its models with `discover_acp_models()`, giving each a syntactically
 valid but bogus API key. That runs the real handshake (initialize,
 authenticate when offered, session/new, session mode) without any account.
 
-Usage: live_handshake.py [PROVIDER ...]   (default: all of ACP_PROVIDERS)
+Usage: live_handshake.py [PROVIDER ...]   (default: every provider in the
+       install catalog, i.e. the `npx` ones; a native launcher such as
+       antigravity's `agy` is installed by the user and needs a Google login)
 Needs `npx` and the npm registry; exit 3 (blocked) without them.
 """
 
@@ -17,6 +19,7 @@ from sdk_verify import blocked, emit, run_paths
 
 from openhands.sdk.agent.acp_model_discovery import discover_acp_models
 from openhands.sdk.settings import ACP_PROVIDERS, ACPAgentSettings
+from openhands.sdk.settings.acp_install_catalog import ACP_INSTALL_CATALOG
 
 
 if shutil.which("npx") is None:
@@ -35,7 +38,7 @@ EXTRA = {
     "kimi-code": {"KIMI_MODEL_NAME": "kimi-k2.7-code", "KIMI_MODEL_API_KEY": BOGUS},
     "opencode": {"OPENCODE_API_KEY": BOGUS},
 }
-keys = sys.argv[1:] or sorted(ACP_PROVIDERS)
+keys = sys.argv[1:] or sorted(ACP_INSTALL_CATALOG)
 work = run_paths()["run"] / "acp-live"
 work.mkdir(parents=True, exist_ok=True)
 probes: dict = {}
