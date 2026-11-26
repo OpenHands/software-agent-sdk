@@ -10,6 +10,7 @@ import pytest
 from deprecation import DeprecatedWarning
 from pydantic import SecretStr
 
+from openhands.sdk import Agent, Tool
 from openhands.sdk.agent.utils import fix_malformed_tool_arguments
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.state import ConversationExecutionStatus
@@ -562,6 +563,57 @@ def test_spawn_passes_hook_config_to_sub_conversation():
     assert sub_conv._pending_hook_config is not None
     assert len(sub_conv._pending_hook_config.pre_tool_use) == 1
     assert sub_conv._pending_hook_config.pre_tool_use[0].matcher == "terminal"
+
+    _reset_registry_for_tests()
+
+
+def test_spawn_inherits_parent_tools_when_definition_omits_them():
+    """A spawned agent whose definition omits ``tools`` gets the parent's tools."""
+    _reset_registry_for_tests()
+    register_builtins_agents()
+
+    agent_def = AgentDefinition(
+        name="inherit-tools-agent",
+        description="Inherits tools",
+        model="inherit",
+    )
+    from openhands.sdk.subagent.registry import agent_definition_to_factory
+
+    register_agent(
+        name="inherit-tools-agent",
+        factory_func=agent_definition_to_factory(agent_def),
+        description=agent_def,
+    )
+
+    parent_llm = LLM(
+        model="openai/gpt-4o",
+        api_key=SecretStr("test-key"),
+        base_url="https://api.openai.com/v1",
+    )
+
+    parent_conversation = MagicMock()
+    parent_conversation.id = uuid.uuid4()
+    parent_conversation.agent = Agent(
+        llm=parent_llm,
+        tools=[Tool(name="terminal"), Tool(name="file_editor")],
+        include_default_tools=["FinishTool"],
+    )
+    parent_conversation.state.workspace.working_dir = "/tmp"
+    parent_conversation.state.persistence_dir = None
+    parent_conversation._visualizer = None
+
+    executor = DelegateExecutor()
+    observation = executor(
+        DelegateAction(
+            command="spawn", ids=["i1"], agent_types=["inherit-tools-agent"]
+        ),
+        parent_conversation,
+    )
+
+    assert "Successfully spawned" in observation.text
+    sub_conv = executor._sub_agents["i1"]
+    assert [tool.name for tool in sub_conv.agent.tools] == ["terminal", "file_editor"]
+    assert sub_conv.agent.include_default_tools == ["FinishTool"]
 
     _reset_registry_for_tests()
 

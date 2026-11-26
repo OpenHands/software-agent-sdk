@@ -1,8 +1,9 @@
 """Bound a sub-agent by the agent delegating to it.
 
 A sub-agent always runs with exactly its parent's MCP servers
-(:func:`inherit_mcp_config`). A :class:`SubAgentScope` can additionally keep its
-tools within the parent's.
+(:func:`inherit_mcp_config`). A definition that omits ``tools`` inherits the
+parent's tools (:func:`inherit_tools`). A :class:`SubAgentScope` can
+additionally keep its tools within the parent's.
 """
 
 from __future__ import annotations
@@ -96,6 +97,21 @@ def inherit_mcp_config[AgentT: AgentBase](
     return sub_agent.model_copy(update={"mcp_config": dict(parent.mcp_config)})
 
 
+def inherit_tools[AgentT: AgentBase](parent: AgentBase, sub_agent: AgentT) -> AgentT:
+    """Return ``sub_agent`` with exactly ``parent``'s tools.
+
+    Applied when a definition omits ``tools``, so a tool the parent lacks is
+    never granted to the child.
+    """
+    return sub_agent.model_copy(
+        update={
+            "tools": [tool.model_copy(deep=True) for tool in parent.tools],
+            "include_default_tools": list(parent.include_default_tools),
+            "filter_tools_regex": parent.filter_tools_regex,
+        }
+    )
+
+
 def scope_delegation_tools(tools: Sequence[Tool], scope: SubAgentScope) -> list[Tool]:
     """Return ``tools`` with ``scope`` added to every delegation tool."""
     if not scope.restricts:
@@ -118,7 +134,7 @@ def _narrowed(tool: Tool, scope: SubAgentScope) -> Tool:
 
 def _tool_names(agent: AgentBase | AgentDefinition) -> set[str]:
     if isinstance(agent, AgentDefinition):
-        names = list(agent.tools)
+        names = list(agent.tools or [])
     else:
         names = [*(tool.name for tool in agent.tools), *agent.include_default_tools]
     return {canonical_tool_name(name) for name in names}

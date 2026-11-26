@@ -73,12 +73,12 @@ Content.
         assert agent.color == "blue"
 
     def test_load_agent_with_tools_as_string(self, tmp_path: Path):
-        """Test loading agent with tools as single string."""
-        agent_md = tmp_path / "single-tool.md"
+        """A comma-separated string splits into individual, stripped tool names."""
+        agent_md = tmp_path / "multi-tool.md"
         agent_md.write_text(
             """---
-name: single-tool
-tools: Read
+name: multi-tool
+tools: Read, Grep, Bash
 ---
 
 Content.
@@ -86,7 +86,37 @@ Content.
         )
 
         agent = AgentDefinition.load(agent_md)
-        assert agent.tools == ["Read"]
+        assert agent.tools == ["Read", "Grep", "Bash"]
+
+    def test_load_agent_with_empty_tools_is_distinct_from_absent(self, tmp_path: Path):
+        """An explicit empty ``tools`` is not the same as an omitted key."""
+        explicit = tmp_path / "explicit.md"
+        explicit.write_text(
+            """---
+name: explicit
+tools: []
+---
+
+Content.
+"""
+        )
+        absent = tmp_path / "absent.md"
+        absent.write_text(
+            """---
+name: absent
+---
+
+Content.
+"""
+        )
+
+        bare = tmp_path / "bare.md"
+        bare.write_text("---\nname: bare\ntools:\n---\n\nContent.\n")
+
+        assert AgentDefinition.load(explicit).tools == []
+        assert AgentDefinition.load(absent).tools is None
+        # A bare ``tools:`` is YAML null, i.e. the same as omitting the key.
+        assert AgentDefinition.load(bare).tools is None
 
     def test_load_agent_defaults(self, tmp_path: Path):
         """Test agent defaults when fields not provided."""
@@ -102,7 +132,8 @@ Just content.
         agent = AgentDefinition.load(agent_md)
         assert agent.name == "minimal"  # From filename
         assert agent.model == "inherit"
-        assert agent.tools == []
+        # Omitted ``tools`` inherits the delegating agent's tools.
+        assert agent.tools is None
 
     def test_load_agent_with_max_iteration_per_run(self, tmp_path: Path):
         """Test loading agent with max_iteration_per_run."""
@@ -706,6 +737,18 @@ def test_load_empty_frontmatter_values_fall_back_to_defaults(tmp_path: Path):
     assert agent.name == "reviewer"
     assert agent.description == ""
     assert agent.model == "inherit"
+
+
+def test_tools_absent_vs_empty_survives_serialization():
+    """The absent/empty distinction round-trips through model_dump/validate."""
+    absent = AgentDefinition(name="absent")
+    empty = AgentDefinition(name="empty", tools=[])
+    explicit = AgentDefinition(name="explicit", tools=["terminal", "file_editor"])
+
+    for original in (absent, empty, explicit):
+        restored = AgentDefinition.model_validate(original.model_dump())
+        assert restored.tools == original.tools
+    assert AgentDefinition.model_validate(absent.model_dump()).tools is None
 
 
 def test_load_utf8_bom_frontmatter(tmp_path: Path):

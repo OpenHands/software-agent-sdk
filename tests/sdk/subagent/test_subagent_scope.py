@@ -4,7 +4,11 @@ from pydantic import SecretStr
 from openhands.sdk import LLM, Agent, Tool
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.subagent import AgentDefinition, SubAgentScope
-from openhands.sdk.subagent.scope import inherit_mcp_config, scope_delegation_tools
+from openhands.sdk.subagent.scope import (
+    inherit_mcp_config,
+    inherit_tools,
+    scope_delegation_tools,
+)
 
 
 def _agent(*tools: str, mcp: tuple[str, ...] = (), **kwargs) -> Agent:
@@ -95,6 +99,37 @@ def test_a_sub_agent_inherits_exactly_the_parent_mcp_servers() -> None:
     assert inherited.tools == sub_agent.tools
     assert inherit_mcp_config(_agent(), sub_agent).mcp_config == {}
     assert inherit_mcp_config(parent, _agent()).mcp_config == parent.mcp_config
+
+
+def test_a_sub_agent_inherits_exactly_the_parents_tools() -> None:
+    parent = _agent(
+        "terminal",
+        "file_editor",
+        include_default_tools=["FinishTool", "ThinkTool"],
+    )
+    sub_agent = Agent(llm=parent.llm, tools=[])
+
+    inherited = inherit_tools(parent, sub_agent)
+
+    assert [tool.name for tool in inherited.tools] == ["terminal", "file_editor"]
+    assert inherited.include_default_tools == ["FinishTool", "ThinkTool"]
+    # Fresh copies so the two agents never share mutable tool specs.
+    assert inherited.tools is not parent.tools
+    assert inherited.tools[0] is not parent.tools[0]
+    # The original sub-agent is untouched.
+    assert sub_agent.tools == []
+
+
+def test_inherit_tools_never_grants_a_tool_the_parent_lacks() -> None:
+    parent = _agent("terminal")
+
+    inherited = inherit_tools(parent, _agent("terminal", "file_editor"))
+
+    assert [tool.name for tool in inherited.tools] == ["terminal"]
+
+
+def test_a_definition_without_tools_is_never_missing_from_the_parent() -> None:
+    assert ALL.missing_from(_agent("terminal"), AgentDefinition(name="sub")) == []
 
 
 def test_a_stored_mcp_servers_scope_still_loads_and_is_not_dumped() -> None:

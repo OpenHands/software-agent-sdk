@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pydantic import SecretStr
 
-from openhands.sdk import LLM, Agent
+from openhands.sdk import LLM, Agent, Tool
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.hooks.config import HookConfig, HookDefinition, HookMatcher
@@ -301,6 +301,41 @@ class TestTaskManager:
         assert isinstance(agent, Agent)
         assert len(factory_called_with) == 1
         assert factory_called_with[0].stream is False
+
+    def test_omitted_tools_inherit_the_parent_tools(self, tmp_path):
+        """A definition with no ``tools`` key spawns with the parent's tools."""
+        from openhands.sdk.subagent.registry import agent_definition_to_factory
+
+        register_builtins_agents()
+        definition = AgentDefinition(
+            name="inherits-tools",
+            description="Inherits tools",
+            model="inherit",
+        )
+        register_agent(
+            name="inherits-tools",
+            factory_func=agent_definition_to_factory(definition),
+            description=definition,
+        )
+
+        parent_agent = Agent(
+            llm=_make_llm(),
+            tools=[Tool(name="terminal"), Tool(name="file_editor")],
+            include_default_tools=["FinishTool"],
+        )
+        parent = LocalConversation(
+            agent=parent_agent,
+            workspace=str(tmp_path),
+            visualizer=None,
+            delete_on_close=False,
+        )
+        manager = TaskManager()
+        manager._ensure_parent(parent)
+
+        sub_agent = manager._get_sub_agent("inherits-tools")
+
+        assert [tool.name for tool in sub_agent.tools] == ["terminal", "file_editor"]
+        assert sub_agent.include_default_tools == ["FinishTool"]
 
     def test_unknown_agent_type_raises(self, tmp_path):
         manager, _ = _manager_with_parent(tmp_path)

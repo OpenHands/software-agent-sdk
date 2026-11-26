@@ -60,7 +60,8 @@ loading must:
 ### Registration failures must be non-fatal
 
 If a parsed file-based or plugin definition cannot be registered (for example, its
-`skills` names a skill that does not exist), registration must:
+`skills` names a skill that does not exist, or its `tools` names an unregistered
+tool), registration must:
 
 - log a warning naming the agent, its `source` and the error, and
 - skip that definition and keep registering the others.
@@ -117,7 +118,8 @@ Supported YAML frontmatter keys (see `AgentDefinition.load` in `schema.py`):
 
 - `name` (default: filename stem)
 - `description`
-- `tools` (default: `[]`): one tool name or a list of names
+- `tools`: a comma-separated string or list of tool names. Omitted inherits the
+  parent's tools at spawn time; `tools: []` declares none.
 - `skills` (default: `[]`): a comma-separated string or a list of skill names
 - `model` (default: `inherit`): `inherit` reuses the parent LLM; another value is
   loaded as an LLM profile name from `profile_store_dir` or the default profile store
@@ -151,8 +153,19 @@ meaning it is appended to the parent system message (not a complete replacement)
 
 ### Tool and skill resolution
 
-`tools` values remain names until factory instantiation. Each name must already be
-registered; unknown tools raise `ValueError`. Valid names become `Tool(name=...)`.
+An explicit `tools` list resolves when the factory is created, so each name must
+be registered or built-in (only imported tool modules count). An unknown name
+raises `ValueError`, and `_register_definition` skips that definition with a
+warning naming the file and the tool. Comma-separated strings split into names.
+
+An omitted `tools` key parses as `None` and **inherits** the delegating agent's
+`tools`, `include_default_tools`, and `filter_tools_regex` at spawn time
+(`inherit_tools` in `scope.py`); `tools: []` declares none. The copied set
+includes delegation tools such as `task_tool_set`, so the child can spawn
+sub-agents. `AgentFactory.inherits_tools` is true only for
+`agent_definition_to_factory` factories whose definition still has `tools is None`;
+a hand-written `register_agent` factory owns its tools, and a plain-string
+description defaults to `tools=[]`.
 
 `skills` resolve when the factory is created. Project skills take priority over user
 skills, public skills are excluded, and an unknown skill raises `ValueError`.
