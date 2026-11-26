@@ -653,11 +653,21 @@ jobs:
                   create_manifest() {
                       local manifest_tag=$1
                       local source_tag=${2:-$1}
+                      local max_attempts=3
+                      local attempt=1
 
                       echo "Creating multi-arch manifest: ${IMAGE}:${manifest_tag}"
-                      docker buildx imagetools create -t ${IMAGE}:${manifest_tag} \
+                      until docker buildx imagetools create -t ${IMAGE}:${manifest_tag} \
                         ${IMAGE}:${source_tag}-amd64 \
-                        ${IMAGE}:${source_tag}-arm64
+                        ${IMAGE}:${source_tag}-arm64; do
+                          if [ $attempt -ge $max_attempts ]; then
+                              echo "Failed to create manifest after ${max_attempts} attempts"
+                              return 1
+                          fi
+                          echo "Retry $attempt/${max_attempts} after registry error..."
+                          attempt=$((attempt + 1))
+                          sleep $((attempt * 5))
+                      done
 
                       echo "Inspecting multi-arch manifest:"
                       docker buildx imagetools inspect ${IMAGE}:${manifest_tag}

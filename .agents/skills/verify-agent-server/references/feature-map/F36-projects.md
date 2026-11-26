@@ -32,7 +32,7 @@ on keep their `project` tag and tools; each project tool answers that Projects
 is turned off, and outside a project that the conversation is not part of
 one.
 
-Source: `openhands-agent-server/openhands/agent_server/projects_router.py`, `openhands-agent-server/openhands/agent_server/project_board.py`, `openhands-agent-server/openhands/agent_server/project_artifacts.py`, `openhands-agent-server/openhands/agent_server/persistence/models.py`, `openhands-agent-server/openhands/agent_server/persistence/store.py`, `openhands-tools/openhands/tools/project/`
+Source: `openhands-agent-server/openhands/agent_server/projects_router.py`, `openhands-agent-server/openhands/agent_server/project_board.py`, `openhands-agent-server/openhands/agent_server/project_artifacts.py`, `openhands-agent-server/openhands/agent_server/project_profiles.py`, `openhands-agent-server/openhands/agent_server/persistence/models.py`, `openhands-agent-server/openhands/agent_server/persistence/store.py`, `openhands-tools/openhands/tools/project/`
 
 Needs: `llm`
 
@@ -67,7 +67,7 @@ workers on `POST .../children` (F04), and the server-owned tags on a start
 - `F36.patch`: `PATCH` renames and changes the description, keeps `created_at` and moves `updated_at`; omitted fields stay.
 - `F36.coordinator`: creating a project with `coordinator` starts a new, idle coordinator conversation tagged `project=<id>` with the client's other tags, the coordinator prompt (naming its own id) and the coordinator tools; the conversations endpoint reports it as `coordinator`, apart from the other conversations. A project never adopts an existing conversation.
 - `F36.coordinator-missing`: a coordinator with an unknown `agent_profile_id` is 404 and creates no project.
-- `F36.coordinator-active-llm`: when the active agent profile names an LLM profile that is not saved (the seeded `default` profile keeps `llm_profile_ref: "default"` until a real LLM is set up), creating a project with a coordinator answers 201 and builds `project-coordinator` on the active LLM profile (known bug #7061: 422 `LLM profile 'default' not found`, and `project-coordinator` keeps the dangling reference).
+- `F36.coordinator-active-llm`: when the active agent profile names an LLM profile that is not saved (the seeded `default` profile keeps `llm_profile_ref: "default"` until a real LLM is set up), creating a project with a coordinator answers 201 and builds `project-coordinator` on the active LLM profile instead of the dangling reference.
 - `F36.start-member`: only the coordinator starts conversations in its project: its `POST .../children` starts a member tagged `project=<id>`, and a member's own `POST .../children` is 409.
 - `F36.client-tags`: a client cannot start or fork a conversation whose `project` tag names an existing project: 422, and nothing is created. The other project keys (`turn`, `ask`, `resolved`, `resolvenote`, `prs`), or a `project` tag naming no project, are ordinary client tags.
 - `F36.attention`: conversations are grouped `needs_you` (waiting for confirmation), then `working`, `idle` (finished or never run), newest-updated first within a group; non-members are left out.
@@ -288,11 +288,12 @@ Preconditions:
   control-agent-server api GET /api/projects --check . not-contains qa-f36-ghost
   ```
   Nothing is created.
-- **A coordinator on the active LLM profile (`F36.coordinator-active-llm`), known bug #7061.**
+- **A coordinator on the active LLM profile (`F36.coordinator-active-llm`).**
   A second server whose `default` agent profile is seeded before any LLM
   profile exists, so it names the unsaved `default` LLM profile; then a stub
-  LLM profile becomes active and a project starts a coordinator. No model
-  runs: the launch fails before any LLM call.
+  LLM profile becomes active and a project starts a coordinator. The stub
+  profile has no key; the recipe asserts only the create and the saved
+  profile, so no model call is needed.
   ```sh
   SEEDED=$(control-agent-server launch --new --name f36-seeded --print-run)
   trap 'control-agent-server stop --run "$SEEDED" >/dev/null' EXIT
@@ -303,18 +304,13 @@ Preconditions:
   mkdir -p "$SEEDED/fixtures/qa-f36-seeded"
   control-agent-server api POST /api/projects --run "$SEEDED" \
     --json "{\"name\": \"qa-f36-seeded\", \"coordinator\": {\"working_dir\": \"$SEEDED/fixtures/qa-f36-seeded\"}}" \
-    --expect 201 --save F36.coordinator-active-llm/post  # bug: status eq 422 && response.body.detail contains "LLM profile 'default' not found"
+    --expect 201 --save F36.coordinator-active-llm/post
   control-agent-server api GET /api/agent-profiles/project-coordinator --run "$SEEDED" --check profile.llm_profile_ref eq qa-f36-stub
   control-agent-server stop --run "$SEEDED"
   ```
-  Expected: the project is created and its coordinator runs on the active
-  LLM profile, as a chat started from `default` does. Known failure
-  (reproduced 2026-11-22 on main@74f198d,
-  [#7061](https://github.com/OpenHands/software-agent-sdk/issues/7061), fix
-  in [#7056](https://github.com/OpenHands/software-agent-sdk/pull/7056)): 422
-  `Cannot start the coordinator from agent profile <id>: LLM profile
-  'default' not found`, and `project-coordinator` is saved with
-  `llm_profile_ref: "default"`, so it stays broken until the user edits it.
+  The project is created and `project-coordinator` is saved with
+  `llm_profile_ref` set to the active LLM profile (`qa-f36-stub`), as a chat
+  started from `default` runs on it.
 - **The coordinator starts a member (`F36.start-member`).**
   Requires: `F36.coordinator`
   Needs: `llm`

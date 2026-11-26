@@ -11,7 +11,7 @@ dependencies = [
     "tree-sitter-bash>=0.23",
     "binaryornot>=0.6.0",
     "cachetools",
-    "filelock>=4.2.11",
+    "filelock>=4.2.12",
     "libtmux>=0.62.0",
     "psutil>=7.2.2",
     "pydantic>=2.14.3",

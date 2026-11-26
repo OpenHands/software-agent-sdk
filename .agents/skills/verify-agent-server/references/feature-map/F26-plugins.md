@@ -988,3 +988,20 @@ Preconditions:
   including hook commands.
 - Error 500s carry the exception text in an `exception` field; the
   `known bug` bullets save it as evidence.
+- A plugin attached at create (`StartConversationRequest.plugins`) is fetched
+  on the first message. When its source cannot be fetched,
+  `POST /api/conversations/{id}/events` answers 500 with `exception`
+  `Failed to fetch plugin from <source>` (the same failure is 400 on
+  `load_plugin`) and stores no user message; every resend fails the same way
+  until the source is reachable, then it answers 200 and the plugin's hooks
+  run. `PATCH` with `plugins` answers 200 and changes nothing, so a wrong
+  source cannot be corrected. A create with an `initial_message` answers the
+  same 500 but keeps the conversation, whose id the caller never gets
+  ([#7107](https://github.com/OpenHands/software-agent-sdk/issues/7107)).
+- An auto-load marketplace in the agent's
+  `agent_context.registered_marketplaces` that cannot be fetched at the first
+  message leaves one `MarketplaceLoadError` `ConversationErrorEvent` and is
+  not fetched again while that conversation stays loaded: after the source
+  is back, later messages still run without its plugins' hooks and skills
+  until the conversation is loaded anew (a restart)
+  ([#7100](https://github.com/OpenHands/software-agent-sdk/issues/7100)).

@@ -10,6 +10,9 @@ Usage: loop.py MODE
   content-free    a real LLM's reply with no text, tool call or reasoning is
                   retried inside the call, not nudged; reasoning-only still
                   nudged; exhausted retries end the run in ERROR
+  continues-turn  a text reply whose provider marks `end_turn: false` keeps
+                  the run going (chat, chat stream, Responses, Responses
+                  stream; run() and arun())
   parallel        tool_concurrency_limit, order, a failing call, finish truncation
   locks           resource keys, undeclared tools, declared-safe tools
   tool-exception  an exception inside a tool executor
@@ -283,6 +286,58 @@ elif mode == "content-free":
         [{"reasoning": "I am only thinking."}, {"finish": "done"}], 5
     )
     out["exhausted"] = provider_run([{"text": ""}] * 3, 2)
+
+elif mode == "continues-turn":
+    # A real LLM against the local endpoint: the turn marker is a top-level
+    # field of the provider's reply, which TestLLM never builds.
+    def turn_run(api_mode: str, stream: bool, end_turn, async_run=False) -> dict:
+        first = {"text": "Checking the result."}
+        if end_turn is not None:
+            first["end_turn"] = end_turn
+        with FakeProvider([first, {"text": "Verified."}]) as server:
+            llm = LLM(
+                model="openai/gpt-5.2",
+                base_url=server.url,
+                api_key=SecretStr("sk-test"),
+                usage_id="agent",
+                api_mode=api_mode,
+                stream=stream,
+                num_retries=0,
+            )
+            conversation = conversation_for(
+                Agent(llm=llm, tools=[]),
+                token_callbacks=[lambda _: None] if stream else None,
+            )
+            conversation.send_message("Check the result and report it.")
+            if async_run:
+                asyncio.run(conversation.arun())
+            else:
+                conversation.run()
+            result = {
+                "status": conversation.state.execution_status.value,
+                "requests": len(server.requests),
+                "agent_messages": [
+                    "".join(getattr(c, "text", "") for c in e.llm_message.content)
+                    for e in conversation.state.events
+                    if isinstance(e, MessageEvent) and e.source == "agent"
+                ],
+            }
+            conversation.close()
+            return result
+
+    for api_mode, stream in [
+        ("chat", False),
+        ("chat", True),
+        ("responses", False),
+        ("responses", True),
+    ]:
+        key = api_mode + ("_stream" if stream else "")
+        out[key] = {
+            "continue": turn_run(api_mode, stream, False),
+            "end": turn_run(api_mode, stream, True),
+            "absent": turn_run(api_mode, stream, None),
+        }
+    out["chat_async"] = {"continue": turn_run("chat", False, False, async_run=True)}
 
 elif mode == "parallel":
     calls = [sleeper_call(f"s{i}", 1.0) for i in range(4)]
