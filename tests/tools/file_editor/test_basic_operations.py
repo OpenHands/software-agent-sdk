@@ -265,14 +265,47 @@ def test_view_operation_truncation(temp_file):
     # Check that truncation notice is present
     assert TEXT_FILE_CONTENT_TRUNCATED_NOTICE in result.text
 
-    # The content should be truncated before line numbers are added
-    # So the final output will be longer than MAX_RESPONSE_LEN_CHAR due to formatting
-    # but the original content was truncated
     assert "Here's the result of running `cat -n`" in result.text
 
     # With head-and-tail truncation, should contain both start and end content
     # The line numbers will show as "     1\tA..." at start and end with "A"
     assert "\tA" in result.text  # Should have A's with tab formatting
+
+
+@pytest.mark.parametrize("view_range", [None, [101, 500]])
+def test_clipped_view_preserves_line_numbers_for_ranges_and_edits(tmp_path, view_range):
+    path = tmp_path / "large.txt"
+    lines = [f"Line {i}: " + "x" * 80 for i in range(1, 601)]
+    path.write_text("\n".join(lines) + "\n")
+
+    view = file_editor(command="view", path=str(path), view_range=view_range)
+
+    assert_successful_result(view, str(path))
+    assert view.text is not None
+    head, notice, tail = view.text.partition(TEXT_FILE_CONTENT_TRUNCATED_NOTICE)
+    assert notice
+    first_line = view_range[0] if view_range else 1
+    assert f"{first_line:6}\t{lines[first_line - 1]}\n" in head
+    tail_lines = tail.split("\n")[1:-1]
+    assert tail_lines
+    for line in tail_lines:
+        number, content = line.split("\t", 1)
+        assert content == lines[int(number) - 1]
+    last_line = int(tail_lines[-1].split("\t", 1)[0])
+    assert last_line == (view_range[1] if view_range else len(lines))
+
+    ranged = file_editor(
+        command="view", path=str(path), view_range=[last_line - 1, last_line]
+    )
+    assert ranged.text is not None
+    assert ranged.text.split("\n")[1:-1] == tail_lines[-2:]
+
+    edited = file_editor(
+        command="insert", path=str(path), insert_line=last_line, new_str="inserted"
+    )
+    assert_successful_result(edited, str(path))
+    lines.insert(last_line, "inserted")
+    assert path.read_text() == "\n".join(lines) + "\n"
 
 
 def test_view_file(editor):
