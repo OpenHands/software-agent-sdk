@@ -46,3 +46,20 @@ def test_secret_uses_sdk_serializer_and_noop_preserves_ciphertext():
         == changed
     )
     assert reconcile_model(empty, changed, changed, stored, {"secret": True}) == stored
+
+
+def test_read_replaces_empty_map_and_preserves_required_inherited_siblings():
+    from openhands.sdk.utils.model_overlay import overlay_model
+
+    class RequiredForm(BaseModel):
+        account: str
+        options: Options
+
+    parent = RequiredForm(account="org", options=Options(limit=30, catalog={"a": 1}))
+    local = {"options": {"catalog": {}, "note": None}}
+    resolved = overlay_model(parent, local)
+    assert resolved.account == "org" and resolved.options.limit == 30
+    assert resolved.options.catalog == {} and parent.options.catalog == {"a": 1}
+    assert reconcile_model(parent, parent, resolved, {}, local) == {
+        "options": {"catalog": {}}
+    }

@@ -58,3 +58,36 @@ def reconcile_model(
                     context=client_context("encrypted", cipher),
                 )[name]
     return result
+
+
+def overlay_model[M: BaseModel](
+    parent: M, values: Mapping[str, Any], *, cipher: Cipher | None = None
+) -> M:
+    """Validate one sparse JSON layer over a parent, treating maps as values.
+
+    Inspect raw typed fields rather than JSON-dumping the inherited model: the
+    latter can mask or re-encrypt credentials that the caller never edited.
+    """
+    from openhands.sdk.utils.pydantic_secrets import cipher_context
+
+    def overlay(record: BaseModel, layer: Mapping[str, Any]) -> dict[str, Any]:
+        fields = dict(record)
+        for name, patch in layer.items():
+            if name not in type(record).model_fields:
+                raise ValueError(f"Unknown model field: {name}")
+            existing = fields.get(name)
+            if isinstance(existing, BaseModel) and isinstance(patch, Mapping):
+                discriminator = type(record).model_fields[name].discriminator
+                same_variant = not isinstance(discriminator, str) or (
+                    discriminator not in patch
+                    or patch[discriminator] == dict(existing).get(discriminator)
+                )
+                if same_variant:
+                    fields[name] = overlay(existing, patch)
+                    continue
+            fields[name] = patch
+        return fields
+
+    return type(parent).model_validate(
+        overlay(parent, values), context=cipher_context(cipher, strict=True)
+    )
