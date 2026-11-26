@@ -179,6 +179,33 @@ def test_mcp_test_stdio_success(client: TestClient):
     assert "ping" in body["tools"]
 
 
+@pytest.mark.parametrize("transport_field", ["transport", "type"])
+def test_mcp_test_stdio_honors_server_timeout(client: TestClient, transport_field: str):
+    script = (
+        "import time\n"
+        "from fastmcp import FastMCP\n"
+        "time.sleep(0.5)\n"
+        "FastMCP('slow-stdio').run(show_banner=False)\n"
+    )
+    response = client.post(
+        "/api/mcp/test",
+        json={
+            "server": {
+                transport_field: "stdio",
+                "command": sys.executable,
+                "args": ["-c", script],
+                "timeout": 50,
+            },
+            "timeout": 20.0,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["ok"] is False, body
+    assert "timed out" in body["error"], body
+
+
 # ---------------------------------------------------------------------------
 # Tool-call probe (credential verification)
 # ---------------------------------------------------------------------------

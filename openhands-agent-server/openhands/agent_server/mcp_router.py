@@ -108,6 +108,10 @@ class _StdioMCPServerSpec(BaseModel):
     args: list[str] = Field(default_factory=list)
     env: dict[str, str] = Field(default_factory=dict)
     cwd: str | None = None
+    timeout: float | None = Field(
+        default=None,
+        description="Per-request MCP response timeout, in milliseconds.",
+    )
 
     def to_mcp_server(self) -> MCPServer:
         return MCPServer.model_validate(
@@ -117,6 +121,7 @@ class _StdioMCPServerSpec(BaseModel):
                 "args": self.args,
                 "env": self.env,
                 "cwd": self.cwd,
+                "timeout": self.timeout,
             }
         )
 
@@ -198,7 +203,10 @@ class MCPTestRequest(BaseModel):
         default=15.0,
         gt=0,
         le=120,
-        description="Seconds to wait for connection + tools/list to complete.",
+        description=(
+            "Probe budget in seconds for connection and tools/list. "
+            "Distinct from the per-request server.timeout in milliseconds."
+        ),
     )
     tool_call: MCPToolCallSpec | None = Field(
         default=None,
