@@ -1,9 +1,12 @@
 """String replace editor tool implementation."""
 
+import base64
+import io
 from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Literal
 
+from PIL import Image
 from pydantic import Field, PrivateAttr
 
 
@@ -12,6 +15,7 @@ if TYPE_CHECKING:
 
 from rich.text import Text
 
+from openhands.sdk.llm import ImageContent, TextContent
 from openhands.sdk.tool import (
     Action,
     DeclaredResources,
@@ -21,6 +25,7 @@ from openhands.sdk.tool import (
     register_tool,
 )
 from openhands.tools.file_editor.utils.diff import visualize_diff
+from openhands.tools.file_editor.utils.image import MAX_PREVIEW_BYTES, image_view
 
 
 CommandLiteral = Literal["view", "create", "str_replace", "insert", "undo_edit"]
@@ -56,6 +61,11 @@ class FileEditorAction(Action):
         description="Required parameter of `insert` command. The `new_str` will "
         "be inserted AFTER the line `insert_line` of `path`.",
     )
+    image_region: list[int] | None = Field(
+        default=None,
+        description="Optional image view crop in original pixels [left, top, right, "
+        "bottom], with right and bottom exclusive.",
+    )
     view_range: list[int] | None = Field(
         default=None,
         description="Optional parameter of `view` command when `path` points to a "
@@ -89,6 +99,43 @@ class FileEditorObservation(Observation):
     )
 
     _diff_cache: Text | None = PrivateAttr(default=None)
+
+    @property
+    def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
+        content: list[TextContent | ImageContent] = []
+        for item in super().to_llm_content:
+            if not isinstance(item, ImageContent) or self.command != "view":
+                content.append(item)
+                continue
+            for url in item.image_urls:
+                header, separator, encoded = url.partition(";base64,")
+                if (
+                    not separator
+                    or not header.startswith("data:image/")
+                    or len(encoded) <= 4 * ((MAX_PREVIEW_BYTES + 2) // 3)
+                ):
+                    content.append(item.model_copy(update={"image_urls": [url]}))
+                    continue
+                # Persisted views may contain a full image from before previews.
+                try:
+                    source = io.BytesIO(base64.b64decode(encoded, validate=True))
+                    data, mime, message = image_view(source, self.path or "saved image")
+                except (ValueError, OSError, Image.DecompressionBombError):
+                    content.append(
+                        TextContent(
+                            text=f"Cannot preview the saved image at {self.path}."
+                        )
+                    )
+                    continue
+                encoded_preview = base64.b64encode(data).decode("ascii")
+                preview_url = f"data:{mime};base64,{encoded_preview}"
+                content.extend(
+                    [
+                        TextContent(text=message),
+                        item.model_copy(update={"image_urls": [preview_url]}),
+                    ]
+                )
+        return content
 
     @property
     def visualize(self) -> Text:

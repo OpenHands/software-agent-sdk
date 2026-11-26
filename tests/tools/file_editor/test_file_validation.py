@@ -184,3 +184,65 @@ def test_unreadable_file_returns_error_observation(tmp_path, command, args):
 
     assert result.is_error
     assert "secret.txt" in result.text
+
+
+@pytest.mark.parametrize("size", [(511, 511), (2049, 100)])
+def test_bounded_image_preview_and_original_region(tmp_path, size):
+    import base64
+    import io
+    import random
+
+    from PIL import Image
+
+    from openhands.tools.file_editor.definition import FileEditorAction
+    from openhands.tools.file_editor.impl import FileEditorExecutor
+    from openhands.tools.file_editor.utils.image import (
+        MAX_PREVIEW_BYTES,
+        MAX_PREVIEW_DIMENSION,
+    )
+
+    path = tmp_path / "screenshot.png"
+    source = Image.frombytes(
+        "RGBA", size, random.Random(0).randbytes(size[0] * size[1] * 4)
+    )
+    source.save(path)
+    original = path.read_bytes()
+    executor = FileEditorExecutor(workspace_root=str(tmp_path))
+
+    def view(region=None):
+        result = executor(
+            FileEditorAction(command="view", path=str(path), image_region=region)
+        )
+        assert not result.is_error and result.path == str(path)
+        content = result.content[1]
+        assert isinstance(content, ImageContent)
+        raw = base64.b64decode(content.image_urls[0].split(",", 1)[1], validate=True)
+        assert len(raw) <= MAX_PREVIEW_BYTES
+        return Image.open(io.BytesIO(raw))
+
+    preview = view()
+    assert max(preview.size) <= MAX_PREVIEW_DIMENSION
+    assert preview.size != source.size
+    crop = view([5, 6, 11, 14])
+    assert crop.tobytes() == source.crop((5, 6, 11, 14)).tobytes()
+    assert path.read_bytes() == original
+    from openhands.tools.file_editor.definition import FileEditorObservation
+
+    url = "data:image/png;base64," + base64.b64encode(original).decode("ascii")
+    retained = FileEditorObservation(
+        command="view", path=str(path), content=[ImageContent(image_urls=[url])]
+    )
+    path.unlink()
+    packed = next(
+        item for item in retained.to_llm_content if isinstance(item, ImageContent)
+    )
+    if len(original) > MAX_PREVIEW_BYTES:
+        assert len(packed.image_urls[0]) < len(url)
+    assert retained.content[0] == ImageContent(image_urls=[url])
+    path.write_bytes(original)
+
+    assert executor(
+        FileEditorAction(
+            command="view", path=str(path), image_region=[0, 0, size[0] + 1, 8]
+        )
+    ).is_error
