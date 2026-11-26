@@ -83,11 +83,12 @@ class CORSDispatcher:
         allow_origins: list[str],
         allow_origin_regex: str | None = None,
     ) -> None:
-        self._default_cors = LocalhostCORSMiddleware(
-            app,
-            allow_origins=list(allow_origins),
-            allow_origin_regex=allow_origin_regex,
+        self._app = app
+        self._default_cors = self._build_default_cors(
+            list(allow_origins), allow_origin_regex
         )
+        # The config object ``_default_cors`` was last checked against.
+        self._seen_config: object | None = None
         self._workspace_cors = CORSMiddleware(
             app,
             allow_origin_regex=r"https?://.+",
@@ -95,6 +96,31 @@ class CORSDispatcher:
             allow_methods=["*"],
             allow_headers=["*"],
         )
+
+    def _build_default_cors(
+        self, allow_origins: list[str], allow_origin_regex: str | None
+    ) -> LocalhostCORSMiddleware:
+        self._default_cors_settings = (allow_origins, allow_origin_regex)
+        return LocalhostCORSMiddleware(
+            self._app,
+            allow_origins=allow_origins,
+            allow_origin_regex=allow_origin_regex,
+        )
+
+    def _current_default_cors(self, scope: Scope) -> LocalhostCORSMiddleware:
+        """Return the default CORS middleware for the app's live config.
+
+        ``/api/init`` replaces ``app.state.config`` on a deferred-init server,
+        delivering ``allow_cors_origins`` after this middleware was built.
+        """
+        config = getattr(getattr(scope.get("app"), "state", None), "config", None)
+        if config is None or config is self._seen_config:
+            return self._default_cors
+        self._seen_config = config
+        settings = (list(config.allow_cors_origins), config.allow_cors_origin_regex)
+        if settings != self._default_cors_settings:
+            self._default_cors = self._build_default_cors(*settings)
+        return self._default_cors
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope.get("type") == "http":
@@ -106,4 +132,4 @@ class CORSDispatcher:
             if _is_workspace_cookie_path(route_path or "/"):
                 await self._workspace_cors(scope, receive, send)
                 return
-        await self._default_cors(scope, receive, send)
+        await self._current_default_cors(scope)(scope, receive, send)
