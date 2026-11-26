@@ -10,9 +10,9 @@ agent-server map
 and follows its layout. Family IDs here are `Snn`, so they never collide with
 that map's `Fnn`.
 
-Maintenance baseline: main@0988e976491ff733bc09e976b36a271b0c511530 (2026-11-24). The next maintenance pass starts from this commit, a pass proposes the next baseline in its PR, and merging that PR accepts it.
+Maintenance baseline: main@d7263334df62150bdfdfabec5991484dd001064d (2026-11-26). The next maintenance pass starts from this commit, a pass proposes the next baseline in its PR, and merging that PR accepts it.
 
-The map has **506 sub-features**, **34 of them untested** (no unit or cross
+The map has **507 sub-features**, **34 of them untested** (no unit or cross
 test exercises the behavior; most of those have an example script).
 
 ## What each sub-feature links
@@ -76,7 +76,7 @@ an interactive login are labeled **blocked**.
 | ID | Family | What it covers | Entry points | Needs | Sub-features | Untested |
 |---|---|---|---|---|---|---|
 | S01 | [Agent step loop](S01-agent-loop.md) | step handling (tool calls, text, empty replies), iteration and budget limits, stuck detector, parallel tools, messages sent mid-run, image input, `ask_agent`, structured output, recovery from bad tool calls and context overflow | `Conversation(max_iteration_per_run=, stuck_detection=, max_budget_per_run=)`, `Agent(tool_concurrency_limit=)`, `ask_agent()`, `response_schema` | llm, tmux, network | 25 | 1 |
-| S02 | [LLM core](S02-llm-core.md) | completion, responses and `generate`; streaming; reasoning and thinking blocks; native and prompted tool calling; metrics, stats and pricing; retries and error mapping; caching, token counts, image inlining, completion logs | `LLM(...)`, `llm.completion`/`responses`, `Conversation(token_callbacks=)`, `llm.metrics` | llm, network | 28 | 0 |
+| S02 | [LLM core](S02-llm-core.md) | completion, responses and `generate`; streaming; reasoning and thinking blocks; native and prompted tool calling; metrics, stats and pricing; retries and error mapping; caching, token counts, image inlining, completion logs | `LLM(...)`, `llm.completion`/`responses`, `Conversation(token_callbacks=)`, `llm.metrics` | llm, network | 29 | 0 |
 | S03 | [LLM registry, routing, fallback, profiles and model switching](S03-llm-routing-profiles.md) | `LLMRegistry`, multimodal and random routers, `FallbackStrategy`, `LLMProfileStore`, `switch_profile`/`switch_llm`, the switch-LLM tool, `route_task_to_model`, subscription login | `LLMRegistry`, `MultimodalRouter`, `FallbackStrategy`, `LLMProfileStore`, `LLM.subscription_login()` | llm, network | 30 | 4 |
 | S04 | [Local conversation lifecycle](S04-local-conversation.md) | factory and ids, persistence and resume, callbacks, close, pause, `arun` and interrupt, secrets, visualizers, fork and branches, goal loop (and its stop on a pending `ask_user` question, `GoalAsked`), final response, stats, title and tags | `Conversation(persistence_dir=, callbacks=, visualizer=, secrets=)`, `run`/`pause`/`arun`/`interrupt`/`fork`/`run_goal` | llm, tmux, network, uvx | 34 | 4 |
 | S05 | [Events and the event log](S05-events.md) | event model, JSON round trip, conversion to LLM messages and OpenAI formats, unmatched actions, the `EventLog`, error classification, completion and token events | `Event.model_validate_json`, `events_to_messages`, `conversation.state.events` | llm, tmux | 18 | 1 |

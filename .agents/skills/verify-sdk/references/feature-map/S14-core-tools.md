@@ -166,7 +166,7 @@ Preconditions:
       --check steps.comment.text contains synthetic-status-output
   done
   ```
-  Expected: the leading comment changes nothing; the call waits for the command and returns its output. Known failure (reproduced 2026-11-19, [#6972](https://github.com/OpenHands/software-agent-sdk/issues/6972)): on both backends the commented call returns exit 0 within about 0.2 s, its text holding only the echoed command lines and no `synthetic-status-output` (Bash prints a prompt after the comment line, which the session takes for completion); on the subprocess backend the missing output turns up at the start of the next call's observation.
+  Expected: the leading comment changes nothing; the call waits for the command and returns its output. Known failure (reproduced 2026-11-26, [#6972](https://github.com/OpenHands/software-agent-sdk/issues/6972)): on both backends the commented call returns exit 0 without the command's output (subprocess within about 0.1 s; tmux after about 2 s), its text holding only the echoed command lines and no `synthetic-status-output` (Bash prints a prompt after the comment line, which the session takes for completion); on the subprocess backend the missing output turns up at the start of the next call's observation.
 - **The calls after a heredoc whose prompt is slow, subprocess backend (`S14.terminal-input-encoding`).** `Tool(name="terminal", params={"terminal_type": "subprocess"})`; a scripted agent sets `PROMPT_COMMAND="$PROMPT_COMMAND; sleep 0.3"`, runs `alias oh_test=...; cat <<EOF ... EOF` then `oh_test`, then `echo next-command` and `echo third`.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
@@ -189,7 +189,7 @@ Preconditions:
     --check steps.next.text not-contains 'Previous command outputs are truncated' \
     --check steps.third.text not-contains 'Previous command outputs are truncated'
   ```
-  Expected: each call returns its own output, as on the subprocess backend. Known failure (reproduced 2026-11-24, [#7094](https://github.com/OpenHands/software-agent-sdk/issues/7094), fix in [#7096](https://github.com/OpenHands/software-agent-sdk/pull/7096)): every other call after the slow hook returns `[Previous command outputs are truncated. Showing the last 2 lines of the output below.]` with exit code 0 and none of its own output. `clear_screen` returns while the pane is still blank, so the next command reads no prompt and takes the late prompt from `clear` as its own completion; the screen is then cleared and the output lost. The same happens without a heredoc.
+  Expected: each call returns its own output, as on the subprocess backend: after clearing the screen the session waits for the shell's prompt to reappear, so a late prompt from `clear` is never taken for the next command's completion and no call returns `[Previous command outputs are truncated. ...]` in place of its own output.
 - **A one-second observation wait cap and a shell that exits, subprocess backend (`S14.terminal-observation-wait-cap`, `S14.terminal-shell-exit`).** `Tool(name="terminal", params={"terminal_type": "subprocess", "max_observation_wait_seconds": 1})`; a scripted agent starts `sleep 3; echo finished` with `timeout` 600 and polls it with `""` until it finishes, then runs `printf ...; exit 7`, `echo still-here`, a reset and `echo back`. The program also creates the tool with a cap of 0 and of -1.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)

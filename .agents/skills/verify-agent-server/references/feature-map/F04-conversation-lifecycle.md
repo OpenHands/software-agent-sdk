@@ -44,9 +44,9 @@ Routes: `GET /api/conversations/search`, `GET /api/conversations/count`,
 - `F04.get`: `GET /api/conversations/{id}` returns `runtime_info`, trims skills unless `include_skills=true`, accepts the 32-hex id form, and answers 404, 422 and 401.
 - `F04.batch-get`: `GET /api/conversations?ids=..` returns a list aligned with the ids, `null` for unknown ones, and 422 without or with malformed ids.
 - `F04.batch-get-limit`: 100 ids in one batch are refused with a client error, not a 500.
-- `F04.search-page`: `limit` and `next_page_id` page newest first by default; `sort_order=CREATED_AT` reverses it; skills are trimmed unless `include_skills=true`; bad limits and sort orders are 422.
+- `F04.search-page`: `limit` and `next_page_id` page newest first by default; `sort_order=CREATED_AT` reverses it; skills are trimmed unless `include_skills=true`; every page carries a `broken_items` list, empty on a healthy store; bad limits and sort orders are 422.
 - `F04.search-filter`: `status` filters search and count consistently; an unknown status is 422.
-- `F04.count`: `GET /api/conversations/count` equals the number of conversations search lists.
+- `F04.count`: `GET /api/conversations/count` equals the number of conversations search lists (`items` plus `broken_items`).
 - `F04.search-at-scale`: with 2,000 conversations, search pages through every one exactly once in both orders, count is 2,000, the last page answers within 4× the first page's p95 (first page under 2 s), 50 listings grow the server's RSS by under 300 MB, and all 2,000 are listed again after a restart.
 - `F04.patch-title`: PATCH `title` is stripped, stored in `meta.json`, bumps `updated_at` and moves the conversation to the top of `UPDATED_AT_DESC`.
 - `F04.patch-tags`: PATCH `tags` replaces the whole map in `meta.json` and `base_state.json` and pushes a `tags` state update on the events socket.
@@ -85,7 +85,8 @@ Routes: `GET /api/conversations/search`, `GET /api/conversations/count`,
 - REST reads: `GET /api/conversations/{conversation_id}`,
   `GET /api/conversations?ids=..&ids=..` (fewer than 100),
   `GET /api/conversations/search` (`page_id`, `limit` 1..100, `status`,
-  `sort_order`, `include_skills`), `GET /api/conversations/count` (`status`),
+  `sort_order`, `include_skills`; a `ConversationPage` of `items`,
+  `next_page_id` and `broken_items`), `GET /api/conversations/count` (`status`),
   `GET /api/conversations/{conversation_id}/agent_final_response`.
 - REST writes: `PATCH /api/conversations/{conversation_id}` (`title`, `tags`),
   `DELETE /api/conversations/{conversation_id}`.
@@ -105,7 +106,9 @@ Routes: `GET /api/conversations/search`, `GET /api/conversations/count`,
   `searchConversations`, `countConversations`, `getConversations`,
   `getConversation`, `getAgentFinalResponse`, `updateConversation`,
   `deleteConversation`; `ConversationManager` wraps them
-  (`getAllConversations` pages through search).
+  (`getAllConversations` pages through search). The page type carries
+  `broken_items?: BrokenConversationInfo[]`
+  (`clients/typescript/src/models/conversation.ts`).
 - Agent Canvas (context only): the new-conversation flow reads
   `GET /api/settings` with `X-Expose-Secrets: encrypted` and posts
   `agent_settings` with `secrets_encrypted: true` (what
@@ -545,7 +548,7 @@ EOF
   S2=$(control-agent-server api POST /api/conversations --json "{\"workspace\": {\"working_dir\": \"$W\"}, \"agent\": $OFFLINE_AGENT, \"autotitle\": false}" --expect 201 --field id)
   control-agent-server api GET /api/conversations/search --query limit=1 --expect 200 --check items len-eq 1 \
     --check items.0.id eq "$S2" --check items.0.runtime_info.runtime_status eq available \
-    --check next_page_id eq "${S1//-/}" --save F04.search-page/first
+    --check next_page_id eq "${S1//-/}" --check broken_items len-eq 0 --save F04.search-page/first
   control-agent-server api GET /api/conversations/search --query limit=1 --query page_id="${S1//-/}" --check items.0.id eq "$S1" --save F04.search-page/second
   control-agent-server api GET /api/conversations/search --query sort_order=CREATED_AT --query limit=100 --check items.-1.id eq "$S2" --check next_page_id missing
   control-agent-server api GET /api/conversations/search --query limit=100 --check items not-contains qa-f04-skill --quiet
@@ -555,8 +558,9 @@ EOF
   control-agent-server api GET /api/conversations/search --query sort_order=bogus --expect 422
   control-agent-server api GET /api/conversations/search --auth none --expect 401
   ```
-  The first page holds `S2` and points at `S1` (32-hex); that page starts with
-  `S1`; ascending order ends with `S2`. The inline skill `qa-f04-skill` is
+  The first page holds `S2` and points at `S1` (32-hex) and its
+  `broken_items` is `[]`; that page starts with `S1`; ascending order ends
+  with `S2`. The inline skill `qa-f04-skill` is
   absent from the listing unless `include_skills=true`.
 - **Status filter (`F04.search-filter`).** Finished and idle conversations
   from the bullets above.
@@ -578,7 +582,7 @@ EOF
 - **Count (`F04.count`).** The total agrees with search.
   ```sh
   N=$(control-agent-server api GET /api/conversations/count --expect 200 --field .)
-  control-agent-server api GET /api/conversations/search --query limit=100 --check items len-eq "$N" --save F04.count/search-all
+  control-agent-server api GET /api/conversations/search --query limit=100 --check items len-eq "$N" --check broken_items len-eq 0 --save F04.count/search-all
   control-agent-server api GET /api/conversations/count --auth none --expect 401
   ```
   Count grows on create (first bullets) and shrinks on delete (Delete bullet).
@@ -1103,8 +1107,19 @@ EOF
 - `next_page_id` is the 32-hex form of the next item's id, while items carry
   dashed ids. An unknown `page_id` silently restarts at the first page instead
   of failing.
-- `count` counts catalog records (`meta.json`); search skips records whose
-  `base_state.json` is missing, so the two can differ on a damaged store.
+- Search never drops an unreadable record: a conversation whose `meta.json`
+  does not parse (`reason: "metadata"`) or whose `base_state.json` is missing
+  or invalid (`reason: "state"`) is listed in the page's `broken_items` (id,
+  title, timestamps, tags, reason) instead of `items`, and takes a slot of
+  `limit` (a `limit=1` page can hold no `items` and one broken item).
+  `count` includes them, so on a damaged store `count` equals `items` plus
+  `broken_items` of an unfiltered listing. A `status` filter drops them from
+  search, but `count?status=idle` still counts a record whose
+  `base_state.json` is missing (it reads as `idle`), so filtered count and
+  search can differ there
+  ([#7157](https://github.com/OpenHands/software-agent-sdk/issues/7157),
+  `F04.search-filter`). DELETE removes such a record's directory (see
+  `F31.search-unreadable-record`).
 - `agent.agent_context.skills` is trimmed to `[]` on every route unless
   `include_skills=true`; the stored agent keeps them.
 - Unknown ids: GET, PATCH, DELETE and `agent_final_response` are 404, as
