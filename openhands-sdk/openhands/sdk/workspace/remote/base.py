@@ -14,6 +14,7 @@ from openhands.sdk.git.models import GitChange, GitDiff
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.settings import SecretsListResponse, SettingsResponse
+from openhands.sdk.utils.pydantic_secrets import client_context
 from openhands.sdk.workspace.base import BaseWorkspace
 from openhands.sdk.workspace.models import CommandResult, FileOperationResult
 from openhands.sdk.workspace.remote.remote_workspace_mixin import RemoteWorkspaceMixin
@@ -452,7 +453,7 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
                 if not llm_kwargs:
                     return agent_settings.llm
                 llm_data = agent_settings.llm.model_dump(
-                    context={"expose_secrets": "plaintext"}
+                    context=client_context("plaintext")
                 )
             else:
                 llm_data = self._fetch_llm_profile_config(resolved_profile_name)
@@ -530,6 +531,8 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
                 url=f"{self.host}/api/settings/secrets/{item.name}",
                 headers=dict(self._headers),
                 description=item.description,
+                scope=item.scope,
+                scope_description=item.scope_description,
             )
 
         return result
@@ -634,8 +637,8 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
 
         Clones specified repositories to meaningful directory names (e.g.,
         'openhands-cli' instead of 'repo_0'). Automatically fetches GitHub,
-        GitLab, Bitbucket and Azure DevOps tokens from the agent server's
-        secrets for authentication.
+        GitLab, Bitbucket, Azure DevOps and Bitbucket Data Center tokens from
+        the agent server's secrets for authentication.
 
         Args:
             repos: List of repositories to clone. Can be:

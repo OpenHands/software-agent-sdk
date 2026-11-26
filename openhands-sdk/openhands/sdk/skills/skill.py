@@ -16,6 +16,8 @@ from pydantic import (
     BaseModel,
     Field,
     SerializationInfo,
+    TypeAdapter,
+    ValidationError,
     ValidationInfo,
     field_serializer,
     field_validator,
@@ -46,7 +48,7 @@ from openhands.sdk.skills.utils import (
     update_skills_repository,
     validate_skill_name,
 )
-from openhands.sdk.utils import DEFAULT_TRUNCATE_NOTICE, maybe_truncate
+from openhands.sdk.utils import maybe_truncate
 from openhands.sdk.utils.path import get_user_persistence_dir, to_posix_path
 
 
@@ -245,7 +247,7 @@ class Skill(BaseModel):
         description=(
             "A brief description of what the skill does and when to use it. "
             "Descriptions exceeding MAX_DESCRIPTION_LENGTH are truncated "
-            "with a notice pointing to the skill's source path."
+            "with a notice pointing to invoke_skill for the full skill."
         ),
     )
     license: str | None = Field(
@@ -291,10 +293,12 @@ class Skill(BaseModel):
         ),
     )
 
+    # Points at invoke_skill, never at the file: to_prompt() leaves out the
+    # skill's location on purpose so the agent loads it through the tool.
     _DESCRIPTION_TRUNCATE_NOTICE = (
         "<response clipped><NOTE>Due to the max output limit, only part of "
-        "the full description is shown. You can view the complete skill "
-        "content at {source}.</NOTE>"
+        'the full description is shown. Call invoke_skill(name="{name}") to '
+        "load the full skill.</NOTE>"
     )
 
     @field_validator("allowed_tools", mode="before")
@@ -676,8 +680,8 @@ class Skill(BaseModel):
         """Truncate description to MAX_DESCRIPTION_LENGTH via maybe_truncate.
 
         Uses a model_validator (not field_validator) so the truncation notice
-        can reference self.source, telling the agent where to find the full
-        skill content.
+        can name the skill, pointing the agent to ``invoke_skill`` for the full
+        content. It never names the file (#6644).
         """
         if (
             self.description is not None
@@ -689,9 +693,7 @@ class Skill(BaseModel):
                 len(self.description),
                 self.MAX_DESCRIPTION_LENGTH,
             )
-            notice = DEFAULT_TRUNCATE_NOTICE
-            if self.source:
-                notice = self._DESCRIPTION_TRUNCATE_NOTICE.format(source=self.source)
+            notice = self._DESCRIPTION_TRUNCATE_NOTICE.format(name=self.name)
             self.description = maybe_truncate(
                 self.description,
                 truncate_after=self.MAX_DESCRIPTION_LENGTH,
@@ -1129,7 +1131,7 @@ def load_project_skills(work_dir: str | Path) -> list[Skill]:
                     all_skills.append(skill)
                     seen_names.add(skill.name)
                     logger.debug(f"Loaded third-party skill: {skill.name} from {path}")
-            except (SkillError, OSError, yaml.YAMLError) as e:
+            except (SkillError, OSError, UnicodeDecodeError, yaml.YAMLError) as e:
                 logger.warning(f"Failed to load third-party skill from {path}: {e}")
 
     # Load nested third-party files (e.g. server/AGENTS.md) as directory-scoped
@@ -1174,6 +1176,36 @@ PUBLIC_SKILLS_REF = os.environ.get("EXTENSIONS_REF", "main")
 DEFAULT_MARKETPLACE_PATH = "marketplaces/default.json"
 # A local checkout or package of the public repo, read instead of a git clone.
 PUBLIC_SKILLS_PATH_ENV = "EXTENSIONS_PATH"
+# Deployment switches for the default public extensions repository. Read at
+# call time so a warm agent-server picks up values delivered by POST /api/init.
+# They gate only automatic loading/fetching from that repository; skills a
+# client sends or a persisted conversation already holds are not filtered.
+PUBLIC_SKILLS_ENABLED_ENV = "OH_PUBLIC_SKILLS_ENABLED"
+PUBLIC_CATALOG_ENABLED_ENV = "OH_PUBLIC_CATALOG_ENABLED"
+_BOOL_ADAPTER = TypeAdapter(bool)
+
+
+def _env_flag_enabled(name: str) -> bool:
+    """Parse a default-enabled switch; unset, empty or unrecognised keep it on."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return True
+    try:
+        return _BOOL_ADAPTER.validate_python(raw)
+    except ValidationError:
+        logger.warning("Ignoring unrecognised %s=%r; keeping it enabled", name, raw)
+        return True
+
+
+def public_skills_enabled() -> bool:
+    """Whether skills auto-load from the default public extensions repository."""
+    return _env_flag_enabled(PUBLIC_SKILLS_ENABLED_ENV)
+
+
+def public_catalog_enabled() -> bool:
+    """Whether the default public plugin and skills catalogs may be fetched."""
+    return _env_flag_enabled(PUBLIC_CATALOG_ENABLED_ENV)
+
 
 # Process-level cache for load_public_skills. Conversation creation re-validates
 # AgentContext several times and each validation re-runs load_public_skills
@@ -1190,6 +1222,7 @@ _PUBLIC_SKILLS_CACHE: dict[
 ] = {}
 _PUBLIC_SKILLS_CACHE_TTL_SECONDS = 60.0
 _PUBLIC_SKILLS_CACHE_LOCK = threading.Lock()
+_PUBLIC_SKILLS_LOAD_LOCK = threading.Lock()
 
 
 def _invalidate_public_skills_cache() -> None:
@@ -1298,7 +1331,8 @@ def load_public_skills(
 
     Returns:
         List of Skill objects loaded from the public repository.
-        Returns empty list if loading fails.
+        Returns empty list if loading fails, or for the default repository when
+        ``OH_PUBLIC_SKILLS_ENABLED`` is false (nothing is fetched or read).
 
     Example:
         >>> from openhands.sdk.context import AgentContext
@@ -1310,6 +1344,21 @@ def load_public_skills(
         >>> # Use with AgentContext
         >>> context = AgentContext(skills=public_skills)
     """
+    if repo_url == PUBLIC_SKILLS_REPO and not public_skills_enabled():
+        logger.info("Public skills are disabled by %s", PUBLIC_SKILLS_ENABLED_ENV)
+        return []
+    if _local_public_skills_path(repo_url) is None:
+        return _load_public_skills(repo_url, ref, marketplace_path)
+    # A local copy is parsed once at a time, so a caller racing the startup
+    # warm-up reads its cache instead of parsing again. Clones are not
+    # serialized: a slow or failing one must not hold up other callers.
+    with _PUBLIC_SKILLS_LOAD_LOCK:
+        return _load_public_skills(repo_url, ref, marketplace_path)
+
+
+def _load_public_skills(
+    repo_url: str, ref: str, marketplace_path: str | None
+) -> list[Skill]:
     local_path = _local_public_skills_path(repo_url)
     cache_key = (str(local_path or repo_url), ref, marketplace_path)
     with _PUBLIC_SKILLS_CACHE_LOCK:

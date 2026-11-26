@@ -253,33 +253,21 @@ def test_declared_resources_different_paths_produce_different_keys():
         assert r1.keys != r2.keys
 
 
-def test_declared_resources_same_path_same_key_across_commands():
+@pytest.mark.parametrize(
+    ("command1", "path1", "command2", "path2"),
+    [
+        pytest.param(
+            "view", "/a.py", "str_replace", "/a.py", id="same_path_across_commands"
+        ),
+        pytest.param("view", "/a/c.py", "view", "/a/b/../c.py", id="dotdot_paths"),
+        pytest.param("view", "/a/c.py", "view", "/a/./c.py", id="dot_paths"),
+    ],
+)
+def test_declared_resources_same_file_same_key(command1, path1, command2, path2):
     with tempfile.TemporaryDirectory() as temp_dir:
         tool = FileEditorTool.create(_create_test_conv_state(temp_dir))[0]
-        r1 = tool.declared_resources(FileEditorAction(command="view", path="/a.py"))
-        r2 = tool.declared_resources(
-            FileEditorAction(command="str_replace", path="/a.py")
-        )
-        assert r1.keys == r2.keys
-
-
-def test_declared_resources_normalizes_dotdot_paths():
-    """Paths with '..' that resolve to the same file produce the same key."""
-    with tempfile.TemporaryDirectory() as temp_dir:
-        tool = FileEditorTool.create(_create_test_conv_state(temp_dir))[0]
-        r1 = tool.declared_resources(FileEditorAction(command="view", path="/a/c.py"))
-        r2 = tool.declared_resources(
-            FileEditorAction(command="view", path="/a/b/../c.py")
-        )
-        assert r1.keys == r2.keys
-
-
-def test_declared_resources_normalizes_dot_paths():
-    """Paths with '.' that resolve to the same file produce the same key."""
-    with tempfile.TemporaryDirectory() as temp_dir:
-        tool = FileEditorTool.create(_create_test_conv_state(temp_dir))[0]
-        r1 = tool.declared_resources(FileEditorAction(command="view", path="/a/c.py"))
-        r2 = tool.declared_resources(FileEditorAction(command="view", path="/a/./c.py"))
+        r1 = tool.declared_resources(FileEditorAction(command=command1, path=path1))
+        r2 = tool.declared_resources(FileEditorAction(command=command2, path=path2))
         assert r1.keys == r2.keys
 
 

@@ -28,11 +28,13 @@ from openhands.agent_server.models import ConversationInfo, StoredConversation
 from openhands.agent_server.utils import utc_now
 from openhands.sdk import LLM, Agent, Tool
 from openhands.sdk.agent.acp_agent import ACPAgent
-from openhands.sdk.agent.acp_models import ACPModelInfo
+from openhands.sdk.agent.acp_contracts import ACPSessionEffortState
+from openhands.sdk.agent.acp_models import ACPEffortOption, ACPModelInfo
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.llm.utils.metrics import Metrics
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -90,6 +92,52 @@ def test_current_model_id_is_lifted_from_acp_agent():
 
     assert isinstance(info, ConversationInfo)
     assert info.current_model_id == "claude-opus-4-1"
+
+
+def test_effort_is_lifted_from_acp_agent_then_persisted_hints():
+    agent = ACPAgent(acp_command=["echo", "test"])
+    agent._effort_state = ACPSessionEffortState(
+        config_id="effort",
+        current="high",
+        available=[ACPEffortOption(value="low"), ACPEffortOption(value="high")],
+    )
+    state = _make_state(agent)
+
+    info = _compose_conversation_info(_make_stored(state), state)
+
+    assert info.current_effort == "high"
+    assert [o.value for o in info.available_efforts] == ["low", "high"]
+
+    cold_agent = ACPAgent(acp_command=["echo", "test"])
+    cold_state = _make_state(cold_agent)
+    cold_state.agent_state = {
+        "acp_current_effort": "max",
+        "acp_available_efforts": [{"value": "max", "name": "Max"}],
+    }
+
+    cold = _compose_conversation_info(_make_stored(cold_state), cold_state)
+
+    assert cold.current_effort == "max"
+    assert cold.available_efforts == [ACPEffortOption(value="max", name="Max")]
+
+
+def test_effort_falls_back_to_acp_effort_before_the_session_starts():
+    agent = ACPAgent(acp_command=["echo", "test"], acp_effort="low")
+    state = _make_state(agent)
+
+    info = _compose_conversation_info(_make_stored(state), state)
+
+    assert info.current_effort == "low"
+
+
+def test_a_stored_no_effort_hint_beats_the_configured_effort():
+    agent = ACPAgent(acp_command=["echo", "test"], acp_effort="high")
+    state = _make_state(agent)
+    state.agent_state = {"acp_current_effort": None}
+
+    info = _compose_conversation_info(_make_stored(state), state)
+
+    assert info.current_effort is None
 
 
 def test_current_model_id_is_none_when_acp_agent_has_no_model():
@@ -353,3 +401,37 @@ def test_supports_runtime_model_switch_defaults_false():
     info = _compose_conversation_info(stored, state)
 
     assert info.supports_runtime_model_switch is False
+
+
+def test_conversation_info_stats_omit_per_call_metrics():
+    """REST conversation info carries aggregates, not per-call metrics (#6741)."""
+    agent = Agent(
+        llm=LLM(model="gpt-4o", api_key=SecretStr("test-key"), usage_id="test-llm"),
+        tools=[],
+    )
+    state = _make_state(agent)
+    metrics = Metrics(model_name="gpt-4o")
+    for i in range(50):
+        metrics.add_cost(0.01)
+        metrics.add_token_usage(
+            prompt_tokens=100,
+            completion_tokens=50,
+            cache_read_tokens=0,
+            cache_write_tokens=0,
+            context_window=8000,
+            response_id=f"resp{i}",
+        )
+        metrics.add_response_latency(1.5, f"resp{i}")
+    state.stats.usage_to_metrics["test-llm"] = metrics
+
+    info = _compose_conversation_info(_make_stored(state), state)
+
+    served = info.model_dump(mode="json")["stats"]["usage_to_metrics"]["test-llm"]
+    assert served["costs"] == []
+    assert served["response_latencies"] == []
+    assert served["token_usages"] == []
+    assert served["accumulated_cost"] == pytest.approx(0.5)
+    assert served["accumulated_token_usage"]["prompt_tokens"] == 5000
+    assert served["accumulated_token_usage"]["completion_tokens"] == 2500
+    # The live state, which is what gets persisted, is untouched.
+    assert len(state.stats.usage_to_metrics["test-llm"].costs) == 50

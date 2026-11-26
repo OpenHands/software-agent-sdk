@@ -69,6 +69,9 @@ export {
   isConversationErrorEvent,
   isCondensationEvent,
   isHookExecutionEvent,
+  isReactionEvent,
+  isAskUserAnswerEvent,
+  isMessageEditEvent,
 } from './events/types';
 export type {
   EventID,
@@ -98,6 +101,12 @@ export type {
   StuckDetectionEvent,
   FinishEvent,
   ThinkEvent,
+  ReactionEmoji,
+  ReactionEvent,
+  AskUserAction,
+  AskUserObservation,
+  AskUserAnswerEvent,
+  MessageEditEvent,
   HookExecutionEvent,
   HookExecutionEventType,
   ConversationEvent,
@@ -172,6 +181,9 @@ export type {
   LLM as LLMConfig,
   ServerInfo,
   Success,
+  ModelRouteInfo,
+  ModelRouterSelection,
+  ModelRouterStatus,
   EventPage,
   ConversationCallbackType,
   SecretValue,
@@ -222,8 +234,9 @@ export type {
 
 // ACP provider registry (mirrors openhands-sdk; see scripts/validate-acp-providers.mjs)
 export { ACP_PROVIDERS, ACP_SETTINGS_KEYS, getAcpProvider } from './models/acp';
-export type { ACPModelOption, ACPProviderInfo, ACPProviderKey } from './models/acp';
+export type { ACPProviderInfo, ACPProviderKey } from './models/acp';
 export type {
+  ACPEffortOption,
   ACPModelDiscovery,
   ACPModelDiscoveryError,
   ACPModelDiscoveryRequest,
@@ -235,6 +248,7 @@ export type {
   AgentKind,
   ACPServerKind,
   ProfileVerificationSettings,
+  ProfileSandboxSettings,
   OpenHandsAgentProfile,
   ACPAgentProfile,
   AgentProfile,
@@ -264,6 +278,7 @@ export type { SwitchPlan } from './profiles/derive-switch-plan';
 // Conversation models
 export type {
   ConversationInfo,
+  BrokenConversationInfo,
   ConversationRuntimeStatus,
   ConversationRuntimeError,
   ConversationRuntimeInfo,
@@ -313,6 +328,18 @@ export type {
 } from './client/workspaces-client';
 export type { AgentServerFeatureRequirement } from './client/agent-server-compatibility';
 export type {
+  AgentServerArchiveQuery,
+  AgentServerBatchEventIds,
+  AgentServerBatchEventsResponse,
+  AgentServerGitCommitChangesQuery,
+  AgentServerGitCommitChangesResponse,
+  AgentServerGitCommitsQuery,
+  AgentServerGitCommitsResponse,
+  AgentServerInitRequest,
+  AgentServerInitResponse,
+  AgentServerInitStatus,
+  AgentServerLoadPluginRequest,
+  AgentServerLoadPluginResponse,
   AgentServerConversationSettingsSchema,
   AgentServerMCPOAuthCallbackRequest,
   AgentServerMCPOAuthCallbackResponse,

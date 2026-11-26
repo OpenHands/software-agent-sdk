@@ -1,0 +1,6 @@
+[
+  {"tool": "no_such_tool", "args": {"x": 1}},
+  {"tool": "no_such_tool", "args": {"x": 1}},
+  {"tool": "no_such_tool", "args": {"x": 1}},
+  {"finish": "switched approach"}
+]

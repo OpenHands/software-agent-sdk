@@ -325,8 +325,8 @@ class Message(BaseModel):
         if self.role == "assistant" and self.tool_calls:
             message_dict["tool_calls"] = [tc.to_chat_dict() for tc in self.tool_calls]
             self._remove_content_if_empty(message_dict)
-        else:
-            self._normalize_empty_assistant_content(message_dict)
+        elif message_dict["content"] == []:
+            message_dict["content"] = ""
 
         # Tool result (observation) threading
         if self.role == "tool" and self.tool_call_id is not None:
@@ -358,7 +358,9 @@ class Message(BaseModel):
         self, *, vision_enabled: bool, cache_enabled: bool
     ) -> dict[str, Any]:
         content: list[dict[str, Any]] = []
-        role_tool_with_prompt_caching = False
+        role_tool_with_prompt_caching = self.role == "tool" and any(
+            item.cache_prompt for item in self.content
+        )
 
         # Add thinking blocks first (for Anthropic extended thinking)
         # Only add thinking blocks for assistant messages
@@ -373,6 +375,12 @@ class Message(BaseModel):
                 thinking_blocks_dicts.append(thinking_dict)
 
         for item in self.content:
+            if isinstance(item, TextContent) and not item.text.strip():
+                if self.role != "tool" and item.cache_prompt and content:
+                    # Keep the cached prefix when dropping its trailing blank block.
+                    content[-1]["cache_control"] = {"type": "ephemeral"}
+                continue
+
             # All content types now return list[dict[str, Any]]
             item_dicts = item.to_llm_dict()
 
@@ -391,6 +399,7 @@ class Message(BaseModel):
             # See discussion here for details: https://github.com/BerriAI/litellm/issues/6422#issuecomment-2438765472
             if cache_enabled and self.role == "tool" and item.cache_prompt:
                 role_tool_with_prompt_caching = True
+            if self.role == "tool" and item.cache_prompt:
                 for d in item_dicts:
                     d.pop("cache_control", None)
 
@@ -456,14 +465,6 @@ class Message(BaseModel):
             return
 
         # Any other content shape is left as-is
-
-    def _normalize_empty_assistant_content(self, message_dict: dict[str, Any]) -> None:
-        """Normalize empty plain assistant content for Chat Completions."""
-        if self.role != "assistant":
-            return
-
-        if message_dict.get("content") == []:
-            message_dict["content"] = ""
 
     def to_responses_value(self, *, vision_enabled: bool) -> str | list[dict[str, Any]]:
         """Return serialized form.

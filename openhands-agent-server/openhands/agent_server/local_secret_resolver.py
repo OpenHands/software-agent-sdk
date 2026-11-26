@@ -9,10 +9,10 @@ round trip.
 """
 
 import os
+from collections.abc import Callable
 from urllib.parse import urlsplit
 
-from openhands.agent_server.config import Config
-from openhands.agent_server.persistence import get_secrets_store
+from openhands.agent_server.persistence import SecretsStore
 from openhands.sdk.logger import get_logger
 from openhands.sdk.secret import (
     register_local_secret_resolver,
@@ -57,14 +57,18 @@ def _secret_name_if_local(url: str) -> str | None:
     return name
 
 
-def build_local_secret_resolver(config: Config):
-    """Build a resolver that answers this server's own secret URLs."""
+def build_local_secret_resolver(secrets_store: Callable[[], SecretsStore]):
+    """Build a resolver that answers this server's own secret URLs.
+
+    ``secrets_store`` is called per resolution, so the resolver follows the
+    server to the store of its current context.
+    """
 
     def resolve(url: str) -> str | None:
         name = _secret_name_if_local(url)
         if name is None:
             return None
-        value = get_secrets_store(config).get_secret(name)
+        value = secrets_store().get_secret(name)
         if value is None:
             # Fall through to HTTP so the caller still sees the server's 404.
             return None
@@ -77,8 +81,8 @@ def build_local_secret_resolver(config: Config):
 class local_secret_resolution:
     """Context manager registering the in-process resolver for a server."""
 
-    def __init__(self, config: Config) -> None:
-        self._resolver = build_local_secret_resolver(config)
+    def __init__(self, secrets_store: Callable[[], SecretsStore]) -> None:
+        self._resolver = build_local_secret_resolver(secrets_store)
 
     def __enter__(self) -> None:
         register_local_secret_resolver(self._resolver)

@@ -16,7 +16,7 @@ ACP model discovery is a separate pre-conversation request: a throwaway
 session reports the real adapter's models, while a local launch failure
 returns a structured error. Neither creates a persisted conversation.
 
-Source: `openhands-agent-server/openhands/agent_server/llm_router.py`, `openhands-agent-server/openhands/agent_server/provider_connections_router.py`, `openhands-agent-server/openhands/agent_server/acp_router.py`, `openhands-sdk/openhands/sdk/agent/acp_model_discovery.py`, `openhands-sdk/openhands/sdk/llm/provider_connection_store.py`, `openhands-sdk/openhands/sdk/llm/utils/unverified_models.py`, `openhands-sdk/openhands/sdk/llm/utils/verified_models.py`, `clients/typescript/src/client/llm-client.ts`, `clients/typescript/src/client/acp-client.ts`
+Source: `openhands-agent-server/openhands/agent_server/llm_router.py`, `openhands-agent-server/openhands/agent_server/provider_connections_router.py`, `openhands-agent-server/openhands/agent_server/acp_router.py`, `openhands-sdk/openhands/sdk/agent/acp_model_discovery.py`, `openhands-sdk/openhands/sdk/settings/acp_providers.py`, `openhands-sdk/openhands/sdk/llm/provider_connection_store.py`, `openhands-sdk/openhands/sdk/llm/utils/unverified_models.py`, `openhands-sdk/openhands/sdk/llm/utils/verified_models.py`, `clients/typescript/src/client/llm-client.ts`, `clients/typescript/src/client/acp-client.ts`
 
 Needs: `llm`, `node`, `network`
 
@@ -29,6 +29,7 @@ Routes: `GET /api/llm/providers`, `GET /api/llm/models`,
 ## Sub-features
 
 - `F23.acp-discovery-errors`: `POST /api/acp/models` requires a session key, validates `agent_settings`, and reports a missing local executable as HTTP 200 with `error.code: ACPSpawnError`, no models and no new conversation; `refresh: true` reports the same failure; `ACPClient.discoverModels` exposes the same structured errors and rejects unauthorized calls.
+- `F23.acp-discovery-antigravity`: `acp_server: antigravity` (Google Antigravity) is an accepted provider whose default command is the native `agy acp`, not an `npx` package: without `agy` on the server's `PATH`, discovery answers 200 with `error.code: ACPSpawnError` naming `agy`, and an unknown `acp_server` is 422 listing the accepted providers, `antigravity` among them.
 - `F23.acp-discovery-live`: the real Claude Code ACP adapter reports its default and offered models through REST and TypeScript `ACPClient.discoverModels`; a repeated request and `refresh: true` return the same catalog without persisting any conversation or probe directory.
 - `F23.auth-required`: all seven routes answer 401 `{"detail": "Unauthorized"}` without a valid `X-Session-API-Key`, and nothing is created.
 - `F23.providers`: `GET /api/llm/providers` returns LiteLLM's provider names, sorted and unique, including `deepseek`, `openai` and `anthropic`.
@@ -40,7 +41,7 @@ Routes: `GET /api/llm/providers`, `GET /api/llm/models`,
 - `F23.conn-create`: `POST /api/llm/provider-connections` answers 201 with a server-minted 32-hex `id`, the fields, equal `created_at`/`updated_at` and `api_key_set: true`, never the key; `provider` defaults to `custom`; the list shows the same entries in creation order.
 - `F23.conn-key-encrypted`: the connection file `home/.openhands/provider-connections/provider_connections.json` is mode `600` with `schema_version` 1 and a Fernet `gAAAAA` token as `api_key`; the plaintext key appears in no response and in no file under the server's home.
 - `F23.no-cipher`: on a server with neither `OH_SECRET_KEY` nor a session key (no cipher), a connection's key is stored in plaintext in the `600` file, the list still never returns it, and activating a linked profile applies it.
-- `F23.conn-create-validation`: a missing or empty `api_key` or `display_name`, an empty `provider`, a 129-character `display_name`, and any extra field (`extra_headers`, a client-chosen `id`) are 422 and create nothing.
+- `F23.conn-create-validation`: a missing or empty `api_key` or `display_name`, an empty `provider`, a 129-character `display_name`, and any extra field (`extra_headers`, a client-chosen `id`) are 422 and create nothing; an empty `api_key` reports `value_error` `The secret must be a real value, not blank or redacted`.
 - `F23.conn-create-blank-key`: a whitespace-only or redacted-placeholder (`**********`) `api_key` is refused like an empty one instead of creating a keyless connection.
 - `F23.linked-run`: a profile saved with `provider_connection_id` stores no inline key; activating it writes the connection's key into `agent_settings.llm`, and a conversation started from those settings runs on the connection's DeepSeek key and finishes.
 - `F23.conn-update`: `PATCH` renames a connection and sets or clears (`null`) its `base_url`, keeping `id`, `created_at` and the key; the list shows the change, and the next activation of a linked profile applies the connection's `base_url` (and clears it).
@@ -49,7 +50,7 @@ Routes: `GET /api/llm/providers`, `GET /api/llm/models`,
 - `F23.conn-rotate-key`: rotating `api_key` leaves already-activated settings on the old key; the next activation (`PATCH /api/settings` `active_profile` or `POST /api/profiles/{name}/activate`) applies the new key, which is what the provider then receives, and rotating back makes conversations finish again.
 - `F23.validate-linked-draft`: `POST /api/profiles/{name}/validate` of a draft that references a connection checks it with the connection's key, so a connection holding a working DeepSeek key validates `valid: true` like the same key inline.
 - `F23.persist-restart`: connections (ids, names, timestamps, `api_key_set`) survive a restart unchanged, and a linked profile still resolves the key afterwards.
-- `F23.strict-decrypt`: after the server's secret key changes, list, create, update and delete answer 400 `api_key is encrypted but cannot be decrypted with the current cipher` and leave the file byte-identical; with the old key back everything works and the key is intact.
+- `F23.strict-decrypt`: after the server's secret key changes, list, create, update and delete answer 400 with a validation report per stored key, `The secret is encrypted but no configured key can decrypt it`, naming `OH_SECRET_KEY` and `OH_PREVIOUS_SECRET_KEYS`, and leave the file byte-identical; with the old key back everything works and the key is intact.
 - `F23.corrupt-file`: a connection file that is not valid JSON, or has a newer `schema_version`, makes the routes answer 400 without rewriting the file; restoring it restores the connections.
 - `F23.store-busy`: while another process holds the store's lock, a create waits out the 30-second lock timeout and answers 503 `Profile store is busy. Please retry.` without creating anything.
 - `F23.store-busy-responsive`: while a connection request waits for the store lock, the server keeps answering other requests (`GET /alive` within 3 seconds).
@@ -321,7 +322,8 @@ Preconditions:
   control-agent-server api POST /api/llm/provider-connections --json '{"api_key": "sk-qa-f23-bad"}' --expect 422 \
     --check detail.0.type eq missing --check detail.0.loc contains display_name
   control-agent-server api POST /api/llm/provider-connections --json '{"display_name": "qa-f23-bad", "api_key": ""}' --expect 422 \
-    --check detail.0.type eq too_short --check detail.0.loc contains api_key
+    --check detail.0.type eq value_error --check detail.0.loc contains api_key \
+    --check detail.0.msg contains 'The secret must be a real value, not blank or redacted' --save F23.conn-create-validation/empty-key
   control-agent-server api POST /api/llm/provider-connections --json '{"display_name": "", "api_key": "sk-qa-f23-bad"}' --expect 422 \
     --check detail.0.type eq string_too_short --check detail.0.loc contains display_name
   control-agent-server api POST /api/llm/provider-connections --json '{"display_name": "qa-f23-bad", "provider": "", "api_key": "sk-qa-f23-bad"}' --expect 422 \
@@ -536,19 +538,20 @@ Preconditions:
 - **Secret key changed (`F23.strict-decrypt`).** Restart with a new
   `OH_SECRET_KEY`, try every connection route, then restore the old key.
 
-  Requires: `F23.conn-create`
+  Requires: `F23.conn-create`, `F23.linked-run`
   ```sh
   SUM=$(sha256sum "$CF" | cut -d' ' -f1)
   control-agent-server restart --rotate-secret-key
   control-agent-server api GET /api/llm/provider-connections --expect 400 \
-    --check detail contains 'api_key is encrypted but cannot be decrypted with the current cipher' \
-    --check detail contains OH_SECRET_KEY --save F23.strict-decrypt/list
+    --check detail contains 'connections.0.api_key' --check detail contains 'connections.1.api_key' \
+    --check detail contains 'The secret is encrypted but no configured key can decrypt it' \
+    --check detail contains OH_SECRET_KEY --check detail contains OH_PREVIOUS_SECRET_KEYS --save F23.strict-decrypt/list
   control-agent-server api POST /api/llm/provider-connections --json '{"display_name": "qa-f23-rotated", "api_key": "sk-qa-f23-rotated"}' \
-    --expect 400 --check detail contains 'cannot be decrypted with the current cipher'
+    --expect 400 --check detail contains 'no configured key can decrypt it'
   control-agent-server api PATCH "/api/llm/provider-connections/$CONN" --json '{"display_name": "qa-f23-rotated"}' \
-    --expect 400 --check detail contains 'cannot be decrypted with the current cipher'
+    --expect 400 --check detail contains 'no configured key can decrypt it'
   control-agent-server api DELETE "/api/llm/provider-connections/$DEF" --expect 400 \
-    --check detail contains 'cannot be decrypted with the current cipher' --save F23.strict-decrypt/delete
+    --check detail contains 'no configured key can decrypt it' --save F23.strict-decrypt/delete
   test "$(sha256sum "$CF" | cut -d' ' -f1)" = "$SUM"
   control-agent-server restart --restore-secret-key
   control-agent-server api GET /api/llm/provider-connections --expect 200 --check . len-eq 2 --check 0.display_name eq qa-f23-deepseek
@@ -556,7 +559,9 @@ Preconditions:
   control-agent-server api GET /api/settings --header 'X-Expose-Secrets: plaintext' --max-chars 200 \
     --check agent_settings.llm.api_key eq "$DEEPSEEK_API_KEY" --save F23.strict-decrypt/restored
   ```
-  Under the new key all four answers are 400 naming `OH_SECRET_KEY`, and
+  Under the new key all four answers are 400 whose `detail` is the
+  validation report of the stored file (one entry per connection key,
+  naming `OH_SECRET_KEY` and `OH_PREVIOUS_SECRET_KEYS`), and
   the file's SHA-256 is unchanged (nothing was rewritten or dropped). With
   the old key back both connections are listed and the DeepSeek key still
   resolves.
@@ -748,6 +753,26 @@ Preconditions:
     --expect-output QA_F23_ACP_ERRORS_OK --save F23.acp-discovery-errors/typescript -- node "$F23/ts_acp_errors.mjs"
   control-agent-server api GET /api/conversations/count --check . eq "$ACP_COUNT"
   ```
+- **Antigravity discovery without its CLI (`F23.acp-discovery-antigravity`).**
+  Google Antigravity's ACP server ships inside its own CLI (`agy`), which
+  the user installs; the server never fetches it. On a host without `agy`
+  the built-in provider fails to launch, and the provider list that
+  validation reports names it.
+  ```sh
+  test -z "$(command -v agy || true)"
+  ACP_COUNT=$(control-agent-server api GET /api/conversations/count --field .)
+  control-agent-server api POST /api/acp/models --json '{"agent_settings":{"agent_kind":"acp","acp_server":"antigravity"}}' --timeout 60 --expect 200 \
+    --check error.code eq ACPSpawnError --check error.detail contains "'agy'" --check available_models len-eq 0 --check agent_name eq null \
+    --save F23.acp-discovery-antigravity/spawn
+  control-agent-server api POST /api/acp/models --json '{"agent_settings":{"agent_kind":"acp","acp_server":"qa-f23-nope"}}' --expect 422 \
+    --check detail.0.loc.2 eq acp_server --check detail.0.msg contains "'antigravity'" --save F23.acp-discovery-antigravity/unknown
+  control-agent-server api GET /api/conversations/count --check . eq "$ACP_COUNT"
+  ```
+  Discovery tries to start `agy acp` and reports `[Errno 2] No such file or
+  directory: 'agy'` as a structured `ACPSpawnError` (no npm download is
+  attempted), with no models and no conversation left behind. The 422 for
+  an unknown provider lists `'claude-code', 'codex', 'gemini-cli',
+  'antigravity', 'kimi-code', 'pi', 'opencode' or 'custom'`.
 - **Real ACP model discovery (`F23.acp-discovery-live`).** Use the real
   Claude Code adapter through its built-in `npx` command. As in F09,
   DeepSeek's Anthropic-compatible endpoint supplies the credentials and
@@ -804,6 +829,11 @@ Preconditions:
 
 ## Gotchas
 
+- Agent Canvas does not offer `antigravity` yet: its ACP preset list has
+  its own five providers, and a profile with `acp_server: antigravity` opens
+  there as Custom with an empty command
+  ([OpenHands/OpenHands#20025](https://github.com/OpenHands/OpenHands/issues/20025)).
+  The server side (`F23.acp-discovery-antigravity`) does not depend on it.
 - Catalog answers depend on the installed `litellm` version (thousands of
   ids, changing with every upgrade) and on `VERIFIED_MODELS` (curated, kept
   to the two latest versions per model line). Assert membership, ordering

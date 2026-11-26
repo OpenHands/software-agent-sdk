@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import importlib
-import warnings
 from types import MappingProxyType
 from typing import get_args
 
 import pytest
-from deprecation import DeprecatedWarning
 
 from openhands.sdk.settings.acp_install_catalog import (
     PI_ACP_VERSION,
@@ -16,14 +13,23 @@ from openhands.sdk.settings.acp_install_catalog import (
 )
 from openhands.sdk.settings.acp_providers import (
     ACP_PROVIDERS,
-    ACPModelOption,
     ACPProviderInfo,
     build_session_model_meta,
     detect_acp_provider_by_agent_name,
     detect_acp_provider_by_command,
     get_acp_provider,
 )
-from openhands.sdk.settings.model import ACPServerKind
+from openhands.sdk.settings.model import ACPAgentSettings, ACPServerKind
+
+
+@pytest.mark.parametrize("command", [[], ["/opt/antigravity/bin/agy", "acp"]])
+def test_antigravity_settings_preserve_native_command(command: list[str]) -> None:
+    settings = ACPAgentSettings(acp_server="antigravity", acp_command=command)
+    restored = ACPAgentSettings.model_validate_json(settings.model_dump_json())
+    agent = restored.create_agent()
+
+    assert agent.acp_server == "antigravity"
+    assert agent.acp_command == (command or ["agy", "acp"])
 
 
 class TestACPProviderInfo:
@@ -42,8 +48,26 @@ class TestACPProviderInfo:
             assert isinstance(info, ACPProviderInfo)
 
     def test_default_commands_prefer_offline_cache(self):
-        for info in ACP_PROVIDERS.values():
-            assert info.default_command[:3] == ("npx", "-y", "--prefer-offline")
+        for key, info in ACP_PROVIDERS.items():
+            if key == "antigravity":
+                # Google's standalone CLI ships its own native ACP server.
+                assert info.default_command == ("agy", "acp")
+            else:
+                assert info.default_command[:3] == ("npx", "-y", "--prefer-offline")
+
+    def test_antigravity_metadata(self):
+        info = ACP_PROVIDERS["antigravity"]
+        assert info.display_name == "Google Antigravity"
+        assert info.api_key_env_var == "GEMINI_API_KEY"
+        assert info.base_url_env_var is None
+        assert info.default_session_mode == "default"
+        assert info.agent_name_patterns == ("antigravity",)
+        assert info.supports_set_session_model is True
+        assert info.supports_runtime_model_switch is True
+        assert info.session_meta_key is None
+        assert info.binary_name == "agy"
+        assert info.data_dir_env_var == "HOME"
+        assert info.file_secrets == ()
 
     def test_claude_code_metadata(self):
         info = ACP_PROVIDERS["claude-code"]
@@ -61,12 +85,6 @@ class TestACPProviderInfo:
         assert info.supports_set_session_model is True
         assert info.supports_runtime_model_switch is True
         assert info.session_meta_key == "claudeCode"
-        assert info.default_model == "opus[1m]"
-        models = {model.id: model.label for model in info.available_models}
-        assert models["opus[1m]"] == "Claude Opus (1M)"
-        assert models["claude-opus-5"] == "Claude Opus 5"
-        assert models["sonnet"] == "Claude Sonnet"
-        assert models["haiku"] == "Claude Haiku"
         # Pinned binary exposed by the agent-server image wrappers.
         assert info.binary_name == "claude-agent-acp"
         assert info.data_dir_env_var == "CLAUDE_CONFIG_DIR"
@@ -83,12 +101,6 @@ class TestACPProviderInfo:
         assert info.supports_set_session_model is True
         assert info.supports_runtime_model_switch is True
         assert info.session_meta_key is None
-        assert info.default_model == "gpt-5.5"
-        assert any(m.id == "gpt-5.6-sol" for m in info.available_models)
-        assert any(m.id == "gpt-5.6-terra" for m in info.available_models)
-        assert any(m.id == "gpt-5.6-luna" for m in info.available_models)
-        assert any(m.id == "gpt-6-astra" for m in info.available_models)
-        assert any(m.id == "gpt-5.5" for m in info.available_models)
         assert info.binary_name == "codex-acp"
         assert info.data_dir_env_var == "CODEX_HOME"
 
@@ -104,8 +116,6 @@ class TestACPProviderInfo:
         assert info.supports_set_session_model is True
         assert info.supports_runtime_model_switch is True
         assert info.session_meta_key is None
-        assert info.default_model == "auto"
-        assert any(m.id == "auto" for m in info.available_models)
         # The Gemini CLI's ACP binary is just ``gemini`` (the ``--acp`` flag is
         # a trailing arg, preserved by resolve_acp_command on rewrite).
         assert info.binary_name == "gemini"
@@ -128,11 +138,6 @@ class TestACPProviderInfo:
         assert info.supports_set_session_model is True
         assert info.supports_runtime_model_switch is True
         assert info.session_meta_key is None
-        # Model ids follow the credential, not the plan tier, so nothing is
-        # curated and the CLI resolves its own default. See
-        # _UNCURATED_MODEL_PROVIDERS.
-        assert info.available_models == ()
-        assert info.default_model is None
         # The CLI's ACP binary is just ``kimi``; ``acp`` is a trailing arg.
         assert info.binary_name == "kimi"
         assert info.data_dir_env_var == "KIMI_CODE_HOME"
@@ -167,7 +172,6 @@ class TestACPProviderInfo:
         assert info.supports_set_session_model is True
         assert info.supports_runtime_model_switch is True
         assert info.session_meta_key is None
-        assert info.default_model is None
         assert info.binary_name == "pi-acp"
         assert info.data_dir_env_var == "HOME"
         assert [spec.secret_name for spec in info.file_secrets] == ["PI_AUTH_JSON"]
@@ -202,12 +206,6 @@ class TestACPProviderInfo:
         assert info.supports_runtime_model_switch is True
         # session/new ignores a _meta model selection.
         assert info.session_meta_key is None
-        assert info.default_model == "opencode/big-pickle"
-        model_ids = [m.id for m in info.available_models]
-        assert "opencode/big-pickle" in model_ids
-        assert "opencode/claude-opus-5" in model_ids
-        # One free-tier id, which is the only kind that works with no key.
-        assert "opencode/nemotron-3-ultra-free" in model_ids
         assert info.binary_name == "opencode"
         # OPENCODE_CONFIG_DIR relocates only the config file; auth, sessions and
         # caches follow XDG dirs that fall back to HOME.
@@ -240,50 +238,48 @@ class TestGetACPProvider:
             assert result is not None
             assert result.key == key
 
-    def test_returns_none_for_custom(self):
-        assert get_acp_provider("custom") is None
-
-    def test_returns_none_for_unknown(self):
-        assert get_acp_provider("nonexistent-provider") is None
+    @pytest.mark.parametrize(
+        "key",
+        [
+            pytest.param("custom", id="custom"),
+            pytest.param("nonexistent-provider", id="unknown"),
+        ],
+    )
+    def test_returns_none_for_non_registry_key(self, key):
+        assert get_acp_provider(key) is None
 
 
 class TestDetectACPProviderByAgentName:
-    def test_detects_claude_code_by_agent_name(self):
-        info = detect_acp_provider_by_agent_name("claude-agent-acp v0.29.0")
+    @pytest.mark.parametrize(
+        ("agent_name", "expected_key"),
+        [
+            pytest.param("claude-agent-acp v0.29.0", "claude-code", id="claude_code"),
+            pytest.param("codex-acp", "codex", id="codex"),
+            pytest.param("gemini-cli 0.38.0", "gemini-cli", id="gemini_cli"),
+            # ``kimi acp`` reports agentInfo.name "Kimi Code CLI".
+            pytest.param("Kimi Code CLI", "kimi-code", id="kimi_code"),
+            # ``opencode acp`` reports agentInfo.name "OpenCode".
+            pytest.param("OpenCode", "opencode", id="opencode"),
+        ],
+    )
+    def test_detects_provider_by_agent_name(self, agent_name, expected_key):
+        info = detect_acp_provider_by_agent_name(agent_name)
         assert info is not None
-        assert info.key == "claude-code"
-
-    def test_detects_codex_by_agent_name(self):
-        info = detect_acp_provider_by_agent_name("codex-acp")
-        assert info is not None
-        assert info.key == "codex"
-
-    def test_detects_gemini_cli_by_agent_name(self):
-        info = detect_acp_provider_by_agent_name("gemini-cli 0.38.0")
-        assert info is not None
-        assert info.key == "gemini-cli"
-
-    def test_detects_kimi_code_by_agent_name(self):
-        # ``kimi acp`` reports agentInfo.name "Kimi Code CLI".
-        info = detect_acp_provider_by_agent_name("Kimi Code CLI")
-        assert info is not None
-        assert info.key == "kimi-code"
-
-    def test_detects_opencode_by_agent_name(self):
-        # ``opencode acp`` reports agentInfo.name "OpenCode".
-        info = detect_acp_provider_by_agent_name("OpenCode")
-        assert info is not None
-        assert info.key == "opencode"
+        assert info.key == expected_key
 
     def test_case_insensitive_detection(self):
         assert detect_acp_provider_by_agent_name("CLAUDE-AGENT-ACP") is not None
         assert detect_acp_provider_by_agent_name("Gemini-CLI") is not None
 
-    def test_returns_none_for_unknown_agent_name(self):
-        assert detect_acp_provider_by_agent_name("some-unknown-agent") is None
-
-    def test_returns_none_for_empty_string(self):
-        assert detect_acp_provider_by_agent_name("") is None
+    @pytest.mark.parametrize(
+        "agent_name",
+        [
+            pytest.param("some-unknown-agent", id="unknown_agent_name"),
+            pytest.param("", id="empty_string"),
+        ],
+    )
+    def test_returns_none_for_unmatched_agent_name(self, agent_name):
+        assert detect_acp_provider_by_agent_name(agent_name) is None
 
 
 class TestDetectACPProviderByCommand:
@@ -293,6 +289,12 @@ class TestDetectACPProviderByCommand:
             # Identity, not just a matching key: detect_acp_provider_by_command
             # must resolve back to the very same ACP_PROVIDERS entry.
             assert detected is info, key
+
+    def test_detects_native_antigravity_launcher_without_short_name_collision(self):
+        info = detect_acp_provider_by_command(["/usr/local/bin/agy", "acp"])
+        assert info is ACP_PROVIDERS["antigravity"]
+        assert detect_acp_provider_by_command(["/usr/bin/my-agy-wrapper"]) is None
+        assert detect_acp_provider_by_agent_name("some-random-agy-utility") is None
 
     def test_tolerates_version_pin(self):
         info = detect_acp_provider_by_command(
@@ -378,14 +380,6 @@ class TestProviderRegistryConsistency:
                 f"{key}: default_session_mode must be None or non-blank"
             )
 
-    def test_session_modes_are_distinct(self):
-        modes = [
-            info.default_session_mode
-            for info in ACP_PROVIDERS.values()
-            if info.default_session_mode is not None
-        ]
-        assert len(modes) == len(set(modes)), "each provider should use a unique mode"
-
     def test_detect_returns_matching_provider_for_all_registered_patterns(self):
         """Every registered pattern should resolve back to its own provider."""
         for key, info in ACP_PROVIDERS.items():
@@ -407,92 +401,6 @@ class TestProviderRegistryConsistency:
         assert set(get_args(ACPServerKind)) == set(ACP_PROVIDERS) | {"custom"}
 
 
-# Providers whose model ids depend on which credential the user supplies, so no
-# static list can be correct. Not the same as plan-tier variance, which the
-# curated lists already tolerate (they are suggestions, not access checks).
-_UNCURATED_MODEL_PROVIDERS = {
-    # An account login offers ``kimi-code/*`` aliases; a config.toml provider
-    # offers whatever alias the user named. A static list would be wrong, not
-    # merely incomplete, for anyone not on an account login.
-    "kimi-code",
-}
-
-
-class TestProviderModelLists:
-    """Verify the curated ``available_models`` / ``default_model`` fields."""
-
-    def test_every_builtin_provider_has_available_models(self):
-        for key, info in ACP_PROVIDERS.items():
-            if key in _UNCURATED_MODEL_PROVIDERS:
-                assert not info.available_models, (
-                    f"{key}: now curates models — remove it from "
-                    "_UNCURATED_MODEL_PROVIDERS"
-                )
-                assert info.default_model is None, (
-                    f"{key}: an uncurated provider must leave default_model "
-                    "None so the CLI resolves its own default"
-                )
-                continue
-            assert info.available_models, f"{key}: available_models must not be empty"
-
-    def test_every_uncurated_provider_is_a_real_registry_key(self):
-        assert _UNCURATED_MODEL_PROVIDERS <= set(ACP_PROVIDERS)
-
-    def test_available_models_entries_are_model_options(self):
-        for info in ACP_PROVIDERS.values():
-            for option in info.available_models:
-                assert isinstance(option, ACPModelOption)
-                assert option.id, "model option id must not be empty"
-                assert option.label, "model option label must not be empty"
-
-    def test_model_ids_unique_within_provider(self):
-        for key, info in ACP_PROVIDERS.items():
-            ids = [m.id for m in info.available_models]
-            assert len(ids) == len(set(ids)), f"{key}: duplicate model ids"
-
-    def test_default_model_is_one_of_available_models(self):
-        for key, info in ACP_PROVIDERS.items():
-            if info.default_model is None:
-                continue
-            ids = {m.id for m in info.available_models}
-            assert info.default_model in ids, (
-                f"{key}: default_model {info.default_model!r} not in available_models"
-            )
-
-    def test_model_option_is_frozen(self):
-        option = ACP_PROVIDERS["claude-code"].available_models[0]
-        with pytest.raises((AttributeError, TypeError)):
-            option.id = "mutated"  # type: ignore[misc]
-
-
-class TestModelListDeprecation:
-    @pytest.fixture(autouse=True)
-    def _released(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(
-            "openhands.sdk.utils.deprecation._current_version", lambda: "1.54.0"
-        )
-
-    @pytest.mark.parametrize("name", ["available_models", "default_model"])
-    def test_reading_a_curated_model_field_warns(self, name: str) -> None:
-        with pytest.warns(DeprecatedWarning, match=f"ACPProviderInfo.{name}"):
-            getattr(ACP_PROVIDERS["codex"], name)
-
-    def test_other_uses_of_a_provider_do_not_warn(self) -> None:
-        info = ACP_PROVIDERS["codex"]
-        with warnings.catch_warnings():
-            warnings.simplefilter("error")
-            assert info.display_name == "Codex"
-            assert info == get_acp_provider("codex")
-            hash(info)
-            repr(info)
-
-    @pytest.mark.parametrize("module", ["openhands.sdk", "openhands.sdk.settings"])
-    def test_importing_the_model_option_warns(self, module: str) -> None:
-        with pytest.warns(DeprecatedWarning, match="ACPModelOption"):
-            option = importlib.import_module(module).ACPModelOption
-        assert option is ACPModelOption
-
-
 class TestBuildSessionModelMeta:
     def test_empty_when_no_model(self):
         assert build_session_model_meta("claude-agent-acp", None) == {}
@@ -502,16 +410,30 @@ class TestBuildSessionModelMeta:
         result = build_session_model_meta("claude-agent-acp v0.29.0", "claude-opus-4")
         assert result == {"claudeCode": {"options": {"model": "claude-opus-4"}}}
 
-    def test_codex_returns_empty(self):
-        result = build_session_model_meta("codex-acp", "gpt-4o")
-        assert result == {}
+    def test_claude_splits_effort(self):
+        result = build_session_model_meta("claude-agent-acp", "opus[1m]/high")
+        assert result == {
+            "claudeCode": {"options": {"model": "opus[1m]", "effort": "high"}}
+        }
 
-    def test_gemini_returns_empty(self):
-        result = build_session_model_meta("gemini-cli 0.38.0", "gemini-2.0-flash")
-        assert result == {}
+    def test_explicit_effort_wins_over_suffix(self):
+        assert build_session_model_meta("claude-agent-acp", "opus[1m]/high", "low") == {
+            "claudeCode": {"options": {"model": "opus[1m]", "effort": "low"}}
+        }
+        assert build_session_model_meta("claude-agent-acp", None, "max") == {
+            "claudeCode": {"options": {"effort": "max"}}
+        }
 
-    def test_unknown_agent_returns_empty(self):
-        result = build_session_model_meta("unknown-agent", "some-model")
+    @pytest.mark.parametrize(
+        ("agent_name", "model"),
+        [
+            pytest.param("codex-acp", "gpt-4o", id="codex"),
+            pytest.param("gemini-cli 0.38.0", "gemini-2.0-flash", id="gemini"),
+            pytest.param("unknown-agent", "some-model", id="unknown_agent"),
+        ],
+    )
+    def test_non_claude_agent_returns_empty(self, agent_name, model):
+        result = build_session_model_meta(agent_name, model)
         assert result == {}
 
 

@@ -23,7 +23,7 @@ Routes: none
 
 ## Sub-features
 
-- `F33.workspace-exec`: `Workspace(host=...)` returns a `RemoteWorkspace` whose `execute_command` returns the command's exit code, stdout and stderr, runs in the given `cwd`, gives up after `timeout` with exit `-1` and `timeout_occurred`; `alive` and `get_server_info()` match the server.
+- `F33.workspace-exec`: `Workspace(host=...)` returns a `RemoteWorkspace` (its `working_dir` given as a `str` or a `pathlib.Path`, stored as a string) whose `execute_command` returns the command's exit code, stdout and stderr, runs in the given `cwd`, gives up after `timeout` with exit `-1` and `timeout_occurred`; `alive` and `get_server_info()` match the server.
 - `F33.workspace-bad-key`: with a wrong `api_key`, `execute_command` and `file_upload` report a 401 failure instead of raising, creating a conversation raises a 401 `HTTPStatusError`, and the server records no command, file or conversation.
 - `F33.workspace-background`: `start_command` returns a command id at once, `get_command_output` shows no exit code while it runs, `stop_command` ends it (no later output), and stopping an unknown id is a no-op.
 - `F33.workspace-files`: `file_upload` (from a path or from bytes) and `file_download` round-trip a binary file byte for byte; a missing remote file or a relative destination reports `success: false` with the server's 404 or 400 and leaves no local file.
@@ -43,11 +43,11 @@ Routes: none
 - `F33.conversation-streaming`: with a `stream=True` agent LLM, callbacks receive the run's `StreamingDeltaEvent` frames live and the server stores none of them.
 - `F33.conversation-token-callbacks`: `Conversation(token_callbacks=[...])` on a remote workspace calls the token callbacks with the run's streamed deltas.
 - `F33.conversation-streaming-state`: streamed deltas stay out of `state.events`, which keeps matching the server's stored events.
-- `F33.completion-logs`: an agent LLM with `log_completions=True` gets one log file per model call in its `log_completions_folder`, written by the client from the `LLMCompletionLogEvent`s the server streams and stores (the server writes no file).
+- `F33.completion-logs`: an agent LLM with `log_completions_to_file=True` gets one log file per model call in its `log_completions_folder`, written by the client from the `LLMCompletionLogEvent`s the server streams and stores (the server writes no file).
 - `F33.conversation-attach`: a second program reattaches by id with `RemoteConversation.attach()` or `Conversation(conversation_id=...)` and replays the same history without creating anything; `attach()` on an unknown id raises 404 while `Conversation(conversation_id=<new id>)` creates that id.
 - `F33.conversation-attach-large`: attaching to a conversation with more than 100 stored events pages through the whole history: `state.events` holds the server's events in the server's order (plus the one unpersisted socket snapshot), and the first reads of `state.confirmation_policy`, `state.security_analyzer`, `state.hook_config` and `state.agent` equal the server's.
 - `F33.conversation-state-reread`: reading `state.confirmation_policy`, `state.security_analyzer`, `state.agent` and `is_confirmation_mode_active` a second time gives the same answer as the first.
-- `F33.conversation-ask-title`: `ask_agent()` answers without adding events, `generate_title()` returns a title within `max_length` without adding events, and `set_title()` changes the server's title.
+- `F33.conversation-ask-title`: `ask_agent()` answers and `generate_title()` returns a title within `max_length` without adding any event but `stats` state updates (the ask's usage is reported under `ask-agent-llm`), and `set_title()` changes the server's title.
 - `F33.conversation-fork`: `fork(title=..., tags=...)` returns a `RemoteConversation` for a new server conversation with the same history, the title and the tags; `fork(agent=...)` is refused client-side.
 - `F33.conversation-fork-branch`: `fork(from_event_id=..., reset_metrics=False)` returns a fork whose history ends at that event (its HEAD) with the source's stats, and `navigate_to(None)` and `navigate_to(event_id)` move the fork's HEAD without changing its events.
 - `F33.conversation-plugins-tag`: `Conversation(plugins=[PluginSource(...)])` with inline URL credentials stores the `plugins` tag with the credentials masked, and the token reaches no server state.
@@ -92,7 +92,7 @@ Routes: none
   `events`, `confirmation_policy`, `security_analyzer`, `hook_config`,
   `agent`, `refresh_from_server()`) and `conversation_stats`. Agent-side
   options that change what the client sees: an LLM with `stream=True`
-  (`StreamingDeltaEvent` frames) or `log_completions=True` (completion log
+  (`StreamingDeltaEvent` frames) or `log_completions_to_file=True` (completion log
   files written by the client), and tools registered in the client process
   (sent as `tool_module_qualnames`). Not driven here: `condense` and
   `load_plugin`, one-call wrappers over routes F10 and F09 drive.
@@ -289,12 +289,16 @@ Preconditions:
   control-agent-server exec --env PYTHONPATH="$F33" --save F33.workspace-exec/probe -- .venv/bin/python - <<'PY'
   import os
   import time
+  from pathlib import Path
   import f33
   from openhands.sdk.workspace import RemoteWorkspace, Workspace
 
   os.makedirs(os.path.join(f33.DIR, "exec"), exist_ok=True)
-  ws = Workspace(host=f33.URL, api_key=f33.KEY, working_dir=os.path.join(f33.DIR, "exec"))
+  ws = Workspace(host=f33.URL, api_key=f33.KEY, working_dir=Path(f33.DIR, "exec"))
   assert isinstance(ws, RemoteWorkspace), type(ws)
+  assert ws.working_dir == os.path.join(f33.DIR, "exec") and type(ws.working_dir) is str, repr(ws.working_dir)
+  direct = RemoteWorkspace(host=f33.URL, api_key=f33.KEY, working_dir=Path(f33.DIR, "exec"))
+  assert direct.working_dir == ws.working_dir and type(direct.working_dir) is str, repr(direct.working_dir)
   assert ws.alive and not RemoteWorkspace(host="http://127.0.0.1:9", working_dir="/tmp").alive
   r = ws.execute_command("echo qa-f33-out; echo qa-f33-err >&2; exit 3", cwd=ws.working_dir)
   assert (r.exit_code, r.stdout, r.stderr, r.timeout_occurred) == (3, "qa-f33-out\n", "qa-f33-err\n", False), r
@@ -313,8 +317,9 @@ Preconditions:
     --check items.2.exit_code eq 3 --check items.2.stderr contains qa-f33-err --check items.1.exit_code eq 0 \
     --check items.0.exit_code eq -1 --until-ok 15 --save F33.workspace-exec/server-outputs
   ```
-  The probe passes; the server's newest three commands are the SDK's, with
-  the `cwd` and `timeout` it sent, and their outputs carry exit codes `3`,
+  The probe passes (a `pathlib.Path` `working_dir`, through the factory and
+  `RemoteWorkspace` itself, is stored as the same string); the server's
+  newest three commands are the SDK's, with the `cwd` and `timeout` it sent, and their outputs carry exit codes `3`,
   `0` and `-1` (the server stopped `sleep 20` after 2 s too).
 - **Wrong session key (`F33.workspace-bad-key`).** The run's key works (the
   bullet above); a wrong one must change nothing.
@@ -969,7 +974,7 @@ Preconditions:
   The stored kinds agree, and `state.events` holds no `StreamingDeltaEvent`
   although the callback saw one per delta.
 - **Completion logs on the client (`F33.completion-logs`).** An agent LLM
-  with `log_completions=True` and a relative `log_completions_folder`. The
+  with `log_completions_to_file=True` and a relative `log_completions_folder`. The
   server replaces file logging with `LLMCompletionLogEvent`s; the client
   writes them under its own working directory, and the server's working
   directory (`<run>/server`) would show any file the server wrote itself.
@@ -982,7 +987,7 @@ Preconditions:
   from openhands.sdk.event import LLMCompletionLogEvent
 
   seen = []
-  conv = Conversation(agent=f33.agent(log_completions=True, log_completions_folder="qa-f33-logs"), workspace=f33.workspace("logs"),
+  conv = Conversation(agent=f33.agent(log_completions_to_file=True, log_completions_folder="qa-f33-logs"), workspace=f33.workspace("logs"),
                       visualizer=None, delete_on_close=False, callbacks=[lambda e: isinstance(e, LLMCompletionLogEvent) and seen.append(e)])
   conv.set_title("qa-f33 logs")
   conv.send_message("Reply with one word: ready")
@@ -1165,7 +1170,9 @@ Preconditions:
 
   Requires: `F33.conversation-run`
   ```sh
+  STATE=openhands.sdk.event.conversation_state.ConversationStateUpdateEvent
   E0=$(control-agent-server api GET "/api/conversations/$CID/events/count" --field .)
+  S0=$(control-agent-server api GET "/api/conversations/$CID/events/count" --query kind=$STATE --field .)
   control-agent-server exec --env PYTHONPATH="$F33" --env CID="$CID" --save F33.conversation-ask-title/probe -- .venv/bin/python - <<'PY'
   import os
   import uuid
@@ -1182,12 +1189,21 @@ Preconditions:
   f33.emit("ask", answer=answer[:80], title=title)
   conv.close()
   PY
-  control-agent-server api GET "/api/conversations/$CID/events/count" --check . eq "$E0"
+  E1=$(control-agent-server api GET "/api/conversations/$CID/events/count" --field .)
+  S1=$(control-agent-server api GET "/api/conversations/$CID/events/count" --query kind=$STATE --field .)
+  test "$S1" -gt "$S0"
+  test "$((E1 - S1))" -eq "$((E0 - S0))"
+  control-agent-server api GET "/api/conversations/$CID/events/search" --query kind=$STATE --query sort_order=TIMESTAMP_DESC --query limit=1 --quiet \
+    --check items.0.key eq stats --check items.0.value.usage_to_metrics.ask-agent-llm.accumulated_token_usage.completion_tokens ge 1 \
+    --save F33.conversation-ask-title/stats-event
   control-agent-server api GET "/api/conversations/$CID" --check title eq 'qa-f33 title' --check execution_status eq finished \
     --save F33.conversation-ask-title/get
   ```
-  The answer and the generated title are non-empty; the event count is
-  unchanged and the server's title is the one set.
+  The answer and the generated title are non-empty. The only events added
+  are `ConversationStateUpdateEvent`s (the count of every other kind is
+  unchanged), and the newest one is a `stats` update whose
+  `usage_to_metrics` has an `ask-agent-llm` entry with the ask's tokens.
+  The server's title is the one set.
 - **Fork (`F33.conversation-fork`).**
 
   Requires: `F33.conversation-run`
@@ -2100,7 +2116,7 @@ Preconditions:
 - The server's auto-title runs on the agent's own LLM (unless the create
   names `title_llm_profile`) for the first user message of a conversation
   without a title. With an `llm-stub` agent it takes a scripted step,
-  racing the agent's first call; with `log_completions` it logs one more
+  racing the agent's first call; with `log_completions_to_file` it logs one more
   call, often after `run()` returned; its cost lands in the agent's
   `usage_to_metrics`. `RemoteConversation` sends no `autotitle` field, so
   call `set_title()` before the first message to keep a stub's script and
@@ -2125,10 +2141,12 @@ Preconditions:
   and they stay out of `state.events` (`F33.conversation-streaming-state`);
   `token_callbacks` passed to `Conversation(...)` receive the same deltas
   (`F33.conversation-token-callbacks`).
-- `log_completions=True` on a remote agent writes the log files on the
-  client (relative folders resolve against the client's working directory),
-  from `LLMCompletionLogEvent`s that the server also stores and serves like
-  any event.
+- `log_completions_to_file=True` on a remote agent writes the log files on
+  the client (relative folders resolve against the client's working
+  directory), from `LLMCompletionLogEvent`s that the server also stores and
+  serves like any event. `log_completions` is a deprecated alias of the
+  field (removal scheduled for v1.68.0); serialized LLMs carry both keys
+  with the same value.
 - `fork()` returns a `RemoteConversation` built with the default visualizer
   and no callbacks, whatever the source used: rich panels go to stdout for
   the fork's events unless the program passes its own fork to a quieter

@@ -16,6 +16,7 @@ from pydantic import (
     ConfigDict,
     Field,
     PrivateAttr,
+    SerializeAsAny,
     field_validator,
     model_validator,
 )
@@ -24,10 +25,13 @@ from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.context.condenser import CondenserBase
 from openhands.sdk.context.prompts.presets import PromptPreset, create_registry
 from openhands.sdk.context.prompts.prompt import render_template
-from openhands.sdk.context.prompts.section import Platform, PromptContext
+from openhands.sdk.context.prompts.section import Platform, PromptContext, SecretInfo
 from openhands.sdk.critic.base import CriticBase
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
+from openhands.sdk.llm.utils.openhands_provider import (
+    OPENHANDS_SYSTEM_IDENTITY,
+)
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.config import MCPServer
@@ -64,10 +68,7 @@ logger = get_logger(__name__)
 # replaces the default identity in the system prompt.
 
 _SOUL_PATH = get_user_persistence_dir() / "SOUL.md"
-_DEFAULT_SOUL = (
-    "You are OpenHands agent, a helpful AI assistant that can interact"
-    " with a computer to solve tasks."
-)
+_DEFAULT_SOUL = OPENHANDS_SYSTEM_IDENTITY
 
 # Built-in prompt dir. The registry only stands in for built-in prompts here; a
 # subclass with its own prompts/ keeps the Jinja render path.
@@ -77,11 +78,16 @@ _BUILTIN_PROMPT_DIR = os.path.realpath(
 
 # Built-in ``system_prompt_filename`` values are back-compat sentinels (the .j2 files
 # were removed) that select a registry preset. ``system_prompt_planning.j2`` keeps its
-# historical name so ``get_planning_agent`` needs no change. Any other filename -- or a
-# subclass's own ``prompt_dir`` -- falls through to the Jinja escape hatch.
+# historical name so ``get_planning_agent`` needs no change. The project roles select
+# their presets the same way. Any other filename -- or a subclass's own ``prompt_dir``
+# -- falls through to the Jinja escape hatch.
+PROJECT_COORDINATOR_PROMPT = "system_prompt_project_coordinator.j2"
+PROJECT_WORKER_PROMPT = "system_prompt_project_worker.j2"
 _PRESET_BY_FILENAME: dict[str, PromptPreset] = {
     "system_prompt.j2": PromptPreset.DEFAULT,
     "system_prompt_planning.j2": PromptPreset.PLANNING,
+    PROJECT_COORDINATOR_PROMPT: PromptPreset.PROJECT_COORDINATOR,
+    PROJECT_WORKER_PROMPT: PromptPreset.PROJECT_WORKER,
 }
 
 
@@ -112,7 +118,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         arbitrary_types_allowed=True,
     )
 
-    llm: LLM = Field(
+    llm: SerializeAsAny[LLM] = Field(
         ...,
         description="LLM configuration for the agent.",
         examples=[
@@ -162,12 +168,14 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         default_factory=lambda: [tool.__name__ for tool in BUILT_IN_TOOLS],
         description=(
             "List of default tool class names to include. By default, the agent "
-            "includes 'FinishTool' and 'ThinkTool'. Set to an empty list to disable "
-            "all default tools, or provide a subset to include only specific ones. "
-            "Example: include_default_tools=['FinishTool'] to only include FinishTool, "
-            "or include_default_tools=[] to disable all default tools."
+            "includes 'FinishTool'. Set to an empty list to disable all default "
+            "tools, or provide a subset to include specific ones. Add 'ThinkTool' "
+            "explicitly to enable the think tool. "
+            "Example: include_default_tools=['FinishTool', 'ThinkTool'] to enable "
+            "the think tool, or include_default_tools=[] to disable all default "
+            "tools."
         ),
-        examples=[["FinishTool", "ThinkTool"], ["FinishTool"], []],
+        examples=[["FinishTool"], ["FinishTool", "ThinkTool"], []],
     )
     agent_context: AgentContext | None = Field(
         default=None,
@@ -252,6 +260,11 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             and data["security_policy_filename"] is None
         ):
             data["security_policy_filename"] = ""
+        llm = data.get("llm")
+        if isinstance(llm, dict) and "llms_for_routing" in llm:
+            from openhands.sdk.llm.router import RouterLLM
+
+            data["llm"] = RouterLLM.model_validate_router(llm)
         has_inline = data.get("system_prompt") is not None
         has_custom_filename = (
             "system_prompt_filename" in data
@@ -458,7 +471,8 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         available_skills_prompt: str | None = None
         custom_suffix: str | None = None
         memory_context: str | None = None
-        secret_infos: tuple[tuple[str, str | None], ...] = ()
+        project_context: str | None = None
+        secret_infos: tuple[SecretInfo, ...] = ()
 
         if agent_context is not None:
             data = agent_context._resolve_dynamic_data(
@@ -476,13 +490,20 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             available_skills_prompt = data.available_skills_prompt or None
             custom_suffix = agent_context.system_message_suffix or None
             memory_context = agent_context.memory_context or None
+            project_context = agent_context.project_context or None
             secret_infos = tuple(
-                (info["name"] or "", info["description"]) for info in data.secret_infos
+                SecretInfo(
+                    name=info["name"] or "",
+                    description=info.get("description"),
+                    scope=info.get("scope"),
+                    scope_description=info.get("scope_description"),
+                )
+                for info in data.secret_infos
             )
             # Derive names from the resolver's merged secret_infos instead of a
             # second get_secret_infos() walk; this now includes registry-provided
             # secrets (additional_secret_infos), matching what <CUSTOM_SECRETS> shows.
-            secret_names = tuple(name for name, _ in secret_infos if name)
+            secret_names = tuple(info.name for info in secret_infos if info.name)
 
         template_kwargs = self._resolved_template_kwargs()
         # A custom security policy's content for SecuritySection (registry path only).
@@ -506,6 +527,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             available_skills_prompt=available_skills_prompt,
             custom_suffix=custom_suffix,
             memory_context=memory_context,
+            project_context=project_context,
             secret_infos=secret_infos,
         )
 
@@ -818,15 +840,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
         # Drive the traversal from self
         yield from _walk(self)
-
-    def _close_tool_executor(self, tool: ToolDefinition) -> None:
-        try:
-            executable_tool = tool.as_executable()
-            executable_tool.executor.close()
-        except NotImplementedError:
-            return
-        except Exception as exc:
-            logger.warning("Error closing executor for tool '%s': %s", tool.name, exc)
 
     def add_runtime_tools(self, tools: Sequence[ToolDefinition]) -> None:
         """Register tools materialized at runtime (e.g. MCP tools).

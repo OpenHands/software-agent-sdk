@@ -9,9 +9,12 @@ Unversioned "current" aliases (for example ``deepseek-chat``, ``kimi-for-coding`
 stay. When a new version lands, drop the oldest one in the same line.
 """
 
-# GPT: gpt-6 and gpt-5.6. Codex: gpt-5.3-codex and gpt-5.2-codex.
+# GPT: gpt-6.2, gpt-6.1, gpt-6 and gpt-5.6. Codex: gpt-5.3-codex and gpt-5.2-codex.
 VERIFIED_OPENAI_MODELS = [
+    "gpt-6.2-sol",
+    "gpt-6.2-astra",
     "gpt-6.1-sol",
+    "gpt-6.1-terra",
     "gpt-6-sol",
     "gpt-6-luna",
     "gpt-6-astra",
@@ -23,7 +26,8 @@ VERIFIED_OPENAI_MODELS = [
     "gpt-5.2-codex",
 ]
 
-# Opus: 5.5 and 5. Sonnet: 5.5 and 5. Haiku: 5.5 and 4.5. Fable: 5.1 and 5.
+# Opus: 5.5 and 5. Sonnet: 5.5 and 5. Haiku: 5.5 and 4.5.
+# Fable: 5.2 and 5.1; 5 remains available for existing users.
 VERIFIED_ANTHROPIC_MODELS = [
     "claude-opus-5-5",
     "claude-opus-5",
@@ -31,6 +35,7 @@ VERIFIED_ANTHROPIC_MODELS = [
     "claude-sonnet-5",
     "claude-haiku-5-5",
     "claude-haiku-4-5-20251001",
+    "claude-fable-5-2",
     "claude-fable-5-1",
     "claude-fable-5",
 ]
@@ -41,9 +46,13 @@ VERIFIED_MISTRAL_MODELS = [
     "devstral-medium-2512",
 ]
 
-# Argon: 4. Pro: 3.1. Flash: 3.8 and 3.7. Flash-lite: 3.5 and 3.1.
+# Gemini 4: Argon, Carbon, Hydrogen and Neon. Pro: 3.1. Flash: 3.8 and 3.7.
+# Flash-lite: 3.5 and 3.1.
 VERIFIED_GEMINI_MODELS = [
     "gemini-4-argon",
+    "gemini-4-carbon",
+    "gemini-4-hydrogen",
+    "gemini-4-neon",
     "gemini-3.1-pro",
     "gemini-3.1-pro-preview",
     "gemini-3.8-flash",
@@ -62,9 +71,10 @@ VERIFIED_DEEPSEEK_MODELS = [
     "deepseek-v3.2-reasoner",
 ]
 
-# Kimi K3 and K2.7; ``kimi-for-coding`` is Moonshot's own alias (direct API only;
-# the OpenHands proxy does not serve it, so it is not in the openhands list).
+# Kimi K3.1, K3 and K2.7; ``kimi-for-coding`` is Moonshot's own alias (direct API
+# only; the OpenHands proxy does not serve it, so it is not in the openhands list).
 VERIFIED_MOONSHOT_MODELS = [
+    "kimi-k3.1-pro",
     "kimi-k3",
     "kimi-k2.7-code",
     "kimi-for-coding",
@@ -81,25 +91,30 @@ VERIFIED_MINIMAX_MODELS = [
 VERIFIED_GLM_MODELS = [
     "glm-5.3",
     "glm-5.3-flash",
+    "glm-5.3-flashx",
     "glm-5.2",
 ]
 
 # Nemotron 3.5 and 3.
 VERIFIED_NVIDIA_MODELS = [
     "nemotron-3.5-lightning-30b-a3b",
+    "nemotron-3.5-super-vl-120b-a12b",
     "nemotron-3-nano",
     "nemotron-3-nano-omni-30b-a3b-reasoning",
     "nemotron-3-super-120b-a12b",
     "nemotron-3-ultra-550b-a55b",
 ]
 
-# Plus: 3.7 and 3.6. Max: 3.8 and 3.7. Flash: 3.8 and 3.7. Coder: unversioned.
+# Plus: 3.7 and 3.6. Max: 4, 3.8 and 3.7. Flash: 3.8 and 3.7. Omni-flash: 3.8.
+# Coder: unversioned.
 VERIFIED_QWEN_MODELS = [
     "qwen3.7-plus",
     "qwen3.6-plus",
+    "qwen4-max",
     "qwen3.8-max",
     "qwen3.7-max",
     "qwen3.8-flash",
+    "qwen3.8-omni-flash",
     "qwen3.7-flash",
     "qwen3-coder-480b",
     "qwen3-coder-next",
@@ -117,7 +132,11 @@ VERIFIED_OPENROUTER_MODELS = [
     "anthropic/claude-sonnet-5",
     "anthropic/claude-haiku-5.5",
     "anthropic/claude-haiku-4.5",
+    "anthropic/claude-fable-5.2",
+    "openai/gpt-6.2-sol",
+    "openai/gpt-6.2-astra",
     "openai/gpt-6.1-sol",
+    "openai/gpt-6.1-terra",
     "openai/gpt-6-astra",
     "openai/gpt-5.6-sol",
     "openai/gpt-5.3-codex",
@@ -126,15 +145,20 @@ VERIFIED_OPENROUTER_MODELS = [
     "deepseek/deepseek-v4-pro",
     "deepseek/deepseek-v4-flash",
     "google/gemini-4-argon",
+    "google/gemini-4-carbon",
+    "google/gemini-4-hydrogen",
+    "google/gemini-4-neon",
     "google/gemini-3.1-pro-preview",
     "google/gemini-3.8-flash",
     "google/gemini-3.7-flash",
     "google/gemini-3.5-flash-lite",
+    "moonshotai/kimi-k3.1-pro",
     "moonshotai/kimi-k3",
     "moonshotai/kimi-k2.7-code",
     "mistralai/devstral-2512",
     "z-ai/glm-5.3",
     "z-ai/glm-5.3-flash",
+    "z-ai/glm-5.3-flashx",
     "z-ai/glm-5.2",
     "minimax/minimax-m3",
 ]
@@ -164,9 +188,13 @@ VERIFIED_OPENHANDS_MODELS = [
     "claude-opus-5",
     "claude-sonnet-5-5",
     "claude-sonnet-5",
+    "claude-fable-5-2",
     "claude-fable-5-1",
     "claude-fable-5",
+    "gpt-6.2-sol",
+    "gpt-6.2-astra",
     "gpt-6.1-sol",
+    "gpt-6.1-terra",
     "gpt-6-sol",
     "gpt-6-luna",
     "gpt-6-astra",
@@ -187,12 +215,14 @@ VERIFIED_OPENHANDS_MODELS = [
     "deepseek-v4-flash-vision-exp",
     "deepseek-v4.1-flash",
     "deepseek-v3.2-reasoner",
+    "kimi-k3.1-pro",
     "kimi-k3",
     "kimi-k2.7-code",
     "devstral-2512",
     "devstral-medium-2512",
     "glm-5.3",
     "glm-5.3-flash",
+    "glm-5.3-flashx",
     "glm-5.2",
     "nemotron-3.5-lightning-30b-a3b",
     "nemotron-3-nano",
@@ -200,6 +230,7 @@ VERIFIED_OPENHANDS_MODELS = [
     "nemotron-3-ultra-550b-a55b",
     "qwen3.7-plus",
     "qwen3.6-plus",
+    "qwen4-max",
     "qwen3.8-max",
     "qwen3.7-max",
     "qwen3.8-flash",

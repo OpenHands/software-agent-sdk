@@ -424,6 +424,8 @@ export interface SettingsUpdateRequest {
 export interface SecretInfo {
   name: string;
   description?: string;
+  scope?: string | null;
+  scope_description?: string | null;
 }
 
 export interface SecretsListResponse {
@@ -498,6 +500,10 @@ export interface FileSearchSubdirsOptions {
 
 export interface HooksRequest {
   project_dir?: string | null;
+  /** Read `<project_dir>/.openhands/hooks.json` (default true). */
+  load_project_hooks?: boolean;
+  /** Read the user's `~/.openhands/hooks.json` (default true). */
+  load_user_hooks?: boolean;
 }
 
 export interface HooksResponse {

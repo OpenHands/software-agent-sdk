@@ -77,6 +77,235 @@ def test_inline_fields_land_on_fresh_base_during_switch() -> None:
     assert result.llm.model == "model-c"
 
 
+# ── the shared mcp_config catalog survives a kind switch ───────────────
+
+
+def _server(name: str) -> dict:
+    return {
+        "transport": "http",
+        "url": f"https://{name}.invalid/mcp",
+        "headers": {"X-Api-Key": f"{name}-key"},
+        "auth": {"strategy": "bearer", "value": f"{name}-token"},
+    }
+
+
+def _plain_catalog(settings: OpenHandsAgentSettings | ACPAgentSettings) -> dict:
+    dumped = settings.model_dump(mode="json", context={"expose_secrets": True})
+    return dumped["mcp_config"]
+
+
+def _kind_switch_case(target: str) -> tuple[dict, dict]:
+    """Return a non-empty base of the other variant and a switch to ``target``."""
+    catalog = {"keep": _server("keep"), "other": _server("other")}
+    if target == "acp":
+        return (
+            {"agent_kind": "openhands", "persona": "x", "mcp_config": catalog},
+            {"agent_kind": "acp", "acp_server": "codex"},
+        )
+    return (
+        {"agent_kind": "acp", "acp_server": "codex", "mcp_config": catalog},
+        {"agent_kind": "openhands", "llm": {"model": "gpt"}},
+    )
+
+
+@pytest.mark.parametrize("target", ["acp", "openhands"])
+def test_switch_preserves_mcp_catalog_with_credentials(target: str) -> None:
+    base, diff = _kind_switch_case(target)
+
+    result = apply_agent_settings_diff(base, diff)
+
+    assert result.agent_kind == target
+    catalog = _plain_catalog(result)
+    assert set(catalog) == {"keep", "other"}
+    assert catalog["keep"]["url"] == "https://keep.invalid/mcp"
+    assert catalog["keep"]["headers"] == {"X-Api-Key": "keep-key"}
+    assert catalog["keep"]["auth"]["value"] == "keep-token"
+
+
+def test_switch_with_mcp_catalog_still_resets_variant_fields() -> None:
+    base, diff = _kind_switch_case("acp")
+    to_acp = apply_agent_settings_diff(base, diff)
+    assert isinstance(to_acp, ACPAgentSettings)
+    assert "persona" not in to_acp.model_dump()
+    assert to_acp.acp_server == "codex"
+
+    base, diff = _kind_switch_case("openhands")
+    to_openhands = apply_agent_settings_diff(base, diff)
+    assert isinstance(to_openhands, OpenHandsAgentSettings)
+    assert "acp_server" not in to_openhands.model_dump()
+    assert to_openhands.llm.model == "gpt"
+
+
+@pytest.mark.parametrize("target", ["acp", "openhands"])
+def test_switch_null_mcp_config_deletes_catalog(target: str) -> None:
+    base, diff = _kind_switch_case(target)
+
+    result = apply_agent_settings_diff(base, {**diff, "mcp_config": None})
+
+    assert result.mcp_config == {}
+
+
+@pytest.mark.parametrize("target", ["acp", "openhands"])
+def test_switch_null_server_entry_deletes_only_that_server(target: str) -> None:
+    base, diff = _kind_switch_case(target)
+
+    result = apply_agent_settings_diff(base, {**diff, "mcp_config": {"other": None}})
+
+    assert set(result.mcp_config) == {"keep"}
+
+
+@pytest.mark.parametrize("target", ["acp", "openhands"])
+def test_switch_sparse_server_patch_keeps_rest_of_server(target: str) -> None:
+    base, diff = _kind_switch_case(target)
+
+    result = apply_agent_settings_diff(
+        base, {**diff, "mcp_config": {"keep": {"enabled": False}}}
+    )
+
+    catalog = _plain_catalog(result)
+    assert set(catalog) == {"keep", "other"}
+    assert catalog["keep"]["enabled"] is False
+    assert catalog["keep"]["url"] == "https://keep.invalid/mcp"
+    assert catalog["keep"]["headers"] == {"X-Api-Key": "keep-key"}
+    assert catalog["keep"]["auth"]["value"] == "keep-token"
+
+
+@pytest.mark.parametrize("target", ["acp", "openhands"])
+def test_switch_new_server_merges_into_catalog(target: str) -> None:
+    base, diff = _kind_switch_case(target)
+
+    result = apply_agent_settings_diff(
+        base, {**diff, "mcp_config": {"new": _server("new")}}
+    )
+
+    assert set(result.mcp_config) == {"keep", "other", "new"}
+
+
+def test_restated_kind_is_not_a_switch_for_mcp_config() -> None:
+    base = {"agent_kind": "openhands", "mcp_config": {"keep": _server("keep")}}
+
+    merged = apply_agent_settings_diff(
+        base, {"agent_kind": "openhands", "mcp_config": {"new": _server("new")}}
+    )
+    cleared = apply_agent_settings_diff(base, {"mcp_config": None})
+
+    assert set(merged.mcp_config) == {"keep", "new"}
+    assert cleared.mcp_config == {}
+
+
+# ── other server-wide state survives a kind switch ─────────────────────
+
+
+def _server_wide_base(target: str, **fields) -> dict:
+    """Return a base of the variant opposite ``target``, holding ``fields``."""
+    if target == "acp":
+        return {"agent_kind": "openhands", **fields}
+    return {"agent_kind": "acp", "acp_server": "codex", **fields}
+
+
+def _switch_to(target: str) -> dict:
+    if target == "acp":
+        return {"agent_kind": "acp", "acp_server": "codex"}
+    return {"agent_kind": "openhands"}
+
+
+@pytest.mark.parametrize("target", ["acp", "openhands"])
+def test_switch_preserves_load_memory_only(target: str) -> None:
+    base = _server_wide_base(
+        target,
+        agent_context={"load_memory": True, "system_message_suffix": "stale"},
+    )
+
+    result = apply_agent_settings_diff(base, _switch_to(target))
+
+    assert result.agent_context is not None
+    assert result.agent_context.load_memory is True
+    assert result.agent_context.system_message_suffix is None
+
+
+def test_switch_without_load_memory_keeps_acp_context_null() -> None:
+    base = {"agent_kind": "openhands", "agent_context": {"load_memory": False}}
+
+    result = apply_agent_settings_diff(base, _switch_to("acp"))
+
+    assert result.agent_context is None
+
+
+@pytest.mark.parametrize("target", ["acp", "openhands"])
+def test_switch_applies_load_memory_patch(target: str) -> None:
+    base = _server_wide_base(target, agent_context={"load_memory": True})
+
+    turned_off = apply_agent_settings_diff(
+        base, {**_switch_to(target), "agent_context": {"load_memory": False}}
+    )
+    reset = apply_agent_settings_diff(
+        base, {**_switch_to(target), "agent_context": None}
+    )
+
+    assert turned_off.agent_context is not None
+    assert turned_off.agent_context.load_memory is False
+    assert reset.agent_context is None or reset.agent_context.load_memory is False
+
+
+@pytest.mark.parametrize("target", ["acp", "openhands"])
+def test_switch_preserves_critic_api_key(target: str) -> None:
+    base = _server_wide_base(target, verification={"critic_api_key": "critic-key"})
+
+    result = apply_agent_settings_diff(base, _switch_to(target))
+
+    dumped = result.model_dump(mode="json", context={"expose_secrets": True})
+    assert dumped["verification"]["critic_api_key"] == "critic-key"
+
+
+def test_switch_resets_critic_policy_but_not_its_key() -> None:
+    base = {
+        "agent_kind": "openhands",
+        "verification": {
+            "critic_enabled": True,
+            "critic_server_url": "https://critic.invalid",
+            "critic_api_key": "critic-key",
+        },
+    }
+
+    round_trip = apply_agent_settings_diff(
+        apply_agent_settings_diff(base, _switch_to("acp")), _switch_to("openhands")
+    )
+
+    assert isinstance(round_trip, OpenHandsAgentSettings)
+    assert round_trip.verification.critic_enabled is False
+    assert round_trip.verification.critic_server_url is None
+    assert isinstance(round_trip.verification.critic_api_key, SecretStr)
+    assert round_trip.verification.critic_api_key.get_secret_value() == "critic-key"
+
+
+@pytest.mark.parametrize("target", ["acp", "openhands"])
+def test_switch_applies_critic_api_key_patch(target: str) -> None:
+    base = _server_wide_base(target, verification={"critic_api_key": "critic-key"})
+
+    deleted = apply_agent_settings_diff(
+        base, {**_switch_to(target), "verification": {"critic_api_key": None}}
+    )
+    replaced = apply_agent_settings_diff(
+        base, {**_switch_to(target), "verification": {"critic_api_key": "new-key"}}
+    )
+
+    assert deleted.verification.critic_api_key is None
+    dumped = replaced.model_dump(mode="json", context={"expose_secrets": True})
+    assert dumped["verification"]["critic_api_key"] == "new-key"
+
+
+def test_acp_settings_store_only_the_critic_key_from_a_verification_patch() -> None:
+    base = {"agent_kind": "acp", "acp_server": "codex"}
+
+    result = apply_agent_settings_diff(
+        base,
+        {"verification": {"critic_api_key": "critic-key", "critic_enabled": True}},
+    )
+
+    dumped = result.model_dump(mode="json", context={"expose_secrets": True})
+    assert dumped["verification"] == {"critic_api_key": "critic-key"}
+
+
 # ── same-variant deep merge ────────────────────────────────────────────
 
 

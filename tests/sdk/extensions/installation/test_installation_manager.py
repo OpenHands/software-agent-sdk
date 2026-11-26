@@ -434,6 +434,25 @@ def test_load_installed_extensions(
     assert extensions[0].name == "mock-extension"
 
 
+def test_load_installed_skips_extension_that_fails_to_load(
+    manager: InstallationManager[MockExtension],
+    installation_dir: Path,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+):
+    manager.install(str(_write_mock_extension(tmp_path / "broken", name="broken")))
+    manager.install(str(_write_mock_extension(tmp_path / "working", name="working")))
+    (installation_dir / "broken" / "extension.json").write_text("{not json")
+
+    with caplog.at_level(
+        "WARNING", logger="openhands.sdk.extensions.installation.manager"
+    ):
+        extensions = manager.load_installed()
+
+    assert [extension.name for extension in extensions] == ["working"]
+    assert "Failed to load installed extension 'broken'" in caplog.text
+
+
 def test_disable_extension_filters_load(
     manager: InstallationManager[MockExtension],
     mock_extension_dir: Path,

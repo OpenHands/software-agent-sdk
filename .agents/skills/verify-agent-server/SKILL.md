@@ -72,7 +72,8 @@ may be running the same script: edit a copy, run its tests and
 ```sh
 export AGENT_SERVER_VERIFY_RUN=$(control-agent-server launch --new --print-run)
 control-agent-server doctor                     # read-only; must be ok before driving
-control-agent-server llm preset deepseek        # deepseek-flash (active) + deepseek-pro from $DEEPSEEK_API_KEY
+control-agent-server llm preset deepseek        # deepseek-flash (active) + deepseek-pro from $DEEPSEEK_API_KEY,
+                                                # or, with $LLM_BASE_URL and $LLM_API_KEY, deepseek-flash through that LiteLLM proxy
 CID=$(control-agent-server conversation start --prompt 'Create hello.txt containing hi' --wait --print-id)
 control-agent-server conversation events "$CID" --kinds ObservationEvent --contains hello.txt
 control-agent-server api GET "/api/conversations/$CID" --expect 200 --save F03.get/after-run
@@ -144,7 +145,8 @@ control-agent-server stop                       # stops only this run; evidence 
 - **State control** reaches states a happy path never shows, without mocks:
   `restart` (same state after a restart: persistence, restore, reconnection),
   `restart --hard` (SIGKILL: crash recovery), `restart --rotate-key` (stale
-  session key), `launch --share-conversations-from RUN` (a second instance on
+  session key), `restart --checkout PATH` (another version of the server on
+  the same state: an upgrade or a downgrade), `launch --share-conversations-from RUN` (a second instance on
   the same conversations: leases and takeover), `restart --env K=V` or
   `--config-json` (config changes such as `max_concurrent_runs` or idle TTL),
   `launch --deferred-init`, `launch --no-auth`, `conversation start --no-run`,
