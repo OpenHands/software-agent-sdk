@@ -8,9 +8,9 @@ consumers). Read this
 index before driving the server, then use the matching family file as the
 recipe.
 
-Maintenance baseline: main@0988e976491ff733bc09e976b36a271b0c511530 (2026-11-24). The next maintenance pass starts from this commit, a pass proposes the next baseline in its PR, and merging that PR accepts it.
+Maintenance baseline: main@d7263334df62150bdfdfabec5991484dd001064d (2026-11-26). The next maintenance pass starts from this commit, a pass proposes the next baseline in its PR, and merging that PR accepts it.
 
-The map has **1119 sub-features**.
+The map has **1120 sub-features**.
 
 ## Baseline preconditions
 
@@ -65,7 +65,7 @@ them honest: [../maintenance.md](../maintenance.md).
 
 | ID | Family | What it covers | Entry points | Needs | Sub-features |
 |---|---|---|---|---|---|
-| F01 | [Server status, info and contract](F01-server-status.md) | liveness, health, readiness, server info and its `/` alias, uptime and idle time, OpenAPI document, the static-files mode, DEBUG tracebacks, tool preloading | `GET /alive`, `/health`, `/ready`, `/server_info`, `/`, `/openapi.json` | baseline | 11 |
+| F01 | [Server status, info and contract](F01-server-status.md) | liveness, health, readiness, server info and its `/` alias, uptime and idle time, OpenAPI document, the static-files mode, DEBUG tracebacks, tool preloading | `GET /alive`, `/health`, `/ready`, `/server_info`, `/`, `/openapi.json` | baseline | 12 |
 | F02 | [Authentication and workspace sessions](F02-auth-and-sessions.md) | session keys on HTTP and on WebSockets (first frame, deprecated query and header forms, close codes), several and rotated keys, no-auth and legacy modes, the default bind address, the workspace session cookie, CORS | `X-Session-API-Key`, `POST`/`DELETE /api/auth/workspace-session`, WebSocket auth on every socket | recipes: tmux | 22 |
 | F03 | [Deferred init (warm-pool dormant mode)](F03-deferred-init.md) | warm-pool dormant mode: the gate on `/api`, `/v1`, `/app-backends` and every socket (checked before auth), init key auth, validation and redaction, rollback, one-shot init, and every field the init body delivers (keys, secret key, paths, worktree root, run limit, CORS, webhooks, env, web URL) | `GET`/`POST /api/init`, `X-Init-API-Key` | git; launch `--no-auth --deferred-init` | 26 |
 | F04 | [Conversation lifecycle and catalog](F04-conversation-lifecycle.md) | create from settings, an agent profile or an inline agent; client ids, parents, worktrees, start-time secrets, 422 redaction; get, batch get, search, count; PATCH; final response; DELETE; restart | `POST`/`GET`/`PATCH`/`DELETE /api/conversations[/{id}]`, `/search`, `/count`, `/agent_final_response`, `/children` | llm, git | 40 |

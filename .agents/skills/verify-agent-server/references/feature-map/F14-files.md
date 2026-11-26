@@ -56,7 +56,7 @@ Routes: `GET /api/file/home`, `GET /api/file/search_subdirs`,
 - `F14.scoped-path-guard`: scoped routes reject paths outside the workspace (another conversation's workspace, `..` traversal, a symlink escape, a sibling with the same prefix, a relative path) with 422 and write nothing, while the global route serves the same path.
 - `F14.scoped-conversation-errors`: a scoped route for an unknown conversation is 404 and does nothing; a malformed conversation id is 422.
 - `F14.scoped-trajectory-archive`: the scoped trajectory route serves only its own conversation (another or malformed id is 422), and the scoped archive packs the workspace, including the agent's file, but refuses a path outside it with 422.
-- `F14.sdk-workspace`: the SDK's `RemoteWorkspace.file_upload`/`file_download` round-trip bytes through the global routes and, with `runtime_conversation_id`, through the scoped routes; a scoped upload outside the workspace returns `success=False` with the 422 and writes nothing.
+- `F14.sdk-workspace`: the SDK's `RemoteWorkspace.file_upload`/`file_download` round-trip bytes through the global routes and, with `runtime_conversation_id`, through the scoped routes; a scoped upload outside the workspace returns `success=False` with the 422 and writes nothing. `working_dir` accepts a `str` or a `pathlib.Path` (stored as a string).
 - `F14.restart`: after a restart, uploaded files, the scoped download and the trajectory are still served.
 
 ## How to get to it (agent POV)
@@ -770,7 +770,9 @@ Preconditions:
   repo or another workspace through this scope is 422.
 - **SDK workspace (`F14.sdk-workspace`).** `RemoteWorkspace.file_upload` and
   `file_download`, first on the host (`/api/file/...`), then scoped to `CID`
-  (`runtime_conversation_id`, `/api/conversations/{id}/file/...`).
+  (`runtime_conversation_id`, `/api/conversations/{id}/file/...`). The plain
+  workspace is built with a `pathlib.Path` `working_dir`, the scoped one with
+  a string.
   ```sh
   cat > "$F/sdk_files.py" <<'PY'
   import os
@@ -783,7 +785,8 @@ Preconditions:
   fixtures, ws, cid = Path(sys.argv[1]), Path(sys.argv[2]), UUID(sys.argv[3])
   host, key = os.environ["AGENT_SERVER_URL"], os.environ["SESSION_API_KEY"]
   blob = (fixtures / "blob.bin").read_bytes()
-  plain = RemoteWorkspace(host=host, api_key=key, working_dir=str(fixtures))
+  plain = RemoteWorkspace(host=host, api_key=key, working_dir=fixtures)  # a pathlib.Path
+  assert plain.working_dir == str(fixtures), plain.working_dir
   scoped = RemoteWorkspace(host=host, api_key=key, working_dir=str(ws), runtime_conversation_id=cid)
   for name, w, remote in (
       ("plain", plain, fixtures / "sdk" / "blob.bin"),
@@ -804,7 +807,8 @@ Preconditions:
   control-agent-server exec --expect-output SDK_FILES_OK --save F14.sdk-workspace/program -- .venv/bin/python "$F/sdk_files.py" "$F" "$WS" "$CID"
   ```
   Both workspaces upload the blob (the file on disk matches) and download it
-  back byte for byte; the scoped workspace's upload outside `WS` returns
+  back byte for byte (the `Path` `working_dir` is stored as its string); the
+  scoped workspace's upload outside `WS` returns
   `success=False` with the 422 in `error` (the SDK swallows HTTP errors into
   the result) and writes nothing.
 - **Restart (`F14.restart`).** Restart the server and read everything back.
