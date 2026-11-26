@@ -91,6 +91,7 @@ def mock_event_service():
     service = AsyncMock(spec=EventService)
     service._gateway_run_lock = asyncio.Lock()
     service._active_gateway_runs = 0
+    service._direct_tool_active.return_value = False
     service.send_message = AsyncMock()
     return service
 

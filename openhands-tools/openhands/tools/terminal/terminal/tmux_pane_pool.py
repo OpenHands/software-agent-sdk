@@ -276,13 +276,19 @@ class TmuxPanePool:
                     remaining = (
                         None if deadline is None else deadline - time.monotonic()
                     )
+
+                    def target() -> PooledTmuxTerminal:
+                        if prefer is not None and prefer in self._all_panes:
+                            return prefer
+                        return self._all_panes[0]
+
                     if not self._pane_available.wait_for(
-                        lambda: self._closed or self._all_panes[0] in self._available,
+                        lambda: self._closed or target() in self._available,
                         timeout=remaining,
                     ):
                         raise TimeoutError("Persistent terminal pane is busy")
                     if not self._closed:
-                        terminal = self._all_panes[0]
+                        terminal = target()
                         self._available.remove(terminal)
                         return terminal
                 if self._closed:

@@ -21,34 +21,6 @@ Routes: `POST /api/conversations/{conversation_id}/ask_agent`,
 `POST /api/conversations/{conversation_id}/fork`,
 `POST /api/conversations/{conversation_id}/navigate`
 
-## Direct terminal setup
-
-`POST /api/conversations/{conversation_id}/execute_tool` accepts
-`{"tool_name":"terminal","action":{"kind":"TerminalAction","command":"source .openhands/setup.sh"}}`.
-The caller supplies the same session authorization as for the other conversation
-routes. The server does not discover or run setup scripts automatically. It
-returns the terminal observation with secrets masked, without asking the model
-or generating tool-use events. A cold conversation can still emit a system prompt.
-This is an explicit operator action: agent confirmation, security analysis and
-pre/post-tool hooks do not run. Do not source untrusted scripts through it.
-
-Run setup before sending the first user message. The first direct call selects
-one shell; later terminal actions in that runtime use it serially, including
-multiple terminal actions in one agent turn. Resetting or recreating the shell
-loses its in-memory state. A soft timeout can return `exit_code: -1` while a
-command is still running; inspect or interrupt it before starting the agent.
-
-- `401`: missing or invalid session authorization; `404`: unknown conversation.
-- `409`: another direct action or an agent run is active. A conflicting
-  `send_message(run=True)` is rejected without saving the message.
-- `422`: unavailable terminal, unsupported tool, or invalid action (including
-  missing or mismatched `kind`); `429`: server run capacity exhausted.
-
-The Python equivalent is `RemoteConversation.execute_tool("terminal",
-TerminalAction(command="source .openhands/setup.sh"))`. The live regression is
-`test_execute_tool_runs_setup_script_in_persistent_terminal` in
-`tests/cross/test_remote_conversation_live_server.py`.
-
 ## Sub-features
 
 - `F10.fork-whole`: `POST /fork` with no body answers 201 with a new `idle` conversation that names its source in `forked_from_conversation_id`, keeps the source's HEAD and working directory, and holds a copy of every event (same ids) in its own persistence directory; the source is unchanged.
@@ -618,6 +590,36 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   usage with the conversation's state.
 
 ## Gotchas
+
+### Direct terminal setup
+
+`POST /api/conversations/{conversation_id}/execute_tool` accepts
+`{"tool_name":"terminal","action":{"kind":"TerminalAction","command":"source .openhands/setup.sh"}}`.
+The caller supplies the same session authorization as for the other conversation
+routes. The server does not discover or run setup scripts automatically. It
+returns the terminal observation with secrets masked, without asking the model
+or generating tool-use events. A cold conversation can still emit a system prompt.
+This is an explicit operator action: agent confirmation, security analysis and
+pre/post-tool hooks do not run. Do not source untrusted scripts through it.
+
+Run setup before sending the first user message. The first direct call selects
+one shell; later terminal actions in that runtime use it serially, including
+multiple terminal actions in one agent turn. Shell state does not survive a reset,
+idle eviction, or server restart. Source the script again on the new runtime.
+A soft timeout can return `exit_code: -1` while a
+command is still running; inspect or interrupt it before starting the agent.
+
+- `401`: missing or invalid session authorization; `404`: unknown conversation.
+- `409`: another direct action or an agent run is active. A conflicting
+  REST message with `run=true` is rejected without saving it. WebSocket messages
+  are saved and run after the direct action.
+- `422`: unavailable terminal, unsupported tool, or invalid action (including
+  missing or mismatched `kind`); `429`: server run capacity exhausted.
+
+The Python equivalent is `RemoteConversation.execute_tool("terminal",
+TerminalAction(command="source .openhands/setup.sh"))`. The live regression is
+`test_execute_tool_runs_setup_script_in_persistent_terminal` in
+`tests/cross/test_remote_conversation_live_server.py`.
 
 - `fork` copies events with their original ids, so the same event id exists
   in the source and every fork; always scope event lookups by conversation.

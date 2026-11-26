@@ -321,6 +321,8 @@ async def send_message(
     _refuse_during_gateway_run(event_service)
     async with event_service._gateway_run_lock:
         _refuse_during_gateway_run(event_service)
+        if request.run and event_service._direct_tool_active():
+            raise Conflict("A direct terminal action is in flight; message not saved")
         await event_service.send_message(message, request.run, sender=sender)
     return Success()
 

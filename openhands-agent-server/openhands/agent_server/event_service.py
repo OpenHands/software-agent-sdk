@@ -139,6 +139,7 @@ logger = get_logger(__name__)
 
 _T = TypeVar("_T")
 _GIT_INIT_LOCK = threading.Lock()
+DIRECT_TERMINAL_CLOSE_GRACE_SECONDS = 2.0
 
 
 def _without_skill_bodies(
@@ -1027,8 +1028,6 @@ class EventService:
         ``keep_goal_loop`` leaves an active ``/goal`` loop running, for
         messages the server delivers rather than the user writes.
         """
-        if run and self._direct_tool_active():
-            raise Conflict("A direct terminal action is in flight; message not saved")
         self._message_run_admissions += int(run)
         try:
             await self._send_message(
@@ -1727,26 +1726,30 @@ class EventService:
 
         def competing_admission() -> bool:
             return bool(
-                self._closing
-                or self._active_gateway_runs
+                self._active_gateway_runs
                 or self._message_run_admissions
-            )
-
-        async with self._run_lock:
-            conversation = self._conversation
-            if not isinstance(conversation, LocalConversation):
-                raise Unprocessable("The conversation has no active terminal tool")
-            if (
-                competing_admission()
+                or self._run_session_slot is not None
+                or self._rerun_requested
+                or self._acp_internal_rerun_requested
                 or self._direct_tool_active()
                 or (self._run_task is not None and not self._run_task.done())
                 or (
                     self._goal_loop_task is not None and not self._goal_loop_task.done()
                 )
-                or await self._get_execution_status()
-                == ConversationExecutionStatus.RUNNING
-                or competing_admission()
-            ):
+            )
+
+        async with self._run_lock:
+            conversation = self._conversation
+            if conversation is None or self._closing:
+                raise ServiceInactive()
+            if not isinstance(conversation, LocalConversation):
+                raise Unprocessable("The conversation has no active terminal tool")
+            if competing_admission():
+                raise Conflict("The conversation is busy")
+            status = await self._get_execution_status()
+            if self._closing:
+                raise ServiceInactive()
+            if status == ConversationExecutionStatus.RUNNING or competing_admission():
                 raise Conflict("The conversation is busy")
             slot = await RunSlot.acquire(self._run_semaphore)
             cancel = asyncio.Event()
@@ -1788,6 +1791,8 @@ class EventService:
         with slot:
             self.touch()
             update_last_execution_time()
+            heartbeat_stop = asyncio.Event()
+            heartbeat = asyncio.create_task(_pulse_execution_activity(heartbeat_stop))
             try:
                 if cancel.is_set():
                     raise Conflict("Direct terminal action cancelled")
@@ -1815,8 +1820,19 @@ class EventService:
                     with suppress(asyncio.CancelledError):
                         await cancelled
             finally:
+                heartbeat_stop.set()
+                await heartbeat
                 self.touch()
                 update_last_execution_time()
+                if self._rerun_requested and not self._closing:
+                    # Socket messages were already saved. Hand the terminal's
+                    # permit to their run before a competitor can take it.
+                    self._rerun_requested = False
+                    with suppress(ServiceInactive):
+                        await self.run(
+                            acp_internal_rerun_generation=self._explicit_interrupt_generation,
+                            run_slot=slot,
+                        )
 
     async def run(
         self,
@@ -1858,7 +1874,10 @@ class EventService:
             # (a tool call can last minutes), so reading execution status would
             # block this request behind it instead of answering at once.
             if (
-                self._direct_tool_active()
+                (
+                    self._direct_tool_active()
+                    and asyncio.current_task() is not self._direct_tool_task
+                )
                 or (self._run_task is not None and not self._run_task.done())
                 or (
                     await self._get_execution_status()
@@ -2034,7 +2053,6 @@ class EventService:
                             None, self._callback_wrapper.wait_for_pending, 30.0
                         )
 
-                    # Clear task reference and publish state update
                     self._run_task = None
                     await self._publish_state_update()
 
@@ -2055,10 +2073,12 @@ class EventService:
                     rerun_requested = self._rerun_requested
                     acp_internal_rerun_requested = self._acp_internal_rerun_requested
                     rerun_generation = self._explicit_interrupt_generation
+                    status = (
+                        await self._get_execution_status() if rerun_requested else None
+                    )
                     self._rerun_requested = False
                     self._acp_internal_rerun_requested = False
                     if rerun_requested:
-                        status = await self._get_execution_status()
                         rerun_generation_still_valid = (
                             self._explicit_interrupt_generation == rerun_generation
                         )
@@ -2703,9 +2723,11 @@ class EventService:
         await asyncio.shield(self._close_task)
 
     async def _close(self) -> None:
-        if self._direct_tool_active() and self._direct_tool_task is not None:
-            with suppress(Exception):
-                await self._direct_tool_task
+        direct = self._direct_tool_task
+        if direct is not None and not direct.done():
+            # Ctrl-C is best effort. A command may ignore it; proceed to close
+            # the terminal itself without cancelling the permit-owning task.
+            await asyncio.wait((direct,), timeout=DIRECT_TERMINAL_CLOSE_GRACE_SECONDS)
         if self.bash_event_service is not None:
             await self.bash_event_service.close()
         self._closing = True
@@ -2765,6 +2787,8 @@ class EventService:
         if self._conversation:
             await self.run_state_op(self._conversation.close)
             self._conversation = None
+        if direct is not None and not direct.done():
+            await asyncio.wait((direct,), timeout=DIRECT_TERMINAL_CLOSE_GRACE_SECONDS)
         if self._state_executor is not None:
             self._state_executor.shutdown(wait=False)
             self._state_executor = None

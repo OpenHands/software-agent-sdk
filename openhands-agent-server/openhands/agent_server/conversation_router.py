@@ -34,6 +34,7 @@ from openhands.agent_server.exceptions import (
     ConversationAlreadyRunning,
     GoalAlreadyRunning,
     InvalidParentConversation,
+    ServiceInactive,
     UnavailableAgentTool,
 )
 from openhands.agent_server.launch import launch_error
@@ -441,6 +442,7 @@ async def delete_conversation(
     "/{conversation_id}/execute_tool",
     responses=error_responses(
         {
+            Invalid: "Conversation runtime is inactive",
             NotFound: "Conversation not found",
             Conflict: "Conversation is busy",
             Unprocessable: "Terminal unavailable or invalid action",
@@ -481,6 +483,8 @@ async def execute_conversation_tool(
             # signals it to stop while retaining its admission slot.
             raise Conflict("Client disconnected during terminal execution")
         return ExecuteToolResponse(observation=operation.result())
+    except ServiceInactive as exc:
+        raise Invalid(str(exc)) from exc
     finally:
         operation.cancel()
         disconnect.cancel()

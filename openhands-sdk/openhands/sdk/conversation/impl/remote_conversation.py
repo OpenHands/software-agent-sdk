@@ -2028,7 +2028,9 @@ class RemoteConversation(BaseConversation):
         allows (currently ``terminal``) and validates the action against that
         tool's action schema. Call it before the agent run; subsequent terminal
         actions share one shell and execute serially for this runtime. No tool-use
-        hooks or action/observation events run for the direct call.
+        hooks or action/observation events run for the direct call. The SDK
+        leaves observation timing to the server's terminal tool rather than
+        imposing the workspace's HTTP read deadline. Proxy timeouts still apply.
 
         Args:
             tool_name: Name of the tool to execute.
@@ -2044,10 +2046,13 @@ class RemoteConversation(BaseConversation):
                 unknown/unsupported tool or invalid action (422), or exhausted
                 server run capacity (429).
         """
+        timeout = httpx.Timeout(self._client.timeout)
+        timeout.read = None
         response = _send_request(
             self._client,
             "POST",
             f"{CONVERSATIONS_PATH}/{self._id}/execute_tool",
+            timeout=timeout,
             json={
                 "tool_name": tool_name,
                 "action": action.model_dump(mode="json"),

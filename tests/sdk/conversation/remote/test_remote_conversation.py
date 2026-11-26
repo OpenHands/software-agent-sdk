@@ -32,8 +32,16 @@ from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM, Message, Metrics, TextContent
 from openhands.sdk.llm.streaming import LLMStreamChunk
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm
+from openhands.sdk.tool import Action, Observation
 from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
-from openhands.tools.terminal import TerminalAction, TerminalObservation
+
+
+class DirectToolTestAction(Action):
+    command: str
+
+
+class DirectToolTestObservation(Observation):
+    exit_code: int
 
 
 @pytest.mark.parametrize("operation", ["confirmation_policy", "interrupt"])
@@ -2505,10 +2513,9 @@ class TestRemoteConversation:
         client = self.setup_mock_client(str(conversation_id))
         mock_ws_client.return_value = Mock()
         conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
-        action = TerminalAction(command="pwd")
-        response = TerminalObservation.from_text(
-            text="/tmp", command="pwd", exit_code=0
-        )
+        action = DirectToolTestAction(command="pwd")
+        response = DirectToolTestObservation.from_text("/tmp", exit_code=0)
+        client.timeout = httpx.Timeout(1, read=0.2)
         request = client.request.side_effect
 
         def dispatch(method, url, **kwargs):
@@ -2526,6 +2533,7 @@ class TestRemoteConversation:
             "POST",
             f"/api/conversations/{conversation_id}/execute_tool",
             json={"tool_name": "terminal", "action": action.model_dump(mode="json")},
+            timeout=httpx.Timeout(1, read=None),
         )
 
     @patch(

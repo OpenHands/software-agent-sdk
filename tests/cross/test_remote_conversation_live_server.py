@@ -712,6 +712,7 @@ def test_execute_tool_runs_setup_script_in_persistent_terminal(
     setup_script.parent.mkdir(parents=True)
     setup_script.write_text(
         "#!/usr/bin/env bash\n"
+        "sleep 0.5\n"
         "touch somefile.txt\n"
         "export OPENHANDS_SETUP_MARKER=visible\n"
     )
@@ -777,9 +778,16 @@ def test_execute_tool_runs_setup_script_in_persistent_terminal(
         ):
             assert workspace.client.post(path, json=body).status_code == 422
 
-        setup = conversation.execute_tool(
-            "terminal", TerminalAction(command="source .openhands/setup.sh", timeout=30)
-        )
+        client = workspace.client
+        original_timeout = client.timeout
+        client.timeout = httpx.Timeout(5, read=0.2)
+        try:
+            setup = conversation.execute_tool(
+                "terminal",
+                TerminalAction(command="source .openhands/setup.sh", timeout=30),
+            )
+        finally:
+            client.timeout = original_timeout
         check = conversation.execute_tool(
             "terminal",
             TerminalAction(command='printf "%s" "$OPENHANDS_SETUP_MARKER"', timeout=30),

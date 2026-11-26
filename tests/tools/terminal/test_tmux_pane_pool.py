@@ -392,3 +392,12 @@ def test_persistent_shell_waits_for_original_pane_and_inherits_reset(pool):
         replaced = pinned.terminal
     with pool.pane() as next_command:
         assert next_command.terminal is replaced
+
+
+def test_persistent_shell_honors_follow_up_to_another_pane(pool):
+    with pool.pane():
+        with pool.pane() as previous:
+            pane = previous.terminal
+        pool.use_single_pane()
+    with pool.pane(prefer=pane) as follow_up:
+        assert follow_up.terminal is pane

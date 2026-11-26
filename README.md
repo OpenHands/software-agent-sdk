@@ -222,7 +222,10 @@ if result.is_error or result.exit_code != 0:
 `conversation` is a `RemoteConversation`. Use `source` (or your shell's
 corresponding command) rather than spawning a child shell: exported variables
 then remain available to later agent terminal actions. Those actions share one
-shell and run serially until the runtime is recreated. A soft timeout can leave
-the command running; use a follow-up terminal action to finish or interrupt it.
+shell and run serially. Shell state does not survive a terminal reset, idle
+eviction, or a server restart; source the script again in the new runtime. A soft
+timeout can leave the command running; use a follow-up action before issuing a
+new command. The SDK leaves the response deadline to the terminal server, but
+reverse proxies can still time out and disconnect the request.
 Direct execution bypasses the agent's tool confirmation, security analysis, and
 tool-use hooks. It does not discover or run repository scripts automatically.

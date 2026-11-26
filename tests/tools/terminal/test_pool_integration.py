@@ -352,3 +352,15 @@ class TestFollowUpsReachTheRunningCommand:
         assert not result.is_error, result.text
         assert "after" in result.text
         assert result.exit_code == 0
+
+
+def test_persistent_shell_does_not_interrupt_unfinished_command(pool_executor):
+    pool_executor.use_persistent_shell()
+    started = pool_executor(TerminalAction(command="sleep 2; echo first", timeout=0.5))
+    assert started.exit_code == -1
+    competing = pool_executor(TerminalAction(command="echo second"))
+    assert competing.is_error
+    assert "previous command is still running" in (competing.metadata.suffix or "")
+    completed = pool_executor(TerminalAction(command="", timeout=5))
+    assert completed.exit_code == 0
+    assert completed.text.strip() == "first"
