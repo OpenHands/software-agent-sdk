@@ -1,0 +1,25 @@
+{
+  "id": "c00c6fdb-4eb4-4b0f-bde6-8df78b89a980",
+  "timestamp": "2026-09-23T09:42:02.134972",
+  "source": "agent",
+  "parent_id": "2118adb7-bf7e-4f0a-a829-8b15b6c26c7d",
+  "thought": [
+    {
+      "cache_prompt": false,
+      "type": "text",
+      "text": ""
+    }
+  ],
+  "thinking_blocks": [],
+  "tool_name": "no_such_tool",
+  "tool_call_id": "call_no_such_tool",
+  "tool_call": {
+    "id": "call_no_such_tool",
+    "name": "no_such_tool",
+    "arguments": "{}",
+    "origin": "completion"
+  },
+  "llm_response_id": "test-response-4",
+  "security_risk": "UNKNOWN",
+  "kind": "ActionEvent"
+}
