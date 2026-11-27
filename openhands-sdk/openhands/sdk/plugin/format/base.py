@@ -154,8 +154,6 @@ class PluginFormat(ABC):
         manifest = self.load_manifest(plugin_dir)
         skills = self.load_skills(plugin_dir)
         hooks = self.load_hooks(plugin_dir)
-        if hooks is not None:
-            _bind_plugin_root(hooks, plugin_dir)
         mcp_config = self.load_mcp_config(plugin_dir)
         agents = self.load_agents(plugin_dir)
         commands = self.load_commands(plugin_dir)
@@ -177,7 +175,8 @@ def _read_hooks_config(root: Path, plugin_dir: Path | None = None) -> HookConfig
     Shared by the concrete strategies: hooks, agents and commands use the same
     on-disk layout in both formats — only the directory they are rooted at
     differs (the plugin root for Claude Code, the client-extension directory for
-    Agent Plugins).
+    Agent Plugins). Hook commands can use the owning plugin directory with
+    ``python3 "${PLUGIN_ROOT}/scripts/check.py"``.
     """
     hooks_json = root / "hooks" / "hooks.json"
     if not hooks_json.exists() or not resolves_within(hooks_json, plugin_dir or root):
@@ -191,6 +190,7 @@ def _read_hooks_config(root: Path, plugin_dir: Path | None = None) -> HookConfig
         if hook_config.is_empty():
             logger.info(f"No hooks configured in {hooks_json}")
             return HookConfig()
+        _bind_plugin_root(hook_config, plugin_dir or root)
         logger.info(f"Loaded hooks from {hooks_json}")
         return hook_config
     except Exception as e:
