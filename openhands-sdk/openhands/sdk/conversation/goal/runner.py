@@ -25,12 +25,12 @@ from openhands.sdk.event.ask_user import find_pending_ask
 
 
 if TYPE_CHECKING:
-    from openhands.sdk.conversation.base import BaseConversation
+    from openhands.sdk.conversation.impl.local_conversation import LocalConversation
     from openhands.sdk.llm import LLM
 
 
 def run_goal(
-    conversation: BaseConversation,
+    conversation: LocalConversation,
     objective: str,
     judge_llm: LLM,
     *,
