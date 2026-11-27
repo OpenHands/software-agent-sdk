@@ -141,13 +141,13 @@ export async function pollForToken(
   options: PollDeviceTokenOptions
 ): Promise<DeviceTokenResponse> {
   const timeout = options.timeout ?? DEFAULT_TIMEOUT_MS;
+  const timeoutSignal = AbortSignal.timeout(Math.max(0, timeout));
+  const signal = options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal;
   let interval = Math.max(1, options.interval) * 1000;
   const startTime = Date.now();
 
   while (Date.now() - startTime < timeout) {
-    if (options.signal?.aborted) {
-      throw new DeviceFlowError('Authorization cancelled', 'cancelled');
-    }
+    if (signal.aborted) break;
 
     try {
       const body = new URLSearchParams({
@@ -159,7 +159,7 @@ export async function pollForToken(
         '/oauth/device/token',
         body,
         'application/x-www-form-urlencoded',
-        options.signal,
+        signal,
         options.headers
       );
 
@@ -209,6 +209,7 @@ export async function pollForToken(
           );
       }
     } catch (error) {
+      if (signal.aborted) break;
       if (error instanceof DeviceFlowError) {
         throw error;
       }
@@ -219,8 +220,9 @@ export async function pollForToken(
     }
 
     try {
-      await sleep(interval, options.signal);
+      await sleep(interval, signal);
     } catch (error) {
+      if (signal.aborted) break;
       if (error instanceof DOMException && error.name === 'AbortError') {
         throw new DeviceFlowError('Authorization cancelled', 'cancelled');
       }
@@ -228,6 +230,9 @@ export async function pollForToken(
     }
   }
 
+  if (options.signal?.aborted && signal.reason === options.signal.reason) {
+    throw new DeviceFlowError('Authorization cancelled', 'cancelled');
+  }
   throw new DeviceFlowError('Timeout waiting for authorization. Please try again.', 'timeout');
 }
 
