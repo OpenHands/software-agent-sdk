@@ -16,6 +16,7 @@ from openhands.sdk.llm.options.common import (
 
 if TYPE_CHECKING:
     from openhands.sdk.llm.call_context import LLMCallContext
+    from openhands.sdk.llm.utils.litellm_provider import LLMProvider
 
 
 def select_chat_options(
@@ -23,6 +24,8 @@ def select_chat_options(
     user_kwargs: dict[str, Any],
     has_tools: bool,
     call_context: LLMCallContext | None = None,
+    *,
+    gateway_provider: LLMProvider | None = None,
 ) -> dict[str, Any]:
     """Behavior-preserving extraction of _normalize_call_kwargs.
 
@@ -106,11 +109,7 @@ def select_chat_options(
         context,
         supports_prompt_cache_key=model_features.supports_prompt_cache_key,
         openrouter=is_openrouter(llm),
-        gateway_provider=(
-            None
-            if getattr(llm, "is_subscription", False)
-            else getattr(llm, "_provider_info", None)
-        ),
+        gateway_provider=gateway_provider,
     )
 
     return out

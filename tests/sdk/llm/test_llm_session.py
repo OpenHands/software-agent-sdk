@@ -207,8 +207,12 @@ def test_child_conversation_context_does_not_inherit_sessions():
     registry = LLMRegistry()
     parent = _context(registry)
 
-    assert parent.for_conversation("child").sessions is None
-    assert parent == LLMCallContext(prompt_cache_key="conv", session_id="conv")
+    child = parent.for_conversation("child")
+    assert child.sessions is None
+    assert child.root_session_id == parent.root_session_id == "conv"
+    assert parent == LLMCallContext(
+        prompt_cache_key="conv", session_id="conv", root_session_id="conv"
+    )
 
 
 # ── Registry-wide callbacks ────────────────────────────────────────────

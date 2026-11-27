@@ -1642,7 +1642,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         has_tools_flag = bool(cc_tools) and use_native_fc
         # Behavior-preserving: delegate to select_chat_options
         call_kwargs = select_chat_options(
-            self, kwargs, has_tools=has_tools_flag, call_context=call_context
+            self,
+            kwargs,
+            has_tools=has_tools_flag,
+            call_context=call_context,
+            gateway_provider=None if self.is_subscription else self._provider_info,
         )
 
         # 3a) joint input/output budget clamp (e.g. Bedrock-Anthropic)
@@ -1787,7 +1791,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         # Normalize/override Responses kwargs consistently
         call_kwargs = select_responses_options(
-            self, kwargs, include=include, store=store, call_context=call_context
+            self,
+            kwargs,
+            include=include,
+            store=store,
+            call_context=call_context,
+            gateway_provider=None if self.is_subscription else self._provider_info,
         )
 
         # Request context for telemetry (always include context_window for metrics)
