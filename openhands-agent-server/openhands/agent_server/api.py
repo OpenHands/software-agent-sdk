@@ -1,5 +1,48 @@
-import asyncio
+"""Agent-server FastAPI entry point.
+
+Early bootstrap: libtmux depends on tmux emitting the U+241E (``) format
+separator literally; under a C/POSIX locale tmux replaces it with ``_``,
+which breaks Session.from_session_id lookups with ``TmuxObjectDoesNotExist``
+on every terminal init (#18982). Dockerfile-level ``ENV LC_ALL=C.UTF-8``
+covers the default image path but not PyInstaller binaries, Kubernetes
+``--env`` overrides, or runtimes that replace image ENV entirely — so we
+set the locale here before libtmux is imported.
+"""
+
+from __future__ import annotations
+
 import os
+
+
+def _ensure_utf8_locale() -> None:
+    """Force a UTF-8 locale for the tmux backend if none is active.
+
+    Linux: prefer ``C.UTF-8`` (glibc ships it by default on all supported
+    distros). If ``locale -a`` lists nothing suitable (minimal containers
+    that strip locales), emit a warning but still export the variables —
+    ``tmux`` itself will error with a clearer message than
+    ``TmuxObjectDoesNotExist``.
+
+    Non-Linux (macOS, Windows) is a no-op: tmux's format separator
+    mangling is a libc/tmux quirk on POSIX, and Windows has no ``LANG``/
+    ``LC_ALL`` concept.
+    """
+    import platform
+
+    if platform.system() not in ("Linux", "Darwin"):
+        return
+
+    current = os.environ.get("LC_ALL") or os.environ.get("LANG") or ""
+    if current.lower().endswith("utf-8") or current.lower().endswith("utf8"):
+        return  # Already UTF-8 — nothing to do.
+
+    for key in ("LC_ALL", "LANG"):
+        os.environ[key] = "C.UTF-8"
+
+
+_ensure_utf8_locale()
+
+import asyncio
 import shutil
 import sys
 import tempfile
