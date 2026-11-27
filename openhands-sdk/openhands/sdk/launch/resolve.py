@@ -88,6 +88,8 @@ def resolve(
     stores: LaunchStores,
     *,
     llm_profile_ref: str | None = None,
+    acp_model: str | None = None,
+    acp_effort: str | None = None,
 ) -> ResolvedLaunch:
     """Resolve a stored profile id or a profile into a ``ResolvedLaunch``.
 
@@ -104,6 +106,13 @@ def resolve(
             "agent_launch_additions.llm_profile_ref applies only to an "
             "OpenHands Agent Profile"
         )
+    if (acp_model is not None or acp_effort is not None) and not isinstance(
+        profile, ACPAgentProfile
+    ):
+        raise AgentLaunchError(
+            "agent_launch_additions.acp_model and acp_effort apply only to an "
+            "ACP Agent Profile"
+        )
 
     mcp_config, _, dangling_mcp = _compute_mcp_filter(
         dict(stores.mcp_config), profile.mcp_server_refs
@@ -118,6 +127,16 @@ def resolve(
             )
         except ValueError as exc:
             raise AgentLaunchError(str(exc)) from exc
+        # A launch-time override replaces the profile's own value for this
+        # conversation only; the stored profile is not modified.
+        if acp_model is not None or acp_effort is not None:
+            settings = settings.model_copy(
+                update={
+                    key: value
+                    for key, value in (("acp_model", acp_model), ("acp_effort", acp_effort))
+                    if value is not None
+                }
+            )
     else:
         skills = _profile_skills(
             profile, catalog, _load_public_skill_names(profile, stores)

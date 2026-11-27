@@ -112,6 +112,8 @@ def finalize(
     agent = _apply_acp_skill_sourcing(agent, runtime.acp_skill_sourcing)
     if additions and additions.skills:
         agent = _with_launch_skills(agent, additions.skills)
+    if additions:
+        agent = _with_acp_launch_override(agent, additions)
     if managed_secrets:
         agent = _without_context_secrets(agent, managed_secrets)
     if client_tools:
@@ -119,6 +121,36 @@ def finalize(
     if experimental_feature_tools and not isinstance(agent, ACPAgent):
         agent = _with_client_tools(agent, experimental_feature_tools)
     return LaunchedAgent(agent=agent, profile=profile, _token=_FINALIZE_TOKEN)
+
+
+def _with_acp_launch_override(
+    agent: AgentBase, additions: AgentLaunchAdditions
+) -> AgentBase:
+    """Apply a launch-time ACP model/effort override to a resolved ACP agent.
+
+    The override belongs to this launch only: the stored profile keeps its own
+    values. A launch that resolves a profile has already applied the override
+    to the settings, so applying it again is a no-op; this covers a caller that
+    hands an ACP agent straight to :func:`finalize`.
+    """
+    if not isinstance(agent, ACPAgent):
+        return agent
+    updates: dict[str, object] = {}
+    if additions.acp_model is not None:
+        updates["acp_model"] = additions.acp_model
+    if additions.acp_effort is not None:
+        updates["acp_effort"] = additions.acp_effort
+    if not updates:
+        return agent
+    overridden = agent.model_copy(update=updates)
+    if additions.acp_model is not None:
+        # Mirror ACPAgent.model_post_init: the sentinel LLM shows the model
+        # actually in use. model_copy does not re-run the validator hook.
+        overridden.llm.model = additions.acp_model
+        overridden.llm.metrics.model_name = additions.acp_model
+        if overridden.llm.metrics.accumulated_token_usage is not None:
+            overridden.llm.metrics.accumulated_token_usage.model = additions.acp_model
+    return overridden
 
 
 def _settings_for_runtime(
