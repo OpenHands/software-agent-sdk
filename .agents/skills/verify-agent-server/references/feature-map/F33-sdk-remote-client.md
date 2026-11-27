@@ -23,7 +23,7 @@ Routes: none
 
 ## Sub-features
 
-- `F33.workspace-exec`: `Workspace(host=...)` returns a `RemoteWorkspace` whose `execute_command` returns the command's exit code, stdout and stderr, runs in the given `cwd`, gives up after `timeout` with exit `-1` and `timeout_occurred`; `alive` and `get_server_info()` match the server.
+- `F33.workspace-exec`: `Workspace(host=...)` returns a `RemoteWorkspace` (its `working_dir` given as a `str` or a `pathlib.Path`, stored as a string) whose `execute_command` returns the command's exit code, stdout and stderr, runs in the given `cwd`, gives up after `timeout` with exit `-1` and `timeout_occurred`; `alive` and `get_server_info()` match the server.
 - `F33.workspace-bad-key`: with a wrong `api_key`, `execute_command` and `file_upload` report a 401 failure instead of raising, creating a conversation raises a 401 `HTTPStatusError`, and the server records no command, file or conversation.
 - `F33.workspace-background`: `start_command` returns a command id at once, `get_command_output` shows no exit code while it runs, `stop_command` ends it (no later output), and stopping an unknown id is a no-op.
 - `F33.workspace-files`: `file_upload` (from a path or from bytes) and `file_download` round-trip a binary file byte for byte; a missing remote file or a relative destination reports `success: false` with the server's 404 or 400 and leaves no local file.
@@ -289,12 +289,16 @@ Preconditions:
   control-agent-server exec --env PYTHONPATH="$F33" --save F33.workspace-exec/probe -- .venv/bin/python - <<'PY'
   import os
   import time
+  from pathlib import Path
   import f33
   from openhands.sdk.workspace import RemoteWorkspace, Workspace
 
   os.makedirs(os.path.join(f33.DIR, "exec"), exist_ok=True)
-  ws = Workspace(host=f33.URL, api_key=f33.KEY, working_dir=os.path.join(f33.DIR, "exec"))
+  ws = Workspace(host=f33.URL, api_key=f33.KEY, working_dir=Path(f33.DIR, "exec"))
   assert isinstance(ws, RemoteWorkspace), type(ws)
+  assert ws.working_dir == os.path.join(f33.DIR, "exec") and type(ws.working_dir) is str, repr(ws.working_dir)
+  direct = RemoteWorkspace(host=f33.URL, api_key=f33.KEY, working_dir=Path(f33.DIR, "exec"))
+  assert direct.working_dir == ws.working_dir and type(direct.working_dir) is str, repr(direct.working_dir)
   assert ws.alive and not RemoteWorkspace(host="http://127.0.0.1:9", working_dir="/tmp").alive
   r = ws.execute_command("echo qa-f33-out; echo qa-f33-err >&2; exit 3", cwd=ws.working_dir)
   assert (r.exit_code, r.stdout, r.stderr, r.timeout_occurred) == (3, "qa-f33-out\n", "qa-f33-err\n", False), r
@@ -313,8 +317,9 @@ Preconditions:
     --check items.2.exit_code eq 3 --check items.2.stderr contains qa-f33-err --check items.1.exit_code eq 0 \
     --check items.0.exit_code eq -1 --until-ok 15 --save F33.workspace-exec/server-outputs
   ```
-  The probe passes; the server's newest three commands are the SDK's, with
-  the `cwd` and `timeout` it sent, and their outputs carry exit codes `3`,
+  The probe passes (a `pathlib.Path` `working_dir`, through the factory and
+  `RemoteWorkspace` itself, is stored as the same string); the server's
+  newest three commands are the SDK's, with the `cwd` and `timeout` it sent, and their outputs carry exit codes `3`,
   `0` and `-1` (the server stopped `sleep 20` after 2 s too).
 - **Wrong session key (`F33.workspace-bad-key`).** The run's key works (the
   bullet above); a wrong one must change nothing.

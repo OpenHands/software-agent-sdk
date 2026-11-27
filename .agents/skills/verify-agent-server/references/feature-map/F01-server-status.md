@@ -23,6 +23,7 @@ Routes: `GET /alive`, `GET /health`, `GET /ready`, `GET /server_info`, `GET /`,
 - `F01.root-info`: without static files, `GET /` returns the same server info document as `/server_info` (every field but the clocks).
 - `F01.uptime-restart`: `uptime` grows while the process lives and starts again from zero after a restart.
 - `F01.idle-time`: `idle_time` grows while nothing happens and resets when a file operation runs.
+- `F01.idle-time-active-run`: while a conversation run is in flight but emits nothing (a model call that hangs), `idle_time` stays below the 30 s activity interval plus a margin instead of growing with the wait; once the run stops it grows again.
 - `F01.openapi`: `GET /openapi.json` serves the OpenAPI document with the conversation routes and without the WebSockets.
 - `F01.static-files`: with `static_files_path` set to an existing directory, `GET /` answers 302 to `/static/index.html` (or `/static/` without an `index.html`), `/static/*` serves the directory without a session key and refuses to escape it, `/api/*` still needs the key and `/server_info` is unchanged; a missing directory keeps `/` as server info.
 - `F01.debug-tracebacks`: with `DEBUG=true` a 5xx body carries a `traceback` next to `detail` and `exception`; without it, or on a 4xx, it does not.
@@ -136,6 +137,33 @@ Preconditions:
   `idle_time` is at least `3.0` although probes ran in between, the directory
   did not exist before and exists on disk after the call, and `idle_time`
   drops after it is created.
+- **Idle time during an active run (`F01.idle-time-active-run`).** A run
+  whose model call hangs emits no event for minutes, the way a parent run
+  blocked on a Task child does. The server's own timer is under test, so
+  this bullet sleeps (about two minutes). `llm-stub` stands in for the model
+  because no real model hangs on demand.
+  ```sh
+  IDLE=$(control-agent-server fixture llm-stub --name qa-f01-idle --step hang:300 --print-path)
+  IDLE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key\", \"base_url\": \"$IDLE/v1\", \"num_retries\": 0}, \"tools\": []}"
+  I=$(control-agent-server conversation start --body-json "{\"agent\": $IDLE_AGENT}" --no-autotitle --print-id)
+  control-agent-server conversation send "$I" --text 'QA_F01_IDLE' --no-run
+  control-agent-server api POST "/api/conversations/$I/run" --expect 200 --check success eq true
+  control-agent-server conversation wait "$I" --until running --timeout 60
+  control-agent-server sink read --name qa-f01-idle --expect-min 1
+  sleep 70
+  control-agent-server api GET "/api/conversations/$I" --check execution_status eq running
+  control-agent-server api GET /server_info --auth none --check idle_time lt 45 --save F01.idle-time-active-run/during-run
+  control-agent-server api POST "/api/conversations/$I/interrupt" --expect 200 --check success eq true
+  control-agent-server conversation wait "$I" --until paused --timeout 30
+  sleep 50
+  control-agent-server api GET /server_info --auth none --check idle_time ge 40 --save F01.idle-time-active-run/after-run
+  control-agent-server api DELETE "/api/conversations/$I" --expect 200
+  ```
+  The stub received the model request and the run is still `running` 70 s
+  later, yet `idle_time` is under `45.0` (it climbs to about 30 and drops
+  back each time the run's heartbeat fires; without the heartbeat it would
+  be 70 or more). After the interrupt the conversation is `paused` and,
+  50 s later, `idle_time` is at least `40.0`: the heartbeat stopped with the run.
 - **OpenAPI document (`F01.openapi`).** The contract clients generate from.
   ```sh
   control-agent-server api GET /openapi.json --auth none --expect 200 --max-chars 200 \
@@ -271,7 +299,11 @@ Preconditions:
 - `idle_time` resets on conversation events (except state updates), bash
   command start, execute and stop, file uploads, downloads, directory creation
   and archives, and the git changes and diff routes; not on status probes or
-  other reads. Orchestrators use it to reap idle sandboxes.
+  other reads. While a run is in flight the server also refreshes it every
+  30 s (`ACTIVITY_SIGNAL_INTERVAL`), so a run blocked on a slow model call,
+  a long tool call or a Task child keeps `idle_time` at or below about 30;
+  the refresh stops when the run ends or is interrupted. Orchestrators use it
+  to reap idle sandboxes.
 - `build_git_sha` and `build_git_ref` come from `OPENHANDS_BUILD_GIT_SHA` and
   `OPENHANDS_BUILD_GIT_REF`; `launch` sets them from the checkout. A server
   started another way reports `unknown`, which is why `doctor` compares the
