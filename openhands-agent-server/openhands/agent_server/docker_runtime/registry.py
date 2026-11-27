@@ -323,6 +323,10 @@ class DockerConversationRegistry(ConversationRegistry):
     def has_active_leases(self, conversation_id: UUID) -> bool:
         return self._leases.get(conversation_id, 0) > 0
 
+    def idle_token(self, conversation_id: UUID) -> int:
+        """Snapshot runtime activity for a later ``stop_if_idle`` call."""
+        return self._lease_generations.get(conversation_id, 0)
+
     def release_lease(self, conversation_id: UUID) -> None:
         """Release a previously acquired lease on a container runtime."""
         count = self._leases.get(conversation_id, 0) - 1

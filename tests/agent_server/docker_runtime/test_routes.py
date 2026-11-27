@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from fastapi import FastAPI
+from fastapi import APIRouter, Depends, FastAPI
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 from starlette.requests import Request
@@ -15,6 +15,7 @@ from starlette.routing import Match
 
 from openhands.agent_server.api import add_domain_error_handler, create_app
 from openhands.agent_server.config import Config
+from openhands.agent_server.dependencies import check_session_api_key
 from openhands.agent_server.docker_runtime import routers
 from openhands.agent_server.docker_runtime.provisioning import RuntimeProvisioningStore
 from openhands.agent_server.docker_runtime.registry import (
@@ -27,13 +28,25 @@ from openhands.agent_server.docker_runtime.routers import (
     proxy_conversation,
 )
 from openhands.agent_server.event_router import event_read_router
-from openhands.agent_server.models import UpdateSecretsRequest
+from openhands.agent_server.models import (
+    StartConversationRequest,
+    StoredConversation,
+    UpdateSecretsRequest,
+)
 from openhands.agent_server.persistence import PersistedSettings, ServerStores
 from openhands.agent_server.server_context import server_context_of
+from openhands.sdk.agent import ACPAgent
+from openhands.sdk.agent.acp_file_credentials import CODEX_AUTH_SECRET_NAME
 from openhands.sdk.conversation.request import ConversationContainerOptions
+from openhands.sdk.conversation.state import (
+    ConversationExecutionStatus,
+    ConversationState,
+)
 from openhands.sdk.git.utils import run_git_command
 from openhands.sdk.profiles.agent_profile import LaunchedAgentProfile
-from openhands.sdk.secret import LookupSecret
+from openhands.sdk.secret import LookupSecret, StaticSecret
+from openhands.sdk.utils.pydantic_secrets import cipher_context, client_context
+from openhands.sdk.workspace import LocalWorkspace
 from tests.agent_server.conftest import install_test_context
 
 
@@ -63,6 +76,10 @@ def test_docker_mode_replaces_local_conversation_execution_routes(tmp_path):
     assert "/api/conversations/{conversation_id}/{tail:path}" in paths
     assert "/api/conversations/{conversation_id}/events/search" in paths
     assert "/api/conversations/{conversation_id}" in paths
+    assert (
+        "/api/conversations/{conversation_id}/runtime-credential-bindings/{secret_name}"
+        in paths
+    )
     assert "/api/host/bash/execute_bash_command" not in paths
     assert "/api/bash/execute_bash_command" in paths
 
@@ -728,6 +745,314 @@ def _docker_start_app(
     )
     app.include_router(docker_conversation_router, prefix="/api")
     return app, registry
+
+
+def _persist_codex_conversation(
+    registry: DockerConversationRegistry,
+    conversation_id,
+    execution_status: ConversationExecutionStatus = ConversationExecutionStatus.IDLE,
+):
+    identity = registry.provisioning.create(conversation_id)
+    conversation_dir = registry.conversation_dir(conversation_id)
+    conversation_dir.mkdir(parents=True, exist_ok=True)
+    workspace = LocalWorkspace(working_dir=identity.workspace_path)
+    stored = StoredConversation(id=conversation_id, workspace=workspace)
+    (conversation_dir / "meta.json").write_text(
+        stored.model_dump_json(context=cipher_context(identity.cipher))
+    )
+    state = ConversationState.create(
+        id=conversation_id,
+        agent=ACPAgent(acp_command=["codex-acp"], acp_server="codex"),
+        workspace=workspace,
+        persistence_dir=str(conversation_dir),
+        cipher=identity.cipher,
+    )
+    state.execution_status = execution_status
+    return identity
+
+
+def test_runtime_credential_broker_follows_host_rotation_and_writes_back(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "persistence"))
+    config = Config(
+        conversations_path=tmp_path / "conversations",
+        workspace_path=tmp_path / "workspaces",
+        secret_key=SecretStr("outer-key"),
+        session_api_keys=["outer-session"],
+    )
+    registry = DockerConversationRegistry(config, ServerStores.from_config(config))
+    identity = registry.provisioning.create(uuid4())
+    registry.stores.secrets.set_secret(CODEX_AUTH_SECRET_NAME, "generation-0")
+    app = _app_with(registry, AsyncMock())
+    add_domain_error_handler(app)
+    api_router = APIRouter(prefix="/api", dependencies=[Depends(check_session_api_key)])
+    api_router.include_router(
+        routers.runtime_credential_broker_router, prefix="/conversations"
+    )
+    app.include_router(api_router)
+    path = (
+        f"/api/conversations/{identity.conversation_id}/"
+        f"runtime-credential-bindings/{CODEX_AUTH_SECRET_NAME}"
+    )
+    headers = {"X-Session-API-Key": identity.api_key.get_secret_value()}
+
+    with TestClient(app) as client:
+        initial = client.get(path, headers=headers)
+        registry.stores.secrets.set_secret(
+            CODEX_AUTH_SECRET_NAME, "generation-from-another-conversation"
+        )
+        current = client.get(path, headers=headers)
+        writeback = client.put(
+            path,
+            headers=headers,
+            json={
+                "expected_version": current.json()["version"],
+                "value": "generation-from-this-runtime",
+            },
+        )
+        rejected = client.get(
+            path, headers={"X-Session-API-Key": "another-runtime-key"}
+        )
+
+    assert initial.status_code == 200
+    assert initial.json()["value"] == "generation-0"
+    assert current.status_code == 200
+    assert current.json()["value"] == "generation-from-another-conversation"
+    assert current.json()["version"] != initial.json()["version"]
+    assert writeback.status_code == 200
+    assert registry.stores.secrets.get_secret(CODEX_AUTH_SECRET_NAME) == (
+        "generation-from-this-runtime"
+    )
+    assert rejected.status_code == 401
+
+
+def test_docker_codex_start_activates_host_binding_before_forwarding(
+    tmp_path, monkeypatch, caplog
+):
+    monkeypatch.setenv("OH_INTERNAL_SERVER_URL", "http://127.0.0.1:8123")
+    app, registry = _docker_start_app(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    registry.stores.secrets.set_secret(CODEX_AUTH_SECRET_NAME, "canonical")
+    calls: list[tuple[str, str, dict]] = []
+
+    async def get_or_create(_conversation_id):
+        identity = registry.provisioning.load(conversation_id)
+        return SimpleNamespace(
+            host="http://inner",
+            api_key=identity.api_key.get_secret_value(),
+        )
+
+    async def put(self, url, **kwargs):
+        calls.append(("PUT", url, kwargs))
+        return httpx.Response(204, request=httpx.Request("PUT", url))
+
+    async def post(self, url, **kwargs):
+        calls.append(("POST", url, kwargs))
+        return httpx.Response(
+            201,
+            json={"id": str(conversation_id)},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(registry, "get_or_create", get_or_create)
+    monkeypatch.setattr(httpx.AsyncClient, "put", put)
+    monkeypatch.setattr(httpx.AsyncClient, "post", post)
+    agent = ACPAgent(acp_command=["codex-acp"], acp_server="codex")
+
+    with caplog.at_level("INFO"):
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/conversations",
+                json={
+                    "conversation_id": str(conversation_id),
+                    "agent": agent.model_dump(mode="json"),
+                    "secrets": {
+                        CODEX_AUTH_SECRET_NAME: StaticSecret(
+                            value=SecretStr("request-snapshot")
+                        ).model_dump(mode="json", context=client_context("plaintext"))
+                    },
+                },
+            )
+
+    assert response.status_code == 201
+    assert [method for method, _, _ in calls] == ["PUT", "POST"]
+    activation = calls[0]
+    identity = registry.provisioning.load(conversation_id)
+    assert activation[1] == (
+        "http://inner/api/conversations/"
+        f"{conversation_id}/credential-bindings/{CODEX_AUTH_SECRET_NAME}"
+    )
+    assert activation[2]["json"] == {
+        "url": (
+            "http://host.docker.internal:8123/api/conversations/"
+            f"{conversation_id}/runtime-credential-bindings/{CODEX_AUTH_SECRET_NAME}"
+        ),
+        "headers": {
+            "X-Session-API-Key": identity.api_key.get_secret_value(),
+        },
+    }
+    forwarded = StartConversationRequest.model_validate(
+        calls[1][2]["json"], context=cipher_context(identity.cipher)
+    )
+    assert CODEX_AUTH_SECRET_NAME not in forwarded.secrets
+    assert "docker_credential_binding_selection" in caplog.text
+    assert "docker_credential_binding_activation" in caplog.text
+
+
+def test_existing_docker_codex_resume_reactivates_current_host_binding(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("OH_INTERNAL_SERVER_URL", "http://127.0.0.1:8123")
+    app, registry = _docker_start_app(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    identity = registry.provisioning.create(conversation_id)
+    conversation_dir = registry.conversation_dir(conversation_id)
+    conversation_dir.mkdir(parents=True, exist_ok=True)
+    workspace = LocalWorkspace(working_dir=identity.workspace_path)
+    stored = StoredConversation(id=conversation_id, workspace=workspace)
+    (conversation_dir / "meta.json").write_text(
+        stored.model_dump_json(context=cipher_context(identity.cipher))
+    )
+    ConversationState.create(
+        id=conversation_id,
+        agent=ACPAgent(acp_command=["codex-acp"], acp_server="codex"),
+        workspace=workspace,
+        persistence_dir=str(conversation_dir),
+        cipher=identity.cipher,
+    )
+    registry.stores.secrets.set_secret(CODEX_AUTH_SECRET_NAME, "rotated-on-the-host")
+    calls: list[tuple[str, str, dict]] = []
+
+    async def get_or_create(_conversation_id):
+        return SimpleNamespace(
+            host="http://inner",
+            api_key=identity.api_key.get_secret_value(),
+        )
+
+    async def put(self, url, **kwargs):
+        calls.append(("PUT", url, kwargs))
+        return httpx.Response(204, request=httpx.Request("PUT", url))
+
+    async def post(self, url, **kwargs):
+        calls.append(("POST", url, kwargs))
+        return httpx.Response(
+            200,
+            json={"id": str(conversation_id)},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(registry, "get_or_create", get_or_create)
+    monkeypatch.setattr(httpx.AsyncClient, "put", put)
+    monkeypatch.setattr(httpx.AsyncClient, "post", post)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/conversations",
+            json={
+                "conversation_id": str(conversation_id),
+                "agent_profile_id": str(uuid4()),
+            },
+        )
+
+    assert response.status_code == 200
+    assert [method for method, _, _ in calls] == ["PUT", "POST"]
+    assert calls[0][1].endswith(
+        f"/{conversation_id}/credential-bindings/{CODEX_AUTH_SECRET_NAME}"
+    )
+
+
+def test_legacy_binding_conflict_does_not_restart_an_active_turn(tmp_path, monkeypatch):
+    app, registry = _docker_start_app(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    identity = _persist_codex_conversation(
+        registry, conversation_id, ConversationExecutionStatus.RUNNING
+    )
+    registry.stores.secrets.set_secret(CODEX_AUTH_SECRET_NAME, "rotated-on-the-host")
+    container = SimpleNamespace(
+        host="http://inner", api_key=identity.api_key.get_secret_value()
+    )
+    registry.stop_if_idle = AsyncMock()
+
+    monkeypatch.setattr(registry, "get_or_create", AsyncMock(return_value=container))
+    monkeypatch.setattr(
+        httpx.AsyncClient,
+        "put",
+        AsyncMock(
+            return_value=httpx.Response(
+                409, request=httpx.Request("PUT", "http://inner/credential-binding")
+            )
+        ),
+    )
+    post = AsyncMock()
+    monkeypatch.setattr(httpx.AsyncClient, "post", post)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/conversations",
+            json={
+                "conversation_id": str(conversation_id),
+                "agent_profile_id": str(uuid4()),
+            },
+        )
+
+    assert response.status_code == 409
+    registry.stop_if_idle.assert_not_awaited()
+    post.assert_not_awaited()
+
+
+@pytest.mark.parametrize("runtime_busy", [False, True])
+def test_legacy_binding_conflict_restarts_only_an_idle_runtime(
+    tmp_path, monkeypatch, runtime_busy
+):
+    app, registry = _docker_start_app(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    identity = _persist_codex_conversation(registry, conversation_id)
+    registry.stores.secrets.set_secret(CODEX_AUTH_SECRET_NAME, "rotated-on-the-host")
+    old_container = SimpleNamespace(
+        host="http://old-inner", api_key=identity.api_key.get_secret_value()
+    )
+    new_container = SimpleNamespace(
+        host="http://new-inner", api_key=identity.api_key.get_secret_value()
+    )
+    get_or_create = AsyncMock(side_effect=[old_container, new_container])
+    stop_if_idle = AsyncMock(return_value=not runtime_busy)
+    put_responses = iter([409, 204])
+
+    async def put(self, url, **kwargs):
+        status_code = next(put_responses)
+        return httpx.Response(status_code, request=httpx.Request("PUT", url))
+
+    post = AsyncMock(
+        return_value=httpx.Response(
+            200,
+            json={"id": str(conversation_id)},
+            request=httpx.Request("POST", "http://new-inner/api/conversations"),
+        )
+    )
+    monkeypatch.setattr(registry, "get_or_create", get_or_create)
+    monkeypatch.setattr(registry, "stop_if_idle", stop_if_idle)
+    monkeypatch.setattr(httpx.AsyncClient, "put", put)
+    monkeypatch.setattr(httpx.AsyncClient, "post", post)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/conversations",
+            json={
+                "conversation_id": str(conversation_id),
+                "agent_profile_id": str(uuid4()),
+            },
+        )
+
+    stop_if_idle.assert_awaited_once_with(conversation_id, 1, container=old_container)
+    if runtime_busy:
+        assert response.status_code == 409
+        assert get_or_create.await_count == 1
+        post.assert_not_awaited()
+    else:
+        assert response.status_code == 200
+        assert get_or_create.await_count == 2
+        post.assert_awaited_once()
 
 
 @pytest.mark.parametrize("existing", [False, True])
