@@ -174,6 +174,12 @@ def _normalized_supported_openai_params(
     return frozenset(params or ())
 
 
+def requires_max_tokens_param(model: str | None) -> bool:
+    """Whether LiteLLM only accepts the output limit as ``max_tokens``."""
+    params = _normalized_supported_openai_params(model)
+    return "max_tokens" in params and "max_completion_tokens" not in params
+
+
 def _openai_supported_params(model: str) -> list[str]:
     """LiteLLM's param list for an ``openai`` model, minus its 1.105 guess.
 
