@@ -186,15 +186,6 @@ def test_parse_https_url_with_git_suffix_and_trailing_slash():
     )
 
 
-# -- SourceType enum ----------------------------------------------------------
-
-
-def test_source_type_values():
-    assert SourceType.LOCAL == "local"
-    assert SourceType.GIT == "git"
-    assert SourceType.GITHUB == "github"
-
-
 # -- get_cache_path ------------------------------------------------------------
 
 

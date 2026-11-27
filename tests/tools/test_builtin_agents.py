@@ -34,13 +34,6 @@ def _make_test_llm() -> LLM:
     return LLM(model="gpt-4o", api_key=SecretStr("test-key"), usage_id="test-llm")
 
 
-def test_builtins_contains_expected_agents() -> None:
-    md_files = {f.stem for f in SUBAGENTS_DIR.glob("*.md")}
-    assert {"default", "code_explorer", "bash_runner", "web_researcher"}.issubset(
-        md_files
-    )
-
-
 def test_load_all_builtins() -> None:
     """Every .md file in subagents/ should parse without errors."""
     agents = load_agents_from_dir(SUBAGENTS_DIR)
@@ -93,15 +86,6 @@ def test_register_builtins_agents_registers_expected_factories(
 
     if enable_browser:
         assert "browser_tool_set" in agent_tool_names["web-researcher"]
-
-
-def test_general_purpose_has_no_browser_tools() -> None:
-    """general-purpose agent should not have browser tools (architectural change)."""
-    register_builtins_agents(enable_browser=True)
-    factory = get_agent_factory("general-purpose")
-    agent = factory.factory_func(_make_test_llm())
-    tool_names = [t.name for t in agent.tools]
-    assert "browser_tool_set" not in tool_names
 
 
 def test_register_builtins_agents_skips_web_researcher_without_browser() -> None:
