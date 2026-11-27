@@ -83,12 +83,39 @@ def test_session_start_additional_context_reaches_llm_messages(tmp_path):
         conversation.close()
 
 
-def test_session_start_hook_env_excludes_conversation_secrets(tmp_path):
-    """Hooks run with the sanitized server environment, not conversation secrets."""
+def test_session_start_hook_env_excludes_sensitive_host_variables(
+    tmp_path, monkeypatch
+):
+    """Hooks run with the sanitized server environment, not the host's secrets."""
     names_file = tmp_path / "hook-env-names.txt"
     command = python_command(
         "import os; from pathlib import Path; "
         f"Path({str(names_file)!r}).write_text('\\n'.join(sorted(os.environ)))"
+    )
+    monkeypatch.setenv("SESSION_API_KEY", "host-credential")
+    conversation = _conversation(tmp_path, _session_start_config(command))
+    try:
+        conversation.send_message("Hello")
+
+        names = set(names_file.read_text().split("\n"))
+        assert {"OPENHANDS_PROJECT_DIR", "OPENHANDS_EVENT_TYPE"} <= names
+        assert "SESSION_API_KEY" not in names
+    finally:
+        conversation.close()
+
+
+def test_session_start_hook_env_includes_conversation_secrets(tmp_path):
+    """A hook command can use the conversation's registered secrets.
+
+    A hook command is never name-scanned, so it cannot be given only the
+    secrets it mentions: it receives the whole registry. See #6966.
+    """
+    names_file = tmp_path / "hook-env-names.txt"
+    value_file = tmp_path / "hook-env-value.txt"
+    command = python_command(
+        "import os; from pathlib import Path; "
+        f"Path({str(names_file)!r}).write_text('\\n'.join(sorted(os.environ))); "
+        f"Path({str(value_file)!r}).write_text(os.environ.get('AZURE_DEVOPS_TOKEN', ''))"
     )
     conversation = _conversation(tmp_path, _session_start_config(command))
     try:
@@ -96,7 +123,15 @@ def test_session_start_hook_env_excludes_conversation_secrets(tmp_path):
         conversation.send_message("Hello")
 
         names = set(names_file.read_text().split("\n"))
-        assert {"OPENHANDS_PROJECT_DIR", "OPENHANDS_EVENT_TYPE"} <= names
-        assert "AZURE_DEVOPS_TOKEN" not in names
+        assert "AZURE_DEVOPS_TOKEN" in names
+        # The hook really resolved the value; the persisted event masks it.
+        assert value_file.read_text() == "not-a-real-token"
+
+        hook_events = [
+            e for e in conversation.state.events if isinstance(e, HookExecutionEvent)
+        ]
+        assert hook_events
+        for event in hook_events:
+            assert "not-a-real-token" not in (event.stdout or "")
     finally:
         conversation.close()

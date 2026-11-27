@@ -12,6 +12,7 @@ from openhands.sdk.hooks.types import HookEvent, HookEventType
 
 if TYPE_CHECKING:
     from openhands.sdk.conversation.conversation_stats import ConversationStats
+    from openhands.sdk.conversation.secret_registry import SecretRegistry
     from openhands.sdk.llm import LLM
     from openhands.sdk.llm.call_context import LLMCallContext
 
@@ -35,6 +36,7 @@ class HookManager:
         | ConversationVisualizerBase
         | None = None,
         conversation_stats: "ConversationStats | None" = None,
+        secret_registry: "SecretRegistry | None" = None,
     ):
         self.config = config or HookConfig.load(working_dir=working_dir)
         self.executor = HookExecutor(
@@ -45,6 +47,7 @@ class HookManager:
             persistence_dir=persistence_dir,
             visualizer=visualizer,
             conversation_stats=conversation_stats,
+            secret_registry=secret_registry,
         )
         self.session_id = session_id
         self.working_dir = working_dir

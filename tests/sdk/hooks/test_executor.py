@@ -12,6 +12,7 @@ import pytest
 from pydantic import SecretStr
 
 from openhands.sdk.conversation.conversation_stats import ConversationStats
+from openhands.sdk.conversation.secret_registry import SecretRegistry
 from openhands.sdk.hooks.config import HookDefinition, HookType
 from openhands.sdk.hooks.executor import HookExecutor
 from openhands.sdk.hooks.types import HookDecision, HookEvent, HookEventType
@@ -1332,3 +1333,170 @@ class TestPromptHookExecution:
             )
 
         assert captured_model == "gpt-5.5"
+
+
+class TestHookSecrets:
+    """A command hook can use the conversation's registered secrets."""
+
+    @pytest.fixture
+    def sample_event(self):
+        return HookEvent(
+            event_type=HookEventType.PRE_TOOL_USE,
+            tool_name="BashTool",
+            tool_input={"command": "ls -la"},
+            session_id="test-session",
+        )
+
+    @pytest.fixture
+    def registry(self):
+        registry = SecretRegistry()
+        registry.update_secrets({"FOO": "bar-value"})
+        return registry
+
+    def _executor(self, tmp_path, registry=None):
+        return HookExecutor(working_dir=str(tmp_path), secret_registry=registry)
+
+    def test_a_command_hook_sees_a_registered_secret(self, tmp_path, sample_event,
+                                                    registry):
+        """The hook subprocess resolves the secret the agent's bash would.
+
+        The captured output is masked, so the value shows as ``<secret-hidden>``
+        rather than as the plaintext — but it is resolved, not unset.
+        """
+        executor = self._executor(tmp_path, registry)
+        hook = HookDefinition(
+            command=python_command(
+                "import os; print('FOO=' + os.environ.get('FOO', 'UNSET'))"
+            )
+        )
+
+        result = executor.execute(hook, sample_event)
+
+        assert result.success
+        assert "FOO=<secret-hidden>" in result.stdout
+        assert "UNSET" not in result.stdout
+
+    def test_a_secret_is_masked_in_the_persisted_hook_output(
+        self, tmp_path, sample_event, registry
+    ):
+        """The hook saw the value; the captured output does not keep it."""
+        executor = self._executor(tmp_path, registry)
+        hook = HookDefinition(
+            command=python_command(
+                "import os; print('the value is ' + os.environ['FOO'])"
+            )
+        )
+
+        result = executor.execute(hook, sample_event)
+
+        assert result.success
+        assert "bar-value" not in result.stdout
+        assert "<secret-hidden>" in result.stdout
+
+    def test_a_hook_with_no_secrets_behaves_as_before(self, tmp_path, sample_event):
+        """No registry means no secret variables and no failure."""
+        executor = self._executor(tmp_path, None)
+        hook = HookDefinition(
+            command=python_command(
+                "import os; print('FOO' in os.environ); "
+                "print(os.environ['OPENHANDS_SESSION_ID'])"
+            )
+        )
+
+        result = executor.execute(hook, sample_event)
+
+        assert result.success
+        assert "False" in result.stdout
+        assert "test-session" in result.stdout
+
+    def test_an_empty_registry_adds_no_variables(self, tmp_path, sample_event):
+        """An empty registry is the same as no registry."""
+        executor = self._executor(tmp_path, SecretRegistry())
+        hook = HookDefinition(
+            command=python_command(
+                "import os; print('FOO' in os.environ); "
+                "print(os.environ['OPENHANDS_PROJECT_DIR'] != '')"
+            )
+        )
+
+        result = executor.execute(hook, sample_event)
+
+        assert result.success
+        assert "False" in result.stdout
+        assert "True" in result.stdout
+
+    def test_a_secret_that_cannot_be_resolved_is_omitted(
+        self, tmp_path, sample_event
+    ):
+        """A failing lookup does not break the hook."""
+        registry = SecretRegistry()
+        registry.update_secrets({"BROKEN": "never-resolved"})
+
+        class BrokenSecret:
+            def get_value(self):
+                raise RuntimeError("lookup exploded")
+
+        registry.secret_sources["BROKEN"] = BrokenSecret()
+        executor = self._executor(tmp_path, registry)
+        hook = HookDefinition(
+            command=python_command(
+                "import os; print('BROKEN' in os.environ); print('ran')"
+            )
+        )
+
+        result = executor.execute(hook, sample_event)
+
+        assert result.success
+        assert "False" in result.stdout
+        assert "ran" in result.stdout
+
+    def test_an_agent_hook_forwards_the_secrets_to_its_sub_conversation(
+        self, tmp_path, sample_event, registry
+    ):
+        """The hook's sub-agent sees the parent's secrets."""
+        executor = self._executor(tmp_path, registry)
+        executor._llm = LLM(
+            model="gpt-4o", api_key=SecretStr("test-key"), usage_id="test"
+        )
+
+        captured = {}
+
+        class FakeConversation:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+                self.state = MagicMock()
+                self.state.events = []
+                self.conversation_stats = MagicMock()
+                self.conversation_stats.usage_to_metrics = {}
+
+            def send_message(self, message):
+                pass
+
+            def run(self):
+                pass
+
+            def close(self):
+                pass
+
+        from openhands.sdk.conversation.response_utils import get_agent_final_response
+
+        with (
+            patch(
+                "openhands.sdk.conversation.impl.local_conversation.LocalConversation",
+                FakeConversation,
+            ),
+            patch(
+                "openhands.sdk.conversation.response_utils.get_agent_final_response",
+                lambda events: '{"decision": "allow"}',
+            ),
+        ):
+            hook = HookDefinition(
+                type=HookType.AGENT,
+                system_prompt="decide",
+            )
+            result = executor.execute(hook, sample_event)
+
+        assert result.success
+        secrets = captured.get("secrets")
+        assert secrets is not None
+        assert "FOO" in secrets
