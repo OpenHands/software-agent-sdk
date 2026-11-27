@@ -124,6 +124,7 @@ def test_exit_sends_completion_callback(mock_docker_workspace, monkeypatch):
 
     with patch("httpx.Client") as MockClient:
         mock_client = MagicMock()
+        mock_client.post.return_value.status_code = 200
         mock_client.__enter__ = MagicMock(return_value=mock_client)
         mock_client.__exit__ = MagicMock(return_value=False)
         MockClient.return_value = mock_client

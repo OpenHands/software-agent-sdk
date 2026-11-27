@@ -14,6 +14,7 @@ from pydantic import Field, PrivateAttr, SecretStr, ValidationError
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.config import MCPServer, MCPTransport, coerce_mcp_config
+from openhands.sdk.workspace.completion_callback import post_completion_callback
 from openhands.sdk.workspace.remote.base import RemoteWorkspace
 from openhands.sdk.workspace.repo import CloneResult, RepoMapping, RepoSource
 
@@ -868,7 +869,9 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
 
         Includes ``conversation_id`` in the payload if one was registered via
         ``register_conversation()``, and ``cost`` if one was registered via
-        ``register_cost()``.
+        ``register_cost()``. Transport errors, 429, and 5xx are retried on the
+        same payload within a short budget. Any 2xx or 409 stops at once.
+        Building the payload or headers is part of this call. It never raises.
         """
         try:
             callback_url = self._automation_callback_url
@@ -879,27 +882,35 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
             return
 
         status = "COMPLETED" if exc_type is None else "FAILED"
-        payload: dict[str, Any] = {"status": status}
-        if self._automation_run_id:
-            payload["run_id"] = self._automation_run_id
-        if exc_val is not None:
-            payload["error"] = str(exc_val)
-
-        # Include conversation_id if one was registered
-        if self._conversation_id is not None:
-            payload["conversation_id"] = self._conversation_id
-
-        # Include accumulated LLM cost if one was registered
-        if self._accumulated_cost is not None:
-            payload["cost"] = self._accumulated_cost
-
         try:
+            payload: dict[str, Any] = {"status": status}
+            if self._automation_run_id:
+                payload["run_id"] = self._automation_run_id
+            if exc_val is not None:
+                payload["error"] = str(exc_val)
+
+            # Include conversation_id if one was registered
+            if self._conversation_id is not None:
+                payload["conversation_id"] = self._conversation_id
+
+            # Include accumulated LLM cost if one was registered
+            if self._accumulated_cost is not None:
+                payload["cost"] = self._accumulated_cost
+
             headers = {"Authorization": f"Bearer {self.cloud_api_key}"}
-            with httpx.Client(timeout=10.0) as cb_client:
-                resp = cb_client.post(callback_url, json=payload, headers=headers)
-                logger.info(f"Completion callback sent ({status}): {resp.status_code}")
-        except Exception as e:
-            logger.warning(f"Completion callback failed: {e}")
+            post_completion_callback(
+                url=callback_url,
+                payload=payload,
+                headers=headers,
+                status=status,
+                logger=logger,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Completion callback failed (%s): %s",
+                status,
+                type(exc).__name__,
+            )
 
     # --- Repository Cloning Methods ---
 

@@ -3,7 +3,6 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Annotated, Any
 
-import httpx
 from pydantic import BeforeValidator, Field, PrivateAttr
 
 from openhands.sdk.conversation.exceptions import ConversationRunError
@@ -12,6 +11,7 @@ from openhands.sdk.git.models import GitChange, GitDiff
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import observability_headers_from_env
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
+from openhands.sdk.workspace.completion_callback import post_completion_callback
 from openhands.sdk.workspace.models import CommandResult, FileOperationResult
 
 
@@ -101,7 +101,9 @@ class BaseWorkspace(DiscriminatedUnionMixin, ABC):
         Includes ``conversation_id`` and ``cost`` when registered. On failure,
         ``error`` is the existing structured ``ConversationErrorEvent`` carried
         by ``ConversationRunError``, or a classified fallback event for errors
-        outside a conversation.
+        outside a conversation. Transport errors, 429, and 5xx are retried on
+        the same payload within a short budget. Any 2xx or 409 stops at once.
+        Building the payload or headers is part of this call. It never raises.
 
         Args:
             exc_type: Exception type if an exception was raised, None otherwise
@@ -115,45 +117,53 @@ class BaseWorkspace(DiscriminatedUnionMixin, ABC):
         run_id = os.environ.get("AUTOMATION_RUN_ID")
 
         status = "COMPLETED" if exc_type is None else "FAILED"
-        payload: dict[str, Any] = {"status": status}
-        if run_id:
-            payload["run_id"] = run_id
-        if exc_val is not None:
-            error = (
-                exc_val.conversation_error
-                if isinstance(exc_val, ConversationRunError)
-                else None
-            )
-            if error is None:
-                cause = (
-                    exc_val.original_exception
-                    if isinstance(exc_val, ConversationRunError)
-                    else exc_val
-                )
-                error = ConversationErrorEvent(
-                    source="environment",
-                    code=type(cause).__name__,
-                    detail=str(cause),
-                )
-            payload["error"] = error.model_dump(mode="json")
-
-        # Include conversation_id if one was registered
-        if self._conversation_id is not None:
-            payload["conversation_id"] = self._conversation_id
-
-        # Include accumulated LLM cost if one was registered
-        if self._accumulated_cost is not None:
-            payload["cost"] = self._accumulated_cost
-
         try:
+            payload: dict[str, Any] = {"status": status}
+            if run_id:
+                payload["run_id"] = run_id
+            if exc_val is not None:
+                error = (
+                    exc_val.conversation_error
+                    if isinstance(exc_val, ConversationRunError)
+                    else None
+                )
+                if error is None:
+                    cause = (
+                        exc_val.original_exception
+                        if isinstance(exc_val, ConversationRunError)
+                        else exc_val
+                    )
+                    error = ConversationErrorEvent(
+                        source="environment",
+                        code=type(cause).__name__,
+                        detail=str(cause),
+                    )
+                payload["error"] = error.model_dump(mode="json")
+
+            # Include conversation_id if one was registered
+            if self._conversation_id is not None:
+                payload["conversation_id"] = self._conversation_id
+
+            # Include accumulated LLM cost if one was registered
+            if self._accumulated_cost is not None:
+                payload["cost"] = self._accumulated_cost
+
             headers = observability_headers_from_env()
             if callback_api_key:
                 headers["Authorization"] = f"Bearer {callback_api_key}"
-            with httpx.Client(timeout=10.0) as cb_client:
-                resp = cb_client.post(callback_url, json=payload, headers=headers)
-                logger.info(f"Completion callback sent ({status}): {resp.status_code}")
-        except Exception as e:
-            logger.warning(f"Completion callback failed: {e}")
+            post_completion_callback(
+                url=callback_url,
+                payload=payload,
+                headers=headers,
+                status=status,
+                logger=logger,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Completion callback failed (%s): %s",
+                status,
+                type(exc).__name__,
+            )
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         """Exit the workspace context and cleanup resources.
