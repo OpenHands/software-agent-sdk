@@ -67,10 +67,7 @@ def create_mock_responses_response(content: str = "Recovered") -> ResponsesAPIRe
 
 def _auth_error() -> AuthenticationError:
     return AuthenticationError(
-        message=(
-            "Invalid proxy server token passed. Unable to find token in cache or "
-            "LiteLLM_VerificationTokenTable (token_not_found_in_db)"
-        ),
+        message="Incorrect API key provided",
         llm_provider="openhands",
         model="gpt-4o",
     )
