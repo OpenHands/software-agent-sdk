@@ -34,7 +34,7 @@ def gateway():
             requests.append((self.path, model, headers))
             calls[model] += 1
             child = {"atlas": "birch", "birch": "cedar"}.get(model)
-            message = {"role": "assistant", "content": "Done."}
+            message: dict[str, object] = {"role": "assistant", "content": "Done."}
             finish_reason = "stop"
             if child and calls[model] == 1:
                 message["content"] = None
@@ -72,7 +72,7 @@ def gateway():
             self.end_headers()
             self.wfile.write(payload)
 
-        def log_message(self, *_args):
+        def log_message(self, format: str, *args: object) -> None:
             pass
 
     with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
