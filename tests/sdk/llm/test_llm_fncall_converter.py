@@ -1195,3 +1195,53 @@ def test_non_fncall_param_whitespace_follows_renderer_framing(
     )
 
     assert _first_tool_call_arguments(fncall_messages) == {"value": expected}
+
+
+def test_null_property_value_in_tool_schema():
+    """Tool schemas with an explicit null property value must not crash.
+
+    Lenient producers (e.g. YAML-defined tools where ``command:`` has no
+    nested mapping, or MCP servers emitting partial JSON schemas) can put a
+    null value under ``properties``. The non-native fn-call converter must
+    tolerate that everywhere it walks properties, matching the isinstance
+    guard already used for descriptions.
+    """
+    tools = cast(
+        list[ChatCompletionToolParam],
+        [
+            {
+                "type": "function",
+                "function": {
+                    "name": "terminal",
+                    "description": "Run a command.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"command": None},
+                        "required": ["command"],
+                    },
+                },
+            }
+        ],
+    )
+
+    # The tool description rendering must not crash on the null property.
+    description = convert_tools_to_description(tools)
+    assert "terminal" in description
+
+    # The convert-back path must not crash either and should still produce
+    # the model's parameter value.
+    messages = [
+        {"role": "user", "content": "list files"},
+        {
+            "role": "assistant",
+            "content": (
+                "<function=terminal>\n"
+                "<parameter=command>ls</parameter>\n"
+                "</function>"
+            ),
+        },
+    ]
+    fncall_messages = convert_non_fncall_messages_to_fncall_messages(
+        messages, tools
+    )
+    assert _first_tool_call_arguments(fncall_messages) == {"command": "ls"}

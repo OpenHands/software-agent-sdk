@@ -293,7 +293,7 @@ def convert_tools_to_description(tools: list[ChatCompletionToolParam]) -> str:
                     param_info if isinstance(param_info, dict) else None
                 )
 
-                if "enum" in param_info:
+                if isinstance(param_info, dict) and "enum" in param_info:
                     enum_values = ", ".join(f"`{v}`" for v in param_info["enum"])
                     desc += f"\nAllowed values: [{enum_values}]"
 
@@ -543,7 +543,7 @@ def _extract_and_validate_params(
                 f"Allowed parameters: {allowed_params}"
             )
 
-        prop = properties.get(param_name, {})
+        prop = properties.get(param_name) or {}
         param_type = prop.get("type", "string")
 
         if param_type == "integer":
