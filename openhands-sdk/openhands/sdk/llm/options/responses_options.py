@@ -92,6 +92,9 @@ def select_responses_options(
         context,
         supports_prompt_cache_key=model_features.supports_prompt_cache_key,
         openrouter=is_openrouter(llm),
+        gateway_provider=(
+            None if llm.is_subscription else getattr(llm, "_provider_info", None)
+        ),
         codex_subscription=llm.is_subscription,
     )
 
