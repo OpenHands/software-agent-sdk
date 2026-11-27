@@ -266,7 +266,7 @@ export class HttpClient {
         let errorContent: unknown;
         try {
           const contentType = response.headers.get('content-type');
-          if (contentType?.includes('application/json')) {
+          if (contentType?.toLowerCase().includes('application/json')) {
             errorContent = await response.json();
           } else {
             errorContent = await response.text();
@@ -373,7 +373,9 @@ export class HttpClient {
               const text = buffer.toString('utf-8');
               let errorContent: unknown;
               try {
-                errorContent = contentType?.includes('application/json') ? JSON.parse(text) : text;
+                errorContent = contentType?.toLowerCase().includes('application/json')
+                  ? JSON.parse(text)
+                  : text;
               } catch {
                 errorContent = text || null;
               }
@@ -437,7 +439,7 @@ export class HttpClient {
       return (text ? JSON.parse(text) : undefined) as T;
     }
 
-    if (contentType?.includes('application/json')) {
+    if (contentType?.toLowerCase().includes('application/json')) {
       return (text ? JSON.parse(text) : undefined) as T;
     }
 
@@ -462,7 +464,7 @@ export class HttpClient {
     }
 
     const contentType = response.headers.get('content-type');
-    if (contentType?.includes('application/json')) {
+    if (contentType?.toLowerCase().includes('application/json')) {
       return (await response.json()) as T;
     }
     return (await response.text()) as T;
