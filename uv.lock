@@ -2816,7 +2816,7 @@ requires-dist = [
     { name = "openai", specifier = ">=2.33.0,<3" },
     { name = "openhands-sdk", editable = "openhands-sdk" },
     { name = "openhands-tools", editable = "openhands-tools" },
-    { name = "posthog", marker = "extra == 'posthog'", specifier = ">=8.0.1,<9" },
+    { name = "posthog", marker = "extra == 'posthog'", specifier = ">=8.0.2,<9" },
     { name = "pydantic", specifier = ">=2.14.3" },
     { name = "sqlalchemy", specifier = ">=2.1.9" },
     { name = "uvicorn", specifier = ">=0.54.0" },
@@ -3332,16 +3332,16 @@ wheels = [
 
 [[package]]
 name = "posthog"
-version = "8.0.1"
+version = "8.0.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "distro" },
     { name = "requests" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/54/f3/fba1fd9fa7a609dcf55593945373a1c883270883ed9c15f98adf0ad11702/posthog-8.0.1.tar.gz", hash = "sha256:66d8b58992900109958495c31500125b98c46c1809bc451e3baeec89e02e3dcb", size = 1038752, upload-time = "2026-11-17T20:09:11.838Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ab/61/ba338586300466745ff07ab9a537c7264f267144e93be8f173790fee79a3/posthog-8.0.2.tar.gz", hash = "sha256:cd75439e82bd18a8b7d635a21d80625fbe8699eb95e4b51d272c3189648d1145", size = 1039689, upload-time = "2026-11-18T20:12:16.716Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/67/3a/ca1e4944dc854e3f526bd77a6209433cd01ad4e6ef5633115b857ecff46a/posthog-8.0.1-py3-none-any.whl", hash = "sha256:7672cf055bafc87cf73d457a2fab15cef4b36ff0a1030812fe7ae0c9c536f429", size = 1191005, upload-time = "2026-11-17T20:09:09.662Z" },
+    { url = "https://files.pythonhosted.org/packages/c3/70/ca7efbc2f18cea23c0bde5e4de17ee43a42ff6527f1712016b568070abb8/posthog-8.0.2-py3-none-any.whl", hash = "sha256:31cc8bb39f986178db92f2f238524e78cebcd1a90035fecd3aba49fe1fff3e6e", size = 1191998, upload-time = "2026-11-18T20:12:14.31Z" },
 ]
 
 [[package]]
