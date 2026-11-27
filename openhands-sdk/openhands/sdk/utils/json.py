@@ -1,11 +1,27 @@
+from __future__ import annotations
+
 import json
 from datetime import datetime
-from typing import Any
-
-from litellm.types.utils import ModelResponse
+from typing import TYPE_CHECKING, Any, TypeGuard
 
 from openhands.sdk.llm.exceptions import LLMResponseError
 from openhands.sdk.llm.utils.metrics import Metrics
+
+
+if TYPE_CHECKING:
+    from litellm.types.utils import ModelResponse
+
+
+def _is_model_response(o: object) -> TypeGuard[ModelResponse]:
+    """Return whether ``o`` is a litellm ``ModelResponse``.
+
+    litellm is imported on first use so that importing this module does not pull
+    the provider stack. The ``TypeGuard`` return type narrows for type checkers,
+    which a plain ``bool`` would not.
+    """
+    from litellm.types.utils import ModelResponse
+
+    return isinstance(o, ModelResponse)
 
 
 class OpenHandsJSONEncoder(json.JSONEncoder):
@@ -16,7 +32,7 @@ class OpenHandsJSONEncoder(json.JSONEncoder):
             return o.isoformat()
         if isinstance(o, Metrics):
             return o.get()
-        if isinstance(o, ModelResponse):
+        if _is_model_response(o):
             return o.model_dump()
         return super().default(o)
 
