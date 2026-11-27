@@ -5,8 +5,13 @@ import time
 
 import pytest
 
+from openhands.agent_server.bash_service import BashEventService
 from openhands.agent_server.conversation_service import ConversationService
-from openhands.agent_server.models import StartConversationRequest
+from openhands.agent_server.models import (
+    BashOutput,
+    ExecuteBashRequest,
+    StartConversationRequest,
+)
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.sdk import LLM, Agent, Event
 from openhands.sdk.credential import ResolvedCredential
@@ -165,6 +170,54 @@ async def test_running_conversation_is_not_evicted(tmp_path):
         finally:
             run_task.cancel()
             event_service._run_task = None
+
+
+@pytest.mark.asyncio
+async def test_conversation_with_running_bash_command_is_not_evicted(tmp_path):
+    """A running conversation-scoped bash command keeps the conversation loaded.
+
+    Evicting closes the scoped BashEventService, which kills the command's
+    process group before any final BashOutput is written.
+    """
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    request = _make_request(workspace_dir)
+
+    async with ConversationService(
+        conversations_dir=conversations_dir,
+        conversation_idle_ttl_seconds=1800,
+    ) as service:
+        info, _ = await service.start_conversation(request)
+        conversation_id = info.id
+        assert service._event_services is not None
+        event_service = service._event_services[conversation_id]
+        bash_service = BashEventService(
+            bash_events_dir=event_service.conversation_dir / "bash_events",
+            default_cwd=str(workspace_dir),
+        )
+        event_service.bash_event_service = bash_service
+        command, task = await bash_service.start_bash_command(
+            ExecuteBashRequest(command="sleep 30", timeout=60)
+        )
+
+        event_service._last_active_monotonic = time.monotonic() - 10_000
+        await service._evict_idle_conversations(1800)
+        assert conversation_id in service._event_services
+        assert event_service.is_open()
+        assert not task.done()
+
+        # Once the command finishes, the conversation becomes evictable and
+        # the command's final output was written.
+        assert await bash_service.stop_bash_command(command.id)
+        await asyncio.wait_for(task, timeout=10)
+        page = await bash_service.search_bash_events(command_id__eq=command.id)
+        assert any(
+            isinstance(item, BashOutput) and item.exit_code is not None
+            for item in page.items
+        )
+        event_service._last_active_monotonic = time.monotonic() - 10_000
+        await service._evict_idle_conversations(1800)
+        assert conversation_id not in service._event_services
 
 
 @pytest.mark.asyncio
