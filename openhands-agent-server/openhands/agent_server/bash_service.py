@@ -429,6 +429,8 @@ class BashEventService:
                             "Failed to kill process (command_id=%s)", command.id
                         )
                 exit_code = -1
+                # The remote workspace recognizes this marker on timeout results.
+                stderr_buffer += f"\nCommand timed out after {command.timeout} seconds"
                 logger.warning(
                     "Command timed out after %s seconds (command_id=%s)",
                     command.timeout,

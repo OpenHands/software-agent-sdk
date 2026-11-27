@@ -91,6 +91,11 @@ async def test_bash_timeout_runs_sigterm_trap(
 
     await asyncio.sleep(0.2)  # let the trap's filesystem write land
     assert marker.exists(), "SIGTERM trap did not run; cleanup skipped."
+    assert any(
+        event.get("exit_code") == -1
+        and "Command timed out" in (event.get("stderr") or "")
+        for event in items
+    )
     assert "Command timed out" in caplog.text
     assert secret not in caplog.text
 
