@@ -40,6 +40,7 @@ Routes: `POST /api/conversations/{conversation_id}/ask_agent`,
 - `F10.condense-no-condenser`: an agent without a request-handling condenser (condenser disabled, or `no_op`) gets an error naming the cause, and no `CondensationRequest` or other event is recorded.
 - `F10.condense-status`: that refusal is a client error (4xx), not a 500.
 - `F10.condense-llm-failure`: when the condenser's model is unreachable, condense answers 500 with an `error_id`, leaves the `CondensationRequest` pending and records no `Condensation`.
+- `F10.condense-pending-action`: on a conversation waiting for confirmation (`AlwaysConfirm`, one terminal action pending), condense never runs the pending action: the command has not run, no observation is recorded, the status stays `waiting_for_confirmation`, and condense either records a `Condensation` or is refused (409); accepting the action afterwards runs it exactly once. Known bug [#7160](https://github.com/OpenHands/software-agent-sdk/issues/7160).
 - `F10.condense-errors`: an unknown id is 404 `Conversation not found`, a malformed id 422, a missing key 401 (and records nothing).
 - `F10.ask-agent`: `POST /ask_agent` answers a question about the conversation with DeepSeek (200 `{"response": ...}`), records no message or action and pushes none on the socket, and leaves the status unchanged; the only event it adds is one `stats` `ConversationStateUpdateEvent` that reports the call's usage under `ask-agent-llm`, in the event log and on the socket.
 - `F10.ask-agent-errors`: a missing `question` is 422, a missing key 401, and an unreachable model 500 with an `error_id`.
@@ -435,6 +436,41 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   `CondensationRequest` stays in the log unhandled, so the next agent step
   will try to condense first; no `Condensation` exists and the status is
   still `idle`.
+- **Condense while an action awaits confirmation (`F10.condense-pending-action`), known bug [#7160](https://github.com/OpenHands/software-agent-sdk/issues/7160).**
+  A conversation of its own under `AlwaysConfirm`, with the default
+  summarizing condenser, on an `llm-stub` whose first answer is one terminal
+  command and whose later answers are plain text (a summary, then a reply).
+
+  Needs: `tmux`
+  ```sh
+  PW="$AGENT_SERVER_VERIFY_RUN/fixtures/qa-f10-pending"; mkdir -p "$PW"
+  PSTUB=$(control-agent-server fixture llm-stub --name qa-f10-pending --step 'tool:terminal:{"command":"echo ran >> qa-f10-unapproved.txt"}' --step 'reply:QA_F10_PENDING_TEXT' --print-path)
+  PLLM="{\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key\", \"base_url\": \"$PSTUB/v1\", \"num_retries\": 0}"
+  P=$(control-agent-server api POST /api/conversations --json "{\"workspace\": {\"working_dir\": \"$PW\"}, \"agent_settings\": {\"agent_kind\": \"openhands\", \"llm\": $PLLM, \"tools\": [{\"name\": \"terminal\"}]}, \"confirmation_policy\": {\"kind\": \"AlwaysConfirm\"}, \"autotitle\": false}" --expect 201 --field id)
+  control-agent-server conversation send "$P" --text 'Run the command.' --wait --until waiting_for_confirmation --timeout 120
+  control-agent-server api GET "/api/conversations/$P" --quiet --check execution_status eq waiting_for_confirmation --check agent.condenser.kind eq LLMSummarizingCondenser
+  test ! -e "$PW/qa-f10-unapproved.txt"
+  PCODE=$(control-agent-server api POST "/api/conversations/$P/condense" --expect 200,409 --timeout 120 --save F10.condense-pending-action/condense | jq -r .status)
+  control-agent-server api GET "/api/conversations/$P/events/count" --query kind=openhands.sdk.event.llm_convertible.observation.ObservationEvent --check . eq 0 --save F10.condense-pending-action/observations # bug: response.body eq 1
+  test ! -e "$PW/qa-f10-unapproved.txt"
+  control-agent-server api GET "/api/conversations/$P" --quiet --check execution_status eq waiting_for_confirmation
+  NCOND=$(control-agent-server api GET "/api/conversations/$P/events/count" --query kind=$COND --field .)
+  test "$PCODE" = 409 || test "$NCOND" -ge 1
+  control-agent-server api POST "/api/conversations/$P/events/respond_to_confirmation" --json '{"accept": true}' --expect 200
+  control-agent-server conversation wait "$P" --until finished --timeout 120
+  test "$(cat "$PW/qa-f10-unapproved.txt")" = ran
+  ```
+  Correct behavior: condense leaves the pending command alone (no file, no
+  observation, still `waiting_for_confirmation`), either condenses or answers
+  409, and accepting afterwards runs the command once. Known bug #7160
+  (reproduced 2026-11-27 on main@7cfef13a): condense answers 200
+  `{"success": true}`, but `LocalConversation._condense()` runs a full agent
+  step, which executes the pending action first (implicit confirmation) and
+  returns before the condenser: the file exists, one `ObservationEvent` is
+  recorded, no `Condensation` is, and the status still reads
+  `waiting_for_confirmation` with nothing left to approve. The SDK twin is
+  `S06.condense-pending-action`; fix in review:
+  [#7161](https://github.com/OpenHands/software-agent-sdk/pull/7161).
 - **Unknown, malformed and unauthenticated (`F10.condense-errors`).**
   ```sh
   control-agent-server api POST "/api/conversations/$NOPE/condense" --expect 404 --check detail eq 'Conversation not found' --save F10.condense-errors/unknown
