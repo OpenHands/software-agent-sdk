@@ -1366,7 +1366,7 @@ class ConversationService:
                 continue
             if isinstance(item, ConversationInfo):
                 page.items.append(item)
-            elif execution_status is None:
+            else:
                 page.broken_items.append(item)
 
         return page

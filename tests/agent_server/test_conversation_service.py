@@ -4803,6 +4803,33 @@ class TestConversationSearchScaling:
             assert total == 25
 
     @pytest.mark.asyncio
+    async def test_filtered_search_lists_the_broken_record_filtered_count_counts(
+        self, tmp_path
+    ):
+        """A status filter keeps a record whose state is unreadable in the page.
+
+        Regression coverage for #7157: the filtered count counted a record
+        without ``base_state.json`` that the filtered search left out.
+        """
+        workspace_dir = tmp_path / "workspace"
+        workspace_dir.mkdir()
+        conversations_dir = tmp_path / "conversations"
+        readable, no_state, bad_meta = self._seed(conversations_dir, 3, workspace_dir)
+        (conversations_dir / no_state.hex / "base_state.json").unlink()
+        (conversations_dir / bad_meta.hex / "meta.json").write_text("{not json")
+
+        async with ConversationService(conversations_dir=conversations_dir) as svc:
+            idle = ConversationExecutionStatus.IDLE
+            assert await svc.count_conversations(execution_status=idle) == 2
+
+            page = await svc.search_conversations(execution_status=idle)
+            assert [item.id for item in page.items] == [readable]
+            assert [(item.id, item.reason) for item in page.broken_items] == [
+                (no_state, "state")
+            ]
+            assert page.next_page_id is None
+
+    @pytest.mark.asyncio
     async def test_status_index_picks_up_on_disk_changes(self, tmp_path):
         """The cached status is invalidated when base_state.json changes."""
         workspace_dir = tmp_path / "workspace"
@@ -4870,6 +4897,9 @@ class TestConversationSearchScaling:
             base_state.write_text(corrupt_payload)
 
             assert await svc.count_conversations(execution_status=idle) == 2
+            page = await svc.search_conversations(execution_status=idle)
+            assert [item.id for item in page.items] == [ids[1]]
+            assert [item.id for item in page.broken_items] == [ids[0]]
 
     @pytest.mark.asyncio
     async def test_live_conversation_status_is_read_from_memory(self, tmp_path):

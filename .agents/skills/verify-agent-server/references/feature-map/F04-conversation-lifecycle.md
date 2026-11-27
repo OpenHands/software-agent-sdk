@@ -1113,12 +1113,13 @@ EOF
   title, timestamps, tags, reason) instead of `items`, and takes a slot of
   `limit` (a `limit=1` page can hold no `items` and one broken item).
   `count` includes them, so on a damaged store `count` equals `items` plus
-  `broken_items` of an unfiltered listing. A `status` filter drops them from
-  search, but `count?status=idle` still counts a record whose
-  `base_state.json` is missing (it reads as `idle`), so filtered count and
-  search can differ there
-  ([#7157](https://github.com/OpenHands/software-agent-sdk/issues/7157),
-  `F04.search-filter`). DELETE removes such a record's directory (see
+  `broken_items` of an unfiltered listing. With a `status` filter, search
+  and count both keep a `reason: "state"` record under the status the
+  catalog holds for it (`idle` when `base_state.json` is missing or its
+  `execution_status` cannot be read) and both leave out a
+  `reason: "metadata"` record, which has no status, so `count?status=`
+  equals `items` plus `broken_items` of the filtered listing
+  (`F04.search-filter`). DELETE removes such a record's directory (see
   `F31.search-unreadable-record`).
 - `agent.agent_context.skills` is trimmed to `[]` on every route unless
   `include_skills=true`; the stored agent keeps them.
