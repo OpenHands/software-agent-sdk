@@ -6,6 +6,7 @@ constraints.
 """
 
 from openhands.sdk.context.view import View
+from openhands.sdk.event import AgentErrorEvent
 from openhands.sdk.llm import (
     ThinkingBlock,
 )
@@ -336,4 +337,28 @@ def test_forgetting_range_selection() -> None:
     indices = View.from_events(events).manipulation_indices
 
     # [0 msg1 1 batch 5 msg2 6]
+    assert indices == {0, 1, 5, 6}
+
+
+def test_batch_with_leading_validation_error_cannot_be_split() -> None:
+    """A rejected first call's error must not open a cut inside its batch."""
+    rejected = create_action_event("response_1", "call_x").model_copy(
+        update={"action": None}
+    )
+    error = AgentErrorEvent(
+        error="Error validating tool 'test_tool'",
+        tool_name="test_tool",
+        tool_call_id="call_x",
+    )
+    events = [
+        message_event("Keep"),
+        rejected,
+        error,
+        create_action_event("response_1", "call_y"),
+        create_observation_event("call_y"),
+        message_event("Keep"),
+    ]
+    indices = View.from_events(events).manipulation_indices
+
+    # [0 msg1 1 batch(x, error x, y, obs y) 5 msg2 6]
     assert indices == {0, 1, 5, 6}
