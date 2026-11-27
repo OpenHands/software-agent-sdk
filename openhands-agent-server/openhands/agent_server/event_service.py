@@ -680,6 +680,16 @@ class EventService:
             return None  # the log's stand-in for a damaged file
         return event
 
+    async def active_branch(self, limit: int | None = None) -> list[Event]:
+        """Read HEAD and its ancestry under the same conversation lock."""
+
+        def snapshot() -> list[Event]:
+            conversation = self.get_conversation()
+            with conversation._state as state:
+                return state.active_branch(limit=limit)
+
+        return await asyncio.to_thread(snapshot)
+
     def _search_events_sync(
         self,
         page_id: str | None = None,
@@ -2080,7 +2090,7 @@ class EventService:
             # Snapshot events under the conversation lock, then judge (an LLM
             # call) with the lock released -- both on this worker thread.
             with conversation._state:
-                events = list(conversation._state.events)
+                events = conversation._state.active_branch()
             return controller.on_run_finished(events)
 
         def _user(text: str) -> Message:

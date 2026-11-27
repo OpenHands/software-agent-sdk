@@ -648,6 +648,34 @@ class RemoteState(ConversationStateProtocol):
 
         return callback
 
+    def active_branch(self, limit: int | None = None) -> list[Event]:
+        """Fetch an authoritative branch snapshot, including an explicitly empty HEAD.
+
+        Do not reconstruct HEAD from cached state: legacy and deliberately empty
+        heads can both be serialized as null, and WebSocket events may lag REST.
+        Older servers must be upgraded; falling back to the full log would mix
+        abandoned branches into pending-question checks and goal judging.
+        """
+        params = {"limit": limit} if limit is not None else None
+        try:
+            response = _send_request(
+                self._client,
+                "GET",
+                f"{self._events._events_base_path}/{self._conversation_id}/events/active-branch",
+                params=params,
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                raise httpx.HTTPStatusError(
+                    "Active-branch snapshot is unavailable: the conversation may "
+                    "not exist, or the agent server needs an upgrade supporting "
+                    "GET /events/active-branch. Refusing to use abandoned history.",
+                    request=exc.request,
+                    response=exc.response,
+                ) from exc
+            raise
+        return [Event.model_validate(item) for item in response.json()]
+
     @property
     def events(self) -> RemoteEventsList:
         """Access to the events list."""
