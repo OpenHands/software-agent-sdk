@@ -1,6 +1,7 @@
 """Opt-in tests against the verified release: CODE_SERVER_ROOT=/path/to/release."""
 
 import asyncio
+import json
 import os
 import socket
 from pathlib import Path
@@ -57,6 +58,27 @@ async def test_real_editor_auth_paths_websocket_and_rotation(
             assert response.status_code == 200
             assert "vscode-workbench-web-configuration" in response.text
             assert (await client.get(path + "healthz")).status_code == 200
+            theme = next(
+                service.extensions_dir.glob("theme-defaults/themes/dark_plus.json"),
+                None,
+            )
+            assert theme is not None
+            product = json.loads(
+                (
+                    service.openvscode_server_root / "lib" / "vscode" / "product.json"
+                ).read_text()
+            )
+            editor_root = f"/{product['quality']}-{product['commit']}"
+            resource = f"{prefix or ''}{editor_root}/vscode-remote-resource"
+            empty_tkn = {"path": str(theme), "tkn": ""}
+            authed = await client.get(resource, params=empty_tkn)
+            assert authed.status_code == 200
+            assert "Dark+" in authed.text
+            async with httpx.AsyncClient(base_url=base) as bare:
+                assert (await bare.get(resource, params=empty_tkn)).status_code == 401
+                assert (
+                    await bare.get(resource, params={**empty_tkn, "tkn": "wrong"})
+                ).status_code == 401
             assert (
                 await client.get(path, headers={"Origin": "https://evil.invalid"})
             ).status_code == 403
