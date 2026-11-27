@@ -1,9 +1,22 @@
+import sys
+import time
 from collections import OrderedDict
 from unittest.mock import patch
 
 import pytest
 
 from openhands.sdk.utils.command import execute_command, sanitized_env
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
+def test_execute_command_timeout_kills_shell_children():
+    """A timeout must not wait for processes the shell spawned."""
+    start = time.monotonic()
+    result = execute_command("sleep 30; echo done", timeout=1, print_output=False)
+
+    assert result.returncode == -1
+    assert "done" not in result.stdout
+    assert time.monotonic() - start < 10
 
 
 def test_sanitized_env_returns_copy():
