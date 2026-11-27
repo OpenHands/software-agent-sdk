@@ -363,7 +363,8 @@ def test_local_conversation_condense_does_not_run_pending_actions(tmp_path):
                 role="assistant",
                 content=[TextContent(text="Cleaning up.")],
                 tool_calls=[tool_call],
-            )
+            ),
+            Message(role="assistant", content=[TextContent(text="Done.")]),
         ]
     )
     condenser = LLMSummarizingCondenser(
@@ -397,6 +398,11 @@ def test_local_conversation_condense_does_not_run_pending_actions(tmp_path):
         == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
     )
     assert [a.tool_call_id for a in conv.state.waiting_actions()] == ["call_1"]
+
+    conv.run()
+
+    observations = [e for e in conv.state.events if isinstance(e, ObservationEvent)]
+    assert [o.tool_call_id for o in observations] == ["call_1"]
 
 
 # ---------------------------------------------------------------------------
