@@ -24,10 +24,10 @@ if TYPE_CHECKING:
     from openhands.sdk.conversation.base import BaseConversation
     from openhands.sdk.conversation.conversation_stats import ConversationStats
     from openhands.sdk.conversation.secret_registry import SecretRegistry
-    from openhands.sdk.secret import SecretSource
     from openhands.sdk.llm import LLM
     from openhands.sdk.llm.call_context import LLMCallContext
     from openhands.sdk.llm.utils.metrics import Metrics
+    from openhands.sdk.secret import SecretSource
 
 
 class HookResult(BaseModel):
@@ -473,7 +473,7 @@ class HookExecutor:
             else:
                 self.conversation_stats.usage_to_metrics[usage_id] = metrics.deep_copy()
 
-    def _hook_sub_conversation_secrets(self) -> 'dict[str, SecretSource] | None':
+    def _hook_sub_conversation_secrets(self) -> "dict[str, SecretSource] | None":
         """The parent's registered secrets, for an agent hook's sub-conversation.
 
         The sub-agent runs bash like any other agent, and it must see the same

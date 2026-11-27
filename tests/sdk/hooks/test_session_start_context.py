@@ -115,7 +115,8 @@ def test_session_start_hook_env_includes_conversation_secrets(tmp_path):
     command = python_command(
         "import os; from pathlib import Path; "
         f"Path({str(names_file)!r}).write_text('\\n'.join(sorted(os.environ))); "
-        f"Path({str(value_file)!r}).write_text(os.environ.get('AZURE_DEVOPS_TOKEN', ''))"
+        f"Path({str(value_file)!r}).write_text("
+        "os.environ.get('AZURE_DEVOPS_TOKEN', ''))"
     )
     conversation = _conversation(tmp_path, _session_start_config(command))
     try:

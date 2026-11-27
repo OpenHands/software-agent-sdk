@@ -1356,8 +1356,9 @@ class TestHookSecrets:
     def _executor(self, tmp_path, registry=None):
         return HookExecutor(working_dir=str(tmp_path), secret_registry=registry)
 
-    def test_a_command_hook_sees_a_registered_secret(self, tmp_path, sample_event,
-                                                    registry):
+    def test_a_command_hook_sees_a_registered_secret(
+        self, tmp_path, sample_event, registry
+    ):
         """The hook subprocess resolves the secret the agent's bash would.
 
         The captured output is masked, so the value shows as ``<secret-hidden>``
@@ -1425,9 +1426,7 @@ class TestHookSecrets:
         assert "False" in result.stdout
         assert "True" in result.stdout
 
-    def test_a_secret_that_cannot_be_resolved_is_omitted(
-        self, tmp_path, sample_event
-    ):
+    def test_a_secret_that_cannot_be_resolved_is_omitted(self, tmp_path, sample_event):
         """A failing lookup does not break the hook."""
         registry = SecretRegistry()
         registry.update_secrets({"BROKEN": "never-resolved"})
@@ -1477,8 +1476,6 @@ class TestHookSecrets:
 
             def close(self):
                 pass
-
-        from openhands.sdk.conversation.response_utils import get_agent_final_response
 
         with (
             patch(
