@@ -143,7 +143,7 @@ Preconditions:
     --check steps.shell.text contains my-shell \
     --check steps.shell_after_reset.text contains my-shell --check backend_at_end eq SubprocessTerminal
   ```
-  Expected: a reset starts a fresh shell of the same kind. Known failure (reproduced 2026-11-17, [#6653](https://github.com/OpenHands/software-agent-sdk/issues/6653)): `TerminalExecutor._reset_single_session` builds the new session with `terminal_type=None`, so an executor forced to `subprocess` comes back from a reset on tmux (`backend_at_end` is `TmuxTerminal`, `$0` is `/bin/bash`), dropping `shell_path`.
+  Expected: a reset starts a fresh shell of the same kind. Before #6653, `TerminalExecutor._reset_single_session` built the new session with `terminal_type=None`, so an executor forced to `subprocess` came back from `reset=True` on tmux (`TmuxTerminal`, `$0` `/bin/bash`), losing its configured `shell_path`; the reset now passes the executor's own terminal type.
 - **A timed-out command is flagged (`S14.terminal-timeout`).** With `no_change_timeout_seconds: 2`, a scripted agent runs `sleep 5` with `timeout` 1 (the hard limit) and `sleep 30` with none (no new output for 2 s), each stopped with `C-c`; on tmux, then on the subprocess backend.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
