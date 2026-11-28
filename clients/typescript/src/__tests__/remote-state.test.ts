@@ -68,40 +68,118 @@ describe('RemoteState full_state normalization', () => {
     await expect(state.getPersistenceDir()).rejects.toThrow(/persistence_dir missing/);
   });
 
-  it('normalizes a cache that was populated with a full_state wrapper via events', async () => {
-    // Regression: state-update events can leave the cached state wrapped in a
-    // `full_state` key. The cache-hit path of getConversationInfo() must unwrap
-    // it too, otherwise accessors throw "execution_status missing".
-    const fetchMock = vi.fn().mockRejectedValue(new Error('network should not be called')) as Mock;
-    global.fetch = fetchMock as typeof fetch;
-    const state = new RemoteState(new HttpClient({ baseUrl: 'http://example.com' }), 'abc');
+  it.each([
+    { key: 'full_state', wrapped: false },
+    { key: 'full_state', wrapped: true },
+    { key: '__full_state__', wrapped: false },
+    { key: '__full_state__', wrapped: true },
+  ])('applies deltas after a $key snapshot (wrapped: $wrapped)', async ({ key, wrapped }) => {
+    const { state, fetchMock } = makeState(CONVERSATION_INFO);
 
     await state.updateStateFromEvent({
       id: 'evt-1',
       kind: 'ConversationStateUpdateEvent',
       timestamp: '2024-01-01T00:00:00Z',
-      key: 'full_state',
-      value: CONVERSATION_INFO,
+      key,
+      value: wrapped ? { full_state: CONVERSATION_INFO } : CONVERSATION_INFO,
     });
 
     await expect(state.getExecutionStatus()).resolves.toBe('running');
+    await expect(state.getConfirmationPolicy()).resolves.toEqual({ kind: 'NeverConfirm' });
+
+    for (const update of [
+      { key: 'execution_status', value: 'paused' },
+      { key: 'confirmation_policy', value: { kind: 'AlwaysConfirm' } },
+    ]) {
+      await state.updateStateFromEvent({
+        id: update.key,
+        kind: 'ConversationStateUpdateEvent',
+        timestamp: '2024-01-01T00:00:01Z',
+        ...update,
+      });
+    }
+
+    await expect(state.getExecutionStatus()).resolves.toBe('paused');
+    await expect(state.getConfirmationPolicy()).resolves.toEqual({ kind: 'AlwaysConfirm' });
     await expect(state.getPersistenceDir()).resolves.toBe('/data/conversations/abc');
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('rejects a non-object full-state event instead of corrupting the cache', async () => {
-    const { state } = makeState(CONVERSATION_INFO);
+  it.each(['full_state', '__full_state__'])(
+    'rejects non-object %s events without corrupting the cache',
+    async (key) => {
+      const { state, fetchMock } = makeState(CONVERSATION_INFO);
+      await expect(state.getExecutionStatus()).resolves.toBe('running');
 
-    await expect(
-      state.updateStateFromEvent({
-        id: 'evt-2',
+      for (const value of ['not-an-object', null, []]) {
+        await expect(
+          state.updateStateFromEvent({
+            id: 'evt-2',
+            kind: 'ConversationStateUpdateEvent',
+            timestamp: '2024-01-01T00:00:00Z',
+            key,
+            value,
+          })
+        ).rejects.toThrow('Full conversation state update must contain an object value.');
+
+        await expect(state.getExecutionStatus()).resolves.toBe('running');
+      }
+      expect(fetchMock).toHaveBeenCalledOnce();
+    }
+  );
+
+  it.each([false, true])(
+    'preserves a newer event during a queued refresh (initial update fails: %s)',
+    async (initialUpdateFails) => {
+      const { state, fetchMock } = makeState(CONVERSATION_INFO);
+      let resolveResponse!: (response: Response) => void;
+      const response = new Promise<Response>((resolve) => {
+        resolveResponse = resolve;
+      });
+      const fetchStarted = new Promise<void>((resolve) => {
+        fetchMock.mockImplementationOnce(() => {
+          resolve();
+          return response;
+        });
+      });
+
+      const initialUpdate = state.updateStateFromEvent({
+        id: 'initial-update',
         kind: 'ConversationStateUpdateEvent',
         timestamp: '2024-01-01T00:00:00Z',
-        key: '__full_state__',
-        value: 'not-an-object',
-      })
-    ).rejects.toThrow('Full conversation state update must contain an object value');
+        key: initialUpdateFails ? '__full_state__' : 'execution_status',
+        value: initialUpdateFails ? 'not-an-object' : 'running',
+      });
+      const initialResult = initialUpdate.catch((error: unknown) => error);
+      const refresh = state.refresh();
+      await fetchStarted;
 
-    await expect(state.getExecutionStatus()).resolves.toBe('running');
-  });
+      const newerUpdate = state.updateStateFromEvent({
+        id: 'newer-update',
+        kind: 'ConversationStateUpdateEvent',
+        timestamp: '2024-01-01T00:00:01Z',
+        key: 'execution_status',
+        value: 'paused',
+      });
+      const latestUpdate = state.updateStateFromEvent({
+        id: 'latest-update',
+        kind: 'ConversationStateUpdateEvent',
+        timestamp: '2024-01-01T00:00:02Z',
+        key: 'execution_status',
+        value: 'finished',
+      });
+      resolveResponse(jsonResponse(CONVERSATION_INFO));
+      await Promise.all([refresh, newerUpdate, latestUpdate]);
+
+      if (initialUpdateFails) {
+        expect(await initialResult).toMatchObject({
+          message: 'Full conversation state update must contain an object value.',
+        });
+      } else {
+        expect(await initialResult).toBeUndefined();
+      }
+      expect(fetchMock).toHaveBeenCalledOnce();
+      await expect(state.getExecutionStatus()).resolves.toBe('finished');
+    }
+  );
 });
