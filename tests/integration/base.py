@@ -17,6 +17,7 @@ from openhands.sdk import (
     Message,
     TextContent,
 )
+from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.context.condenser import CondenserBase
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.visualizer import DefaultConversationVisualizer
@@ -135,7 +136,10 @@ class BaseIntegrationTest(ABC):
 
         self.llm: LLM = LLM(**llm_kwargs, usage_id="test-llm")
         self.agent: Agent = Agent(
-            llm=self.llm, tools=self.tools, condenser=self.condenser
+            llm=self.llm,
+            tools=self.tools,
+            condenser=self.condenser,
+            agent_context=self.agent_context,
         )
         self.collected_events: list[Event] = []
         self.llm_messages: list[dict[str, Any]] = []
@@ -268,6 +272,16 @@ class BaseIntegrationTest(ABC):
         return get_tools_for_preset(
             self.tool_preset, enable_browser=self.enable_browser
         )
+
+    @property
+    def agent_context(self) -> AgentContext | None:
+        """Optional agent context for the agent. Override to provide skills,
+        path rules, or other context the scenario needs.
+
+        Returns:
+            AgentContext instance or None (default)
+        """
+        return None
 
     @property
     def condenser(self) -> CondenserBase | None:
