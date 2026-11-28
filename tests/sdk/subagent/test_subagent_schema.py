@@ -3,10 +3,16 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from openhands.sdk.context.condenser import (
+    LLMSummarizingCondenser,
+    NoOpCondenser,
+)
 from openhands.sdk.hooks.config import HookConfig
 from openhands.sdk.mcp.config import MCPServer, dump_mcp_config
 from openhands.sdk.subagent.schema import (
     AgentDefinition,
+    AgentDefinitionError,
+    SubAgentCondenserSettings,
     _extract_examples,
 )
 
@@ -716,3 +722,171 @@ def test_load_utf8_bom_frontmatter(tmp_path: Path):
 
     assert agent.name == "bom-agent"
     assert agent.system_prompt == "Prompt."
+
+
+class TestAgentDefinitionCondenserMapping:
+    """Frontmatter ``condenser:`` mappings carry tuning params, not a full spec.
+
+    The condenser LLM is injected at factory time, so a tuning-only mapping must
+    load successfully (it could not before: ``LLMSummarizingCondenser.llm`` is
+    required).
+    """
+
+    def test_tuning_mapping_loads(self, tmp_path: Path):
+        agent_md = tmp_path / "tuned.md"
+        agent_md.write_text(
+            "---\nname: tuned\ncondenser:\n  max_size: 600\n  keep_first: 8\n"
+            "  max_tokens: 4096\n---\n\nPrompt.\n"
+        )
+
+        condenser = AgentDefinition.load(agent_md).condenser
+
+        assert isinstance(condenser, SubAgentCondenserSettings)
+        assert condenser.max_size == 600
+        assert condenser.keep_first == 8
+        assert condenser.max_tokens == 4096
+
+    def test_tuning_mapping_accepts_summarizing_kind(self, tmp_path: Path):
+        """The repro shape uses ``kind: LLMSummarizingCondenser``."""
+        agent_md = tmp_path / "tuned.md"
+        agent_md.write_text(
+            "---\nname: tuned\ncondenser:\n  kind: LLMSummarizingCondenser\n"
+            "  max_size: 600\n  keep_first: 8\n---\n\nPrompt.\n"
+        )
+
+        condenser = AgentDefinition.load(agent_md).condenser
+
+        assert isinstance(condenser, SubAgentCondenserSettings)
+        assert condenser.max_size == 600
+        assert condenser.keep_first == 8
+
+    def test_mapping_enabled_false_is_recorded(self, tmp_path: Path):
+        agent_md = tmp_path / "off.md"
+        agent_md.write_text(
+            "---\nname: off\ncondenser:\n  enabled: false\n---\n\nPrompt.\n"
+        )
+
+        condenser = AgentDefinition.load(agent_md).condenser
+
+        assert isinstance(condenser, SubAgentCondenserSettings)
+        assert condenser.enabled is False
+
+    def test_mapping_kind_noop_still_loads_as_condenser(self, tmp_path: Path):
+        agent_md = tmp_path / "noop.md"
+        agent_md.write_text(
+            "---\nname: noop\ncondenser:\n  kind: NoOpCondenser\n---\n\nPrompt.\n"
+        )
+
+        assert isinstance(AgentDefinition.load(agent_md).condenser, NoOpCondenser)
+
+    def test_invalid_field_names_file_and_field(self, tmp_path: Path):
+        """An unbuildable ``llm`` is reported, not silently swallowed."""
+        agent_md = tmp_path / "broken.md"
+        agent_md.write_text(
+            "---\nname: broken\ncondenser:\n  max_size: 600\n"
+            "  llm:\n    model: gpt-4o\n---\n\nPrompt.\n"
+        )
+
+        with pytest.raises(AgentDefinitionError) as excinfo:
+            AgentDefinition.load(agent_md)
+
+        error = excinfo.value
+        assert error.field == "llm"
+        assert error.name == "broken"
+        assert error.source is not None and error.source.endswith("broken.md")
+        assert "broken.md" in str(error)
+        assert "field 'llm'" in str(error)
+
+    def test_unknown_field_names_offending_field(self, tmp_path: Path):
+        agent_md = tmp_path / "broken.md"
+        agent_md.write_text(
+            "---\nname: broken\ncondenser:\n  max_size: 600\n"
+            "  bogus_param: 1\n---\n\nPrompt.\n"
+        )
+
+        with pytest.raises(AgentDefinitionError, match="field 'bogus_param'"):
+            AgentDefinition.load(agent_md)
+
+    def test_impossible_window_names_keep_first(self, tmp_path: Path):
+        agent_md = tmp_path / "broken.md"
+        agent_md.write_text(
+            "---\nname: broken\ncondenser:\n  max_size: 10\n"
+            "  keep_first: 8\n---\n\nPrompt.\n"
+        )
+
+        with pytest.raises(AgentDefinitionError) as excinfo:
+            AgentDefinition.load(agent_md)
+
+        assert excinfo.value.field == "keep_first"
+        assert "field 'keep_first'" in str(excinfo.value)
+
+    def test_inherit_string_uses_default_condenser(self, tmp_path: Path):
+        """``condenser: inherit`` predates tuning mappings and must keep loading."""
+        agent_md = tmp_path / "inherit.md"
+        agent_md.write_text("---\nname: inherit\ncondenser: inherit\n---\n\nPrompt.\n")
+
+        assert AgentDefinition.load(agent_md).condenser is None
+
+
+def test_legacy_inline_llm_spec_loads_as_condenser(tmp_path: Path):
+    """A frontmatter full spec with its own summarizer LLM still works."""
+    agent_md = tmp_path / "legacy.md"
+    agent_md.write_text(
+        "---\nname: legacy\ncondenser:\n  kind: LLMSummarizingCondenser\n"
+        "  max_size: 600\n  keep_first: 8\n  llm:\n    model: gpt-4o\n"
+        "    usage_id: my-condenser\n---\n\nPrompt.\n"
+    )
+
+    condenser = AgentDefinition.load(agent_md).condenser
+
+    assert isinstance(condenser, LLMSummarizingCondenser)
+    assert condenser.max_size == 600
+    assert condenser.keep_first == 8
+    assert condenser.llm.usage_id == "my-condenser"
+
+
+def test_inline_llm_with_settings_kind_loads_as_condenser(tmp_path: Path):
+    """``llm_summarizing`` plus an inline ``llm`` means the same condenser."""
+    agent_md = tmp_path / "legacy.md"
+    agent_md.write_text(
+        "---\nname: legacy\ncondenser:\n  kind: llm_summarizing\n"
+        "  max_size: 600\n  llm:\n    model: gpt-4o\n---\n\nPrompt.\n"
+    )
+
+    condenser = AgentDefinition.load(agent_md).condenser
+
+    assert isinstance(condenser, LLMSummarizingCondenser)
+    assert condenser.max_size == 600
+    assert condenser.llm.model == "gpt-4o"
+
+
+def test_partial_mapping_defers_unset_tuning(tmp_path: Path):
+    agent_md = tmp_path / "partial.md"
+    agent_md.write_text(
+        "---\nname: partial\ncondenser:\n  max_tokens: 4096\n---\n\nPrompt.\n"
+    )
+
+    definition = AgentDefinition.load(agent_md)
+    condenser = definition.condenser
+
+    assert isinstance(condenser, SubAgentCondenserSettings)
+    assert condenser.max_size is None
+    assert condenser.keep_first is None
+    assert condenser.max_tokens == 4096
+
+    # The None placeholders survive the remote-conversation JSON round-trip.
+    roundtripped = AgentDefinition.model_validate(definition.model_dump(mode="json"))
+    assert isinstance(roundtripped.condenser, SubAgentCondenserSettings)
+    assert roundtripped.condenser.max_size is None
+    assert roundtripped.condenser.max_tokens == 4096
+
+
+def test_window_validation_uses_default_max_size(tmp_path: Path):
+    """``keep_first`` alone is validated against the default window."""
+    agent_md = tmp_path / "too-many.md"
+    agent_md.write_text(
+        "---\nname: too-many\ncondenser:\n  keep_first: 39\n---\n\nPrompt.\n"
+    )
+
+    with pytest.raises(AgentDefinitionError, match="keep_first"):
+        AgentDefinition.load(agent_md)

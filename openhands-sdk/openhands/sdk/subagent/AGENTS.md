@@ -55,6 +55,10 @@ loading must:
 - log a warning (with stack trace), and
 - continue scanning other files.
 
+Exception: an invalid `condenser:` mapping raises `AgentDefinitionError`, logged at
+error level and **recorded** so a later `get_agent_factory("<name>")` names the file
+and field. Other definitions still load.
+
 (See `load_agents_from_dir` in `load.py`.)
 
 ### Registration failures must be non-fatal
@@ -134,10 +138,20 @@ Supported YAML frontmatter keys (see `AgentDefinition.load` in `schema.py`):
   servers nor re-expands `${VAR}`. Declared servers never affect eligibility.
 - `permission_mode` (optional): `always_confirm`, `never_confirm`, or `confirm_risky`;
   omission inherits the parent confirmation policy
-- `condenser` (optional): omission uses the default summarizing condenser; `none` or
-  `false` disables condensation; a mapping configures a condenser
+- `condenser` (optional): omission (or `default`/`inherit`) uses the default
+  summarizing condenser; `none` or `false` disables condensation; a mapping tunes it
+  or gives a full spec (below)
 
 **Unknown keys are preserved** in `AgentDefinition.metadata`.
+
+### Condenser frontmatter
+
+A mapping without `llm` tunes the default condenser (`max_size`, `keep_first`,
+`max_tokens`, `enabled`; unset keys keep 80/4, `enabled: false` → `NoOpCondenser`,
+`kind: LLMSummarizingCondenser` is accepted); any other mapping is a full condenser
+spec. Unknown tuning keys are rejected, `keep_first` must be ≤ `max_size // 2 - 2`,
+and an invalid mapping raises `AgentDefinitionError` naming the file and field
+(recorded for `get_agent_factory`).
 
 ### Body → system prompt
 

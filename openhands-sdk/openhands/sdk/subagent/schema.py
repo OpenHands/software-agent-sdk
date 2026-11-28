@@ -7,15 +7,30 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal
 
 import frontmatter
-from pydantic import BaseModel, Field
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    ValidationInfo,
+    field_validator,
+)
 
-from openhands.sdk.context.condenser import CondenserBase, NoOpCondenser
+from openhands.sdk.context.condenser import (
+    CondenserBase,
+    NoOpCondenser,
+    default_condenser,
+)
+from openhands.sdk.context.condenser.llm_summarizing_condenser import (
+    resolve_condenser_window,
+)
 from openhands.sdk.hooks.config import HookConfig
 from openhands.sdk.mcp.config import MCPServer, coerce_mcp_config
 from openhands.sdk.utils.path import to_posix_path
 
 
 if TYPE_CHECKING:
+    from openhands.sdk.llm import LLM
     from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
 
 
@@ -172,15 +187,101 @@ def _extract_hooks(fm: dict[str, object]) -> HookConfig | None:
     return hooks
 
 
-def _extract_condenser(fm: dict[str, Any]) -> CondenserBase | None:
+class AgentDefinitionError(ValueError):
+    """An invalid agent definition, naming the file and offending field."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        name: str | None = None,
+        source: str | None = None,
+        field: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.name = name
+        self.source = source
+        self.field = field
+
+
+class SubAgentCondenserSettings(BaseModel):
+    """Tuning parameters for a sub-agent's LLM summarizing condenser.
+
+    Frontmatter stores tuning only; unset fields keep the defaults applied by
+    :func:`default_condenser`, and the condenser LLM is injected at spawn.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["llm_summarizing"] = "llm_summarizing"
+    enabled: bool = True
+    max_size: int | None = Field(default=None, gt=0)
+    max_tokens: int | None = Field(default=None, gt=0)
+    keep_first: int | None = Field(default=None, ge=0, validate_default=True)
+
+    @field_validator("keep_first")
+    @classmethod
+    def _validate_window(
+        cls, keep_first: int | None, info: ValidationInfo
+    ) -> int | None:
+        # Field-level so the error names keep_first; max_size is declared first so
+        # info.data has it, and validate_default also checks an omitted keep_first.
+        if info.data.get("enabled", True):
+            window, resolved = resolve_condenser_window(
+                info.data.get("max_size"), keep_first
+            )
+            if window // 2 - resolved - 1 <= 0:
+                raise ValueError(
+                    "keep_first must be less than max_size // 2 to leave room for "
+                    "condensation"
+                )
+        return keep_first
+
+    def build_condenser(self, llm: LLM) -> CondenserBase:
+        """Build the condenser, injecting the agent's LLM at factory time."""
+        if not self.enabled:
+            return NoOpCondenser()
+        return default_condenser(
+            llm.model_copy(update={"usage_id": "condenser"}),
+            max_size=self.max_size,
+            keep_first=self.keep_first,
+            max_tokens=self.max_tokens,
+        )
+
+
+# Kinds that select the summarizing condenser whose tuning params we accept.
+# Any other ``kind`` is treated as a full condenser spec (e.g. NoOpCondenser).
+_SUMMARIZING_CONDENSER_KINDS: Final[set[str]] = {
+    "llm_summarizing",
+    "LLMSummarizingCondenser",
+}
+
+
+def _condenser_validation_error(
+    exc: ValidationError, *, name: str, source: str
+) -> AgentDefinitionError:
+    first = exc.errors()[0]
+    field = ".".join(str(part) for part in first["loc"]) or "condenser"
+    return AgentDefinitionError(
+        f"Invalid condenser in {source} (agent '{name}'): field '{field}': "
+        f"{first['msg']}",
+        name=name,
+        source=source,
+        field=field,
+    )
+
+
+def _extract_condenser(
+    fm: dict[str, Any], *, name: str, source: str
+) -> CondenserBase | SubAgentCondenserSettings | None:
     """Extract the condenser config from frontmatter.
 
-    Absent / 'default' / None -> None (a default summarizing condenser is applied
-    at factory time). 'none'/'off'/false -> NoOpCondenser (disable condensation).
-    A mapping -> a full condenser spec validated against the discriminated union.
+    None / 'default' -> None; 'none'/'off'/false -> NoOpCondenser; a mapping
+    without ``llm`` tunes the summarizing condenser; any other mapping is a full
+    condenser spec.
     """
     raw = fm.get("condenser")
-    if raw is None or isinstance(raw, CondenserBase):
+    if raw is None or isinstance(raw, (CondenserBase, SubAgentCondenserSettings)):
         return raw
     if isinstance(raw, bool):
         return None if raw else NoOpCondenser()
@@ -190,13 +291,40 @@ def _extract_condenser(fm: dict[str, Any]) -> CondenserBase | None:
             return None
         if value in ("none", "off", "false", "no", "disable", "disabled"):
             return NoOpCondenser()
-        raise ValueError(
-            f"Invalid condenser value: {raw!r}. Use 'default', 'none', "
-            "or a mapping with a condenser config."
+        raise AgentDefinitionError(
+            f"Invalid condenser value {raw!r} in {source} (agent '{name}'). "
+            "Use 'default', 'none', or a mapping of condenser tuning parameters.",
+            name=name,
+            source=source,
+            field="condenser",
         )
     if isinstance(raw, dict):
-        return CondenserBase.model_validate(raw)
-    raise ValueError(f"Invalid condenser value: {raw!r}")
+        kind = raw.get("kind")
+        if kind is not None and (
+            kind not in _SUMMARIZING_CONDENSER_KINDS or "llm" in raw
+        ):
+            # Full spec (e.g. NoOpCondenser, or a legacy inline-llm mapping);
+            # normalize our settings spelling to the real condenser kind.
+            spec = (
+                {**raw, "kind": "LLMSummarizingCondenser"}
+                if kind == "llm_summarizing"
+                else raw
+            )
+            try:
+                return CondenserBase.model_validate(spec)
+            except ValidationError as e:
+                raise _condenser_validation_error(e, name=name, source=source) from e
+        tuning = {k: v for k, v in raw.items() if k != "kind"}
+        try:
+            return SubAgentCondenserSettings.model_validate(tuning)
+        except ValidationError as e:
+            raise _condenser_validation_error(e, name=name, source=source) from e
+    raise AgentDefinitionError(
+        f"Invalid condenser value {raw!r} in {source} (agent '{name}').",
+        name=name,
+        source=source,
+        field="condenser",
+    )
 
 
 class AgentDefinition(BaseModel):
@@ -279,10 +407,13 @@ class AgentDefinition(BaseModel):
         description="Path to the directory where LLM profiles are stored. "
         "If None, the default profile store directory is used.",
     )
-    condenser: CondenserBase | None = Field(
+    condenser: CondenserBase | SubAgentCondenserSettings | None = Field(
         default=None,
-        description="Context condenser for the sub-agent. None applies a default "
-        "summarizing condenser; set a NoOpCondenser to disable condensation.",
+        description=(
+            "Context condenser for the sub-agent. None applies a default "
+            "summarizing condenser; SubAgentCondenserSettings holds frontmatter "
+            "tuning; a NoOpCondenser disables condensation."
+        ),
     )
     metadata: dict[str, Any] = Field(
         default_factory=dict, description="Additional metadata from frontmatter"
@@ -331,6 +462,8 @@ class AgentDefinition(BaseModel):
         - permission_mode (optional): How the subagent handles permissions
           ('always_confirm', 'never_confirm', 'confirm_risky'). None inherits parent.
         - max_iterations_per_run: Max iteration per run
+        - condenser (optional): `none`/`false` disables condensation; a mapping
+          sets LLM-summarizing tuning (max_size, keep_first, max_tokens, enabled).
         - hooks (optional): List of applicable hooks
 
         The body of the Markdown is the system prompt.
@@ -349,6 +482,7 @@ class AgentDefinition(BaseModel):
 
         # Extract frontmatter fields with proper type handling
         name: str = str(fm.get("name") or agent_path.stem)
+        source = to_posix_path(agent_path)
         description: str = str(fm.get("description") or "")
         model: str = str(fm.get("model") or "inherit")
         color: str | None = _extract_color(fm)
@@ -360,7 +494,9 @@ class AgentDefinition(BaseModel):
         mcp_config: dict[str, MCPServer] | None = _extract_mcp_config(fm)
         profile_store_dir: str | None = _extract_profile_store_dir(fm)
         hooks: HookConfig | None = _extract_hooks(fm)
-        condenser: CondenserBase | None = _extract_condenser(fm)
+        condenser: CondenserBase | SubAgentCondenserSettings | None = (
+            _extract_condenser(fm, name=name, source=source)
+        )
 
         # Extract whenToUse examples from description
         when_to_use_examples = _extract_examples(description)
@@ -383,7 +519,7 @@ class AgentDefinition(BaseModel):
             profile_store_dir=profile_store_dir,
             condenser=condenser,
             system_prompt=content,
-            source=to_posix_path(agent_path),
+            source=source,
             when_to_use_examples=when_to_use_examples,
             metadata=metadata,
         )

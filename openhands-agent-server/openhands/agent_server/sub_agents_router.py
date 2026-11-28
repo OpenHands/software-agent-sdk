@@ -20,6 +20,7 @@ from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.subagent import (
     AgentDefinition,
     AgentDefinitionLevel,
+    SubAgentCondenserSettings,
     discover_agents,
 )
 from openhands.tools.preset.default import discover_builtin_agents
@@ -85,7 +86,7 @@ class SubAgentInfo(BaseModel):
     )
     profile_store_dir: str | None = None
     hooks: HookConfig | None = None
-    condenser: CondenserBase | None = None
+    condenser: CondenserBase | SubAgentCondenserSettings | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     level: AgentDefinitionLevel | None = None
     source: str | None = None
