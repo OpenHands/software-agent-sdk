@@ -97,6 +97,7 @@ from openhands.agent_server.server_details_router import (
 )
 from openhands.agent_server.settings_router import settings_router
 from openhands.agent_server.skills_router import skills_router
+from openhands.agent_server.storage_router import storage_router
 from openhands.agent_server.sub_agents_router import sub_agents_router
 from openhands.agent_server.telemetry import (
     build_telemetry_sink,
@@ -657,6 +658,7 @@ def _add_api_routes(app: FastAPI) -> None:
     ]
 
     api_router = APIRouter(prefix="/api", dependencies=dependencies)
+    api_router.include_router(storage_router)
     api_router.include_router(file_discovery_router)
     # Collection routes must precede runtime catch-alls such as
     # ``/conversations/{conversation_id}``.

@@ -3,8 +3,11 @@
 Probes and metadata every consumer reads before anything else: liveness,
 health and readiness for orchestrators, `/server_info` (and its `/` alias) for
 versions, build identity, usable tools, capability flags and idle time, and the
-OpenAPI document that clients generate types from. All of them answer without
-a session key, even when authentication is on. Three server-wide settings
+OpenAPI document that clients generate types from. The health and metadata
+routes answer without
+a session key, even when authentication is on. Managed storage status is a
+separate authenticated `/api/storage` read, not a health probe. Three server-wide
+settings
 change what these surfaces show: `static_files_path` turns `/` into a redirect
 to an unauthenticated `/static` mount, `preload_tools` runs a tool preload
 before `/ready` flips, and `DEBUG` adds a stack trace to 5xx bodies.
@@ -12,9 +15,11 @@ before `/ready` flips, and `DEBUG` adds a stack trace to 5xx bodies.
 Source: `openhands-agent-server/openhands/agent_server/server_details_router.py`, `openhands-agent-server/openhands/agent_server/api.py`, `openhands-agent-server/openhands/agent_server/openapi.py`, `openhands-agent-server/openhands/agent_server/tool_preload_service.py`, `openhands-agent-server/openhands/agent_server/config.py`
 
 Routes: `GET /alive`, `GET /health`, `GET /ready`, `GET /server_info`, `GET /`,
-`GET /openapi.json`
+`GET /openapi.json`, `GET /api/storage`
 
 ## Sub-features
+
+- `F01.managed-storage`: `GET /api/storage` returns `managed_storage: null` for local mode. Docker and mixed-runtime servers report backing-filesystem free bytes and usage fraction, plus configured disk budget and retention. It does not include caller-owned local workspaces, disclose root paths, walk directory trees, reclaim files, start a runtime, or reset idle time.
 
 - `F01.alive`: `GET /alive` returns 200 `{"status": "ok"}` without a session key, while a protected route refuses the same key-less request.
 - `F01.health`: `GET /health` returns 200 `{"status": "ok"}` without a session key.
@@ -288,6 +293,20 @@ Preconditions:
   into the run's `~/.cache/ms-playwright`, the next start logs `Chromium is
   available for browser operations` and one more `Tool preload service
   started successfully`. The last restart writes `preload_tools: false` again.
+
+- **Managed storage status (`F01.managed-storage`).** On the baseline local server:
+  ```sh
+  control-agent-server api GET /api/storage --auth none --expect 401
+  control-agent-server api GET /api/storage --expect 200 --save F01.managed-storage/status
+  ```
+  The authenticated body is `{"managed_storage": null}`. On a Docker or mixed-runtime
+  server the object describes the backing filesystem, not a directory's byte size;
+  `disk_budget` and `retention_days` are null when disabled. A missing/invalid key
+  remains 401 and dormant initialization remains 503. Repeated polling must not
+  reset `/server_info`'s idle clock. No model or conversation is needed.
+  Regression coverage: `tests/agent_server/test_storage_router.py` and
+  `test_storage_status_local_live_endpoint` in
+  `tests/cross/test_remote_conversation_live_server.py`.
 
 ## Gotchas
 

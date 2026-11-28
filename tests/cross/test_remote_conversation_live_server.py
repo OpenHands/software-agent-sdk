@@ -4192,3 +4192,15 @@ def test_runtime_added_mcp_tools_keep_their_names_after_server_restart(
     assert [
         (event["tool_name"], event["observation"]["is_error"]) for event in observations
     ] == [("docs_fetch", False), ("docs_fetch", False)]
+
+
+def test_storage_status_local_live_endpoint(tmp_path, monkeypatch):
+    """Read-only status works over HTTP without a conversation or LLM call."""
+    with live_server_env(tmp_path, monkeypatch) as env:
+        with httpx.Client(base_url=env["host"]) as client:
+            before = client.get("/server_info").json()["idle_time"]
+            response = client.get("/api/storage")
+            assert response.status_code == 200
+            assert response.json() == {"managed_storage": None}
+            after = client.get("/server_info").json()["idle_time"]
+            assert after >= before
