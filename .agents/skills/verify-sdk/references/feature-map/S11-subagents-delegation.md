@@ -92,7 +92,7 @@ Programs give each programmatic sub-agent its own scripted LLM (`programs/S11/s1
     --check sub_cache_key_is_parent.0 eq true --check sub_cache_key_is_parent.1 eq true \
     --check sub_cache_key_is_parent.2 eq true --check sub_session_differs eq true
   ```
-  Expected: every sub-agent call carries the parent conversation's id as `prompt_cache_key`, on create and on resume. Known failure (reproduced 2026-11-17, [#6655](https://github.com/OpenHands/software-agent-sdk/issues/6655)): the two calls of the created task carry the parent's key, but the call made after `task(resume=...)` carries the sub-conversation's own id (`sub_cache_key_is_parent` is `[true, true, false]`): `TaskManager._resume_task` builds the `LocalConversation` without `prompt_cache_key=...`, unlike `_get_conversation`.
+  Expected: every sub-agent call carries the parent conversation's id as `prompt_cache_key`, on create and on resume. Before #6655, the call made after `task(resume=...)` carried the sub-conversation's own id (`[true, true, false]`) because `TaskManager._resume_task` built the `LocalConversation` without `prompt_cache_key=...`; now the resumed task passes the parent's id too.
 - **Delegates see the parent's secrets (`S11.task-secrets`).** A persisted parent registers `PROBE_TOKEN` with `update_secrets`, runs `echo probe=${PROBE_TOKEN:+set} value=$PROBE_TOKEN` itself, then delegates the same command to the programmatic sub-agent `prober` and resumes that task for a second run.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
