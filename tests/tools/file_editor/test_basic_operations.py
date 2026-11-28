@@ -564,6 +564,16 @@ def test_str_replace_with_empty_new_str(editor):
     assert test_file.read_text() == "Line 1\nLine 3"
 
 
+def test_str_replace_with_omitted_new_str(tmp_path):
+    path = tmp_path / "example.txt"
+    path.write_text("first\nremove this\nlast\n")
+
+    result = file_editor(command="str_replace", path=str(path), old_str="remove this\n")
+
+    assert_successful_result(result)
+    assert path.read_text() == "first\nlast\n"
+
+
 def test_str_replace_with_empty_old_str(editor):
     editor, test_file = editor
     test_file.write_text("Line 1\nLine 2\nLine 3")

@@ -154,8 +154,7 @@ class FileEditor:
         elif command == "str_replace":
             if old_str is None:
                 raise EditorToolParameterMissingError(command, "old_str")
-            if new_str is None:
-                raise EditorToolParameterMissingError(command, "new_str")
+            new_str = new_str or ""
             if new_str == old_str:
                 raise EditorToolParameterInvalidError(
                     "new_str",
