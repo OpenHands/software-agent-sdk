@@ -5,13 +5,9 @@ Covers two fixes for the Qwen3.5-Flash stuck conversation issue:
 1. JSON argument parsing: raw json.loads first, sanitize_json_control_chars
    as fallback (fixes literal \\n whitespace being incorrectly escaped).
 
-2. Corrective feedback: when the LLM produces reasoning but no tool call
-   and no content, inject a user message so the model can self-correct
-   instead of silently looping into the monologue stuck detector.
-
-   A completely content-free completion (no text, no tool calls, no
-   reasoning) is a provider failure, not agent behaviour: the LLM layer
-   retries it as LLMNoResponseError instead of nudging (#6085).
+2. Corrective feedback: when the LLM produces no tool call and no content,
+   inject a user message so the model can self-correct instead of silently
+   looping into the monologue stuck detector.
 """
 
 import json
@@ -250,8 +246,14 @@ def test_reasoning_only_response_injects_nudge():
     assert "function call" in nudge_text.text
 
 
-def test_content_response_does_not_inject_nudge():
-    """When LLM produces meaningful content, no nudge should be injected."""
+def test_content_response_injects_nudge():
+    """When LLM produces content but no tool call, a corrective nudge is injected.
+
+    Prior behavior treated content-only turns as terminal (set FINISHED), which
+    killed the agent loop on intermediate narration turns. Now the framework
+    nudges the model to either call the finish tool or continue with the next
+    tool call, keeping the loop alive (#5510).
+    """
     agent = _make_agent(with_tool=False)
     conv = Conversation(agent=agent)
 
@@ -270,33 +272,23 @@ def test_content_response_does_not_inject_nudge():
     corrective_nudges = [
         e for e in events if isinstance(e, MessageEvent) and e.source == "environment"
     ]
-    assert len(corrective_nudges) == 0
+    assert len(corrective_nudges) == 1
+    assert corrective_nudges[0].llm_message.role == "user"
+    nudge_text = corrective_nudges[0].llm_message.content[0]
+    assert isinstance(nudge_text, TextContent)
+    assert "no function call" in nudge_text.text
+    assert "finish" in nudge_text.text
 
 
-def test_completely_empty_response_is_retried_not_nudged():
-    """Completely empty responses (no reasoning, no content) are retried inside
-    the LLM retry boundary as LLMNoResponseError; no corrective nudge is sent."""
-    llm = LLM(
-        model="test-model",
-        usage_id="test-llm",
-        api_key=SecretStr("test-key"),
-        base_url="http://test",
-        num_retries=2,
-        retry_min_wait=0,
-        retry_max_wait=0,
-        temperature=0.0,
-    )
-    agent = Agent(llm=llm, tools=[])
+def test_completely_empty_response_injects_nudge():
+    """Completely empty responses (no reasoning, no content) get a nudge."""
+    agent = _make_agent(with_tool=False)
     conv = Conversation(agent=agent)
 
-    empty_resp = _model_response(content="")
-    good_resp = _model_response(content="Working on it.")
+    resp = _model_response(content="")
 
     events: list[object] = []
-    with patch(
-        "openhands.sdk.llm.llm.litellm_completion",
-        side_effect=[empty_resp, good_resp],
-    ):
+    with patch("openhands.sdk.llm.llm.litellm_completion", return_value=resp):
         conv.send_message(
             Message(
                 role="user",
@@ -305,16 +297,8 @@ def test_completely_empty_response_is_retried_not_nudged():
         )
         agent.step(conv, on_event=events.append)
 
-    # The empty attempt was retried, not surfaced as a nudge turn.
     corrective_nudges = [
         e for e in events if isinstance(e, MessageEvent) and e.source == "environment"
     ]
-    assert len(corrective_nudges) == 0
-
-    agent_msgs = [
-        e for e in events if isinstance(e, MessageEvent) and e.source == "agent"
-    ]
-    assert len(agent_msgs) == 1
-    content = agent_msgs[0].llm_message.content[0]
-    assert isinstance(content, TextContent)
-    assert content.text == "Working on it."
+    assert len(corrective_nudges) == 1
+    assert corrective_nudges[0].llm_message.role == "user"
