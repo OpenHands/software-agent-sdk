@@ -2,13 +2,73 @@
 
 import json
 from collections.abc import Sequence
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 import pytest
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from openhands.sdk.llm import ImageContent, TextContent
 from openhands.sdk.tool.schema import Action, Observation, Schema, _process_schema_node
+
+
+class ConstrainedNestedSchema(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    order_id: str = Field(pattern=r"^ORD-[0-9]{6}$")
+    currency: Literal["USD"]
+
+
+class ConstrainedMCPAction(Action):
+    order_id: str = Field(pattern=r"^ORD-[0-9]{6}$")
+    currency: Literal["USD"]
+    nested: ConstrainedNestedSchema
+    optional: ConstrainedNestedSchema | None = None
+    entries: list[ConstrainedNestedSchema]
+    indexed: dict[str, ConstrainedNestedSchema]
+    disabled: Literal[False]
+    zero: Literal[0]
+    empty: Literal[""]
+    null: Literal[None]
+
+
+class OpenMCPAction(Action):
+    model_config = ConfigDict(extra="allow")
+
+    value: str
+
+
+class UnspecifiedMCPAction(Action):
+    model_config = ConfigDict(extra="ignore")
+
+    value: str
+
+
+def test_action_schema_preserves_declared_constraints_through_nested_refs():
+    schema = ConstrainedMCPAction.to_mcp_schema()
+    props = schema["properties"]
+    assert schema["additionalProperties"] is False
+    assert props["order_id"]["pattern"] == r"^ORD-[0-9]{6}$"
+    assert props["currency"]["const"] == "USD"
+    for nested in (
+        props["nested"],
+        props["optional"],
+        props["entries"]["items"],
+        props["indexed"]["additionalProperties"],
+    ):
+        assert nested["additionalProperties"] is False
+        assert nested["properties"]["order_id"]["pattern"] == r"^ORD-[0-9]{6}$"
+        assert nested["properties"]["currency"]["const"] == "USD"
+        assert "$ref" not in nested
+    assert props["disabled"]["const"] is False
+    assert props["zero"]["const"] == 0
+    assert props["empty"]["const"] == ""
+    assert props["null"]["const"] is None
+    assert "kind" not in props
+
+
+def test_action_schema_keeps_open_objects_and_unspecified_extra_policy():
+    assert OpenMCPAction.to_mcp_schema()["additionalProperties"] is True
+    assert "additionalProperties" not in UnspecifiedMCPAction.to_mcp_schema()
 
 
 class MCPSchemaTestAction(Action):
