@@ -132,7 +132,11 @@ def _validate_secret_name(name: str) -> None:
         )
 
 
-@settings_router.get(SETTINGS_PATH, response_model=SettingsResponse)
+@settings_router.get(
+    SETTINGS_PATH,
+    response_model=SettingsResponse,
+    responses={409: {"description": "settings.json exists but cannot be read"}},
+)
 async def get_settings(
     request: Request,
     config: Config = Depends(get_config),
@@ -169,7 +173,7 @@ async def get_settings(
         values.
     """
     expose_mode = parse_expose_secrets_header(request)
-    settings = await run_store(store.load) or PersistedSettings()
+    settings = await run_store(store.load_existing) or PersistedSettings()
 
     # Audit log all settings access for security visibility
     # Use WARNING level for plaintext mode to highlight security-sensitive operations

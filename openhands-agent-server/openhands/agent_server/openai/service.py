@@ -266,7 +266,7 @@ def _create_conversation_request(
     profile = active_agent_profile(stores, config.cipher)
     if profile is None:
         raise Conflict("No active Agent Profile; activate one to use the gateway")
-    settings = stores.settings.load() or PersistedSettings()
+    settings = stores.settings.load_existing() or PersistedSettings()
     try:
         additions = AgentLaunchAdditions(
             # An ACP server runs its own model.
