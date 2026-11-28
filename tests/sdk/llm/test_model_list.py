@@ -235,6 +235,16 @@ def test_openhands_haiku_uses_full_infra_name():
     assert "claude-haiku-4-5-20251001" in VERIFIED_MODELS["anthropic"]
 
 
+def test_openhands_glm_models_are_ones_the_proxy_serves():
+    """The OpenHands proxy rejects ``glm-5.3`` and ``glm-5.3-flashx`` with
+    "Invalid model name", so they must not be offered under the OpenHands
+    provider. Direct GLM keeps them.
+    """
+    openhands_glm = {m for m in VERIFIED_OPENHANDS_MODELS if m.startswith("glm-")}
+    assert openhands_glm == {"glm-5.3-flash", "glm-5.2"}
+    assert {"glm-5.3", "glm-5.3-flashx"} <= set(VERIFIED_MODELS["glm"])
+
+
 def test_verified_lists_keep_two_latest_versions_per_line():
     """Check the curation rule for every provider: the two latest versions of a
     line are present and the version before them is gone (see the module

@@ -220,9 +220,9 @@ VERIFIED_OPENHANDS_MODELS = [
     "kimi-k2.7-code",
     "devstral-2512",
     "devstral-medium-2512",
-    "glm-5.3",
+    # The proxy does not serve ``glm-5.3`` or ``glm-5.3-flashx``; they stay in
+    # the GLM, OpenRouter and DigitalOcean lists.
     "glm-5.3-flash",
-    "glm-5.3-flashx",
     "glm-5.2",
     "nemotron-3.5-lightning-30b-a3b",
     "nemotron-3-nano",
