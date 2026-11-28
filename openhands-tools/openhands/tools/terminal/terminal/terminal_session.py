@@ -444,6 +444,7 @@ class TerminalSession(TerminalSessionBase):
             command=command,
             text=command_output,
             metadata=metadata,
+            is_in_progress=self.is_running(),
             exit_code=metadata.exit_code,
         )
 
@@ -486,6 +487,7 @@ class TerminalSession(TerminalSessionBase):
             exit_code=metadata.exit_code,
             text=command_output,
             metadata=metadata,
+            is_in_progress=self.is_running(),
         )
 
     def _handle_unresponsive_terminal(
