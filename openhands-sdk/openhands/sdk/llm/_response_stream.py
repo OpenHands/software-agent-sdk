@@ -1,5 +1,5 @@
 from collections.abc import AsyncIterable, AsyncIterator, Iterable, Iterator
-from typing import Protocol, runtime_checkable
+from typing import Protocol, TypeGuard, runtime_checkable
 
 from litellm.types.llms.base import BaseLiteLLMOpenAIResponseObject
 from litellm.types.llms.openai import (
@@ -7,10 +7,12 @@ from litellm.types.llms.openai import (
     ReasoningSummaryTextDeltaEvent,
     RefusalDeltaEvent,
     ResponseCompletedEvent,
+    ResponseIncompleteEvent,
     ResponsesAPIStreamEvents,
 )
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from openhands.sdk.llm._message_normalization import stopped_by_content_filter
 from openhands.sdk.llm.exceptions import LLMNoResponseError
 
 
@@ -38,8 +40,9 @@ class _GenericOutputItemEvent(BaseModel):
     item: object = None
 
 
+ResponseEndEvent = ResponseCompletedEvent | ResponseIncompleteEvent
 ResponseStreamEvent = (
-    ResponseCompletedEvent
+    ResponseEndEvent
     | OutputTextDeltaEvent
     | RefusalDeltaEvent
     | ReasoningSummaryTextDeltaEvent
@@ -47,13 +50,20 @@ ResponseStreamEvent = (
 )
 
 
+def is_completed_or_filtered(event: object) -> TypeGuard[ResponseEndEvent]:
+    return isinstance(event, ResponseCompletedEvent) or (
+        isinstance(event, ResponseIncompleteEvent)
+        and stopped_by_content_filter(event.response)
+    )
+
+
 def completed_response(
-    stream: object, observed: ResponseCompletedEvent | None = None
-) -> ResponseCompletedEvent | None:
+    stream: object, observed: ResponseEndEvent | None = None
+) -> ResponseEndEvent | None:
     if isinstance(stream, _CompletionSource):
         completion = stream.completed_response
         if completion is not None:
-            if not isinstance(completion, ResponseCompletedEvent):
+            if not is_completed_or_filtered(completion):
                 raise LLMNoResponseError(
                     f"Unexpected completed event: {type(completion)}"
                 )
@@ -62,16 +72,7 @@ def completed_response(
 
 
 def _response_event(event: object) -> ResponseStreamEvent | None:
-    if isinstance(
-        event,
-        (
-            ResponseCompletedEvent,
-            OutputTextDeltaEvent,
-            RefusalDeltaEvent,
-            ReasoningSummaryTextDeltaEvent,
-            OutputItemEvent,
-        ),
-    ):
+    if isinstance(event, ResponseStreamEvent):
         return event
     if isinstance(event, BaseLiteLLMOpenAIResponseObject):
         try:

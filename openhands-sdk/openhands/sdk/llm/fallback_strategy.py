@@ -15,7 +15,7 @@ from litellm.exceptions import (
 )
 from pydantic import BaseModel, Field, PrivateAttr
 
-from openhands.sdk.llm.exceptions import LLMNoResponseError
+from openhands.sdk.llm.exceptions import LLMNoResponseError, LLMResponseRefusedError
 from openhands.sdk.llm.exceptions.classifier import (
     is_budget_exceeded_error,
     is_transient_http_error,
@@ -122,6 +122,9 @@ class FallbackStrategy(BaseModel):
                     primary_metrics.merge(fallback.metrics.diff(metrics_before))
                 logger.info(f"[Fallback Strategy] Fallback LLM ({fb.model}) succeeded")
                 return result
+            except LLMResponseRefusedError:
+                # A fallback that refuses ends the call, just like the primary.
+                raise
             except Exception as fb_error:
                 # A budget applies across models; another fallback cannot bypass it.
                 if is_budget_exceeded_error(fb_error):

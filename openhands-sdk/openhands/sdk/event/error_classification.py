@@ -83,8 +83,12 @@ def classify_error(code: str, detail: str = "") -> ErrorClassification:
     # condensation, so classify them as agent outcomes, not diagnostics.
     if code in {"LLMContextWindowExceedError", "LLMMalformedConversationHistoryError"}:
         return _failure(FailureKind.AGENT_ACTION, retryable=True, user_action="retry")
-    # Run-limit and ownership-loss are known product outcomes, not diagnostics.
-    if code in {"MaxIterationsReached", "ConversationOwnershipLostError"}:
+    # Known terminal outcomes of a run; none should suggest retrying it.
+    if code in {
+        "MaxIterationsReached",
+        "ConversationOwnershipLostError",
+        "LLMResponseRefusedError",
+    }:
         return _failure(FailureKind.AGENT_ACTION)
     if code in {
         "KeyError",

@@ -1,5 +1,7 @@
 from litellm import ResponseFunctionToolCall
+from litellm.types.llms.openai import ResponsesAPIResponse
 from litellm.types.responses.main import OutputFunctionToolCall
+from openai.types.responses.response import IncompleteDetails
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 
@@ -64,22 +66,41 @@ ResponseOutput = (
 )
 
 
-def normalize_text_part(part: object) -> _TextPart | None:
+def stopped_by_content_filter(response: ResponsesAPIResponse) -> bool:
+    # LiteLLM can retain raw mappings for partially validated provider responses.
+    match response.get("incomplete_details"):
+        case IncompleteDetails(reason="content_filter") | {"reason": "content_filter"}:
+            return True
+    return False
+
+
+def _output_kind(value: object) -> object:
     try:
-        kind = _OutputKind.model_validate(part).type
+        return _OutputKind.model_validate(value).type
     except ValidationError:
         return None
-    if kind == "output_text":
+
+
+def response_is_refused(response: ResponsesAPIResponse) -> bool:
+    if stopped_by_content_filter(response):
+        return True
+    for item in response.output or []:
+        if _output_kind(item) == "message":
+            parts = MessageOutput.model_validate(item).content or []
+            if any(_output_kind(part) == "refusal" for part in parts):
+                return True
+    return False
+
+
+def normalize_text_part(part: object) -> _TextPart | None:
+    if _output_kind(part) == "output_text":
         return _TextPart.model_validate(part)
     return None
 
 
 def normalize_response_output(item: object) -> ResponseOutput | None:
     """Project provider objects and mappings onto the fields the SDK consumes."""
-    try:
-        kind = _OutputKind.model_validate(item).type
-    except ValidationError:
-        return None
+    kind = _output_kind(item)
     if kind == "message":
         return MessageOutput.model_validate(item)
     if kind == "function_call":

@@ -29,6 +29,7 @@ from openhands.sdk.llm import (
     MetricsSnapshot,
     TextContent,
 )
+from openhands.sdk.llm.exceptions import LLMResponseRefusedError
 
 
 def message_event(content: str) -> MessageEvent:
@@ -926,6 +927,32 @@ async def test_agenerate_condensation_wraps_llm_errors(mock_llm: LLM) -> None:
 
     with pytest.raises(NoCondensationAvailableException, match="boom"):
         await condenser.aget_condensation(view)
+
+
+@pytest.mark.parametrize("use_async", [False, True], ids=["sync", "async"])
+@pytest.mark.parametrize("scenario", ["soft", "hard", "during-reset"])
+async def test_condensation_propagates_first_refusal(mock_llm, use_async, scenario):
+    condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=10, keep_first=2)
+    events: list[Event] = [message_event(f"Event {i}") for i in range(12)]
+    if scenario != "soft":
+        events.append(CondensationRequest())
+    view = View.from_events(events)
+
+    generate = mock_llm.agenerate if use_async else mock_llm.generate
+    refusal = LLMResponseRefusedError()
+    # A size error can trigger a hard reset; a refusal during that reset must escape.
+    failures = (
+        [RuntimeError("context window exceeded")] if scenario == "during-reset" else []
+    )
+    generate.side_effect = [*failures, refusal]
+
+    with pytest.raises(LLMResponseRefusedError) as exc:
+        if use_async:
+            await condenser.acondense(view)
+        else:
+            condenser.condense(view)
+    assert exc.value is refusal
+    assert generate.call_count == len(failures) + 1
 
 
 def test_llm_error_triggers_hard_context_reset(mock_llm: LLM) -> None:
