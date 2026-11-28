@@ -50,9 +50,17 @@ export type ActionEvent = Omit<
   tool_call?: AgentServerMessageToolCall;
 };
 export type AgentErrorEvent = AgentServerAgentErrorEvent;
-export type CondensationEvent = AgentServerCondensationEvent;
+export type CondensationEvent = AgentServerCondensationEvent & {
+  chars_before?: number | null;
+  chars_after?: number | null;
+  tokens_before?: number | null;
+  tokens_after?: number | null;
+};
 export type CondensationRequestEvent = AgentServerCondensationRequestEvent;
-export type CondensationSummaryEvent = AgentServerCondensationSummaryEvent;
+export type CondensationSummaryEvent = AgentServerCondensationSummaryEvent & {
+  forgotten_event_count?: number | null;
+  summary_offset?: number | null;
+};
 export type ConversationErrorEvent = Omit<AgentServerConversationErrorEvent, 'source'> & {
   source?: EventSource;
 };

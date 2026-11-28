@@ -15,6 +15,7 @@ import {
   ErrorClassification,
   SystemPromptEvent,
   PauseEvent,
+  CondensationEvent,
   CondensationRequestEvent,
   CondensationSummaryEvent,
   ConversationStateUpdateEvent,
@@ -242,6 +243,36 @@ describe('Event Type Guards', () => {
 
       expect(event.kind).toBe('CondensationSummaryEvent');
       expect(event.summary).toBe('Conversation summary here');
+    });
+
+    it('should support optional size metrics on CondensationEvent and span fields on CondensationSummaryEvent', () => {
+      const condensation: CondensationEvent = {
+        id: generateEventId(),
+        kind: 'Condensation',
+        timestamp: new Date().toISOString(),
+        source: 'environment',
+        forgotten_event_ids: ['e1', 'e2'],
+        summary: '<preserved_facts>\n- sha: a1b2c3d\n</preserved_facts>',
+        summary_offset: 1,
+        llm_response_id: 'resp_1',
+        chars_before: 1200,
+        chars_after: 180,
+        tokens_before: 300,
+        tokens_after: 45,
+      };
+      const summaryEvt: CondensationSummaryEvent = {
+        id: generateEventId(),
+        kind: 'CondensationSummaryEvent',
+        timestamp: new Date().toISOString(),
+        source: 'environment',
+        summary: 'Summary body',
+        forgotten_event_count: 2,
+        summary_offset: 1,
+      };
+
+      expect(condensation.chars_before).toBe(1200);
+      expect(condensation.tokens_after).toBe(45);
+      expect(summaryEvt.forgotten_event_count).toBe(2);
     });
   });
 

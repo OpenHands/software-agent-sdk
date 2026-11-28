@@ -1181,3 +1181,135 @@ def test_llm_summarizing_condenser_requires_llm() -> None:
     """LLMSummarizingCondenser raises ValidationError when llm is missing."""
     with pytest.raises(ValidationError):
         LLMSummarizingCondenser()  # type: ignore[call-arg]
+
+
+def test_summarization_prompt_requires_entity_anchor_preservation(
+    mock_llm: LLM,
+) -> None:
+    """Rendered condenser prompt instructs verbatim <preserved_facts> retention."""
+    condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=6, keep_first=1)
+    mock_llm.set_mock_response_content(  # type: ignore[attr-defined]
+        "USER_CONTEXT: Rotate cert\n<preserved_facts>\n"
+        "- sha256: 9F:86:D0:81\n- timestamp: 2026-10-14T23:59:59Z\n"
+        "</preserved_facts>"
+    )
+
+    events: list[Event] = [
+        message_event(f"Turn {i}: thumbprint=9F:86:D0:81 at 2026-10-14T23:59:59Z")
+        for i in range(8)
+    ]
+    view = View.from_events(events)
+    result = condenser.condense(view)
+    assert isinstance(result, Condensation)
+
+    sent_messages = cast(MagicMock, mock_llm.generate).call_args.kwargs["messages"]
+    assert len(sent_messages) == 2
+    system_text = sent_messages[0].content[0].text
+    user_text = sent_messages[1].content[0].text
+
+    assert "<preserved_facts>" in system_text
+    assert "</preserved_facts>" in system_text
+    for required_category in (
+        "Identifiers",
+        "hashes",
+        "thumbprints",
+        "timestamps",
+        "Numeric totals",
+        "File paths",
+        "ticket IDs",
+        "anomaly",
+    ):
+        assert required_category in system_text
+    assert "<preserved_facts>" in user_text
+
+
+def test_condensation_records_size_metrics_and_emits_span_notice(
+    mock_llm: LLM,
+) -> None:
+    """Condensation records before/after char & token metrics, and the model-visible
+    CondensationSummaryEvent user message states the condensed event span.
+    """
+    summary_body = (
+        "USER_CONTEXT: Audit log check\n"
+        "<preserved_facts>\n- anomaly_id: ANOM-7741\n</preserved_facts>"
+    )
+    mock_llm.set_mock_response_content(summary_body)  # type: ignore[attr-defined]
+
+    agent_llm = MagicMock(spec=LLM)
+    agent_llm.effective_max_input_tokens = None
+
+    def count_tokens(messages: list[Message], **_kwargs: Any) -> int:
+        return (
+            sum(
+                len(c.text)
+                for m in messages
+                for c in m.content
+                if isinstance(c, TextContent)
+            )
+            // 4
+        )
+
+    agent_llm.get_token_count.side_effect = count_tokens
+
+    condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=6, keep_first=1)
+    events: list[Event] = [
+        message_event(f"Event {i} with payload {'X' * 60}") for i in range(8)
+    ]
+    view = View.from_events(events)
+
+    condensation = condenser.condense(view, agent_llm=agent_llm)
+    assert isinstance(condensation, Condensation)
+
+    forgotten_count = len(condensation.forgotten_event_ids)
+    assert forgotten_count > 0
+    assert condensation.chars_before is not None and condensation.chars_before > 0
+    assert condensation.chars_after == len(summary_body)
+    assert condensation.tokens_before is not None and condensation.tokens_before > 0
+    assert condensation.tokens_after is not None and condensation.tokens_after > 0
+
+    # Apply condensation to view and inspect the user-role message sent to the LLM
+    condensed_view = View.from_events([*events, condensation])
+    summary_event = condensed_view.events[condensation.summary_offset or 0]
+    assert summary_event.summary == summary_body  # type: ignore[attr-defined]
+
+    llm_msg = summary_event.to_llm_message()
+    assert llm_msg.role == "user"
+    msg_text = llm_msg.content[0].text  # type: ignore[union-attr]
+    assert "Context condensation" in msg_text
+    assert f"{forgotten_count} earlier event" in msg_text
+    start_idx = condensation.summary_offset or 0
+    end_idx = start_idx + forgotten_count - 1
+    expected_span = (
+        f"view index {start_idx}"
+        if forgotten_count == 1
+        else f"view indices {start_idx}..{end_idx}"
+    )
+    assert expected_span in msg_text
+    assert summary_body in msg_text
+
+
+@pytest.mark.asyncio
+async def test_async_condensation_and_hard_reset_record_size_metrics(
+    mock_llm: LLM,
+) -> None:
+    """Async acondense and ahard_context_reset populate size metrics too."""
+    mock_llm.set_mock_response_content("Compact summary")  # type: ignore[attr-defined]
+    agent_llm = MagicMock(spec=LLM)
+    agent_llm.effective_max_input_tokens = None
+    agent_llm.get_token_count.return_value = 42
+
+    condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=6, keep_first=1)
+    events: list[Event] = [message_event(f"Msg {i}") for i in range(8)]
+    view = View.from_events(events)
+
+    async_cond = await condenser.acondense(view, agent_llm=agent_llm)
+    assert isinstance(async_cond, Condensation)
+    assert async_cond.chars_before is not None and async_cond.chars_before > 0
+    assert async_cond.chars_after == len("Compact summary")
+    assert async_cond.tokens_before == 42
+    assert async_cond.tokens_after == 42
+
+    reset_cond = await condenser.ahard_context_reset(view, agent_llm=agent_llm)
+    assert isinstance(reset_cond, Condensation)
+    assert reset_cond.chars_before is not None and reset_cond.chars_before > 0
+    assert reset_cond.tokens_before == 42
