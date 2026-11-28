@@ -3,6 +3,7 @@ import os
 import re
 import sys
 from functools import lru_cache
+from pickle import UnpicklingError
 
 from jinja2 import (
     BaseLoader,
@@ -10,9 +11,46 @@ from jinja2 import (
     FileSystemBytecodeCache,
     Template,
     TemplateNotFound,
+    TemplateSyntaxError,
 )
+from jinja2.bccache import Bucket
 
+from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.path import get_user_persistence_dir
+
+
+logger = get_logger(__name__)
+
+
+class _BestEffortBytecodeCache(FileSystemBytecodeCache):
+    """Stop using a failed disk cache while continuing to compile templates."""
+
+    def __init__(self, directory: str) -> None:
+        super().__init__(directory=directory)
+        self._disabled = False
+
+    def _disable(self, error: Exception) -> None:
+        self._disabled = True
+        logger.warning(
+            "Disabling Jinja bytecode cache at %s: %s", self.directory, error
+        )
+
+    def load_bytecode(self, bucket: Bucket) -> None:
+        if self._disabled:
+            return
+        try:
+            super().load_bytecode(bucket)
+        except (OSError, EOFError, UnpicklingError) as error:
+            bucket.reset()
+            self._disable(error)
+
+    def dump_bytecode(self, bucket: Bucket) -> None:
+        if self._disabled:
+            return
+        try:
+            super().dump_bytecode(bucket)
+        except OSError as error:
+            self._disable(error)
 
 
 class FlexibleFileSystemLoader(BaseLoader):
@@ -64,8 +102,14 @@ def _get_env(prompt_dir: str) -> Environment:
     # Use user-specific cache directory to avoid permission issues
     # in multi-user environments
     cache_folder = get_user_persistence_dir() / "cache" / "jinja"
-    cache_folder.mkdir(parents=True, exist_ok=True)
-    bcc = FileSystemBytecodeCache(directory=str(cache_folder))
+    bcc = None
+    try:
+        cache_folder.mkdir(parents=True, exist_ok=True)
+        bcc = _BestEffortBytecodeCache(directory=str(cache_folder))
+    except OSError as error:
+        logger.warning(
+            "Cannot create Jinja bytecode cache at %s: %s", cache_folder, error
+        )
     env = Environment(
         loader=FlexibleFileSystemLoader(prompt_dir),
         bytecode_cache=bcc,
@@ -81,10 +125,17 @@ def _get_template(prompt_dir: str, template_name: str) -> Template:
     env = _get_env(prompt_dir)
     try:
         return env.get_template(template_name)
-    except Exception:
+    except TemplateNotFound as error:
         raise FileNotFoundError(
             f"Prompt file {os.path.join(prompt_dir, template_name)} not found"
-        )
+        ) from error
+    except TemplateSyntaxError as error:
+        raise type(error)(
+            error.message or str(error),
+            error.lineno,
+            name=error.name,
+            filename=error.filename,
+        ) from error
 
 
 def render_template(prompt_dir: str, template_name: str, **ctx) -> str:
@@ -102,6 +153,10 @@ def render_template(prompt_dir: str, template_name: str, **ctx) -> str:
 
     Raises:
         FileNotFoundError: If the template file cannot be found.
+        TemplateSyntaxError: If the template cannot be compiled.
+        UnicodeDecodeError: If the template is not valid UTF-8.
+
+    Bytecode-cache failures are logged and rendering continues without disk caching.
     """
     # If template_name is an absolute path, extract directory and filename
     if os.path.isabs(template_name):

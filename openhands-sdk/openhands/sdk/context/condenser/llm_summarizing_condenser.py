@@ -254,16 +254,13 @@ class LLMSummarizingCondenser(RollingCondenser):
             for forgotten_event in forgotten_events
         ]
 
-        messages = self._build_summary_messages(event_strings)
-
         # Do not pass extra_body explicitly. The LLM handles forwarding
         # litellm_extra_body only when it is non-empty.
         try:
+            messages = self._build_summary_messages(event_strings)
             llm_response = self.llm.generate(messages=messages, store=False)
         except Exception as e:
-            raise NoCondensationAvailableException(
-                f"Summarization LLM call failed: {e}"
-            ) from e
+            raise NoCondensationAvailableException(f"Summarization failed: {e}") from e
 
         # Extract summary from the LLMResponse message
         summary = None
@@ -460,14 +457,11 @@ class LLMSummarizingCondenser(RollingCondenser):
             for fe in forgotten_events
         ]
 
-        messages = self._build_summary_messages(event_strings)
-
         try:
+            messages = self._build_summary_messages(event_strings)
             llm_response = await self.llm.agenerate(messages=messages, store=False)
         except Exception as e:
-            raise NoCondensationAvailableException(
-                f"Summarization LLM call failed: {e}"
-            ) from e
+            raise NoCondensationAvailableException(f"Summarization failed: {e}") from e
 
         summary = None
         if llm_response.message.content:

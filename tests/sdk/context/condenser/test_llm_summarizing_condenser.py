@@ -2,6 +2,7 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from jinja2 import TemplateSyntaxError
 from litellm.types.utils import (
     Choices,
     Message as LiteLLMMessage,
@@ -912,6 +913,45 @@ def test_generate_condensation_wraps_llm_errors(mock_llm: LLM) -> None:
 
     with pytest.raises(NoCondensationAvailableException, match="boom"):
         condenser.get_condensation(view)
+
+
+@pytest.mark.parametrize("use_async", [False, True])
+@pytest.mark.parametrize("hard_requirement", [False, True])
+async def test_prompt_error_respects_condensation_requirement(
+    mock_llm: LLM, use_async: bool, hard_requirement: bool
+) -> None:
+    condenser = LLMSummarizingCondenser(
+        llm=mock_llm, max_size=10, keep_first=2, hard_context_reset_max_retries=1
+    )
+    events: list[Event] = [message_event(f"Event {i}") for i in range(12)]
+    if hard_requirement:
+        events.append(CondensationRequest())
+    view = View.from_events(events)
+    error = TemplateSyntaxError("invalid prompt", 1, filename="summary.j2")
+
+    with patch(
+        "openhands.sdk.context.condenser.llm_summarizing_condenser.render_template",
+        side_effect=error,
+    ) as render:
+        if hard_requirement:
+            with pytest.raises(NoCondensationAvailableException) as exc_info:
+                if use_async:
+                    await condenser.acondense(view)
+                else:
+                    condenser.condense(view)
+            assert exc_info.value.__cause__ is error
+            assert render.call_count == 2
+        else:
+            result = (
+                await condenser.acondense(view)
+                if use_async
+                else condenser.condense(view)
+            )
+            assert result is view
+            assert render.call_count == 1
+
+    cast(MagicMock, mock_llm.generate).assert_not_called()
+    cast(AsyncMock, mock_llm.agenerate).assert_not_called()
 
 
 @pytest.mark.asyncio
