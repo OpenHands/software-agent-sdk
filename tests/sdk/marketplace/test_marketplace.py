@@ -441,6 +441,29 @@ class TestMarketplace:
         assert ref is None
         assert subpath is None
 
+    def test_resolve_plugin_source_preserves_hidden_directory(self, tmp_path: Path):
+        """A ./ prefix must not remove the dot from a hidden plugin directory."""
+        marketplace_dir = tmp_path / "resolve-hidden"
+        marketplace_dir.mkdir()
+        manifest_dir = marketplace_dir / ".plugin"
+        manifest_dir.mkdir()
+        (manifest_dir / "marketplace.json").write_text(
+            """{
+            "name": "resolve-hidden-marketplace",
+            "owner": {"name": "Test Team"},
+            "plugins": [
+                {"name": "hidden-plugin", "source": "./.claude-plugin/plugins/hidden-plugin"}
+            ]
+        }"""
+        )
+
+        marketplace = Marketplace.load(marketplace_dir)
+        source, ref, subpath = marketplace.resolve_plugin_source(marketplace.plugins[0])
+
+        assert source == str(marketplace_dir / ".claude-plugin/plugins/hidden-plugin")
+        assert ref is None
+        assert subpath is None
+
     def test_resolve_plugin_source_github(self, tmp_path: Path):
         """Test resolve_plugin_source with GitHub source."""
         marketplace_dir = tmp_path / "github-resolve"
