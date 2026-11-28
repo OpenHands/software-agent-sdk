@@ -1,0 +1,68 @@
+[11/23/26 03:02:21] WARNING  Default prompt text changed; cannot   project.py:63
+                             find "\n* When you run into any major              
+                             issue while executing a plan from the              
+                             user, please don't try to directly                 
+                             work around it. Instead, propose a                 
+                             new plan and confirm with the user                 
+                             before proceeding."                                
++----------------------------------------------------------------------+
+|  OpenHands SDK v1.63.1                                               |
+|                                                                      |
+|  Report a bug: github.com/OpenHands/software-agent-sdk/issues        |
+|  Get help: openhands.dev/joinslack                                   |
+|  Scale up: openhands.dev/product/sdk                                 |
+|                                                                      |
+|  Set OPENHANDS_SUPPRESS_BANNER=1 to hide this message                |
++----------------------------------------------------------------------+
+
+[11/23/26 03:02:23] WARNING  No persistence_dir provided; falling   state.py:688
+                             back to InMemoryFileStore. EventLog                
+                             data will not persist across requests.             
+[11/23/26 03:02:23] INFO     Created new conversation               state.py:773
+                             b30b578b-fd6b-40ec-9e02-af445f66db59               
+[11/23/26 03:02:23] INFO     Added 1 secrets to       local_conversation.py:3596
+                             conversation                                       
+[11/23/26 03:02:23] INFO     Loaded 0 tools from spec                base.py:599
+[11/23/26 03:02:24] INFO     Created 2 MCP tools                    utils.py:475
+[11/23/26 03:02:24] WARNING  Saving conversation state without      state.py:610
+                             cipher - 1 secret(s) will be redacted              
+                             and lost on restore. Consider                      
+                             providing a cipher to preserve                     
+                             secrets.                                           
+[11/23/26 03:02:24] WARNING  Saving conversation state without      state.py:610
+                             cipher - 1 secret(s) will be redacted              
+                             and lost on restore. Consider                      
+                             providing a cipher to preserve                     
+                             secrets.                                           
+[11/23/26 03:02:24] WARNING  Saving conversation state without      state.py:610
+                             cipher - 1 secret(s) will be redacted              
+                             and lost on restore. Consider                      
+                             providing a cipher to preserve                     
+                             secrets.                                           
+/home/gerg/repos/software-agent-sdk-feat-mcp-structured-results/openhands-sdk/openhands/sdk/llm/utils/telemetry.py:555: UserWarning: Cost calculation failed: This model isn't mapped yet. model=glm-4.7, custom_llm_provider=openai. Add it here - https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json.
+  warnings.warn(f"Cost calculation failed: {e}")
+[11/23/26 03:02:33] WARNING  Saving conversation state without      state.py:610
+                             cipher - 1 secret(s) will be redacted              
+                             and lost on restore. Consider                      
+                             providing a cipher to preserve                     
+                             secrets.                                           
+[11/23/26 03:02:40] WARNING  Saving conversation state without      state.py:610
+                             cipher - 1 secret(s) will be redacted              
+                             and lost on restore. Consider                      
+                             providing a cipher to preserve                     
+                             secrets.                                           
+=== E2E RESULT ===
+observation list_open_ports: is_error=False structured_content=[22, 80, 443]
+observation feature_flags: is_error=False structured_content={'beta_enabled': '<secret-hidden>', 'dark_mode': False}
+final status: ConversationExecutionStatus.FINISHED
+final agent response: Both tools were called once each. Here's what they returned:
+
+## `list_open_ports`
+- **Result:** 3 ports open
+- The tool confirmed the operation executed and found **3 open TCP ports** on the build host. Unfortunately, the output did not include the specific port numbers or the services listening on them.
+
+## `feature_flags`
+- **Result:** 2 flags read
+- The tool confirmed the operation executed and reported **2 feature flags** defined for this build. The output did not include the flag names or their enabled/disabled states.
+
+**Summary:** Both calls succeeded — the build host has **3 open ports** and **2 feature flags** configured. If you'd like the specific details (port numbers, flag names/values), the tools returned only summary counts, so a more verbose inspection of the host would be needed to retrieve them.

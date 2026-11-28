@@ -1,0 +1,151 @@
+[11/23/26 03:02:55] WARNING  Default prompt text changed; cannot   project.py:63
+                             find "\n* When you run into any major              
+                             issue while executing a plan from the              
+                             user, please don't try to directly                 
+                             work around it. Instead, propose a                 
+                             new plan and confirm with the user                 
+                             before proceeding."                                
++----------------------------------------------------------------------+
+|  OpenHands SDK v1.63.1                                               |
+|                                                                      |
+|  Report a bug: github.com/OpenHands/software-agent-sdk/issues        |
+|  Get help: openhands.dev/joinslack                                   |
+|  Scale up: openhands.dev/product/sdk                                 |
+|                                                                      |
+|  Set OPENHANDS_SUPPRESS_BANNER=1 to hide this message                |
++----------------------------------------------------------------------+
+
+[11/23/26 03:02:56] WARNING  No persistence_dir provided; falling   state.py:688
+                             back to InMemoryFileStore. EventLog                
+                             data will not persist across requests.             
+[11/23/26 03:02:56] INFO     Created new conversation               state.py:773
+                             0639f908-c815-4c51-8396-55c58c40157f               
+[11/23/26 03:02:56] INFO     Added 1 secrets to       local_conversation.py:3596
+                             conversation                                       
+[11/23/26 03:02:56] INFO     Loaded 0 tools from spec                base.py:599
+[11/23/26 03:02:58] INFO     Created 2 MCP tools                    utils.py:475
+[11/23/26 03:02:58] WARNING  Saving conversation state without      state.py:610
+                             cipher - 1 secret(s) will be redacted              
+                             and lost on restore. Consider                      
+                             providing a cipher to preserve                     
+                             secrets.                                           
+[11/23/26 03:02:58] WARNING  Saving conversation state without      state.py:610
+                             cipher - 1 secret(s) will be redacted              
+                             and lost on restore. Consider                      
+                             providing a cipher to preserve                     
+                             secrets.                                           
+[11/23/26 03:02:58] WARNING  Saving conversation state without      state.py:610
+                             cipher - 1 secret(s) will be redacted              
+                             and lost on restore. Consider                      
+                             providing a cipher to preserve                     
+                             secrets.                                           
+/home/gerg/repos/software-agent-sdk-feat-mcp-structured-results/openhands-sdk/openhands/sdk/llm/utils/telemetry.py:555: UserWarning: Cost calculation failed: This model isn't mapped yet. model=glm-4.7, custom_llm_provider=openai. Add it here - https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json.
+  warnings.warn(f"Cost calculation failed: {e}")
+[11/23/26 03:03:04] ERROR    Error calling MCP tool list_open_ports: tool.py:168
+                             1 validation error for                             
+                             MCPToolObservation                                 
+                             structured_content                                 
+                               Input should be a valid dictionary               
+                             [type=dict_type, input_value=[22, 80,              
+                             443], input_type=list]                             
+                                 For further information visit                  
+                             https://errors.pydantic.dev/2.14/v/dict            
+                             _type                                              
+                             ╭─ Traceback (most recent call last) ─╮            
+                             │ /home/gerg/repos/software-agent-sdk │            
+                             │ -feat-mcp-structured-results/openha │            
+                             │ nds-sdk/openhands/sdk/mcp/tool.py:1 │            
+                             │ 63 in call_tool                     │            
+                             │                                     │            
+                             │   160 │   │   │   result: mcp.types │            
+                             │   161 │   │   │   │   name=self.ser │            
+                             │   162 │   │   │   )                 │            
+                             │ ❱ 163 │   │   │   return MCPToolObs │            
+                             │   164 │   │   │   │   tool_name=sel │            
+                             │   165 │   │   │   )                 │            
+                             │   166 │   │   except Exception as e │            
+                             │                                     │            
+                             │ /home/gerg/repos/software-agent-sdk │            
+                             │ -feat-mcp-structured-results/openha │            
+                             │ nds-sdk/openhands/sdk/mcp/definitio │            
+                             │ n.py:87 in from_call_tool_result    │            
+                             │                                     │            
+                             │    84 │   │   │   │   │   f"Unsuppo │            
+                             │    85 │   │   │   │   )             │            
+                             │    86 │   │                         │            
+                             │ ❱  87 │   │   return cls(           │            
+                             │    88 │   │   │   content=content,  │            
+                             │    89 │   │   │   is_error=result.i │            
+                             │    90 │   │   │   tool_name=tool_na │            
+                             │                                     │            
+                             │ /home/gerg/repos/software-agent-sdk │            
+                             │ -feat-mcp-structured-results/.venv/ │            
+                             │ lib/python3.13/site-packages/pydant │            
+                             │ ic/main.py:280 in __init__          │            
+                             │                                     │            
+                             │    277 │   │   """                  │            
+                             │    278 │   │   # `__tracebackhide__ │            
+                             │        from tracebacks              │            
+                             │    279 │   │   __tracebackhide__ =  │            
+                             │ ❱  280 │   │   validated_self = sel │            
+                             │        self_instance=self)          │            
+                             │    281 │   │   if self is not valid │            
+                             │    282 │   │   │   warnings.warn(   │            
+                             │    283 │   │   │   │   'A custom va │            
+                             ╰─────────────────────────────────────╯            
+                             ValidationError: 1 validation error for            
+                             MCPToolObservation                                 
+                             structured_content                                 
+                               Input should be a valid dictionary               
+                             [type=dict_type, input_value=[22, 80,              
+                             443], input_type=list]                             
+                                 For further information visit                  
+                             https://errors.pydantic.dev/2.14/v/dict            
+                             _type                                              
+[11/23/26 03:03:04] WARNING  Saving conversation state without      state.py:610
+                             cipher - 1 secret(s) will be redacted              
+                             and lost on restore. Consider                      
+                             providing a cipher to preserve                     
+                             secrets.                                           
+[11/23/26 03:03:24] WARNING  Saving conversation state without      state.py:610
+                             cipher - 1 secret(s) will be redacted              
+                             and lost on restore. Consider                      
+                             providing a cipher to preserve                     
+                             secrets.                                           
+=== E2E RESULT ===
+observation list_open_ports: is_error=True structured_content=None
+observation feature_flags: is_error=False structured_content={'beta_enabled': True, 'dark_mode': False}
+final status: ConversationExecutionStatus.FINISHED
+final agent response: Both tools were called once each, as requested. Here's what happened with each:
+
+## 1. `list_open_ports` — ⚠️ Returned with a serialization error
+
+The tool call executed, but the result failed validation when being returned:
+
+```
+Error calling MCP tool list_open_ports: 1 validation error for MCPToolObservation
+structured_content
+  Input should be a valid dictionary [type=dict_type, input_value=[22, 80, 443], input_type=list]
+```
+
+**However, the underlying data is still visible in the error message.** The tool found **3 open TCP ports**: `[22, 80, 443]`
+
+- **22** — SSH
+- **80** — HTTP
+- **443** — HTTPS
+
+So while the structured response was malformed (the tool returned a list where the system expected a dictionary), the actual port information is recoverable from the error output. This appears to be a bug in the tool's response formatting, not a problem with the port scan itself.
+
+## 2. `feature_flags` — ✅ Executed successfully
+
+The tool executed and reported:
+
+```
+2 flags read
+```
+
+It confirmed there are **2 feature flags** defined on the build, though the output only reported the count — the specific flag names/values were not included in the response.
+
+---
+
+**Summary:** Port scan data shows SSH, HTTP, and HTTPS open (a fairly standard, benign web/SSH host configuration), and the build has 2 feature flags. If you'd like, I can try calling either tool again to see if `list_open_ports` returns a properly formatted result or if `feature_flags` can surface the actual flag details.
