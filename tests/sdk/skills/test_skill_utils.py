@@ -362,6 +362,16 @@ This is a test agent.
     assert isinstance(agent.trigger, KeywordTrigger)
 
 
+def test_skill_load_utf8_bom_frontmatter(tmp_path):
+    path = tmp_path / "bom.md"
+    path.write_bytes("\ufeff---\ntriggers:\n  - deploy\n---\nBody\n".encode())
+
+    skill = Skill.load(path, tmp_path)
+
+    assert isinstance(skill.trigger, KeywordTrigger)
+    assert skill.content.strip() == "Body"
+
+
 @pytest.fixture
 def temp_skills_dir_with_cursorrules():
     """Create a temporary directory with test skills and .cursorrules file."""

@@ -383,7 +383,8 @@ class Skill(BaseModel):
         """
         path = Path(path) if isinstance(path, str) else path
 
-        with open(path, encoding="utf-8") as f:
+        # utf-8-sig drops a leading BOM, which would otherwise hide the frontmatter.
+        with open(path, encoding="utf-8-sig") as f:
             file_content = f.read()
 
         if path.name.lower() == "skill.md":
