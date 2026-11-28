@@ -29,7 +29,10 @@ from openhands.sdk.conversation.request import StartConversationRequest
 from openhands.sdk.launch import finalize, preview_launch, resolve
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.profiles import OpenHandsAgentProfile
-from openhands.sdk.profiles.agent_profile import ProfileVerificationSettings
+from openhands.sdk.profiles.agent_profile import (
+    ProfileSandboxSettings,
+    ProfileVerificationSettings,
+)
 from openhands.sdk.settings.model import (
     OpenHandsAgentSettings,
     VerificationSettings,
@@ -169,6 +172,46 @@ def test_default_and_a_copy_of_it_launch_the_same_agent(server, tmp_path):
         from_copy = _launch(server, workspace, agent_profile_id=str(copy.id))
 
     assert _agent_view(from_default["agent"]) == _agent_view(from_copy["agent"])
+
+
+def test_start_in_existing_workspace_with_launchers_sandbox_spec(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config = Config(
+        static_files_path=None,
+        session_api_keys=[],
+        secret_key=None,
+        conversations_path=tmp_path / "conversations",
+        workspace_path=workspace,
+        preload_tools=False,
+    )
+    stores = ServerStores.from_config(config)
+    stores.llm_profiles.save("default", LLM(model="gpt-4o-mini"))
+    copied_profile = OpenHandsAgentProfile(
+        name="copied-automation",
+        llm_profile_ref="default",
+        mcp_server_refs=[],
+        sandbox=ProfileSandboxSettings(spec_id="launcher-only-python-tools"),
+    )
+    profile_url = f"/api/agent-profiles/{copied_profile.name}"
+
+    with TestClient(create_app(config)) as client:
+        # Transfer the full profile after the receiving server is running.
+        saved = client.post(profile_url, json=copied_profile.model_dump(mode="json"))
+        assert saved.status_code == 201, saved.text
+        fetched = client.get(profile_url)
+        assert fetched.status_code == 200, fetched.text
+        stored_profile = fetched.json()["profile"]
+        assert stored_profile["sandbox"] == {"spec_id": "launcher-only-python-tools"}
+
+        launched = _launch(
+            client, str(workspace), agent_profile_id=stored_profile["id"]
+        )
+        assert launched["workspace"]["working_dir"] == str(workspace)
+        assert (
+            launched["launched_agent_profile"]["agent_profile_id"]
+            == stored_profile["id"]
+        )
 
 
 def test_public_skills_select_the_public_tier_and_a_launch_can_add_one(
