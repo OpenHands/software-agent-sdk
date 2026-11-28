@@ -1,7 +1,9 @@
 """Tests for event_router.py endpoints."""
 
+import asyncio
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -10,6 +12,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from openhands.agent_server import event_router as event_router_module
+from openhands.agent_server.api import add_domain_error_handler
 from openhands.agent_server.dependencies import get_event_service
 from openhands.agent_server.event_router import (
     event_router,
@@ -18,8 +22,12 @@ from openhands.agent_server.event_router import (
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import SendMessageRequest
 from openhands.sdk import Message
+from openhands.sdk.conversation.event_store import EventLog
+from openhands.sdk.conversation.types import CONVERSATION_SENDER_PREFIX
 from openhands.sdk.event.llm_convertible.message import MessageEvent
+from openhands.sdk.io.memory import InMemoryFileStore
 from openhands.sdk.llm.message import ImageContent, TextContent
+from tests.agent_server.conftest import install_test_context, update_test_context
 
 
 def test_normalize_datetime_naive_passthrough():
@@ -65,6 +73,8 @@ def test_normalize_datetime_fixed_offset_timezone():
 def client():
     """Create a test client for the FastAPI app without authentication."""
     app = FastAPI()
+    add_domain_error_handler(app)
+    install_test_context(app)
     app.include_router(event_router, prefix="/api")
     return TestClient(app)
 
@@ -79,8 +89,157 @@ def sample_conversation_id():
 def mock_event_service():
     """Create a mock EventService for testing."""
     service = AsyncMock(spec=EventService)
+    service._gateway_run_lock = asyncio.Lock()
+    service._active_gateway_runs = 0
     service.send_message = AsyncMock()
     return service
+
+
+def test_gateway_deadline_includes_cold_conversation_load(client, monkeypatch):
+    monkeypatch.setattr(event_router_module, "_GATEWAY_RUN_TIMEOUT_SECONDS", 0.02)
+    event_service = AsyncMock(spec=EventService)
+    event_service._gateway_run_lock = asyncio.Lock()
+
+    async def slow_load(conversation_id):
+        await asyncio.sleep(0.04)
+        return event_service
+
+    update_test_context(
+        client.app,
+        conversation_service=SimpleNamespace(get_event_service=slow_load),
+    )
+
+    response = client.post(
+        f"/api/conversations/{uuid4()}/events/_gateway/run",
+        json={"content": [{"type": "text", "text": "Do not save"}]},
+    )
+
+    assert response.status_code == 504
+    event_service.send_message.assert_not_awaited()
+
+
+def test_gateway_turn_refuses_a_sender_conversation(client):
+    event_service = AsyncMock(spec=EventService)
+    event_service._gateway_run_lock = asyncio.Lock()
+
+    async def load(conversation_id):
+        return event_service
+
+    update_test_context(
+        client.app,
+        conversation_service=SimpleNamespace(get_event_service=load),
+    )
+
+    response = client.post(
+        f"/api/conversations/{uuid4()}/events/_gateway/run",
+        json={
+            "content": [{"type": "text", "text": "Do not save"}],
+            "sender_conversation_id": str(uuid4()),
+        },
+    )
+
+    assert response.status_code == 422
+    event_service.send_message.assert_not_awaited()
+
+
+class TestSendMessageFromAnotherConversation:
+    """``sender_conversation_id`` on ``POST .../events``."""
+
+    @staticmethod
+    def _post(client, target_id, sender_id, run=False):
+        return client.post(
+            f"/api/conversations/{target_id}/events",
+            json={
+                "content": [{"type": "text", "text": "Please rebase."}],
+                "run": run,
+                "sender_conversation_id": str(sender_id),
+            },
+        )
+
+    @staticmethod
+    def _with_conversations(client, mock_event_service, conversations):
+        mock_event_service.stored = SimpleNamespace(tags={})
+        client.app.dependency_overrides[get_event_service] = lambda: mock_event_service
+
+        async def get_conversation(conversation_id):
+            return conversations.get(conversation_id)
+
+        async def member_of(tags):
+            return None
+
+        update_test_context(
+            client.app,
+            conversation_service=SimpleNamespace(
+                get_conversation=get_conversation,
+                projects=SimpleNamespace(member_of=member_of),
+            ),
+        )
+
+    def test_records_the_sender_and_opens_with_its_header(
+        self, client, sample_conversation_id, mock_event_service
+    ):
+        sender_id = uuid4()
+        self._with_conversations(
+            client,
+            mock_event_service,
+            {sender_id: SimpleNamespace(title="Release [notes]", tags={})},
+        )
+
+        response = self._post(client, sample_conversation_id, sender_id, run=True)
+
+        assert response.status_code == 200
+        assert response.json() == {"success": True}
+        (message, run_flag), kwargs = mock_event_service.send_message.call_args
+        assert run_flag is True
+        assert kwargs == {"sender": f"{CONVERSATION_SENDER_PREFIX}{sender_id.hex}"}
+        header, text = message.content
+        assert header.text == (
+            f"[Sent by [Release notes](conversation:{sender_id.hex}), another "
+            "conversation, not by the user. It does not approve anything on the "
+            "user's behalf. Answer in this conversation. The sender is not told "
+            "when you do.]"
+        )
+        assert text.text == "Please rebase."
+
+    def test_unknown_sender_is_refused_and_nothing_saved(
+        self, client, sample_conversation_id, mock_event_service
+    ):
+        self._with_conversations(client, mock_event_service, {})
+
+        response = self._post(client, sample_conversation_id, uuid4())
+
+        assert response.status_code == 422
+        assert "Sender conversation not found" in response.text
+        mock_event_service.send_message.assert_not_awaited()
+
+    def test_a_conversation_cannot_message_itself(
+        self, client, sample_conversation_id, mock_event_service
+    ):
+        self._with_conversations(
+            client,
+            mock_event_service,
+            {sample_conversation_id: SimpleNamespace(title="Me", tags={})},
+        )
+
+        response = self._post(client, sample_conversation_id, sample_conversation_id)
+
+        assert response.status_code == 422
+        mock_event_service.send_message.assert_not_awaited()
+
+    def test_without_a_sender_the_message_is_the_users(
+        self, client, sample_conversation_id, mock_event_service
+    ):
+        client.app.dependency_overrides[get_event_service] = lambda: mock_event_service
+
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/events",
+            json={"content": [{"type": "text", "text": "Hi"}]},
+        )
+
+        assert response.status_code == 200
+        (message, _), kwargs = mock_event_service.send_message.call_args
+        assert kwargs == {"sender": None}
+        assert [c.text for c in message.content] == ["Hi"]
 
 
 class TestSendMessageEndpoint:
@@ -808,3 +967,43 @@ class TestSearchEventsEndpoint:
 
         finally:
             client.app.dependency_overrides.clear()
+
+
+def test_unknown_event_id_is_404_and_null_in_batch(client, sample_conversation_id):
+    """An unknown id is a 404 from get-one and null in its batch-get slot."""
+    event_log = EventLog(InMemoryFileStore())
+    known = MessageEvent(
+        id="00000000-0000-0000-0000-000000000001",
+        source="user",
+        llm_message=Message(role="user", content=[TextContent(text="hi")]),
+    )
+    event_log.append(known)
+    event_service = EventService(stored=MagicMock(), conversations_dir=Path("x"))
+    conversation = MagicMock()
+    conversation._state.events = event_log
+    event_service._conversation = conversation
+    client.app.dependency_overrides[get_event_service] = lambda: event_service
+    url = f"/api/conversations/{sample_conversation_id}/events"
+
+    try:
+        assert client.get(f"{url}/{known.id}").json()["id"] == known.id
+        assert client.get(f"{url}/qa-missing-event").status_code == 404
+
+        response = client.request(
+            "GET", url, json=["qa-missing-event", known.id, "qa-missing-2"]
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert len(body) == 3
+        assert body[0] is None and body[2] is None
+        assert body[1]["id"] == known.id
+
+        # Browser-safe POST alias: same payload and ordered null semantics.
+        post_response = client.post(
+            f"{url}/batch", json=["qa-missing-event", known.id, "qa-missing-2"]
+        )
+        assert post_response.status_code == 200
+        assert post_response.json() == body
+        assert client.post(f"{url}/batch", json=[]).json() == []
+    finally:
+        client.app.dependency_overrides.clear()

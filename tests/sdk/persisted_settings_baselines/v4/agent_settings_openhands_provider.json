@@ -6,6 +6,10 @@
       {
         "name": "TerminalTool",
         "params": {}
+      },
+      {
+        "name": "switch_llm",
+        "params": {}
       }
     ]
   },

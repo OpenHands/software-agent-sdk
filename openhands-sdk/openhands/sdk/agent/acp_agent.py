@@ -19,10 +19,13 @@ from __future__ import annotations
 import asyncio
 import atexit
 import contextlib
+import functools
 import inspect
 import json
 import os
 import re
+import shutil
+import signal
 import threading
 import time
 import uuid
@@ -32,43 +35,69 @@ from collections.abc import (
     Callable,
     Collection,
     Generator,
-    Iterable,
     Sequence,
 )
 from concurrent.futures import Future
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple
+from typing import TYPE_CHECKING, Annotated, Any, Final, Literal, NamedTuple
 
 from acp.client.connection import ClientSideConnection
 from acp.exceptions import RequestError as ACPRequestError
-from acp.helpers import image_block, text_block
+from acp.meta import AGENT_METHODS
 from acp.schema import (
+    AcpMcpServer,
     AgentMessageChunk,
     AgentThoughtChunk,
     AllowedOutcome,
+    ConnectMcpResponse,
+    CreateElicitationResponse,
+    CreateTerminalResponse,
+    DeclineElicitationResponse,
+    DisconnectMcpResponse,
+    ElicitationMode,
     EnvVariable,
     HttpHeader,
     HttpMcpServer,
     ImageContentBlock,
+    KillTerminalResponse,
     McpServerStdio,
+    NewSessionRequest,
+    NewSessionResponse,
+    PermissionOption,
     PromptResponse,
+    ReadTextFileResponse,
+    ReleaseTerminalResponse,
     RequestPermissionResponse,
     SseMcpServer,
+    TerminalOutputResponse,
     TextContentBlock,
     ToolCallProgress,
     ToolCallStart,
+    ToolCallUpdate,
     UsageUpdate,
+    WaitForTerminalExitResponse,
+    WriteTextFileResponse,
 )
 from acp.transports import default_environment
+from acp.utils import request_model
 from pydantic import (
     Field,
     PrivateAttr,
-    SecretStr,
-    ValidationInfo,
-    field_serializer,
+    ValidationError,
     field_validator,
 )
 
+from openhands.sdk.agent.acp_contracts import (
+    ACPLegacySessionModels,
+    ACPSessionEffortState,
+    extract_session_effort,
+    extract_session_models,
+    is_model_dumpable,
+    normalize_acp_error,
+    normalize_auth_method,
+    normalize_mcp_capabilities,
+    supports_legacy_model_switch,
+)
 from openhands.sdk.agent.acp_file_credentials import (
     ACPFileCredentialLifecycle,
     ACPFileCredentialNeedsReauthError,
@@ -79,7 +108,8 @@ from openhands.sdk.agent.acp_file_credentials import (
     file_credential_looks_usable,
     write_secret_file,
 )
-from openhands.sdk.agent.acp_models import ACPModelInfo
+from openhands.sdk.agent.acp_models import ACPEffortOption, ACPModelInfo
+from openhands.sdk.agent.acp_skills import render_skill_catalog, write_skill_files
 from openhands.sdk.agent.acp_tracing import ACPTurnTrace
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.agent.stream_context import StreamContext
@@ -100,7 +130,7 @@ from openhands.sdk.event import (
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.llm import LLM, ImageContent, Message, MessageToolCall, TextContent
 from openhands.sdk.logger import get_logger
-from openhands.sdk.mcp.config import MCPServer
+from openhands.sdk.mcp.config import MCPOAuthAuthCredential, MCPServer
 from openhands.sdk.observability.laminar import maybe_init_laminar, observe
 from openhands.sdk.settings.acp_providers import (
     ACP_PROVIDERS,
@@ -116,18 +146,12 @@ from openhands.sdk.settings.acp_providers import (
 from openhands.sdk.tool import Tool  # noqa: TC002
 from openhands.sdk.tool.builtins.finish import FinishAction, FinishObservation
 from openhands.sdk.utils import maybe_truncate
-from openhands.sdk.utils.pydantic_secrets import (
-    serialize_secret,
-    validate_secret,
-)
+from openhands.sdk.utils.pydantic_secrets import SecretField
 from openhands.sdk.utils.redact import redact_text_secrets
 
 
 logger = get_logger(__name__)
 
-_codex_auth_file = codex_auth_file
-_codex_auth_file_is_chatgpt = codex_auth_file_is_chatgpt
-_write_secret_file = write_secret_file
 maybe_init_laminar()
 
 
@@ -156,6 +180,8 @@ _ACP_PROMPT_MAX_RETRIES: int = int(os.environ.get("ACP_PROMPT_MAX_RETRIES", "3")
 _ACP_CANCEL_DRAIN_TIMEOUT: float = float(
     os.environ.get("ACP_CANCEL_DRAIN_TIMEOUT", "2.0")
 )
+_ACP_POSIX_PROCESS_GROUPS = os.name == "posix"
+_ACP_PROCESS_GROUP_GRACE = 0.5
 
 _ACP_AUTH_TIMEOUT: float = float(os.environ.get("ACP_AUTH_TIMEOUT", "30.0"))
 _ACP_NPX_CACHE_WARM_TIMEOUT: float = float(
@@ -396,7 +422,9 @@ def _auth_selection_failure_reason(
     # which the runtime does not have. Named so the log says why the method was
     # never a candidate rather than implying a missing credential.
     terminal_ids = sorted(
-        m.id for m in auth_methods if getattr(m, "type", None) == "terminal"
+        m.id
+        for m in (normalize_auth_method(raw) for raw in auth_methods)
+        if m.type == "terminal"
     )
     if terminal_ids:
         reasons.append(
@@ -550,55 +578,89 @@ def _with_codex_base_url(
 # (codex-acp, claude-agent-acp 0.44+) rather than the UNSTABLE ``models``
 # capability + ``session/set_model`` (gemini-cli, older codex/claude).
 _MODEL_CONFIG_OPTION_ID = "model"
-_CODEX_REASONING_EFFORTS: Final[frozenset[str]] = frozenset(
-    {"low", "medium", "high", "xhigh"}
-)
 
 
-def _codex_model_config_options(model: str) -> tuple[tuple[str, str], ...]:
-    """Map combined Canvas Codex model IDs to codex-acp config options."""
-    base_model, sep, effort = model.rpartition("/")
-    if sep and base_model and effort in _CODEX_REASONING_EFFORTS:
-        return (
-            (_MODEL_CONFIG_OPTION_ID, base_model),
-            ("reasoning_effort", effort),
-        )
-    return ((_MODEL_CONFIG_OPTION_ID, model),)
+def _effort_state_hints(state: ACPSessionEffortState | None) -> dict[str, Any]:
+    """``agent_state`` hints that let cold reads surface the session's effort."""
+    return {
+        "acp_current_effort": state.current if state else None,
+        "acp_available_efforts": (
+            [option.model_dump() for option in state.available] if state else []
+        ),
+    }
 
 
-def _model_config_options(
-    agent_name: str | None,
-    model: str,
-) -> tuple[tuple[str, str], ...]:
+def _split_effort_suffix(agent_name: str | None, model: str) -> tuple[str, str | None]:
+    """Split a legacy ``<model>/<effort>`` id (see ``split_model_effort``)."""
     provider = detect_acp_provider_by_agent_name(agent_name or "")
-    if provider is not None and provider.key == "codex":
-        return _codex_model_config_options(model)
-    return ((_MODEL_CONFIG_OPTION_ID, model),)
+    if provider is None:
+        return model, None
+    return provider.split_model_effort(model)
 
 
-def _model_config_option(response: Any) -> Any | None:
-    """Return the ``model`` ``configOptions`` select off a session response.
+async def _apply_acp_effort(
+    conn: ClientSideConnection,
+    session_id: str,
+    effort: str,
+    *,
+    agent_name: str | None,
+    effort_state: ACPSessionEffortState | None,
+    on_config_options: Callable[[Any], None] | None = None,
+) -> bool:
+    """Set reasoning effort through the session's ``thought_level`` option.
 
-    Newer ACP CLIs dropped the UNSTABLE ``models`` capability and expose model
-    selection as a ``configOptions`` entry with ``id == "model"`` (``type ==
-    "select"``), switched via ``session/set_config_option`` instead of
-    ``session/set_model``. Returns that option (carrying ``options`` and
-    ``current_value``) or ``None`` when the server uses neither / the old
-    mechanism. ``getattr`` keeps it tolerant of partial structures.
-
-    The ``agent-client-protocol`` Python lib wraps each entry in a
-    ``SessionConfigOption`` ``RootModel`` on 0.8.x (access via ``.root``) but
-    lists the union members directly on 0.10.x; unwrap ``.root`` so detection
-    works on either.
+    ``effort_state`` is the latest effort option the session advertised; when
+    unknown the provider's ``effort_config_id`` is tried. Returns ``False``
+    without failing when the current model offers no such effort or the server
+    rejects it, so the model already applied stays in place.
     """
-    for raw in getattr(response, "config_options", None) or []:
-        opt = getattr(raw, "root", raw)
-        if (
-            getattr(opt, "type", None) == "select"
-            and getattr(opt, "id", None) == _MODEL_CONFIG_OPTION_ID
-        ):
-            return opt
-    return None
+    if effort_state is not None:
+        if effort_state.config_id is None:
+            logger.warning(
+                "ACP server %s offers no reasoning effort for the current model; "
+                "ignoring effort=%r",
+                agent_name,
+                effort,
+            )
+            return False
+        values = [option.value for option in effort_state.available]
+        if values and effort not in values:
+            logger.warning(
+                "ACP server %s offers effort %s for the current model, not %r; "
+                "keeping %r",
+                agent_name,
+                values,
+                effort,
+                effort_state.current,
+            )
+            return False
+        config_id = effort_state.config_id
+    else:
+        provider = detect_acp_provider_by_agent_name(agent_name or "")
+        if provider is None or provider.effort_config_id is None:
+            logger.warning(
+                "ACP server %s exposes no reasoning effort option; ignoring effort=%r",
+                agent_name,
+                effort,
+            )
+            return False
+        config_id = provider.effort_config_id
+    try:
+        response = await conn.set_config_option(
+            config_id=config_id, value=effort, session_id=session_id
+        )
+    except ACPRequestError as e:
+        logger.warning(
+            "ACP server %s rejected %s=%r (%s); the session keeps its current effort",
+            agent_name,
+            config_id,
+            effort,
+            e,
+        )
+        return False
+    if on_config_options is not None:
+        on_config_options(response)
+    return True
 
 
 async def _apply_acp_model(
@@ -608,29 +670,45 @@ async def _apply_acp_model(
     *,
     agent_name: str | None = None,
     via_config_option: bool,
-) -> None:
-    """Apply ``model`` to a live ACP session via the mechanism the session
-    advertised: ``set_config_option(configId="model")`` for configOptions-based
-    servers (codex-acp, claude-agent-acp 0.44+), else ``set_session_model``.
+    effort: str | None = None,
+    on_config_options: Callable[[Any], None] | None = None,
+) -> str:
+    """Apply ``model`` (then ``effort``) to a live ACP session.
 
-    The model id is normally the bare preset id listed by the server. For
-    Codex, callers may still pass a combined Canvas id such as ``gpt-5.5/high``;
-    codex-acp exposes reasoning effort as a separate config option, so split it
-    only on the config-options mechanism.
+    Uses the mechanism the session advertised: ``set_config_option(model)`` for
+    configOptions-based servers (codex-acp, claude-agent-acp 0.44+), else
+    ``set_session_model``. A legacy ``<model>/<effort>`` id still sets both on
+    the config-options mechanism; an explicit ``effort`` wins over its suffix.
+    Effort is best-effort (see :func:`_apply_acp_effort`). Each
+    ``set_config_option`` response is passed to ``on_config_options``.
+
+    Returns the model id the session now runs.
+
+    agent-client-protocol 0.12.1 removed ``ClientSideConnection.set_session_model``;
+    :class:`_ACPClientConnection` restores it, and a connection without it
+    no-ops rather than raising ``AttributeError``.
     """
     if via_config_option:
-        for config_id, value in _model_config_options(agent_name, model):
-            await conn.set_config_option(
-                config_id=config_id, value=value, session_id=session_id
+        base_model, suffix_effort = _split_effort_suffix(agent_name, model)
+        response = await conn.set_config_option(
+            config_id=_MODEL_CONFIG_OPTION_ID, value=base_model, session_id=session_id
+        )
+        if on_config_options is not None:
+            on_config_options(response)
+        requested_effort = effort or suffix_effort
+        if requested_effort:
+            await _apply_acp_effort(
+                conn,
+                session_id,
+                requested_effort,
+                agent_name=agent_name,
+                effort_state=extract_session_effort(response),
+                on_config_options=on_config_options,
             )
-    else:
-        await conn.set_session_model(model_id=model, session_id=session_id)
-
-
-def _usable_models(infos: Iterable[ACPModelInfo]) -> list[ACPModelInfo]:
-    """Drop entries without a usable ``model_id`` — an empty/missing id is an
-    invalid picker option and an unusable model-switch target."""
-    return [info for info in infos if info.model_id]
+        return base_model
+    if supports_legacy_model_switch(conn):
+        await conn.set_session_model(model_id=model, session_id=session_id)  # type: ignore[attr-defined]
+    return model
 
 
 def _extract_session_models(
@@ -660,52 +738,76 @@ def _extract_session_models(
     configOptions select, ``False`` for the ``models`` capability, and
     ``default_via_config_option`` when the response carries neither (the
     resume-path default for a ``load_session`` that omits the model block).
-
-    ``getattr`` keeps the helper tolerant of agents that emit a partial
-    structure.
     """
-    if response is None:
-        return None, None, default_via_config_option
-    # Prefer configOptions when an adapter advertises both it and the legacy
-    # ``models`` extension. The ``model`` select carries the same state, with
-    # each option's ``value`` as the model id (== the ``set_config_option`` target).
-    opt = _model_config_option(response)
-    if opt is not None:
-        current = getattr(opt, "current_value", None)
-        current = current if isinstance(current, str) and current else None
-        options = getattr(opt, "options", None) or []
-        usable = _usable_models(
-            ACPModelInfo.from_protocol(o, id_attr="value") for o in options
-        )
-        return current, usable, True
-    models = getattr(response, "models", None)
-    if models is not None:
-        current = getattr(models, "current_model_id", None)
-        current = current if isinstance(current, str) and current else None
-        raw = getattr(models, "available_models", None) or []
-        usable = _usable_models(ACPModelInfo.from_protocol(m) for m in raw)
-        return current, usable, False
-    return None, None, default_via_config_option
+    state = extract_session_models(
+        response, default_via_config_option=default_via_config_option
+    )
+    return state.current_model_id, state.available_models, state.via_config_option
 
 
 # The ACP MCP server union accepted by new_session() / load_session().
-_ACPMcpServer = HttpMcpServer | SseMcpServer | McpServerStdio
+_ACPMcpServer = HttpMcpServer | SseMcpServer | McpServerStdio | AcpMcpServer
+
+
+def _oauth_bearer_header(auth: MCPOAuthAuthCredential, name: str) -> dict[str, str]:
+    """Forward a stored OAuth2 access token as an ``Authorization`` header.
+
+    The ACP subprocess owns its own MCP transport and has no access to the
+    FastMCP token store the native path uses, so the token persisted in the
+    connection's ``auth.state`` is the only credential available here. Without
+    this the server is forwarded as a bare URL and the ACP agent reports it is
+    not logged in (``codex mcp login ...``).
+
+    A missing or expired token still forwards what exists: a 401 from the
+    server is more actionable than an unauthenticated URL. Both cases are
+    logged so the drop is not silent.
+    """
+    state = auth.state
+    token = state.tokens.access_token if state is not None and state.tokens else None
+    if token is None:
+        logger.warning(
+            "ACP MCP server %r has an OAuth2 connection with no stored access "
+            "token; forwarding it unauthenticated",
+            name,
+        )
+        return {}
+    if (
+        state is not None
+        and state.token_expires_at is not None
+        and state.token_expires_at <= time.time()
+    ):
+        logger.warning(
+            "ACP MCP server %r has an expired OAuth2 access token; the ACP path "
+            "cannot refresh it, forwarding it as-is",
+            name,
+        )
+    return {"Authorization": f"Bearer {token.get_secret_value()}"}
 
 
 def _remote_mcp_headers(server: MCPServer, name: str) -> list[HttpHeader]:
-    """Convert remote MCP headers/auth into ACP's header-only representation."""
+    """Convert remote MCP headers/auth into ACP's header-only representation.
+
+    Header-compatible auth (api key / bearer / basic / explicit headers)
+    converts directly. OAuth2 does not -- ``to_http_headers()`` returns ``None``
+    because the native path materializes tokens through FastMCP's token store --
+    so its stored access token is forwarded explicitly instead.
+    """
     headers = [
         HttpHeader(name=name, value=value.get_secret_value())
         for name, value in (server.headers or {}).items()
     ]
 
-    auth_headers = server.auth.to_http_headers() if server.auth is not None else {}
+    auth = server.auth
+    if isinstance(auth, MCPOAuthAuthCredential):
+        auth_headers = _oauth_bearer_header(auth, name)
+    else:
+        auth_headers = auth.to_http_headers() if auth is not None else {}
     if auth_headers is None:
         logger.warning(
             "ACP MCP server %r uses unsupported remote MCP auth type %r; "
             "only header-compatible auth can be forwarded",
             name,
-            type(server.auth).__name__,
+            type(auth).__name__,
         )
         return headers
     headers.extend(
@@ -744,10 +846,12 @@ def _mcp_config_to_acp_servers(
     with a warning rather than failing init — one misconfigured server should
     not sink the whole conversation.  ``env`` / ``headers`` maps are converted
     to the protocol's ``[{name, value}]`` list form; header-compatible auth
-    credentials are also converted to headers.
+    credentials, and the stored access token of an OAuth2 connection, are also
+    converted to headers.
     """
-    http_ok = bool(getattr(mcp_capabilities, "http", False))
-    sse_ok = bool(getattr(mcp_capabilities, "sse", False))
+    caps = normalize_mcp_capabilities(mcp_capabilities)
+    http_ok = caps.http
+    sse_ok = caps.sse
     result: list[_ACPMcpServer] = []
     for name, server in mcp_config.items():
         if not server.enabled:
@@ -805,7 +909,9 @@ async def _maybe_set_session_model(
     acp_model: str | None,
     *,
     via_config_option: bool,
-) -> bool:
+    effort: str | None = None,
+    on_config_options: Callable[[Any], None] | None = None,
+) -> str | None:
     """Apply the *initial* session model right after session creation.
 
     Session-creation path only, gated on
@@ -820,31 +926,31 @@ async def _maybe_set_session_model(
     session keeps the server default rather than failing to start. Runtime
     switches go through :meth:`ACPAgent.set_acp_model`.
 
-    Returns ``True`` only when a model-setting call succeeded (the override
-    reached the server); ``False`` when there is nothing to apply or the call
-    was rejected, so the caller knows whether the live session runs ``acp_model``.
+    Returns the model id the live session now runs (see :func:`_apply_acp_model`),
+    or ``None`` when there is nothing to apply or the call was rejected.
     """
     if not acp_model:
-        return False
+        return None
     provider = detect_acp_provider_by_agent_name(agent_name)
     # Known providers gate on supports_set_session_model; unknown/custom servers
     # always attempt (best-effort).
     if provider is not None and not provider.supports_set_session_model:
-        return False
+        return None
     # A rejection is tolerated so session creation can't break: the curated model
     # list is a suggestion, not an access check — a server's model menu is
     # dynamic/account-dependent (claude-agent-acp validates set_config_option
     # against the live select and rejects an absent id), so a model the live
     # session won't accept degrades to the server default rather than failing.
     try:
-        await _apply_acp_model(
+        return await _apply_acp_model(
             conn,
             session_id,
             acp_model,
             agent_name=agent_name,
             via_config_option=via_config_option,
+            effort=effort,
+            on_config_options=on_config_options,
         )
-        return True
     except ACPRequestError as e:
         logger.warning(
             "Could not set model %r on ACP server %s (%s); "
@@ -853,7 +959,7 @@ async def _maybe_set_session_model(
             agent_name,
             e,
         )
-        return False
+        return None
 
 
 async def _reapply_session_model_on_resume(
@@ -863,7 +969,9 @@ async def _reapply_session_model_on_resume(
     acp_model: str | None,
     *,
     via_config_option: bool,
-) -> bool:
+    effort: str | None = None,
+    on_config_options: Callable[[Any], None] | None = None,
+) -> str | None:
     """Reapply the persisted model to a *resumed* session.
 
     ``load_session()`` carries no model ``_meta``, so a session resumed after a
@@ -876,29 +984,29 @@ async def _reapply_session_model_on_resume(
     persisted mechanism hint when that response omits the model block.
 
     Gated on runtime-switch support (skip only known providers that don't); a
-    server that rejects the call is tolerated (logged) — like the
-    ``load_session`` fallback — so resume can't break and the session keeps the
-    server default until the next switch.
+    server that rejects the model-setting call is tolerated (logged), so the
+    resumed session keeps the server default until the next switch.
 
-    Returns ``True`` only when a model-setting call was issued and accepted, so
-    the caller knows the resumed live session is actually running ``acp_model``.
-    ``False`` when there is nothing to reapply, the provider doesn't support the
-    switch, or the server rejected the call (swallowed).
+    Returns the model id the resumed live session now runs (see
+    :func:`_apply_acp_model`), or ``None`` when there is nothing to reapply, the
+    provider doesn't support the switch, or the server rejected the call
+    (swallowed).
     """
     if not acp_model:
-        return False
+        return None
     provider = detect_acp_provider_by_agent_name(agent_name)
     if provider is not None and not provider.supports_runtime_model_switch:
-        return False
+        return None
     try:
-        await _apply_acp_model(
+        return await _apply_acp_model(
             conn,
             session_id,
             acp_model,
             agent_name=agent_name,
             via_config_option=via_config_option,
+            effort=effort,
+            on_config_options=on_config_options,
         )
-        return True
     except ACPRequestError as e:
         logger.warning(
             "Could not reapply model %r on resumed session %s (%s); the live "
@@ -907,7 +1015,7 @@ async def _reapply_session_model_on_resume(
             _fingerprint_session_id(session_id),
             e,
         )
-        return False
+        return None
 
 
 def _extract_token_usage(
@@ -968,13 +1076,13 @@ def _image_url_to_acp_block(url: str) -> ImageContentBlock | None:
         try:
             header, data = url.split(",", 1)
             mime_type = header.split(":", 1)[1].split(";", 1)[0]
-            return image_block(data=data, mime_type=mime_type)
+            return ImageContentBlock(data=data, mime_type=mime_type)
         except (ValueError, IndexError):
             logger.warning("Failed to parse data URI for ACP image block")
             return None
     # Plain URL — pass as uri with a generic MIME type; the ACP server
     # can fetch and detect the actual type.
-    return image_block(data="", mime_type="image/png", uri=url)
+    return ImageContentBlock(data="", mime_type="image/png", uri=url)
 
 
 def _mask_json_value(value: Any, mask: Callable[[str], str]) -> Any:
@@ -1004,7 +1112,7 @@ def _serialize_tool_content(content: list[Any] | None) -> list[dict[str, Any]] |
     for content_block in content:
         block_dict = (
             content_block.model_dump(mode="json")
-            if hasattr(content_block, "model_dump")
+            if is_model_dumpable(content_block)
             else content_block
         )
         if (
@@ -1020,6 +1128,47 @@ def _serialize_tool_content(content: list[Any] | None) -> list[dict[str, Any]] |
             }
         result.append(block_dict)
     return result
+
+
+class _NewSessionResponse(NewSessionResponse):
+    models: ACPLegacySessionModels | None = None
+
+    @field_validator("models", mode="before")
+    @classmethod
+    def _drop_malformed_models(cls, value: Any) -> Any:
+        try:
+            return ACPLegacySessionModels.model_validate(value)
+        except ValidationError:
+            return None
+
+
+# ``@final`` is typing-only; nothing but these two calls is overridden.
+class _ACPClientConnection(ClientSideConnection):  # pyright: ignore[reportGeneralTypeIssues]
+    """Restore the UNSTABLE model calls ACP 0.12 dropped; gemini-cli needs them."""
+
+    async def new_session(  # type: ignore[override]
+        self,
+        cwd: str,
+        additional_directories: list[str] | None = None,
+        mcp_servers: list[Any] | None = None,
+        **kwargs: Any,
+    ) -> NewSessionResponse:
+        return await request_model(
+            self._conn,
+            AGENT_METHODS["session_new"],
+            NewSessionRequest(
+                cwd=cwd,
+                additional_directories=additional_directories,
+                mcp_servers=mcp_servers or [],
+                field_meta=kwargs or None,
+            ),
+            _NewSessionResponse,
+        )
+
+    async def set_session_model(self, *, model_id: str, session_id: str) -> None:
+        await self._conn.send_request(
+            "session/set_model", {"sessionId": session_id, "modelId": model_id}
+        )
 
 
 async def _filter_jsonrpc_lines(source: Any, dest: Any) -> None:
@@ -1114,10 +1263,11 @@ def _stringify_acp_error_data(data: Any) -> str:
 
 def _acp_error_text(exc: BaseException) -> str:
     """Lowercased message + data text used for substring classification."""
+    info = normalize_acp_error(exc)
     if isinstance(exc, ACPRequestError):
-        data_str = _stringify_acp_error_data(getattr(exc, "data", None))
-        return f"{exc} {data_str}".lower()
-    return str(exc).lower()
+        data_str = _stringify_acp_error_data(info.data)
+        return f"{info.message} {data_str}".lower()
+    return info.message.lower()
 
 
 def _acp_error_indicates_auth(exc: BaseException) -> bool:
@@ -1127,8 +1277,10 @@ def _acp_error_indicates_auth(exc: BaseException) -> bool:
     auth marker is an upstream 401/403 the server collapsed into a generic internal
     error.  Either way the client should offer re-authentication.
     """
-    if isinstance(exc, ACPRequestError) and getattr(exc, "code", None) == -32000:
-        return True
+    if isinstance(exc, ACPRequestError):
+        info = normalize_acp_error(exc)
+        if info.code == -32000:
+            return True
     text = _acp_error_text(exc)
     return any(marker in text for marker in _ACP_AUTH_ERROR_MARKERS) or bool(
         _ACP_AUTH_HTTP_CODES_RE.search(text)
@@ -1149,9 +1301,10 @@ def _acp_error_detail(
     secret values) before it leaves, and capped to the 500-char event limit.
     """
     if isinstance(exc, ACPRequestError):
-        code = getattr(exc, "code", None)
-        message = str(exc)
-        data_str = _stringify_acp_error_data(getattr(exc, "data", None))
+        info = normalize_acp_error(exc)
+        code = info.code
+        message = info.message
+        data_str = _stringify_acp_error_data(info.data)
         detail = f"[{code}] {message}" if code is not None else message
         if data_str and data_str != message:
             detail = f"{detail}: {data_str}"
@@ -1268,6 +1421,14 @@ class _OpenHandsACPBridge:
         self.accumulated_text: list[str] = []
         self.accumulated_thoughts: list[str] = []
         self.accumulated_tool_calls: list[dict[str, Any]] = []
+        # Text and thoughts said before a tool call are emitted as their own
+        # message ahead of that call (``on_text_segment``), so the transcript
+        # keeps the agent's narration where it was said. These mark where the
+        # segment not yet emitted starts; the rest of the turn ends it.
+        self._segment_text_start = 0
+        self._segment_thought_start = 0
+        self.text_segments_emitted = 0
+        self.on_text_segment: Callable[[str, str], None] | None = None
         # Emits the LLM/TOOL spans an ACP turn would otherwise never produce.
         self.trace = ACPTurnTrace(acp_server=None, model_id=None)
         self.on_token: Any = None  # ConversationTokenCallbackType | None
@@ -1313,6 +1474,10 @@ class _OpenHandsACPBridge:
         self.accumulated_text.clear()
         self.accumulated_thoughts.clear()
         self.accumulated_tool_calls.clear()
+        self._segment_text_start = 0
+        self._segment_thought_start = 0
+        self.text_segments_emitted = 0
+        self.on_text_segment = None
         self.on_token = None
         self.on_event = None
         self.on_activity = None
@@ -1426,6 +1591,10 @@ class _OpenHandsACPBridge:
                     self._fork_accumulated_text.append(
                         self._mask_value(update.content.text)
                     )
+            elif isinstance(update, UsageUpdate):
+                # ask_agent() waits for this to bill the fork's cost; without
+                # it every call stalls until the usage-update timeout.
+                self._store_usage_update(session_id, update)
             return
 
         if isinstance(update, AgentMessageChunk):
@@ -1447,14 +1616,9 @@ class _OpenHandsACPBridge:
             if isinstance(update.content, TextContentBlock):
                 self.accumulated_thoughts.append(self._mask_value(update.content.text))
         elif isinstance(update, UsageUpdate):
-            # Store the update for step()/ask_agent() to process in one place.
-            self._context_window = update.size
-            self._context_window_by_session[session_id] = update.size
-            self._turn_usage_updates[session_id] = update
-            event = self._usage_received.get(session_id)
-            if event is not None:
-                event.set()
+            self._store_usage_update(session_id, update)
         elif isinstance(update, ToolCallStart):
+            self._emit_text_segment()
             entry = {
                 "tool_call_id": update.tool_call_id,
                 "title": update.title,
@@ -1525,6 +1689,53 @@ class _OpenHandsACPBridge:
         else:
             logger.debug("ACP session update: %s", type(update).__name__)
 
+    def _store_usage_update(self, session_id: str, update: UsageUpdate) -> None:
+        """Keep a usage update for step()/ask_agent() and release its waiter."""
+        if session_id != self._fork_session_id:
+            # The fork's window is not the main session's; only the main
+            # session's size feeds the conversation-wide context window.
+            self._context_window = update.size
+        self._context_window_by_session[session_id] = update.size
+        self._turn_usage_updates[session_id] = update
+        event = self._usage_received.get(session_id)
+        if event is not None:
+            event.set()
+
+    def segment_text(self) -> str:
+        """Text said since the last emitted segment (the whole turn if none)."""
+        return "".join(self.accumulated_text[self._segment_text_start :])
+
+    def segment_thoughts(self) -> str:
+        """Thoughts since the last emitted segment (the whole turn if none)."""
+        return "".join(self.accumulated_thoughts[self._segment_thought_start :])
+
+    def _emit_text_segment(self) -> None:
+        """Hand the text and thoughts said so far to ``on_text_segment``.
+
+        Called when a tool call starts, so that narration such as "let me run
+        the tests" lands before the tool call it announces instead of joining
+        the turn's final message. The joined segment is masked again because a
+        secret split across chunks only reassembles here.
+        """
+        if self.on_text_segment is None:
+            return
+        text = self.segment_text()
+        thoughts = self.segment_thoughts()
+        if not text.strip() and not thoughts.strip():
+            return
+        try:
+            self.on_text_segment(self._mask_value(text), self._mask_value(thoughts))
+        except CredentialBindingError:
+            # Keep the segment: the turn's final text carries it, and the
+            # recorded masking error fails the turn before anything persists.
+            return
+        except Exception:
+            logger.debug("on_text_segment callback failed", exc_info=True)
+            return
+        self._segment_text_start = len(self.accumulated_text)
+        self._segment_thought_start = len(self.accumulated_thoughts)
+        self.text_segments_emitted += 1
+
     def _emit_tool_call_event(self, tc: dict[str, Any]) -> None:
         """Emit an ACPToolCallEvent reflecting the current state of ``tc``.
 
@@ -1579,11 +1790,11 @@ class _OpenHandsACPBridge:
 
     async def request_permission(
         self,
-        options: list[Any],
         session_id: str,  # noqa: ARG002
-        tool_call: Any,
+        tool_call: ToolCallUpdate,
+        options: list[PermissionOption],
         **kwargs: Any,  # noqa: ARG002
-    ) -> Any:
+    ) -> RequestPermissionResponse:
         """Auto-approve all permission requests from the ACP server."""
         # Pick the first option (usually "allow once")
         option_id = options[0].option_id if options else "allow_once"
@@ -1596,53 +1807,110 @@ class _OpenHandsACPBridge:
             outcome=AllowedOutcome(outcome="selected", option_id=option_id),
         )
 
+    async def create_elicitation(
+        self,
+        message: str,  # noqa: ARG002
+        mode: ElicitationMode,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002
+    ) -> CreateElicitationResponse:
+        """Decline elicitation requests; the headless bridge has no user to ask.
+
+        Added to the ``Client`` protocol in agent-client-protocol 0.12.x. None
+        of the pinned ACP providers elicit during a headless turn, so this is a
+        defensive default rather than an exercised code path.
+        """
+        return DeclineElicitationResponse(action="decline")
+
+    async def complete_elicitation(
+        self,
+        elicitation_id: str,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002
+    ) -> None:
+        """No-op completion for an elicitation the bridge always declines."""
+        return None
+
     # fs/terminal methods — raise NotImplementedError; ACP server handles its own
     async def write_text_file(
-        self, content: str, path: str, session_id: str, **kwargs: Any
-    ) -> None:
+        self, session_id: str, path: str, content: str, **kwargs: Any
+    ) -> WriteTextFileResponse | None:
         raise NotImplementedError("ACP server handles file operations")
 
     async def read_text_file(
         self,
-        path: str,
         session_id: str,
-        limit: int | None = None,
+        path: str,
         line: int | None = None,
+        limit: int | None = None,
         **kwargs: Any,
-    ) -> Any:
+    ) -> ReadTextFileResponse:
         raise NotImplementedError("ACP server handles file operations")
 
     async def create_terminal(
         self,
-        command: str,
         session_id: str,
+        command: str,
         args: list[str] | None = None,
+        env: list[EnvVariable] | None = None,
         cwd: str | None = None,
-        env: Any = None,
         output_byte_limit: int | None = None,
         **kwargs: Any,
-    ) -> Any:
+    ) -> CreateTerminalResponse:
         raise NotImplementedError("ACP server handles terminal operations")
 
     async def terminal_output(
         self, session_id: str, terminal_id: str, **kwargs: Any
-    ) -> Any:
+    ) -> TerminalOutputResponse:
         raise NotImplementedError("ACP server handles terminal operations")
 
     async def release_terminal(
         self, session_id: str, terminal_id: str, **kwargs: Any
-    ) -> None:
+    ) -> ReleaseTerminalResponse | None:
         raise NotImplementedError("ACP server handles terminal operations")
 
     async def wait_for_terminal_exit(
         self, session_id: str, terminal_id: str, **kwargs: Any
-    ) -> Any:
+    ) -> WaitForTerminalExitResponse:
         raise NotImplementedError("ACP server handles terminal operations")
 
     async def kill_terminal(
         self, session_id: str, terminal_id: str, **kwargs: Any
-    ) -> None:
+    ) -> KillTerminalResponse | None:
         raise NotImplementedError("ACP server handles terminal operations")
+
+    # MCP-over-ACP methods — part of the unstable ``Client`` protocol in
+    # agent-client-protocol 1.0.0. The bridge never proxies MCP servers to the
+    # ACP server, so these are defensive stubs.
+    async def connect_mcp(
+        self,
+        server_id: str,
+        **kwargs: Any,  # noqa: ARG002
+    ) -> ConnectMcpResponse:
+        raise NotImplementedError("ACP server manages its own MCP connections")
+
+    async def disconnect_mcp(
+        self,
+        connection_id: str,
+        **kwargs: Any,  # noqa: ARG002
+    ) -> DisconnectMcpResponse:
+        raise NotImplementedError("ACP server manages its own MCP connections")
+
+    async def mcp_message(
+        self,
+        connection_id: str,  # noqa: ARG002
+        method: str,  # noqa: ARG002
+        params: dict[str, Any] | None = None,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002
+    ) -> Any:
+        raise NotImplementedError("ACP server manages its own MCP connections")
+
+    async def notify_mcp(
+        self,
+        connection_id: str,  # noqa: ARG002
+        method: str,  # noqa: ARG002
+        params: dict[str, Any] | None = None,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002
+    ) -> None:
+        raise NotImplementedError("ACP server manages its own MCP connections")
 
     async def ext_method(
         self,
@@ -1741,10 +2009,21 @@ class ACPAgent(AgentBase):
             "Model for the ACP server to use (e.g. 'sonnet' or 'gpt-5.5'). "
             "Applied via the protocol — set_config_option(model) for "
             "configOptions-based servers (codex, claude), else "
-            "set_session_model. If None, the server picks its default."
+            "set_session_model. Codex and Claude also accept "
+            "'<model>/<effort>' (e.g. 'gpt-5.5/high'); prefer acp_effort, "
+            "which wins over the suffix. If None, the server picks its default."
         ),
     )
-    acp_resume_session_id: str | None = Field(
+    acp_effort: str | None = Field(
+        default=None,
+        description=(
+            "Reasoning effort for the ACP server to use (e.g. 'high'), applied "
+            "after the model through the session's ``thought_level`` config "
+            "option. Ignored when the model offers no effort setting. If None, "
+            "the server keeps its own."
+        ),
+    )
+    acp_resume_session_id: Annotated[str | None, SecretField()] = Field(
         default=None,
         description=(
             "Optional explicit ACP session id to resume. When set, takes "
@@ -1753,55 +2032,15 @@ class ACPAgent(AgentBase):
             "for environments where the per-conversation filesystem (and "
             "therefore ``base_state.json``) does not survive across restarts "
             "(e.g. cloud sandbox recycles), but the id has been mirrored "
-            "into durable storage elsewhere. Falls back to a fresh session "
-            "if the server cannot load the id. Treated as a secret on the "
-            "wire — possession of the id is enough to resume the underlying "
-            "ACP session, so default serialization redacts it; pass "
+            "into durable storage elsewhere. If the server cannot load the "
+            "id, startup fails without replacing the session. Treated as a "
+            "secret on the wire — possession of the id is enough to resume "
+            "the underlying ACP session, so default serialization redacts it; pass "
             "``expose_secrets='plaintext'`` (trusted backend) or "
             "``expose_secrets='encrypted'`` plus a cipher (frontend round-"
             "trip) when the value must cross a serialization boundary."
         ),
     )
-
-    @field_serializer("acp_resume_session_id", when_used="always")
-    def _serialize_acp_resume_session_id(self, value: str | None, info):
-        """Mask ``acp_resume_session_id`` via :func:`serialize_secret`.
-
-        Default ``model_dump`` / ``model_dump_json`` redacts the id so it
-        cannot leak into logs, trace exports, or PR review attachments.
-        Trusted backend callers opt into plaintext via Pydantic's context
-        (``expose_secrets='plaintext'``); frontend round-trips use the
-        ``"encrypted"`` mode with a cipher in the context.
-        """
-        if value is None:
-            return None
-        return serialize_secret(SecretStr(value), info)
-
-    @field_validator("acp_resume_session_id", mode="before")
-    @classmethod
-    def _validate_acp_resume_session_id(
-        cls, value: Any, info: ValidationInfo
-    ) -> str | None:
-        """Reverse :meth:`_serialize_acp_resume_session_id` on load.
-
-        Without this validator, ``model_validate_json`` of a previously
-        serialized agent would put garbage in ``acp_resume_session_id``:
-
-        - Default-redacted dumps would reload as the literal ``"**********"``
-          sentinel — calling ``session/load`` with that fails server-side and
-          we fall back to a fresh session every time, defeating the whole
-          point of the durable mirror.
-        - Encrypted dumps (frontend round-trip) would reload as the raw
-          Fernet ciphertext — same failure mode, plus the ciphertext sits
-          in ``state.agent_state`` on disk.
-
-        :func:`validate_secret` returns ``None`` for empty/redacted values
-        and decrypts when a cipher is present in the validation context.
-        We unwrap the returned ``SecretStr`` so the field's runtime type
-        stays ``str | None`` (the rest of the SDK reads it directly).
-        """
-        secret = validate_secret(value, info)
-        return secret.get_secret_value() if secret is not None else None
 
     acp_file_secrets: list[ACPFileSecretSpec] = Field(
         default_factory=lambda: list(default_acp_file_secrets()),
@@ -1868,6 +2107,7 @@ class ACPAgent(AgentBase):
     _conn: ClientSideConnection | None = PrivateAttr(default=None)
     _session_id: str | None = PrivateAttr(default=None)
     _process: Any = PrivateAttr(default=None)  # asyncio subprocess
+    _process_group_id: int | None = PrivateAttr(default=None)
     _client: Any = PrivateAttr(default=None)  # _OpenHandsACPBridge
     _filtered_reader: Any = PrivateAttr(default=None)  # StreamReader
     _stdout_filter_task: Any = PrivateAttr(default=None)  # asyncio.Task
@@ -1908,6 +2148,8 @@ class ACPAgent(AgentBase):
     # in ``init_state`` uses that distinction to preserve vs clear the stored
     # list on resume. The public ``available_models`` property coerces to ``[]``.
     _available_models: list[ACPModelInfo] | None = PrivateAttr(default=None)
+    # Latest ``thought_level`` option the session advertised; ``None`` = unknown.
+    _effort_state: ACPSessionEffortState | None = PrivateAttr(default=None)
     # Whether the caller's ``acp_model`` was actually pushed to the server in
     # the most recent session init (via session ``_meta`` or ``set_session_model``).
     # ``False`` when there's no override, the provider can't apply it (unknown
@@ -1926,6 +2168,10 @@ class ACPAgent(AgentBase):
     # "installed"            — already in subprocess history; skip further injection
     _suffix_install_state: str = PrivateAttr(default="unused")
     _installed_suffix: str | None = PrivateAttr(default=None)
+    # Skills written to disk and listed by path in the prompt, not inlined.
+    _skill_locations: dict[str, Path] = PrivateAttr(default_factory=dict)
+    _skills_root: Path | None = PrivateAttr(default=None)
+    _additional_directories_supported: bool = PrivateAttr(default=False)
     _restart_session_on_next_turn: bool = PrivateAttr(default=False)
     # Stream identity for the turn in flight; see stream_context.py. Held on
     # the agent rather than threaded through the finalizers because the ACP
@@ -2014,6 +2260,11 @@ class ACPAgent(AgentBase):
             elapsed: Wall-clock seconds for this prompt round-trip (optional).
             usage_update: The synchronized ACP UsageUpdate for this turn, if any.
         """
+        # The conversation's session for the sentinel LLM: its registry opened
+        # it, so this resolves on the portal thread as well as on the caller's.
+        session = self.llm.session_for()
+        metrics = session.metrics
+
         # -- Cost recording ---------------------------------------------------
         # claude-agent-acp, codex-acp: report cost via UsageUpdate notification
         # gemini-cli: does not send UsageUpdate (cost derived from tokens below)
@@ -2022,7 +2273,7 @@ class ACPAgent(AgentBase):
             last_cost = self._client._last_cost_by_session.get(session_id, 0.0)
             delta = usage_update.cost.amount - last_cost
             if delta > 0:
-                self.llm.metrics.add_cost(delta)
+                metrics.add_cost(delta)
                 cost_recorded = True
             self._client._last_cost_by_session[session_id] = usage_update.cost.amount
             self._client._last_cost = usage_update.cost.amount
@@ -2032,7 +2283,7 @@ class ACPAgent(AgentBase):
             _extract_token_usage(response)
         )
         if input_tokens or output_tokens:
-            self.llm.metrics.add_token_usage(
+            metrics.add_token_usage(
                 prompt_tokens=input_tokens,
                 completion_tokens=output_tokens,
                 cache_read_tokens=cache_read,
@@ -2053,7 +2304,7 @@ class ACPAgent(AgentBase):
                 self.acp_model, input_tokens, output_tokens
             )
             if cost > 0:
-                self.llm.metrics.add_cost(cost)
+                metrics.add_cost(cost)
 
         if not cost_recorded and not input_tokens and not output_tokens:
             # gemini-cli currently returns response.usage=None and
@@ -2065,13 +2316,9 @@ class ACPAgent(AgentBase):
             )
 
         if elapsed is not None:
-            self.llm.metrics.add_response_latency(elapsed, session_id)
+            metrics.add_response_latency(elapsed, session_id)
 
-        if self.llm.telemetry._stats_update_callback is not None:
-            try:
-                self.llm.telemetry._stats_update_callback()
-            except Exception:
-                logger.debug("Stats update callback failed", exc_info=True)
+        session.telemetry.notify_stats_update()
 
     # -- Capability helpers ------------------------------------------------
 
@@ -2135,6 +2382,26 @@ class ACPAgent(AgentBase):
         honored even when the model's self-description disagrees.
         """
         return self._current_model_id
+
+    @property
+    def current_effort(self) -> str | None:
+        """Reasoning effort the live session reports for its current model."""
+        return self._effort_state.current if self._effort_state else None
+
+    @property
+    def available_efforts(self) -> list[ACPEffortOption]:
+        """Reasoning-effort levels the live session offers for its current model."""
+        return list(self._effort_state.available) if self._effort_state else []
+
+    @property
+    def reports_effort(self) -> bool:
+        """Whether the live session advertises config options, where effort lives."""
+        return self._effort_state is not None
+
+    def _observe_config_options(self, response: Any) -> None:
+        state = extract_session_effort(response)
+        if state is not None:
+            self._effort_state = state
 
     @property
     def available_models(self) -> list[ACPModelInfo]:
@@ -2237,6 +2504,7 @@ class ACPAgent(AgentBase):
 
         # Render the suffix once, pulling secrets from the conversation's
         # secret_registry to match the regular Agent's get_dynamic_context().
+        self._materialize_skills(state)
         self._installed_suffix = self._render_suffix(state)
         # A prior session id means we may be resuming; used by ``truly_resumed``
         # below to decide whether the model state reported for this launch
@@ -2287,7 +2555,9 @@ class ACPAgent(AgentBase):
             # exception, which still propagates to preserve the existing
             # cleanup/re-raise contract that run()/arun() rely on.
             try:
-                state.execution_status = ConversationExecutionStatus.ERROR
+                state.transition(
+                    ConversationExecutionStatus.ERROR, "ACP agent failed to start"
+                )
                 on_event(
                     ConversationErrorEvent(
                         source="agent",
@@ -2301,8 +2571,8 @@ class ACPAgent(AgentBase):
 
         self._register_atexit_cleanup(replace=True)
 
-        # A successful resume keeps the prior id; cwd mismatch and load_session
-        # failure both fall back to ``new_session``, which mints a fresh one.
+        # A successful resume keeps the prior id; cwd mismatch falls back to
+        # ``new_session``, which mints a fresh one.
         # The session-id comparison is the only authoritative signal — the
         # decision happens inside ``_start_acp_server`` and isn't otherwise
         # observable here.
@@ -2369,6 +2639,8 @@ class ACPAgent(AgentBase):
             ]
         elif not truly_resumed:
             new_agent_state.pop("acp_available_models", None)
+        if self._effort_state is not None or not truly_resumed:
+            new_agent_state.update(_effort_state_hints(self._effort_state))
         state.agent_state = new_agent_state
 
         if self._installed_suffix:
@@ -2398,6 +2670,25 @@ class ACPAgent(AgentBase):
                 tools=[],
             )
         )
+
+    def _skill_directories(self) -> list[str] | None:
+        if self._skills_root and self._additional_directories_supported:
+            return [str(self._skills_root)]
+        return None
+
+    def _materialize_skills(self, state: ConversationState) -> None:
+        self._skill_locations = {}
+        self._skills_root = None
+        context = self.agent_context
+        if context is None or not context.skills:
+            return
+        _, available = context._partition_skills()
+        if not available:
+            return
+        root = self._acp_file_secret_dir(state, "skills")
+        shutil.rmtree(root, ignore_errors=True)
+        self._skill_locations = write_skill_files(root, available)
+        self._skills_root = root
 
     def _render_suffix(self, state: ConversationState) -> str | None:
         """Render the system suffix once, including secrets from the registry.
@@ -2439,12 +2730,23 @@ class ACPAgent(AgentBase):
             if not secret_infos:
                 return None
             agent_context = AgentContext(current_datetime=None)
-        elif agent_context.secrets:
+        listed = [s for s in agent_context.skills if s.name in self._skill_locations]
+        if listed:
+            agent_context = agent_context.model_copy(
+                update={"skills": [s for s in agent_context.skills if s not in listed]}
+            )
+        if agent_context.secrets:
             # The registry already carries these (and their descriptions), so
             # clear the agent_context copy to advertise from the registry alone
             # rather than re-merging a redundant second source.
             agent_context = agent_context.model_copy(update={"secrets": {}})
-        return agent_context.to_acp_prompt_context(additional_secret_infos=secret_infos)
+        rendered = agent_context.to_acp_prompt_context(
+            additional_secret_infos=secret_infos
+        )
+        if not listed:
+            return rendered
+        catalog = render_skill_catalog(listed, self._skill_locations)
+        return f"{rendered}\n\n{catalog}" if rendered else catalog
 
     def _present_file_secret_names(self, state: ConversationState) -> set[str]:
         """Reserved file-content secret names supplied for this conversation.
@@ -2674,16 +2976,19 @@ class ACPAgent(AgentBase):
                     if self._closed:
                         raise CredentialSyncError("Credential binding is closed.")
                 try:
-                    lifecycle.materialize(state.secret_registry, env)
-                    durable_path = (
-                        self._acp_file_secret_dir(state, spec.subdir) / spec.filename
-                    )
-                    try:
-                        durable_path.unlink(missing_ok=True)
-                    except OSError as exc:
-                        raise CredentialSyncError(
-                            "Durable credential copy could not be removed."
-                        ) from exc
+                    # The CLI keeps its state in the conversation's durable
+                    # directory; the lifecycle links the credential in from a
+                    # temporary file, so it never persists there.
+                    home = self._acp_file_secret_dir(state, spec.subdir)
+                    lifecycle.materialize(state.secret_registry, env, home=home)
+                    durable_path = home / spec.filename
+                    if lifecycle.path != durable_path:
+                        try:
+                            durable_path.unlink(missing_ok=True)
+                        except OSError as exc:
+                            raise CredentialSyncError(
+                                "Durable credential copy could not be removed."
+                            ) from exc
                 except BaseException:
                     env.pop("CODEX_HOME", None)
                     lifecycle.discard()
@@ -2853,11 +3158,6 @@ class ACPAgent(AgentBase):
                         self._file_credential_lifecycles.pop(name)
         return failures
 
-    def _release_file_credentials(self) -> None:
-        """Release scoped ACP file credential sources."""
-        failures = self._release_file_credentials_collect()
-        self._raise_first_file_credential_failure("release", failures)
-
     def _startup_timeout_message(self) -> str:
         return (
             f"ACP startup timed out after {self.acp_startup_timeout:.0f}s "
@@ -2964,8 +3264,7 @@ class ACPAgent(AgentBase):
         # always lands in the same ``working_dir``). We therefore assume
         # cwd-compatibility and let the ACP server's own ``session/load``
         # validation be the last line of defence: a server-side cwd mismatch
-        # returns an ``ACPRequestError``, already caught below and falling back
-        # to ``new_session`` — the same recovery path as a forgotten id.
+        # returns an ``ACPRequestError`` and aborts startup.
         fs_session_id: str | None = state.agent_state.get("acp_session_id")
         fs_session_cwd: str | None = state.agent_state.get("acp_session_cwd")
         if self.acp_resume_session_id and self.acp_resume_session_id != fs_session_id:
@@ -2994,12 +3293,22 @@ class ACPAgent(AgentBase):
             prior_session_id = None
 
         async def _init() -> tuple[
-            str, str, str, str | None, list[ACPModelInfo] | None, bool
+            str,
+            str,
+            str,
+            str | None,
+            list[ACPModelInfo] | None,
+            bool,
+            ACPSessionEffortState | None,
         ]:
             # Spawn the subprocess directly so we can install a
             # filtering reader that skips non-JSON-RPC lines some
             # ACP servers (e.g. claude-code-acp v0.1.x) write to
             # stdout.
+            start_new_session = _ACP_POSIX_PROCESS_GROUPS
+            spawn_kwargs: dict[str, Any] = (
+                {"start_new_session": True} if start_new_session else {}
+            )
             process = await asyncio.create_subprocess_exec(
                 command,
                 *args,
@@ -3008,6 +3317,12 @@ class ACPAgent(AgentBase):
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
                 limit=_STREAM_READER_LIMIT,
+                **spawn_kwargs,
+            )
+            self._process = process
+            pid = process.pid
+            self._process_group_id = (
+                pid if start_new_session and isinstance(pid, int) else None
             )
             assert process.stdin is not None
             assert process.stdout is not None
@@ -3023,7 +3338,7 @@ class ACPAgent(AgentBase):
                 _log_acp_subprocess_stderr(process.stderr)
             )
 
-            conn = ClientSideConnection(
+            conn = _ACPClientConnection(
                 client,
                 process.stdin,  # write to subprocess
                 filtered_reader,  # read filtered output
@@ -3036,7 +3351,6 @@ class ACPAgent(AgentBase):
             # The "session initialized" gating keys off _session_id (assigned
             # last, on full success), so an early _conn here does not make the
             # agent look ready before _init completes.
-            self._process = process
             self._conn = conn
             self._filtered_reader = filtered_reader
             self._stdout_filter_task = stdout_filter_task
@@ -3066,6 +3380,15 @@ class ACPAgent(AgentBase):
                 init_response.agent_capabilities.mcp_capabilities
                 if init_response.agent_capabilities is not None
                 else None
+            )
+            session_caps = (
+                init_response.agent_capabilities.session_capabilities
+                if init_response.agent_capabilities is not None
+                else None
+            )
+            self._additional_directories_supported = (
+                session_caps is not None
+                and session_caps.additional_directories is not None
             )
             acp_mcp_servers = _mcp_config_to_acp_servers(self.mcp_config, mcp_caps)
             if acp_mcp_servers:
@@ -3145,26 +3468,29 @@ class ACPAgent(AgentBase):
                     else:
                         _warn_auth_selection_failure(auth_methods, env, auth_provider)
 
-            # Resume the prior ACP session if we have its id.  If the server
-            # has forgotten it (state wiped, new host, etc.) fall through to
-            # new_session so the conversation still starts cleanly.
-            #
-            # We only swallow ACPRequestError here: that is the protocol-level
-            # "I don't know this session" signal and is recoverable by
-            # starting fresh.  Transport failures (broken pipe, EOF, timeout,
-            # subprocess crash) propagate — there is no working connection to
-            # fall back on, and the outer init_state handler cleans up.
+            # A new ACP session does not inherit the provider's conversation
+            # history, so a failed resume must not silently replace it.
             session_id: str | None = None
             reported_model_id: str | None = None
             available_models: list[ACPModelInfo] | None = None
+            effort_state: ACPSessionEffortState | None = None
+
+            def _observe_effort(response: Any) -> None:
+                nonlocal effort_state
+                observed = extract_session_effort(response)
+                if observed is not None:
+                    effort_state = observed
+
             if prior_session_id is not None:
                 try:
                     load_response = await conn.load_session(
                         cwd=working_dir,
                         session_id=prior_session_id,
+                        additional_directories=self._skill_directories(),
                         mcp_servers=acp_mcp_servers,
                     )
                     session_id = prior_session_id
+                    effort_state = extract_session_effort(load_response)
                     # load_session often omits the model block; fall back to the
                     # mechanism detected at session creation (persisted alongside
                     # the session id) so a config-option session still reapplies
@@ -3187,30 +3513,42 @@ class ACPAgent(AgentBase):
                         working_dir,
                     )
                 except ACPRequestError as e:
-                    logger.warning(
-                        "ACP load_session(%s) failed (%s); starting a fresh session",
-                        _fingerprint_session_id(prior_session_id),
-                        e,
+                    # ``data`` is folded into the message: clients that only
+                    # show ``str(exc)`` would otherwise lose the real cause.
+                    # Providers often echo the id, which must not leak.
+                    provider_error = _acp_error_detail(e).replace(
+                        prior_session_id, _fingerprint_session_id(prior_session_id)
                     )
+                    raise ACPRequestError(
+                        e.code,
+                        "Could not resume the existing ACP session, so the agent "
+                        "would not see the earlier conversation. No new session "
+                        "was started. Fix the provider error and try again, or "
+                        "start a new conversation. Provider error: " + provider_error,
+                    ) from e
 
             # Track whether ``acp_model`` was actually pushed to the server so
             # ``current_model_id`` below can stay honest: a caller override that
             # never reached the server (unknown provider on a fresh session, or
             # a resume whose ``set_session_model`` the server rejected) must not
             # be surfaced as the live model.
-            override_applied = False
+            applied_model: str | None = None
             if session_id is None:
                 # Fresh session. Build _meta content for session options (e.g.
                 # model selection). Extra kwargs to new_session() become the
                 # _meta dict in the JSON-RPC request — do NOT wrap in _meta=
                 # (that double-nests).
-                session_meta = build_session_model_meta(agent_name, self.acp_model)
+                session_meta = build_session_model_meta(
+                    agent_name, self.acp_model, self.acp_effort
+                )
                 response = await conn.new_session(
                     cwd=working_dir,
+                    additional_directories=self._skill_directories(),
                     mcp_servers=acp_mcp_servers,
                     **session_meta,
                 )
                 session_id = response.session_id
+                effort_state = extract_session_effort(response)
                 # Detect the model-selection protocol the server advertised (in
                 # the same scan) so init and later runtime switches use the right
                 # call.
@@ -3225,19 +3563,20 @@ class ACPAgent(AgentBase):
                 # applies the model (#3654) — via set_config_option for
                 # configOptions-based servers, else set_session_model; _meta is
                 # kept only as backward-compat for older claude CLIs.
-                applied_via_call = await _maybe_set_session_model(
+                applied_model = await _maybe_set_session_model(
                     conn,
                     agent_name,
                     session_id,
                     self.acp_model,
                     via_config_option=self._model_via_config_option,
+                    effort=self.acp_effort,
+                    on_config_options=_observe_effort,
                 )
                 # set_session_model is the authoritative signal that acp_model
                 # reached the server. _meta is a no-op on the pinned claude CLI,
                 # so it must not by itself claim the override took effect. (For
-                # claude+acp_model the two always agree: the call returns True or
-                # raises before we reach here.)
-                override_applied = applied_via_call
+                # claude+acp_model the two always agree: the call returns the
+                # applied model or raises before we reach here.)
             else:
                 # Resumed session. load_session() does not carry model _meta, so
                 # reapply the persisted (possibly runtime-switched) acp_model via
@@ -3245,20 +3584,32 @@ class ACPAgent(AgentBase):
                 # session would run on the server default while serialized state
                 # claims the switched model. ``_model_via_config_option`` was set
                 # from the load_session response above.
-                override_applied = await _reapply_session_model_on_resume(
+                applied_model = await _reapply_session_model_on_resume(
                     conn,
                     agent_name,
                     session_id,
                     self.acp_model,
                     via_config_option=self._model_via_config_option,
+                    effort=self.acp_effort,
+                    on_config_options=_observe_effort,
+                )
+            # With no model applied, the effort still targets the server's model.
+            if (
+                self.acp_effort
+                and applied_model is None
+                and self._model_via_config_option
+            ):
+                await _apply_acp_effort(
+                    conn,
+                    session_id,
+                    self.acp_effort,
+                    agent_name=agent_name,
+                    effort_state=effort_state,
+                    on_config_options=_observe_effort,
                 )
 
-            # Resolve the model the agent will actually use.
-            current_model_id = (
-                self.acp_model
-                if (self.acp_model and override_applied)
-                else reported_model_id
-            )
+            override_applied = applied_model is not None
+            current_model_id = applied_model or reported_model_id
 
             # Resolve the permission mode. Known providers each have their own
             # mode ID; unknown/custom servers get None — skip the call rather
@@ -3278,6 +3629,7 @@ class ACPAgent(AgentBase):
                 current_model_id,
                 available_models,
                 override_applied,
+                effort_state,
             )
 
         # _conn / _process / _filtered_reader are assigned to the instance inside
@@ -3291,6 +3643,7 @@ class ACPAgent(AgentBase):
                 self._current_model_id,
                 self._available_models,
                 self._model_override_applied,
+                self._effort_state,
             ) = self._executor.run_async(_init, timeout=self.acp_startup_timeout)
         except TimeoutError:
             # run_async's own TimeoutError carries no message (anyio.fail_after);
@@ -3327,10 +3680,40 @@ class ACPAgent(AgentBase):
         self._client.trace.start_turn(prompt)
         self._client.on_token = on_token
         self._client.on_event = on_event
+        self._client.on_text_segment = functools.partial(
+            self._emit_text_segment, on_event
+        )
         self._client.on_activity = self._on_activity
         # Start the idle-timeout clock fresh for this attempt so the deadline
         # is measured from the send (or retry), not from a stale value.
         self._client.arm_activity_clock()
+
+    def _emit_text_segment(
+        self, on_event: ConversationCallbackType, text: str, thoughts: str
+    ) -> None:
+        """Emit text the agent said before a tool call as its own message.
+
+        It retires the stream slot that carried this text and opens a new one,
+        so the rest of the turn streams below the tool call.
+        """
+        minted: dict[str, Any] = {}
+        if self._stream is not None and (item_id := self._stream.claim()):
+            minted["id"] = item_id
+        on_event(
+            MessageEvent(
+                **minted,
+                source="agent",
+                llm_message=Message(
+                    role="assistant",
+                    content=[TextContent(text=text)],
+                    reasoning_content=thoughts or None,
+                ),
+            )
+        )
+        if self._stream is not None:
+            if minted:
+                self._stream.commit()
+            self._stream.next_item()
 
     def _cancel_inflight_tool_calls(self) -> None:
         """Emit a terminal ``failed`` ACPToolCallEvent for every tool call
@@ -3533,7 +3916,7 @@ class ACPAgent(AgentBase):
         blocks: list[TextContentBlock | ImageContentBlock] = []
         for content in message.content:
             if isinstance(content, TextContent) and content.text.strip():
-                blocks.append(text_block(content.text))
+                blocks.append(TextContentBlock(text=content.text))
             elif isinstance(content, ImageContent):
                 for url in content.image_urls:
                     acp_block = _image_url_to_acp_block(url)
@@ -3543,7 +3926,7 @@ class ACPAgent(AgentBase):
             self._suffix_install_state == "pending_first_prompt"
             and self._installed_suffix
         ):
-            blocks.append(text_block(self._installed_suffix))
+            blocks.append(TextContentBlock(text=self._installed_suffix))
             # NOTE: do NOT flip ``_suffix_install_state`` here.  If the
             # caller (step/astep) is cancelled or fails before the ACP
             # server persists this first turn (more likely on the async
@@ -3715,13 +4098,18 @@ class ACPAgent(AgentBase):
         # gets caught before landing in the persisted event stream.
         self._track_file_credentials_for_masking()
         mask = state.secret_registry.mask_secrets_in_output
-        response_text = mask("".join(self._client.accumulated_text))
-        thought_text = mask("".join(self._client.accumulated_thoughts))
-        if not response_text:
+        # Text said before a tool call was already emitted as its own message
+        # (``_emit_text_segment``); the finish carries what the agent said
+        # after its last tool call.
+        response_text = mask(self._client.segment_text())
+        thought_text = mask(self._client.segment_thoughts())
+        if not response_text and not self._client.text_segments_emitted:
             response_text = "(No response from ACP server)"
 
         self._client.trace.finish_turn(
-            response_text, thought_text, self._client.accumulated_tool_calls
+            mask("".join(self._client.accumulated_text)) or response_text,
+            mask("".join(self._client.accumulated_thoughts)),
+            self._client.accumulated_tool_calls,
         )
 
         # ACP step() boundaries are full remote assistant turns, not
@@ -3761,7 +4149,7 @@ class ACPAgent(AgentBase):
                 tool_call_id=tc_id,
             )
         )
-        state.execution_status = ConversationExecutionStatus.FINISHED
+        state.transition(ConversationExecutionStatus.FINISHED, "ACP turn finished")
 
     def _emit_turn_timeout(
         self,
@@ -3795,7 +4183,7 @@ class ACPAgent(AgentBase):
         # Close any tool cards left in flight from the timed-out attempt.
         self._cancel_inflight_tool_calls()
         on_event(MessageEvent(source="agent", llm_message=error_message))
-        state.execution_status = ConversationExecutionStatus.ERROR
+        state.transition(ConversationExecutionStatus.ERROR, "ACP prompt timed out")
 
     def _emit_turn_error(
         self,
@@ -3840,7 +4228,7 @@ class ACPAgent(AgentBase):
                 detail=error_detail,
             )
         )
-        state.execution_status = ConversationExecutionStatus.ERROR
+        state.transition(ConversationExecutionStatus.ERROR, "ACP turn failed")
 
     def _finalize_successful_turn_guarded(
         self,
@@ -3897,6 +4285,7 @@ class ACPAgent(AgentBase):
             return
         self._client.trace.abandon()
         self._client.on_event = None
+        self._client.on_text_segment = None
         self._client.on_token = None
         self._client.on_activity = None
 
@@ -3945,7 +4334,9 @@ class ACPAgent(AgentBase):
                     break
         if prompt_blocks is None:
             logger.warning("No user message found; finishing conversation")
-            state.execution_status = ConversationExecutionStatus.FINISHED
+            state.transition(
+                ConversationExecutionStatus.FINISHED, "no user message to prompt"
+            )
             return
 
         self._reset_client_for_turn(
@@ -4123,7 +4514,9 @@ class ACPAgent(AgentBase):
                         break
         if prompt_blocks is None:
             logger.warning("No user message found; finishing conversation")
-            state.execution_status = ConversationExecutionStatus.FINISHED
+            state.transition(
+                ConversationExecutionStatus.FINISHED, "no user message to prompt"
+            )
             return
 
         self._reset_client_for_turn(
@@ -4332,7 +4725,7 @@ class ACPAgent(AgentBase):
                 usage_sync = client.prepare_usage_sync(fork_session_id)
                 response = await conn.prompt(
                     session_id=fork_session_id,
-                    prompt=[text_block(question)],
+                    prompt=[TextContentBlock(text=question)],
                 )
                 if client.get_turn_usage_update(fork_session_id) is None:
                     try:
@@ -4446,13 +4839,15 @@ class ACPAgent(AgentBase):
         # error we propagate *before* mutating any local state, so the sentinel
         # LLM is only updated once the live session has actually switched.
         try:
-            self._executor.run_async(
+            applied_model = self._executor.run_async(
                 _apply_acp_model(
                     conn,
                     session_id,
                     model,
                     agent_name=self._agent_name,
                     via_config_option=self._model_via_config_option,
+                    effort=self.acp_effort,
+                    on_config_options=self._observe_config_options,
                 ),
                 timeout=self.acp_prompt_timeout,
             )
@@ -4483,20 +4878,97 @@ class ACPAgent(AgentBase):
         # authoritative current model is persisted by
         # :meth:`LocalConversation.switch_acp_model` via an agent ``model_copy``.
         self.llm.model = model
-        self.llm.metrics.model_name = model
-        if self.llm.metrics.accumulated_token_usage is not None:
-            self.llm.metrics.accumulated_token_usage.model = model
+        # Both ledgers carry the model name: the LLM's own and the one the
+        # conversation keeps for it (the same object outside a conversation).
+        for metrics in (self.llm.metrics, self.llm.session_for().metrics):
+            metrics.model_name = model
+            if metrics.accumulated_token_usage is not None:
+                metrics.accumulated_token_usage.model = model
         # Refresh the surfaced model state so the chip/picker
         # (``ConversationInfo.current_model_id``) reflects the switch instead
         # of the stale session-start value. ``_current_model_id`` is a
         # PrivateAttr, so ``switch_acp_model``'s shallow ``model_copy`` carries
         # this updated value onto the persisted agent. ``available_models`` is
         # unchanged by a model switch, so it is intentionally left alone.
-        self._current_model_id = model
+        self._current_model_id = applied_model
         logger.info(
             "Switched ACP session model to %s (provider=%s, session=%s)",
             model,
             provider.key if provider else "unknown",
+            _fingerprint_session_id(self._session_id),
+        )
+
+    def set_acp_effort(self, effort: str) -> None:
+        """Switch the reasoning effort on the running ACP session.
+
+        Low-level primitive; :meth:`LocalConversation.switch_acp_effort` also
+        holds the state lock and persists the value as ``acp_effort``. The
+        effort must be one the session offers for its current model.
+
+        Raises:
+            ValueError: If ``effort`` is empty, the session has no config
+                options, the current model offers no such effort, or the
+                server rejects it.
+            RuntimeError: If the ACP session has not been initialized yet.
+            TimeoutError: If the server does not answer within
+                ``acp_prompt_timeout`` seconds.
+        """
+        if not effort or not effort.strip():
+            raise ValueError("effort must be a non-empty string")
+        if not self.has_live_acp_session:
+            raise RuntimeError(
+                "ACP session is not initialized; the effort can only be switched "
+                "after the conversation has started (first run())."
+            )
+        if not self._model_via_config_option:
+            raise ValueError(
+                "This ACP server has no session config options, so its reasoning "
+                "effort can't be switched."
+            )
+        effort_state = self._effort_state
+        if effort_state is not None:
+            if effort_state.config_id is None:
+                raise ValueError(
+                    "The current model offers no reasoning effort setting."
+                )
+            offered = [option.value for option in effort_state.available]
+            if offered and effort not in offered:
+                raise ValueError(
+                    f"Reasoning effort {effort!r} is not offered for the current "
+                    f"model; choose one of: {', '.join(offered)}."
+                )
+        assert self._conn is not None
+        assert self._session_id is not None
+        applied = self._executor.run_async(
+            _apply_acp_effort(
+                self._conn,
+                self._session_id,
+                effort,
+                agent_name=self._agent_name,
+                effort_state=effort_state,
+                on_config_options=self._observe_config_options,
+            ),
+            timeout=self.acp_prompt_timeout,
+        )
+        if not applied:
+            raise ValueError(f"ACP server rejected reasoning effort {effort!r}.")
+        if self._effort_state is effort_state:
+            # The reply carried no config options; record what was applied.
+            provider = detect_acp_provider_by_agent_name(self._agent_name or "")
+            self._effort_state = ACPSessionEffortState(
+                config_id=(
+                    effort_state.config_id
+                    if effort_state
+                    else provider.effort_config_id
+                    if provider
+                    else None
+                ),
+                current=effort,
+                available=effort_state.available if effort_state else [],
+            )
+        logger.info(
+            "Switched ACP session reasoning effort to %s (session=%s)",
+            effort,
             _fingerprint_session_id(self._session_id),
         )
 
@@ -4528,21 +5000,35 @@ class ACPAgent(AgentBase):
 
         process = self._process
         if process is not None:
+            group_id = self._process_group_id
             try:
-                if process.returncode is None or not isinstance(
-                    process.returncode, int
-                ):
-                    process.terminate()
+                if group_id is not None:
+                    group_signalled = self._signal_process_group(
+                        process, group_id, signal.SIGTERM
+                    )
+                else:
+                    group_signalled = False
+                    if not isinstance(process.returncode, int):
+                        process.terminate()
                 if self._executor is not None:
                     self._executor.run_async(
                         self._wait_for_process,
                         process,
                         timeout=5.0,
                     )
+                if (
+                    group_id is not None
+                    and group_signalled
+                    and not self._wait_for_process_group_exit(process, group_id)
+                ):
+                    raise TimeoutError("ACP process group did not exit after SIGTERM")
             except Exception as e:
                 logger.debug("Error terminating ACP process: %s", e)
                 try:
-                    process.kill()
+                    if group_id is None:
+                        process.kill()
+                    elif self._signal_process_group(process, group_id, signal.SIGKILL):
+                        self._wait_for_process_group_exit(process, group_id)
                     if self._executor is not None:
                         self._executor.run_async(
                             self._wait_for_process,
@@ -4552,9 +5038,12 @@ class ACPAgent(AgentBase):
                 except Exception as kill_error:
                     logger.debug("Error killing ACP process: %s", kill_error)
             self._process = None
+            self._process_group_id = None
 
-        for task_attr in ("_stdout_filter_task", "_stderr_log_task"):
-            task = getattr(self, task_attr)
+        for task_name, task in (
+            ("stdout filter task", self._stdout_filter_task),
+            ("stderr log task", self._stderr_log_task),
+        ):
             if task is not None:
                 task.cancel()
                 if self._executor is not None:
@@ -4563,8 +5052,9 @@ class ACPAgent(AgentBase):
                             self._await_cancelled_task, task, timeout=5.0
                         )
                     except Exception as e:
-                        logger.debug("Error stopping %s: %s", task_attr, e)
-                setattr(self, task_attr, None)
+                        logger.debug("Error stopping %s: %s", task_name, e)
+        self._stdout_filter_task = None
+        self._stderr_log_task = None
 
         credential_failures = self._release_file_credentials_collect()
         failures.update(credential_failures)
@@ -4580,6 +5070,37 @@ class ACPAgent(AgentBase):
                 failures["ACP executor"] = e
             self._executor = None
         return failures
+
+    @staticmethod
+    def _signal_process_group(
+        process: asyncio.subprocess.Process, group_id: int, sig: int
+    ) -> bool:
+        if group_id <= 1 or group_id == os.getpgrp():
+            return False
+        try:
+            leader_group = os.getpgid(group_id)
+        except ProcessLookupError:
+            # Descendants retain their PGID after the leader has been reaped.
+            pass
+        else:
+            if leader_group != group_id or process.returncode is not None:
+                return False
+        try:
+            os.killpg(group_id, sig)
+        except ProcessLookupError:
+            return False
+        return True
+
+    def _wait_for_process_group_exit(
+        self, process: asyncio.subprocess.Process, group_id: int
+    ) -> bool:
+        deadline = time.monotonic() + _ACP_PROCESS_GROUP_GRACE
+        while self._signal_process_group(process, group_id, 0):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            time.sleep(min(0.05, remaining))
+        return True
 
     @staticmethod
     async def _wait_for_process(process: asyncio.subprocess.Process) -> None:

@@ -111,9 +111,10 @@ def test_base_conversation_span_management():
             "conversation",
             session_id="test-session-id",
             user_id=None,
-            metadata=None,
+            metadata={},
             tags=None,
-            attributes=None,
+            attributes={},
+            parent_span_context=None,
         )
         assert conversation._span_ended is False
         assert conversation._observability_root_span is fake_root
@@ -167,9 +168,11 @@ def test_base_conversation_passes_observability_metadata_and_tag_attributes():
             metadata=metadata,
             tags=span_tags,
             attributes={
+                "repo_name": "OpenHands/software-agent-sdk",
                 "conversation.tags.automationid": "auto-1",
                 "conversation.tags.automationrunid": "run-1",
             },
+            parent_span_context=None,
         )
 
 
@@ -194,9 +197,10 @@ def test_base_conversation_uses_custom_observability_span_name_as_child_span():
             "conversation",
             session_id="test-session-id",
             user_id=None,
-            metadata=None,
+            metadata={},
             tags=None,
-            attributes=None,
+            attributes={},
+            parent_span_context=None,
         )
         mock_child_span.assert_called_once_with(
             mock_start_span.return_value,

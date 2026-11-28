@@ -159,16 +159,27 @@ class ParallelToolExecutor:
             return tools.get(ae.tool_name) if tools else None
 
         if len(action_events) == 1 or self._max_workers == 1:
-            return [
-                await self._arun_safe(
-                    action,
-                    tool_runner,
-                    _resolve(action),
-                    cancel_token,
-                    span_owner=span_owner,
-                )
-                for action in action_events
-            ]
+            # Not the shared default executor: arun() holds the conversation
+            # state lock across this await, and callers waiting on that lock
+            # (state snapshots, send_message) park default-executor threads.
+            # Once they fill it, the tool never starts and the lock is never
+            # released. Shut down without waiting so an interrupt that cancels
+            # this await does not block the event loop on the tool thread.
+            pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="aexecute_seq")
+            try:
+                return [
+                    await self._arun_safe(
+                        action,
+                        tool_runner,
+                        _resolve(action),
+                        cancel_token,
+                        pool,
+                        span_owner,
+                    )
+                    for action in action_events
+                ]
+            finally:
+                pool.shutdown(wait=False)
 
         with ThreadPoolExecutor(
             max_workers=self._max_workers,
@@ -206,9 +217,8 @@ class ParallelToolExecutor:
         locks are acquired on the worker thread, not the event-loop
         thread.
 
-        When *executor* is ``None`` the asyncio default pool is used
-        (suitable for one-off / single-action calls); batch callers
-        should pass a dedicated pool so concurrent tool calls don't
+        When *executor* is ``None`` the asyncio default pool is used;
+        batch callers should pass a dedicated pool so tool calls don't
         contend with other ``run_in_executor`` users on the shared
         default pool.
 

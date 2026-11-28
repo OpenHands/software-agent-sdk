@@ -5,6 +5,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 
 def _load(name: str, script_name: str):
     script_path = (
@@ -179,19 +181,23 @@ def test_extract_linked_issue_numbers_only_bare_ref_in_issue_section():
     assert extract_linked_issue_numbers(body) == [7]
 
 
-def test_extract_linked_issue_numbers_no_bare_ref_outside_issue_section():
-    # A bare `#42` in the Summary must not be treated as a linked issue.
-    body = "## Summary\n\nSee #42 for background.\n\n## Issue Number\n\nN/A\n"
-    assert extract_linked_issue_numbers(body) == []
-
-
-def test_extract_linked_issue_numbers_keyword_inside_word_is_ignored():
-    # "fix"/"clos"/"resolv" must not match inside larger words (e.g. "crucifixes").
-    body = (
-        "## Summary\n\n"
-        "crucifixes #12, encloses #34, transfixes #56.\n\n"
-        "## Issue Number\n\nN/A\n"
-    )
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param(
+            "## Summary\n\nSee #42 for background.\n\n## Issue Number\n\nN/A\n",
+            id="no_bare_ref_outside_issue_section",
+        ),
+        # "fix"/"clos"/"resolv" must not match inside larger words.
+        pytest.param(
+            "## Summary\n\n"
+            "crucifixes #12, encloses #34, transfixes #56.\n\n"
+            "## Issue Number\n\nN/A\n",
+            id="keyword_inside_word_is_ignored",
+        ),
+    ],
+)
+def test_extract_linked_issue_numbers_finds_none(body):
     assert extract_linked_issue_numbers(body) == []
 
 
@@ -210,33 +216,29 @@ def test_validate_linked_issue_ready_no_token_skips_network(monkeypatch):
     assert validate_linked_issue_ready("Fixes #12\n", None, None) == []
 
 
-def test_validate_linked_issue_ready_passes_with_ready_label(monkeypatch):
+@pytest.mark.parametrize(
+    ("labels", "created_at"),
+    [
+        pytest.param(
+            ["ready-for-dev"], "2026-08-13T00:00:00Z", id="passes_with_ready_label"
+        ),
+        pytest.param(
+            ["bug"], "2026-01-15T00:00:00Z", id="grandfathers_pre_rollout_issue"
+        ),
+        # Same issue as #4468/#4469: opened on the rollout day (2026-08-12) before
+        # the workflow was deployed, so it was never labeled. It must be exempt.
+        pytest.param(
+            ["bug"],
+            "2026-08-12T06:46:00Z",
+            id="grandfathers_rollout_day_before_deployment",
+        ),
+    ],
+)
+def test_validate_linked_issue_ready_accepts(monkeypatch, labels, created_at):
     monkeypatch.setattr(
         _prod,
         "fetch_issue_details",
-        lambda repo, num, token: (["ready-for-dev"], "2026-08-13T00:00:00Z"),
-    )
-    assert validate_linked_issue_ready("Fixes #12\n", "org/repo", "token") == []
-
-
-def test_validate_linked_issue_ready_grandfathers_pre_rollout_issue(monkeypatch):
-    monkeypatch.setattr(
-        _prod,
-        "fetch_issue_details",
-        lambda repo, num, token: (["bug"], "2026-01-15T00:00:00Z"),
-    )
-    assert validate_linked_issue_ready("Fixes #12\n", "org/repo", "token") == []
-
-
-def test_validate_linked_issue_ready_grandfathers_rollout_day_before_deployment(
-    monkeypatch,
-):
-    # Same issue as #4468/#4469: opened on the rollout day (2026-08-12) before
-    # the workflow was deployed, so it was never labeled. It must be exempt.
-    monkeypatch.setattr(
-        _prod,
-        "fetch_issue_details",
-        lambda repo, num, token: (["bug"], "2026-08-12T06:46:00Z"),
+        lambda repo, num, token: (labels, created_at),
     )
     assert validate_linked_issue_ready("Fixes #12\n", "org/repo", "token") == []
 

@@ -59,6 +59,21 @@ class ConversationStats(BaseModel):
         total_metrics = Metrics()
         for metrics in self.usage_to_metrics.values():
             total_metrics.merge(metrics)
+        # merge() never populates model_name; attribute the aggregate when
+        # the rolled-up usage is single-model, and keep "default" otherwise
+        # so mixed usage (e.g. a condenser on another model) isn't misattributed.
+        # A child's mixed rollup is already "default", so counting it as
+        # non-model-bearing would let a parent attribute the child's usage
+        # to the parent's model — treat it as unidentified instead.
+        models = {
+            m.model_name for m in self.usage_to_metrics.values() if m.model_name != ""
+        }
+        if len(models) == 1:
+            model_name = models.pop()
+            if model_name != "default":
+                total_metrics.model_name = model_name
+                if total_metrics.accumulated_token_usage is not None:
+                    total_metrics.accumulated_token_usage.model = model_name
         return total_metrics
 
     def get_metrics_for_usage(self, usage_id: str) -> Metrics:
@@ -68,18 +83,19 @@ class ConversationStats(BaseModel):
         return self.usage_to_metrics[usage_id]
 
     def register_llm(self, event: RegistryEvent):
-        # Listen for LLM creations and track their metrics
-        llm = event.llm
-        usage_id = llm.usage_id
+        # Listen for LLM registrations and track the metrics of their session:
+        # the one the registry keeps for the usage ID, else the LLM's own.
+        usage_id = event.llm.usage_id
+        session = event.session if event.session is not None else event.llm.session
 
         # Usage costs exist but have not been restored yet
         if (
             usage_id in self.usage_to_metrics
             and usage_id not in self._restored_usage_ids
         ):
-            llm.restore_metrics(self.usage_to_metrics[usage_id])
+            session.restore_metrics(self.usage_to_metrics[usage_id])
             self._restored_usage_ids.add(usage_id)
 
         # Usage is new, track its metrics
-        if usage_id not in self.usage_to_metrics and llm.metrics:
-            self.usage_to_metrics[usage_id] = llm.metrics
+        if usage_id not in self.usage_to_metrics:
+            self.usage_to_metrics[usage_id] = session.metrics

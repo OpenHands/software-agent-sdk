@@ -102,19 +102,19 @@ def test_render_output_is_stripped() -> None:
 def test_build_threads_ctx_to_sections() -> None:
     """guard and render receive the ctx passed to build()."""
 
-    class _BrowserGated:
-        name = "browser"
+    class _CliGated:
+        name = "cli"
         cache_tier = CacheTier.STATIC
 
         def guard(self, ctx: PromptContext) -> bool:
-            return ctx.enable_browser
+            return ctx.cli_mode
 
         def render(self, ctx: PromptContext) -> str | None:
-            return "BROWSER"
+            return "CLI"
 
     reg = PromptRegistry()
-    reg.register(_BrowserGated())
-    on = PromptContext(template_kwargs={"enable_browser": True})
-    off = PromptContext(template_kwargs={"enable_browser": False})
-    assert reg.build(on).static == "BROWSER"
+    reg.register(_CliGated())
+    on = PromptContext(template_kwargs={"cli_mode": True})
+    off = PromptContext(template_kwargs={"cli_mode": False})
+    assert reg.build(on).static == "CLI"
     assert reg.build(off).static == ""

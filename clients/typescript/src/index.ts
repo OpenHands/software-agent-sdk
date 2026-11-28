@@ -69,6 +69,9 @@ export {
   isConversationErrorEvent,
   isCondensationEvent,
   isHookExecutionEvent,
+  isReactionEvent,
+  isAskUserAnswerEvent,
+  isMessageEditEvent,
 } from './events/types';
 export type {
   EventID,
@@ -98,6 +101,12 @@ export type {
   StuckDetectionEvent,
   FinishEvent,
   ThinkEvent,
+  ReactionEmoji,
+  ReactionEvent,
+  AskUserAction,
+  AskUserObservation,
+  AskUserAnswerEvent,
+  MessageEditEvent,
   HookExecutionEvent,
   HookExecutionEventType,
   ConversationEvent,
@@ -144,7 +153,7 @@ export { BashWebSocketClient } from './events/bash-websocket-client';
 export type { BashWebSocketClientOptions } from './events/bash-websocket-client';
 
 // HTTP client
-export { HttpClient, HttpError } from './client/http-client';
+export { HttpClient, HttpError, isHttpError } from './client/http-client';
 export { HooksClient } from './client/hooks-client';
 export { MCPClient } from './client/mcp-client';
 export { WorkspacesClient } from './client/workspaces-client';
@@ -172,6 +181,9 @@ export type {
   LLM as LLMConfig,
   ServerInfo,
   Success,
+  ModelRouteInfo,
+  ModelRouterSelection,
+  ModelRouterStatus,
   EventPage,
   ConversationCallbackType,
   SecretValue,
@@ -190,6 +202,7 @@ export type {
   FileOperationResult,
   FileDownloadResult,
   GitChange,
+  GitChangeStatus,
   GitDiff,
   ExecuteBashRequest,
   BashEventBase,
@@ -221,13 +234,21 @@ export type {
 
 // ACP provider registry (mirrors openhands-sdk; see scripts/validate-acp-providers.mjs)
 export { ACP_PROVIDERS, ACP_SETTINGS_KEYS, getAcpProvider } from './models/acp';
-export type { ACPModelOption, ACPProviderInfo, ACPProviderKey } from './models/acp';
+export type { ACPProviderInfo, ACPProviderKey } from './models/acp';
+export type {
+  ACPEffortOption,
+  ACPModelDiscovery,
+  ACPModelDiscoveryError,
+  ACPModelDiscoveryRequest,
+  ACPModelInfo,
+} from './models/acp-model-discovery';
 
 // Agent profile types (mirrors openhands-sdk agent_profile.py + resolver.py)
 export type {
   AgentKind,
   ACPServerKind,
   ProfileVerificationSettings,
+  ProfileSandboxSettings,
   OpenHandsAgentProfile,
   ACPAgentProfile,
   AgentProfile,
@@ -237,6 +258,7 @@ export type {
   LaunchedAgentProfile,
   LaunchedProfile,
 } from './models/agent-profile';
+export type { ToolCatalogEntry, ToolCatalogResponse } from './models/tool-catalog';
 
 // Agent profiles client
 export { AgentProfilesClient } from './client/agent-profiles-client';
@@ -256,6 +278,7 @@ export type { SwitchPlan } from './profiles/derive-switch-plan';
 // Conversation models
 export type {
   ConversationInfo,
+  BrokenConversationInfo,
   ConversationRuntimeStatus,
   ConversationRuntimeError,
   ConversationRuntimeInfo,
@@ -288,7 +311,12 @@ export type {
 } from './models/conversation';
 
 // Client options
-export type { HttpClientOptions, RequestOptions, HttpResponse } from './client/http-client';
+export type {
+  HttpClientOptions,
+  RequestOptions,
+  HttpResponse,
+  HttpValidationErrorItem,
+} from './client/http-client';
 export type { HooksClientOptions } from './client/hooks-client';
 export type { MCPClientOptions } from './client/mcp-client';
 export type {
@@ -300,6 +328,18 @@ export type {
 } from './client/workspaces-client';
 export type { AgentServerFeatureRequirement } from './client/agent-server-compatibility';
 export type {
+  AgentServerArchiveQuery,
+  AgentServerBatchEventIds,
+  AgentServerBatchEventsResponse,
+  AgentServerGitCommitChangesQuery,
+  AgentServerGitCommitChangesResponse,
+  AgentServerGitCommitsQuery,
+  AgentServerGitCommitsResponse,
+  AgentServerInitRequest,
+  AgentServerInitResponse,
+  AgentServerInitStatus,
+  AgentServerLoadPluginRequest,
+  AgentServerLoadPluginResponse,
   AgentServerConversationSettingsSchema,
   AgentServerMCPOAuthCallbackRequest,
   AgentServerMCPOAuthCallbackResponse,
@@ -487,7 +527,7 @@ import { RemoteState } from './conversation/remote-state';
 import { RemoteEventsList } from './events/remote-events-list';
 import { WebSocketCallbackClient } from './events/websocket-client';
 import { BashWebSocketClient } from './events/bash-websocket-client';
-import { HttpClient, HttpError } from './client/http-client';
+import { HttpClient, HttpError, isHttpError } from './client/http-client';
 import { HooksClient } from './client/hooks-client';
 import { MCPClient } from './client/mcp-client';
 import { WorkspacesClient } from './client/workspaces-client';
@@ -542,6 +582,7 @@ export default {
   BashWebSocketClient,
   HttpClient,
   HttpError,
+  isHttpError,
   HooksClient,
   MCPClient,
   WorkspacesClient,

@@ -14,20 +14,17 @@ from openhands.tools.terminal import TerminalTool
 from tests.integration.base import BaseIntegrationTest, TestResult
 
 
-# Instruction designed to generate multiple agent messages
+# Large tool results cross the token limit without a long, model-dependent loop.
 INSTRUCTION = """
-Count from 1 to 1000. For each number, use the echo command to print it along with
-a short, unique property of that number (e.g., "1 is the first natural number",
-"2 is the only even prime number", etc.). Be creative with your descriptions.
+Run these two commands using the terminal tool, in separate calls, in order:
 
-DO NOT write a script to do this. Instead, interactively call the echo command
-1000 times, once for each number from 1 to 1000.
+1. python -c "print('token pressure context ' * 2000)"
+2. python -c "print('second context payload ' * 2000)"
 
-This won't be efficient -- that is okay, we're using the output as a test for our
-context management system.
-
-Make sure you should generate some "extended thinking" for each tool call you make
-to help us test the system.
+Do not redirect, truncate, or combine their output. The large output is intentional:
+we are testing conversation condensation. After both calls, reply "done".
+Make sure you generate some "extended thinking" for each tool call to help test
+thinking blocks together with condensation.
 """
 
 logger = get_logger(__name__)
@@ -42,15 +39,6 @@ class TokenCondenserTest(BaseIntegrationTest):
         """Initialize test with tracking variables."""
         self.condensations: list[Condensation] = []
         super().__init__(*args, **kwargs)
-
-        # Some models explicitly disallow long, repetitive tool loops for cost/safety.
-        # Skip this test for models that decline such requests.
-        self.skip_if_model_matches(
-            "gpt-5.1-codex-max",
-            "This test stresses long repetitive tool loops to trigger token-based "
-            "condensation. GPT-5.1 Codex Max often declines such requests for "
-            "efficiency/safety reasons.",
-        )
 
     @property
     def tools(self) -> list[Tool]:
@@ -69,13 +57,22 @@ class TokenCondenserTest(BaseIntegrationTest):
         return LLMSummarizingCondenser(
             llm=condenser_llm,
             max_size=1000,  # Set high so it doesn't trigger on event count
-            max_tokens=5000,  # Low token limit to ensure condensation triggers
-            keep_first=1,  # Keep only initial user message (not tool loop start)
+            # One payload (~9k tokens for 2,000 reps) clears this by a wide margin, so
+            # neither side is tight against small differences in the system prompt or
+            # tool descriptions across the CI model matrix.
+            max_tokens=6000,  # Low token limit to ensure condensation triggers
+            # Keep the system prompt and the user instruction. With keep_first=1 the
+            # first condensation forgets the instruction, and command 2 then survives
+            # only if the LLM summary happens to preserve it.
+            keep_first=2,
         )
 
     @property
     def max_iteration_per_run(self) -> int:
-        return 50
+        # A condensation step still counts as an iteration: agent.step returns early
+        # after emitting the Condensation and the loop increments the counter. The
+        # happy path is therefore already ~4 iterations, so leave generous headroom.
+        return 20
 
     def conversation_callback(self, event):
         """Override callback to detect condensation events."""
@@ -93,15 +90,22 @@ class TokenCondenserTest(BaseIntegrationTest):
         logger.info(f"Token condenser test: max_tokens={self.condenser.max_tokens}")
 
     def verify_result(self) -> TestResult:
-        """Verify that condensation was triggered based on token count."""
-        if len(self.condensations) == 0:
+        """Verify that token-count-based condensation was triggered twice."""
+        if len(self.condensations) < 2:
             return TestResult(
                 success=False,
-                reason="Condensation not triggered. Token counting may not work.",
+                reason=(
+                    f"Expected at least 2 condensations, got "
+                    f"{len(self.condensations)}. Token counting may not work, or the "
+                    "second payload did not cross the token limit."
+                ),
             )
 
         events_summarized = len(self.condensations[0].forgotten_event_ids)
         return TestResult(
             success=True,
-            reason=f"Condensation triggered, summarizing {events_summarized} events.",
+            reason=(
+                f"Condensation triggered {len(self.condensations)} times, first "
+                f"summarizing {events_summarized} events."
+            ),
         )

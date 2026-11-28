@@ -383,6 +383,23 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
     # Automatic tool naming - set by __init_subclass__
     name: ClassVar[str] = ""
 
+    user_selectable: ClassVar[bool] = True
+    """Whether a user may pick this tool when configuring an agent's toolset."""
+
+    catalog_description: ClassVar[str] = ""
+    """User-facing catalog blurb; ``description`` is what the LLM reads."""
+
+    conversation_local: ClassVar[bool] = False
+    """Whether the tool only reads and writes its own conversation's state."""
+
+    ends_turn: ClassVar[bool] = False
+    """Whether a successful call ends the agent's turn, as ``finish`` does.
+
+    The agent's other calls in the same response still run; then the
+    conversation is ``finished`` and waits for the next message. A call whose
+    observation is an error does not end the turn.
+    """
+
     def __init_subclass__(cls, **kwargs):
         """Automatically set name from class name when subclass is created."""
         super().__init_subclass__(**kwargs)
@@ -400,6 +417,13 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
     # runtime-only; always hidden on dumps
     executor: SkipJsonSchema[ToolExecutor | None] = Field(
         default=None, repr=False, exclude=True
+    )
+
+    prompt_guidance: SkipJsonSchema[str | None] = Field(
+        default=None,
+        repr=False,
+        exclude=True,
+        description="System-prompt guidance for this tool; deduplicated by text.",
     )
 
     response_schema: SkipJsonSchema[ResponseSchema | None] = Field(

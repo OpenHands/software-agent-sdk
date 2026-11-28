@@ -6,6 +6,12 @@ also includes optional SDK tools that are resolved by name from agent setup.
 Tools that require interacting with the environment belong in `openhands-tools`.
 """
 
+from openhands.sdk.tool.builtins.classify_and_switch_llm import (
+    ClassifyAndSwitchLLMAction,
+    ClassifyAndSwitchLLMExecutor,
+    ClassifyAndSwitchLLMObservation,
+    ClassifyAndSwitchLLMTool,
+)
 from openhands.sdk.tool.builtins.finish import (
     FinishAction,
     FinishExecutor,
@@ -36,26 +42,51 @@ from openhands.sdk.tool.builtins.vision_inspect import (
     VisionInspectObservation,
     VisionInspectTool,
 )
+from openhands.sdk.tool.tool import ToolDefinition
 
 
-# Tools attached to every agent by default. `InvokeSkillTool` is deliberately
-# *not* here: it's auto-attached by `Agent._initialize` only when an
-# AgentSkills-format skill is loaded (see BUILT_IN_TOOL_CLASSES below).
-BUILT_IN_TOOLS = [FinishTool, ThinkTool]
+# Tools attached to every agent by default. `ThinkTool` is deliberately *not*
+# here: models with native reasoning do not need it, and it competes with
+# provider-side reasoning for tokens. It stays available as an opt-in through
+# `include_default_tools=["ThinkTool"]` and the tool catalog.
+# `InvokeSkillTool` is likewise not here: it's auto-attached by
+# `Agent._initialize` only when an AgentSkills-format skill is loaded (see
+# BUILT_IN_TOOL_CLASSES below).
+BUILT_IN_TOOLS = [FinishTool]
 
 # Map of built-in tool class names to their classes. Includes optional built-ins
 # so they can be resolved by name from `include_default_tools` and the
 # conditional wiring in `Agent._initialize`.
 BUILT_IN_TOOL_CLASSES = {
     **{tool.__name__: tool for tool in BUILT_IN_TOOLS},
+    ThinkTool.__name__: ThinkTool,
     InvokeSkillTool.__name__: InvokeSkillTool,
     SwitchLLMTool.__name__: SwitchLLMTool,
     VisionInspectTool.__name__: VisionInspectTool,
+    ClassifyAndSwitchLLMTool.__name__: ClassifyAndSwitchLLMTool,
 }
+
+BUILT_IN_TOOLS_WITH_PARAMS = frozenset({ClassifyAndSwitchLLMTool.__name__})
+
+
+def builtin_tool_class(name: str) -> type[ToolDefinition] | None:
+    """Return the built-in tool class named by its class name or its tool name."""
+    if name in BUILT_IN_TOOL_CLASSES:
+        return BUILT_IN_TOOL_CLASSES[name]
+    return next(
+        (tool for tool in BUILT_IN_TOOL_CLASSES.values() if tool.name == name), None
+    )
+
 
 __all__ = [
     "BUILT_IN_TOOLS",
     "BUILT_IN_TOOL_CLASSES",
+    "BUILT_IN_TOOLS_WITH_PARAMS",
+    "builtin_tool_class",
+    "ClassifyAndSwitchLLMTool",
+    "ClassifyAndSwitchLLMAction",
+    "ClassifyAndSwitchLLMObservation",
+    "ClassifyAndSwitchLLMExecutor",
     "FinishTool",
     "FinishAction",
     "FinishObservation",

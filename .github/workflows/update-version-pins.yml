@@ -1,0 +1,298 @@
+---
+name: Update version pins
+
+# Single home for the agent-server's scheduled pin refreshers. Each job
+# keeps its own cadence, branch/PR behaviour, and concurrency group; the
+# schedule trigger is the union of the per-pin crons and each job runs
+# only for its own cron (or when manually dispatched for that pin).
+#   - npm:          daily  (7-day observation, majors opt-in)
+#   - code-server:  weekly (7-day observation)
+#   - Debian snapshot: weekly (3-day observation, build+scan before PR)
+
+on:
+    schedule:
+        - cron: 37 6 * * *
+        - cron: 47 6 * * 1
+        - cron: 17 6 * * 1
+    workflow_dispatch:
+        inputs:
+            pin:
+                description: Which pin to update
+                type: choice
+                default: all
+                options:
+                    - all
+                    - npm
+                    - code-server
+                    - debian
+
+permissions:
+    contents: write
+    pull-requests: write
+
+jobs:
+    update-npm:
+        if: >-
+            github.event.schedule == '37 6 * * *' ||
+            inputs.pin == 'npm' || inputs.pin == 'all'
+        runs-on: ubuntu-24.04
+        timeout-minutes: 15
+        concurrency:
+            group: update-agent-server-npm
+            cancel-in-progress: false
+        env:
+            GH_TOKEN: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
+            DOCKERFILE: openhands-agent-server/openhands/agent_server/docker/Dockerfile
+        steps:
+            - uses: actions/checkout@v7.0.1
+              with:
+                  token: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
+            # Deliberate policy: npm majors are only guaranteed to carry the
+            # bundled-dependency fixes (undici/brace-expansion) per major, so
+            # this job explicitly opts in to crossing majors after the
+            # observation window. The script itself defaults to same-major.
+            - name: Select the newest observed stable release
+              env:
+                  ALLOW_MAJOR_UPGRADE: 'true'
+              run: python .github/scripts/update_npm_pin.py --dockerfile "$DOCKERFILE"
+            - name: Open update PR
+              env:
+                  REPO: ${{ github.repository }}
+              run: |
+                  set -euo pipefail
+                  if git diff --quiet; then
+                      echo "npm is already current."
+                      exit 0
+                  fi
+                  VERSION=$(sed -n 's/^ARG NPM_VERSION=//p' "$DOCKERFILE")
+                  OPEN=$(gh pr list --repo "$REPO" --state open --json headRefName --jq '[.[] | select(.headRefName | startswith("chore/agent-server-npm-"))] | length')
+                  if [ "$OPEN" -gt 0 ]; then
+                      echo "An npm update PR is pending review; leaving it unchanged."
+                      exit 0
+                  fi
+                  BRANCH="chore/agent-server-npm-$VERSION"
+                  EXISTING=$(gh pr list --repo "$REPO" --head "$BRANCH" --state all --json number --jq '.[0].number')
+                  if [ -n "$EXISTING" ]; then
+                      echo "Version $VERSION already has PR #$EXISTING; leaving it unchanged."
+                      exit 0
+                  fi
+                  git config user.name "github-actions[bot]"
+                  git config user.email "github-actions[bot]@users.noreply.github.com"
+                  git checkout -b "$BRANCH"
+                  git add "$DOCKERFILE"
+                  git commit -m "chore(agent-server): update npm to $VERSION" \
+                    -m "Co-authored-by: openhands <openhands@all-hands.dev>"
+                  # Reuse an orphaned branch after a previous PR-creation failure.
+                  if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null; then
+                      echo "Reusing existing remote branch $BRANCH"
+                  else
+                      git push -u origin "$BRANCH"
+                  fi
+                  BODY=$(cat <<EOF
+                  HUMAN:
+
+                  <!-- Human reviewer: add testing/approval notes before marking ready. -->
+
+                  ---
+
+                  AGENT:
+
+                  ## Why
+                  Keep the agent-server npm bundle current. Crossing a major is
+                  an explicit policy of this workflow (bundled-dependency fixes
+                  are only guaranteed per major), and the result still lands as
+                  a reviewed draft PR rather than landing unreviewed.
+
+                  ## Summary
+                  Update npm to $VERSION after its seven-day observation period.
+                  The shared pin covers both canonical and ACP Node runtimes.
+
+                  ## How to Test
+                  Review the normal PR image matrix and verify npm installation and runtime compatibility.
+                  Rescan rebuilt images; an npm version bump does not guarantee all bundled CVEs are fixed.
+
+                  ## Type
+                  - [x] Docs / chore
+
+                  _This PR was generated by an automated workflow maintained by OpenHands; the workflow was created by an AI agent (OpenHands) on behalf of Graham Neubig._
+                  EOF
+                  )
+                  gh pr create --repo "$REPO" --base main --head "$BRANCH" --draft \
+                    --title "chore(agent-server): update npm to $VERSION" --body "$BODY"
+
+    update-code-server:
+        if: >-
+            github.event.schedule == '47 6 * * 1' ||
+            inputs.pin == 'code-server' || inputs.pin == 'all'
+        runs-on: ubuntu-24.04
+        timeout-minutes: 15
+        concurrency:
+            group: update-agent-server-code-server
+            cancel-in-progress: false
+        env:
+            GH_TOKEN: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
+            DOCKERFILE: openhands-agent-server/openhands/agent_server/docker/Dockerfile
+        steps:
+            - uses: actions/checkout@v7.0.1
+              with:
+                  token: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
+            - name: Select the newest observed stable release
+              run: python .github/scripts/update_code_server_pin.py --dockerfile "$DOCKERFILE"
+            - name: Open update PR
+              env:
+                  REPO: ${{ github.repository }}
+              run: |
+                  set -euo pipefail
+                  if git diff --quiet; then
+                      echo "code-server is already current."
+                      exit 0
+                  fi
+                  VERSION=$(sed -n 's/^ARG CODE_SERVER_VERSION="\([^"]*\)"/\1/p' "$DOCKERFILE")
+                  OPEN=$(gh pr list --repo "$REPO" --state open --json headRefName --jq '[.[] | select(.headRefName | startswith("chore/agent-server-code-server-"))] | length')
+                  if [ "$OPEN" -gt 0 ]; then
+                      echo "A code-server update PR is pending review; leaving it unchanged."
+                      exit 0
+                  fi
+                  BRANCH="chore/agent-server-code-server-$VERSION"
+                  EXISTING=$(gh pr list --repo "$REPO" --head "$BRANCH" --state all --json number --jq '.[0].number')
+                  if [ -n "$EXISTING" ]; then
+                      echo "Version $VERSION already has PR #$EXISTING; leaving it unchanged."
+                      exit 0
+                  fi
+                  git config user.name "github-actions[bot]"
+                  git config user.email "github-actions[bot]@users.noreply.github.com"
+                  git checkout -b "$BRANCH"
+                  git add "$DOCKERFILE"
+                  git commit -m "chore(agent-server): update code-server to $VERSION" \
+                    -m "Co-authored-by: openhands <openhands@all-hands.dev>"
+                  if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null; then
+                      echo "Reusing existing remote branch $BRANCH"
+                  else
+                      git push -u origin "$BRANCH"
+                  fi
+                  BODY=$(cat <<EOF
+                  HUMAN:
+
+                  <!-- Human reviewer: add testing/approval notes before marking ready. -->
+
+                  ---
+
+                  AGENT:
+
+                  ## Why
+                  Keep the bundled VS Code editor current instead of letting
+                  the pinned code-server release age between manual bumps.
+
+                  ## Summary
+                  Update code-server to $VERSION and its amd64/arm64 release
+                  digests together, after the release's seven-day
+                  observation period. Bundled Node/undici are enforced by
+                  minimum-version floors in the Dockerfile, so a release
+                  that ships older components fails the normal image build
+                  rather than silently landing.
+
+                  ## How to Test
+                  Review the normal PR image matrix and run the code-server
+                  live tests against the new tree. Rescan rebuilt images; a
+                  version bump alone does not guarantee bundled CVEs are
+                  fixed.
+
+                  ## Type
+                  - [x] Docs / chore
+
+                  _This PR was generated by an automated workflow maintained by OpenHands; the workflow was created by an AI agent (OpenHands) on behalf of Graham Neubig._
+                  EOF
+                  )
+                  gh pr create --repo "$REPO" --base main --head "$BRANCH" --draft \
+                    --title "chore(agent-server): update code-server to $VERSION" --body "$BODY"
+
+    update-debian-snapshot:
+        if: >-
+            github.event.schedule == '17 6 * * 1' ||
+            inputs.pin == 'debian' || inputs.pin == 'all'
+        runs-on: ubuntu-24.04
+        timeout-minutes: 45
+        concurrency:
+            group: update-agent-server-debian-snapshot
+            cancel-in-progress: true
+        env:
+            GH_TOKEN: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
+            BRANCH: chore/update-agent-server-debian-snapshot
+            DOCKERFILE: openhands-agent-server/openhands/agent_server/docker/Dockerfile
+            IMAGE: openhands/agent-server-binary-minimal:snapshot-update
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v7.0.1
+              with:
+                  token: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
+
+            - name: Select the newest snapshot older than three days
+              run: python .github/scripts/update_debian_snapshot.py --dockerfile "$DOCKERFILE"
+
+            - name: Build binary-minimal
+              run: |
+                  docker build \
+                    --target binary-minimal \
+                    --build-arg INSTALL_ACP_PROVIDERS= \
+                    --tag "$IMAGE" \
+                    --file "$DOCKERFILE" .
+
+            - name: Scan binary-minimal
+              uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+              with:
+                  image-ref: ${{ env.IMAGE }}
+                  format: json
+                  output: trivy.json
+                  scanners: vuln
+
+            - name: Open or refresh update PR
+              env:
+                  REPO: ${{ github.repository }}
+              run: |
+                  set -euo pipefail
+                  if git diff --quiet; then
+                      echo "Debian snapshot is already current."
+                      exit 0
+                  fi
+
+                  SNAPSHOT=$(sed -n 's/^ARG DEBIAN_SNAPSHOT=//p' "$DOCKERFILE")
+                  TRIVY_COUNTS=$(jq -r '
+                    [.Results[]?.Vulnerabilities[]?]
+                    | group_by(.Severity)
+                    | map("\(.[0].Severity): \(length)")
+                    | join(", ")
+                  ' trivy.json)
+                  git config user.name "github-actions[bot]"
+                  git config user.email "github-actions[bot]@users.noreply.github.com"
+                  git fetch origin "$BRANCH" || true
+                  git checkout -B "$BRANCH"
+                  git add "$DOCKERFILE"
+                  git commit -m "chore(agent-server): update Debian snapshot to $SNAPSHOT" \
+                    -m "Use the newest UTC snapshot that has completed the three-day observation period." \
+                    -m "Co-authored-by: openhands <openhands@all-hands.dev>"
+                  git push --force-with-lease -u origin "$BRANCH"
+
+                  BODY=$(cat <<EOF
+                  ## Summary
+
+                  Advance the agent-server runtime to Debian snapshot \`$SNAPSHOT\`, the newest UTC snapshot that has completed the three-day observation period.
+
+                  The workflow successfully built and scanned \`binary-minimal\` before opening this PR.
+
+                  **Trivy findings:** $TRIVY_COUNTS
+
+                  Normal pull-request CI builds and tests the complete image matrix before merge.
+
+                  _This pull request was created by an automated workflow._
+                  EOF
+                  )
+                  EXISTING=$(gh pr list --repo "$REPO" --head "$BRANCH" --state open --json number --jq '.[0].number')
+                  if [ -n "$EXISTING" ]; then
+                      gh pr edit "$EXISTING" --repo "$REPO" \
+                        --title "chore(agent-server): update Debian snapshot to $SNAPSHOT" \
+                        --body "$BODY"
+                  else
+                      gh pr create --repo "$REPO" --base main --head "$BRANCH" \
+                        --title "chore(agent-server): update Debian snapshot to $SNAPSHOT" \
+                        --body "$BODY"
+                  fi

@@ -1,16 +1,26 @@
 """Common test fixtures and utilities."""
 
+import os
+import re
 import uuid
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+import pytest_forked
 from pydantic import SecretStr
+from pytest_forked import serialize_report
 
 from openhands.sdk import Agent
 from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.io import InMemoryFileStore
 from openhands.sdk.llm import LLM
+from openhands.sdk.skills.skill import (
+    PUBLIC_CATALOG_ENABLED_ENV,
+    PUBLIC_SKILLS_ENABLED_ENV,
+    PUBLIC_SKILLS_PATH_ENV,
+    _invalidate_public_skills_cache,
+)
 from openhands.sdk.tool import ToolExecutor
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -20,6 +30,29 @@ TOKENIZER_FIXTURES_DIR = REPO_ROOT / "tests" / "fixtures" / "tokenizers"
 QWEN3_TOKENIZER_CONFIG = (
     TOKENIZER_FIXTURES_DIR / "qwen3-4b-instruct-2507-tokenizer_config.json"
 )
+
+# Settings that point an agent server at, or authenticate it to, a live
+# deployment. A run inside an OpenHands sandbox inherits them from the sandbox.
+_LIVE_DEPLOYMENT_ENV = re.compile(
+    r"SESSION_API_KEY|OH_SESSION_API_KEYS_\d+|OH_WEBHOOKS(_\w+)?"
+    r"|OH_CONVERSATIONS_PATH|OH_BASH_EVENTS_DIR|OH_INTERNAL_SERVER_URL"
+    r"|OH_LLM_API_KEY_REFRESH_\w+"
+)
+
+
+def _serialize_forked_report(report: pytest.TestReport) -> dict[str, object]:
+    data = serialize_report(report)
+    # pytest 9.2 stores a NodeId in _id, which marshal cannot serialize.
+    data["nodeid"] = report.nodeid
+    data.pop("_id", None)
+    return data
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    pytest_forked.serialize_report = _serialize_forked_report
+    # Before collection: some modules read the agent-server config at import.
+    for name in [n for n in os.environ if _LIVE_DEPLOYMENT_ENV.fullmatch(n)]:
+        del os.environ[name]
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -119,6 +152,36 @@ def mock_tool():
     mock_tool.name = "mock_tool"
     mock_tool.executor = MockExecutor()
     return mock_tool
+
+
+@pytest.fixture
+def public_repo(tmp_path, monkeypatch):
+    """Point the default public skills source at a local `github` + `public-only`
+    repository, with both public-extension switches unset."""
+    for name in ("github", "public-only"):
+        skill_dir = tmp_path / "public" / "skills" / name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: {name}\n---\nPUBLIC-{name}\n"
+        )
+    monkeypatch.setenv(PUBLIC_SKILLS_PATH_ENV, str(tmp_path / "public"))
+    monkeypatch.delenv(PUBLIC_SKILLS_ENABLED_ENV, raising=False)
+    monkeypatch.delenv(PUBLIC_CATALOG_ENABLED_ENV, raising=False)
+    _invalidate_public_skills_cache()
+    yield tmp_path / "public"
+    _invalidate_public_skills_cache()
+
+
+@pytest.fixture
+def no_locale_env(monkeypatch):
+    """Unset what tmux reads to choose UTF-8 output, and restore it afterwards.
+
+    setenv before delenv makes monkeypatch record each original, so a value the
+    code under test sets is removed too.
+    """
+    for name in ("LC_ALL", "LC_CTYPE", "LANG", "TMUX"):
+        monkeypatch.setenv(name, "")
+        monkeypatch.delenv(name)
 
 
 def create_mock_litellm_response(

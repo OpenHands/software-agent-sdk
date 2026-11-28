@@ -125,6 +125,76 @@ def test_message_tool_role_with_image_cache_prompt():
     assert "cache_control" not in result["content"][0]
 
 
+def test_image_content_survives_forced_string_serializer():
+    """Images must not be dropped when string serialization is forced.
+
+    Regression test: models such as DeepSeek/GLM force the string serializer,
+    whose implementation emits TextContent only. Messages carrying images were
+    therefore silently serialized to text and the image was discarded, so
+    vision-capable models never received the image.
+    """
+    from openhands.sdk.llm.message import ImageContent, TextContent
+
+    message = Message(
+        role="user",
+        content=[
+            TextContent(text="What is in this image?"),
+            ImageContent(image_urls=["data:image/png;base64,abc123"]),
+        ],
+    )
+
+    result = message.to_chat_dict(
+        **{
+            **DEFAULT_SERIALIZATION_OPTS,
+            "vision_enabled": True,
+            "force_string_serializer": True,
+        }
+    )
+
+    assert isinstance(result["content"], list)
+    assert any(part.get("type") == "image_url" for part in result["content"])
+
+
+def test_image_content_dropped_when_vision_disabled():
+    """With vision disabled the image is intentionally omitted, text remains."""
+    from openhands.sdk.llm.message import ImageContent, TextContent
+
+    message = Message(
+        role="user",
+        content=[
+            TextContent(text="What is in this image?"),
+            ImageContent(image_urls=["data:image/png;base64,abc123"]),
+        ],
+    )
+
+    result = message.to_chat_dict(
+        **{
+            **DEFAULT_SERIALIZATION_OPTS,
+            "vision_enabled": False,
+            "force_string_serializer": True,
+        }
+    )
+
+    assert result["content"] == "What is in this image?"
+
+
+def test_text_only_message_still_uses_string_serializer_when_forced():
+    """Text-only messages keep the string form that forced providers require."""
+    from openhands.sdk.llm.message import TextContent
+
+    message = Message(role="user", content=[TextContent(text="Hello")])
+
+    result = message.to_chat_dict(
+        **{
+            **DEFAULT_SERIALIZATION_OPTS,
+            "vision_enabled": True,
+            "force_string_serializer": True,
+        }
+    )
+
+    assert result["content"] == "Hello"
+
+
 def test_message_with_tool_calls():
     """Test Message with tool_calls."""
     from openhands.sdk.llm.message import (

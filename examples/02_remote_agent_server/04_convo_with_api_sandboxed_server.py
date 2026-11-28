@@ -4,10 +4,11 @@ This example demonstrates building an agent-server image on-the-fly from the SDK
 codebase and launching it in a remote sandboxed environment via Runtime API.
 
 Usage:
-  uv run examples/24_remote_convo_with_api_sandboxed_server.py
+  uv run examples/02_remote_agent_server/04_convo_with_api_sandboxed_server.py
 
 Requirements:
   - LLM_API_KEY: API key for LLM access
+  - RUNTIME_API_URL: Base URL of your runtime API deployment
   - RUNTIME_API_KEY: API key for runtime API access
 """
 
@@ -39,9 +40,10 @@ llm = LLM(
     api_key=SecretStr(api_key),
 )
 
+runtime_api_url = os.getenv("RUNTIME_API_URL")
 runtime_api_key = os.getenv("RUNTIME_API_KEY")
-if not runtime_api_key:
-    logger.error("RUNTIME_API_KEY required")
+if not runtime_api_url or not runtime_api_key:
+    logger.error("RUNTIME_API_URL and RUNTIME_API_KEY required")
     exit(1)
 
 
@@ -52,7 +54,7 @@ server_image = f"ghcr.io/openhands/agent-server:{server_image_sha[:7]}-python-am
 logger.info(f"Using server image: {server_image}")
 
 with APIRemoteWorkspace(
-    runtime_api_url=os.getenv("RUNTIME_API_URL", "https://runtime.eval.all-hands.dev"),
+    runtime_api_url=runtime_api_url,
     runtime_api_key=runtime_api_key,
     server_image=server_image,
     image_pull_policy="Always",

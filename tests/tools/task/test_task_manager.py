@@ -834,6 +834,10 @@ class TestTaskMetrics:
         accumulated_token_usage = task_metrics.accumulated_token_usage
         assert accumulated_token_usage is not None
         assert accumulated_token_usage.prompt_tokens == 100
+        # The rolled-up entry is attributed to the sub-agent's model, not
+        # "default" (OHE-4216)
+        assert task_metrics.model_name == sub_llm.metrics.model_name
+        assert accumulated_token_usage.model == sub_llm.metrics.model_name
 
     def test_multiple_tasks_have_separate_metrics(self, tmp_path):
         """Each task gets its own metrics entry in parent stats."""

@@ -2,14 +2,16 @@ import logging
 import time
 from collections.abc import Generator
 from pathlib import Path, PureWindowsPath
-from typing import Any
+from typing import Annotated, Any
 from uuid import UUID
 
 import httpx
-from pydantic import BaseModel, Field, TypeAdapter
+from pydantic import BaseModel, BeforeValidator, Field, TypeAdapter
 
 from openhands.sdk.git.models import GitChange, GitDiff
+from openhands.sdk.observability.laminar import observability_headers_from_env
 from openhands.sdk.utils.path import to_posix_path
+from openhands.sdk.workspace.base import _convert_path_to_str
 from openhands.sdk.workspace.models import CommandResult, FileOperationResult
 
 
@@ -40,8 +42,12 @@ class RemoteWorkspaceMixin(BaseModel):
     api_key: str | None = Field(
         default=None, description="API key for authenticating with the remote host."
     )
-    working_dir: str = Field(
-        description="The working directory for agent operations and tool execution."
+    working_dir: Annotated[str, BeforeValidator(_convert_path_to_str)] = Field(
+        description=(
+            "The working directory for agent operations and tool execution. "
+            "Accepts both string paths and Path objects. "
+            "Path objects are automatically converted to strings."
+        )
     )
     read_timeout: float = Field(
         default=600.0,
@@ -73,7 +79,7 @@ class RemoteWorkspaceMixin(BaseModel):
 
     @property
     def _headers(self):
-        headers = {}
+        headers = observability_headers_from_env()
         if self.api_key:
             headers["X-Session-API-Key"] = self.api_key
         return headers
@@ -132,6 +138,21 @@ class RemoteWorkspaceMixin(BaseModel):
     ) -> Generator[dict[str, Any], httpx.Response, dict[str, Any] | None]:
         page = yield from self._search_command_output_generator(command_id)
         return next(iter(page.get("items", [])), None)
+
+    def _stop_command_generator(
+        self,
+        command_id: str,
+    ) -> Generator[dict[str, Any], httpx.Response]:
+        response = yield {
+            "method": "POST",
+            "url": f"{self.host}{self.api_prefix}/bash/bash_commands/{command_id}/stop",
+            "headers": self._headers,
+            "timeout": 60,
+        }
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        return None
 
     def _runtime_lifecycle_generator(
         self,

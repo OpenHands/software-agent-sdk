@@ -2,6 +2,8 @@
  * Base types and interfaces for the OpenHands Agent Server TypeScript client
  */
 
+import type { MetricsSnapshot } from '../generated/agent-server-schema';
+
 export type ConversationID = string;
 
 /**
@@ -76,12 +78,31 @@ export interface ServerInfo {
   build_semver?: string;
   capabilities?: string[];
   conversation_runtime?: 'local' | 'docker';
+  app_backend_ingress_url?: string | null;
   [key: string]: unknown;
 }
 
 export interface Success {
   success: boolean;
   message?: string;
+}
+
+export interface ModelRouterSelection {
+  mode: 'auto' | 'manual';
+  manual_route_name?: string | null;
+}
+
+export interface ModelRouteInfo {
+  name: string;
+  model?: string | null;
+  label?: string | null;
+}
+
+export interface ModelRouterStatus {
+  enabled: boolean;
+  selection?: ModelRouterSelection | null;
+  last_route_name?: string | null;
+  routes: ModelRouteInfo[];
 }
 
 export interface EventPage {
@@ -128,6 +149,8 @@ export interface ConversationStats {
   message_events: number;
   action_events: number;
   observation_events: number;
+  /** Per-LLM accumulated costs in USD, updated as responses are received. */
+  usage_to_metrics?: Record<string, MetricsSnapshot>;
   [key: string]: unknown;
 }
 

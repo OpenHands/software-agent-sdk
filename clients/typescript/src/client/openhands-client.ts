@@ -1,8 +1,11 @@
 import { AgentProfilesClient } from './agent-profiles-client';
 import { BashClient } from './bash-client';
+import { CanvasExtensionsClient } from './canvas-extensions-client';
 import { ConversationClient } from './conversation-client';
 import { FileClient } from './file-client';
+import { GitClient } from './git-client';
 import { HooksClient } from './hooks-client';
+import { InitClient } from './init-client';
 import { HttpClient, type ResponseType } from './http-client';
 import { LLMMetadataClient } from './llm-client';
 import { MCPClient } from './mcp-client';
@@ -124,6 +127,7 @@ export class AgentServerClient extends OpenHandsClient {
   readonly conversations: ConversationClient;
   readonly files: FileClient;
   readonly bash: BashClient;
+  readonly canvasExtensions: CanvasExtensionsClient;
   readonly settings: SettingsClient;
   readonly profiles: ProfilesClient;
   readonly agentProfiles: AgentProfilesClient;
@@ -131,6 +135,7 @@ export class AgentServerClient extends OpenHandsClient {
   readonly skills: SkillsClient;
   readonly subAgents: SubAgentsClient;
   readonly hooks: HooksClient;
+  readonly git: GitClient;
   readonly mcp: MCPClient;
   readonly plugins: PluginsClient;
   readonly tools: ToolClient;
@@ -138,6 +143,7 @@ export class AgentServerClient extends OpenHandsClient {
   readonly shared: SharedClient;
   readonly llm: LLMMetadataClient;
   readonly workspaces: WorkspacesClient;
+  readonly init: InitClient;
 
   private readonly client: HttpClient;
 
@@ -158,6 +164,7 @@ export class AgentServerClient extends OpenHandsClient {
     this.conversations = new ConversationClient(clientOptions);
     this.files = new FileClient(clientOptions);
     this.bash = new BashClient(clientOptions);
+    this.canvasExtensions = new CanvasExtensionsClient(clientOptions);
     this.settings = new SettingsClient(clientOptions);
     this.profiles = new ProfilesClient(clientOptions);
     this.agentProfiles = new AgentProfilesClient(clientOptions);
@@ -165,6 +172,7 @@ export class AgentServerClient extends OpenHandsClient {
     this.skills = new SkillsClient(clientOptions);
     this.subAgents = new SubAgentsClient(clientOptions);
     this.hooks = new HooksClient(clientOptions);
+    this.git = new GitClient(clientOptions);
     this.mcp = new MCPClient(clientOptions);
     this.plugins = new PluginsClient(clientOptions);
     this.tools = new ToolClient(clientOptions);
@@ -172,6 +180,7 @@ export class AgentServerClient extends OpenHandsClient {
     this.shared = new SharedClient(clientOptions);
     this.llm = new LLMMetadataClient(clientOptions);
     this.workspaces = new WorkspacesClient(clientOptions);
+    this.init = new InitClient(clientOptions);
   }
 
   async request<TResponse = unknown>(options: OpenHandsRequestOptions): Promise<TResponse> {

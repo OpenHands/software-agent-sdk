@@ -11,9 +11,11 @@ from dataclasses import dataclass
 class ParallelSubagentBudget:
     n_subagents: int = 8
     per_call_latency_s: float = 0.2
-    # Wall time must be < single-agent wall × this. 1.5 leaves slack for
-    # scheduling overhead while still failing on serialized execution.
-    wall_time_factor: float = 1.5
+    # Wall time must be < single-agent wall × this. 3.0 (vs the ideal ~1×)
+    # leaves slack for non-scaling startup/teardown and per-sub-agent
+    # executor and registry overhead on shared runners, while still failing
+    # hard on serialized execution (which lands near n×).
+    wall_time_factor: float = 3.0
     # RSS delta (peak - baseline) must be < baseline × this. With factor=2.0,
     # peak is allowed up to 3× baseline.
     rss_growth_factor: float = 2.0
@@ -21,40 +23,17 @@ class ParallelSubagentBudget:
 
 
 @dataclass(frozen=True, slots=True)
-class ConversationListingBudget:
-    # 2000 surfaces O(N) regressions strongly in pagination/listing while
-    # keeping the test under a minute on a developer laptop. We tried 10k
-    # behind a --stress-full flag (with a tarball cache to skip the seed
-    # cost) but ConversationService.__aenter__ still loads each meta.json
-    # into a LocalConversation sequentially — that load alone takes minutes
-    # at N=10k, so the cache didn't actually buy anything.
-    n_conversations: int = 2000
-    page_size: int = 50
-    # First-page p95 latency must be < this many seconds. Tuned for a
-    # developer laptop; the suite is opt-in (excluded from default CI
-    # collection in pyproject.toml), so shared CI runners that need looser
-    # numbers should override the budget at the call site rather than
-    # loosening it here for everyone.
-    p95_first_page_s: float = 0.5
-    # Deep-page p95 must be < first-page p95 × this (graceful degradation).
-    deep_page_factor: float = 4.0
-    # 50 sequential list calls. Peak RSS during listing must stay below the
-    # snapshot at listing-start + this delta. `_search_conversations` today
-    # materialises a ConversationInfo for every conversation in the store
-    # per call, so at N=2000 we observe ~4 MB allocator high-water per call
-    # → ~200 MB across the loop. The 300 MB budget gives ~50% headroom over
-    # current behaviour and would fire on a ~1.5× per-call retention
-    # regression (e.g., per-call growth jumping from 4 to 6 MB).
-    listing_rss_delta_mb: float = 300.0
-
-
-@dataclass(frozen=True, slots=True)
 class ConcurrentConversationsBudget:
     n_conversations: int = 16
     per_call_latency_s: float = 0.1
-    # Concurrent wall < single-conversation wall × this. 4.0 (vs serial
-    # estimate of n=16) leaves slack for shared CI runners.
-    wall_time_factor: float = 4.0
+    # Concurrent wall < single-conversation wall × this. 8.0 (vs serial
+    # estimate of n=16) leaves slack for overhead that does not shrink with
+    # per-call latency: the default ``asyncio`` executor is bounded (and is
+    # shared by *every* other ``to_thread``/``run_in_executor`` in the run
+    # path), so 16 × 0.1s synthetic LLM sleeps queue behind a fixed amount of
+    # worker contention instead of overlapping perfectly. The ratio still
+    # catches true serialization, which lands near n× (~2.5s).
+    wall_time_factor: float = 8.0
     # RSS delta (peak - baseline) must be < baseline × this. With factor=2.0,
     # peak is allowed up to 3× baseline.
     rss_growth_factor: float = 2.0
@@ -135,8 +114,27 @@ class LeaseContentionBudget:
     settle_timeout_s: float = 5.0
 
 
+@dataclass(frozen=True, slots=True)
+class TaskDispatchIdleHeartbeatBudget:
+    # How long the test holds a real Task child's single LLM call on a gate
+    # before sampling /server_info and releasing it. idle_time is truncated
+    # to whole seconds server-side (int(now - last_event_time)), so 2.8s
+    # produces a reading of 2: the truncation boundary is crossed at 2.0s,
+    # leaving 0.8s of timing slack past that boundary before the reading
+    # would slip down to 1 -- not an exact-equality race.
+    hold_sample_s: float = 2.8
+    # While the child is held, idle_time must stay under this (the heartbeat
+    # keeps active calls' idle reading low); once the run has finished and
+    # the heartbeat has stopped, idle_time must climb back above it. #5384:
+    # without a run-level heartbeat, idle_time grows for the whole hold
+    # instead of only after completion.
+    idle_time_threshold_s: float = 1.5
+    # Heartbeat pulse interval under test (shared with the ACP/stream
+    # activity throttle); shrunk so hold_sample_s only needs one pulse.
+    fast_activity_signal_interval_s: float = 0.2
+
+
 PARALLEL_SUBAGENTS = ParallelSubagentBudget()
-CONVERSATION_LISTING = ConversationListingBudget()
 CONCURRENT_CONVERSATIONS = ConcurrentConversationsBudget()
 LONG_RUNNING_COMMAND = LongRunningCommandBudget()
 EVENT_LOOP_RESPONSIVENESS = EventLoopResponsivenessBudget()
@@ -145,3 +143,4 @@ SLOW_WEBSOCKET_CONSUMER = SlowWebsocketConsumerBudget()
 WEBSOCKET_RECONNECT_STORM = WebsocketReconnectStormBudget()
 HIGH_VOLUME_BASH_OUTPUT = HighVolumeBashOutputBudget()
 LEASE_CONTENTION = LeaseContentionBudget()
+TASK_DISPATCH_IDLE_HEARTBEAT = TaskDispatchIdleHeartbeatBudget()

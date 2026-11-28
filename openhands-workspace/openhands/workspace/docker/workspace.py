@@ -27,7 +27,7 @@ def check_port_available(port: int) -> bool:
     try:
         sock.bind(("0.0.0.0", port))
         return True
-    except OSError:
+    except (OSError, OverflowError):  # OverflowError: port outside 0-65535
         time.sleep(0.1)
         return False
     finally:
@@ -153,7 +153,13 @@ class DockerWorkspace(RemoteWorkspace):
         # Subclasses should call get_image() to get the image to use
         # This allows them to build or prepare the image before container startup
         image = self.get_image()
-        self._start_container(image, context)
+        try:
+            self._start_container(image, context)
+        except BaseException:
+            # A failed startup never returns a workspace to clean up, so stop
+            # the container `docker run` may already have started.
+            self.cleanup()
+            raise
 
     def get_image(self) -> str:
         """Get the Docker image to use for the container.
@@ -215,11 +221,11 @@ class DockerWorkspace(RemoteWorkspace):
             flags += ["-v", volume]
             logger.info(f"Adding volume mount: {volume}")
 
-        ports = ["-p", f"{self.host_port}:8000"]
+        ports = ["-p", f"127.0.0.1:{self.host_port}:8000"]
         if self.extra_ports:
             ports += [
                 "-p",
-                f"{self.host_port + 1}:8001",  # VSCode
+                f"127.0.0.1:{self.host_port + 1}:8001",  # VSCode
             ]
         flags += ports
 
@@ -269,7 +275,15 @@ class DockerWorkspace(RemoteWorkspace):
         # Override parent's host initialization
         if not self.host:
             object.__setattr__(self, "host", f"http://127.0.0.1:{self.host_port}")
-        object.__setattr__(self, "api_key", None)
+        # Resolve in the same order as the agent server in this container
+        # (`config.py`: the V1 `OH_SESSION_API_KEYS_0` variable is read by the
+        # env parser, and V0 `SESSION_API_KEY` is only a fallback used when V1
+        # is absent). Both are forwarded into the container by `forward_env`,
+        # so preferring V0 here would send a key the server rejects.
+        session_api_key = os.environ.get(
+            "OH_SESSION_API_KEYS_0", os.environ.get("SESSION_API_KEY")
+        )
+        object.__setattr__(self, "api_key", session_api_key)
 
         # Wait for container to be healthy
         self._wait_for_health(timeout=self.health_check_timeout)
@@ -347,8 +361,11 @@ class DockerWorkspace(RemoteWorkspace):
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:  # type: ignore[no-untyped-def]
-        """Context manager exit - cleans up the Docker container."""
-        self.cleanup()
+        """Send the completion callback, then clean up the Docker container."""
+        try:
+            super().__exit__(exc_type, exc_val, exc_tb)
+        finally:
+            self.cleanup()
 
     def __del__(self) -> None:
         """Clean up the Docker container when the workspace is destroyed."""
@@ -363,7 +380,12 @@ class DockerWorkspace(RemoteWorkspace):
         if self._container_id:
             # Stop logs streaming
             self._stop_logs.set()
-            if self._logs_thread and self._logs_thread.is_alive():
+            # __del__ can run on the logs thread itself, which cannot join itself.
+            if (
+                self._logs_thread
+                and self._logs_thread.is_alive()
+                and self._logs_thread is not threading.current_thread()
+            ):
                 self._logs_thread.join(timeout=2)
 
             # Stop and remove the container

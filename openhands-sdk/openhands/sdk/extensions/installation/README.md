@@ -23,17 +23,17 @@ from openhands.sdk.extensions.installation import (
     InstallationManager,
 )
 
+
 class Widget(BaseModel):
     name: str
     version: str
     description: str
 
+
 class WidgetLoader(InstallationInterface[Widget]):
     @staticmethod
     def load_from_dir(extension_dir: Path) -> Widget:
-        return Widget.model_validate_json(
-            (extension_dir / "widget.json").read_text()
-        )
+        return Widget.model_validate_json((extension_dir / "widget.json").read_text())
 ```
 
 ### 2. Create a manager
@@ -56,15 +56,15 @@ info = manager.install("/path/to/local/widget")
 info = manager.install("github:owner/my-widget", force=True)
 
 # List / load
-all_info = manager.list_installed()        # List[InstallationInfo]
-widgets  = manager.load_installed()        # List[Widget]  (enabled only)
+all_info = manager.list_installed()  # List[InstallationInfo]
+widgets = manager.load_installed()  # List[Widget]  (enabled only)
 
 # Enable / disable
-manager.disable("my-widget")               # excluded from load_installed()
-manager.enable("my-widget")                # included again
+manager.disable("my-widget")  # excluded from load_installed()
+manager.enable("my-widget")  # included again
 
 # Look up a single extension
-info = manager.get("my-widget")            # InstallationInfo | None
+info = manager.get("my-widget")  # InstallationInfo | None
 
 # Update to latest from the original source
 info = manager.update("my-widget")

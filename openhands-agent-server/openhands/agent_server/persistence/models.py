@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from typing import Any, TypedDict
+from datetime import datetime
+from typing import Annotated, Any, TypedDict
+from uuid import uuid4
 
 from pydantic import (
     BaseModel,
@@ -26,17 +28,20 @@ from pydantic import (
 from openhands.sdk.settings import (
     AgentSettingsConfig,
     ConversationSettings,
+    OpenHandsAgentSettings,
     apply_agent_settings_diff,
     default_agent_settings,
     validate_agent_settings,
 )
-from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
+from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.datetime import OpenHandsUUID, utc_now
+from openhands.sdk.utils.pydantic_secrets import SecretField, cipher_context
 
 
-class _SecretProbeCipher:
+class _SecretProbeCipher(Cipher):
     """Fake cipher that flags secret serialization without needing a real key.
 
-    Passed as ``context={"cipher": probe}`` this forces every secret field's
+    Passed as ``context=cipher_context(probe)`` this forces every secret field's
     serializer down the "encrypted" branch (see ``resolve_expose_mode``),
     reusing the real serialization pipeline to detect secret-bearing fields
     instead of hand-walking the model for ``SecretStr`` instances. That
@@ -49,11 +54,11 @@ class _SecretProbeCipher:
     def __init__(self) -> None:
         self.found = False
 
-    def try_decrypt_str(self, raw: str) -> str | None:  # noqa: ARG002
+    def try_decrypt_str(self, value: str) -> str | None:  # noqa: ARG002
         return None
 
-    def encrypt(self, value: SecretStr) -> str:
-        if value.get_secret_value():
+    def encrypt(self, secret: SecretStr | None) -> str | None:
+        if secret is not None and secret.get_secret_value():
             self.found = True
         return ""
 
@@ -61,7 +66,7 @@ class _SecretProbeCipher:
 def _contains_secret_value(model: BaseModel) -> bool:
     """Check if serializing `model` would touch any secret-bearing field."""
     probe = _SecretProbeCipher()
-    model.model_dump(mode="json", context={"cipher": probe})
+    model.model_dump(mode="json", context=cipher_context(probe))
     return probe.found
 
 
@@ -89,6 +94,7 @@ class SettingsUpdatePayload(TypedDict, total=False):
     misc_settings_diff: dict[str, Any]
     active_profile: str | None
     active_agent_profile_id: str | None
+    active_meta_profile: str | None
 
 
 def _deep_merge(
@@ -142,7 +148,7 @@ def _deep_merge(
     return result
 
 
-PERSISTED_SETTINGS_SCHEMA_VERSION = 3
+PERSISTED_SETTINGS_SCHEMA_VERSION = 7
 
 
 class PersistedSettings(BaseModel):
@@ -190,6 +196,20 @@ class PersistedSettings(BaseModel):
             "default, so older settings files load with this as None."
         ),
     )
+    active_meta_profile: str | None = Field(
+        default=None,
+        description="Name of the currently active meta-profile used for "
+        "intelligent model routing.",
+    )
+    experimental_features: dict[str, bool] = Field(
+        default_factory=dict,
+        description=(
+            "Experimental features the user turned on or off, by feature key. "
+            "An absent key means off. Changed through "
+            "PATCH /api/settings/experimental/{key}; see "
+            "openhands.agent_server.experimental_features for the known features."
+        ),
+    )
     misc_settings: dict[str, Any] = Field(
         default_factory=dict,
         description=(
@@ -204,6 +224,8 @@ class PersistedSettings(BaseModel):
     @property
     def llm_api_key_is_set(self) -> bool:
         """Check if an LLM API key is configured."""
+        if not isinstance(self.agent_settings, OpenHandsAgentSettings):
+            return False
         raw = self.agent_settings.llm.api_key
         if raw is None:
             return False
@@ -237,8 +259,9 @@ class PersistedSettings(BaseModel):
         ``agent_settings_diff`` is applied via :func:`apply_agent_settings_diff`:
         RFC 7386 merge-patch semantics with kind-switch awareness. When
         ``agent_kind`` changes, the diff is applied onto a fresh base of the
-        target variant. Same-kind diffs deep-merge within the variant. A
-        ``None`` value at any level removes that key and resets it to default.
+        target variant that keeps only the server-wide settings.
+        Same-kind diffs deep-merge within the variant. A ``None`` value at any
+        level removes that key and resets it to default.
 
         ``conversation_settings_diff`` uses :func:`_deep_merge`: ``None`` inside
         a nested map removes that entry; ``None`` on a top-level field flows to
@@ -316,14 +339,66 @@ class PersistedSettings(BaseModel):
                 self.active_profile = payload["active_profile"]
             if "active_agent_profile_id" in payload:
                 self.active_agent_profile_id = payload["active_agent_profile_id"]
+
+            # Update active_meta_profile if explicitly provided (incl. None)
+            if "active_meta_profile" in payload:
+                self._apply_active_meta_profile(payload["active_meta_profile"])
+
+            # Enforce the invariant even when only ``agent_settings`` changed:
+            # switching to an agent variant that cannot attach the routing tool
+            # (e.g. ACP) must not leave a stale top-level ``active_meta_profile``
+            # claiming routing is active. (No-op when active already matches.)
+            self._clear_active_meta_profile_if_unsupported()
         finally:
             # Clear conv_merged to minimize plaintext exposure window
             if conv_merged is not None:
                 conv_merged.clear()
 
+    def _agent_supports_routing(self) -> bool:
+        """Whether the current agent variant can attach the routing tool.
+
+        OpenHands agent settings expose ``active_meta_profile`` /
+        ``enable_classify_and_switch_llm_tool``; ACP (and any other) variants do
+        not and never attach :class:`ClassifyAndSwitchLLMTool`.
+        """
+        return "active_meta_profile" in type(self.agent_settings).model_fields
+
+    def _apply_active_meta_profile(self, name: str | None) -> None:
+        """Set ``active_meta_profile`` and propagate it into agent_settings.
+
+        Propagating into the nested ``agent_settings`` is what enables/uses the
+        routing tool on the agent built from these settings (mirrors how
+        activating a profile bakes the LLM into ``agent_settings``).
+
+        The top-level field is a strict facade for the nested state, not a
+        best-effort hint: if the current agent variant cannot attach the routing
+        tool (e.g. ACP), the request is dropped and the facade cleared so
+        persisted state never claims an active router no conversation can use.
+        """
+        if not self._agent_supports_routing():
+            self.active_meta_profile = None
+            return
+        self.active_meta_profile = name
+        self.agent_settings = self.agent_settings.model_copy(
+            update={
+                "active_meta_profile": name,
+                "enable_classify_and_switch_llm_tool": name is not None,
+            }
+        )
+
+    def _clear_active_meta_profile_if_unsupported(self) -> None:
+        """Clear the facade when the agent variant cannot support routing.
+
+        Guards the agent-kind-switch path: changing ``agent_settings`` to a
+        non-routing variant (e.g. ACP) while a meta-profile is active would
+        otherwise leave the top-level ``active_meta_profile`` stale.
+        """
+        if not self._agent_supports_routing() and self.active_meta_profile is not None:
+            self.active_meta_profile = None
+
     @classmethod
     def from_persisted(
-        cls, data: Any, *, context: dict[str, Any] | None = None
+        cls, data: Any, *, context: Mapping[str, Any] | None = None
     ) -> PersistedSettings:
         """Load persisted settings.
 
@@ -332,11 +407,23 @@ class PersistedSettings(BaseModel):
         - **v1**: ``agent_settings`` + ``conversation_settings`` plus
           ``active_profile``.
         - **v2**: adds the opaque ``misc_settings`` container.
-        - **v3** (current): nested ``agent_settings`` advanced to schema v6
+        - **v3**: nested ``agent_settings`` advanced to schema v6
           (dropped the removed ``llm.modify_params`` field). Nested payloads
           are migrated through ``validate_agent_settings`` in
           ``_normalize_inputs``; the top-level bump keeps the file schema in
           step with the nested shape change.
+        - **v4**: nested ``agent_settings`` advanced to schema v7
+          (dropped the deprecated ``llm`` from ACP settings).
+        - **v5**: nested ``agent_settings`` advanced to schema v8
+          (retired tool switches folded into ``tools``).
+        - **v6**: nested ``agent_settings`` advanced to schema v9
+          (removed deprecated live input paths; persisted inputs still migrate).
+        - **v7** (current): nested ``agent_settings`` advanced to schema v10
+          (MCP servers with neither ``command`` nor ``url`` are dropped).
+
+        ``experimental_features`` was added within v7 without a bump: it is
+        additive and defaults to empty. An older server ignores it and drops
+        it on its next save, so after a downgrade every feature is off again.
         """
         if not isinstance(data, dict):
             return cls.model_validate(data, context=context)
@@ -390,6 +477,7 @@ class PersistedSettings(BaseModel):
             data["agent_settings"] = validate_agent_settings(
                 coerced,
                 context=info.context,
+                persisted=True,
             )
 
         # Apply migrations for conversation_settings
@@ -411,7 +499,7 @@ class CustomSecret(BaseModel):
     """A custom secret with name, value, and optional description."""
 
     name: str
-    secret: SecretStr | None
+    secret: Annotated[SecretStr | None, SecretField()]
     description: str | None = None
 
     @field_validator("name")
@@ -435,17 +523,6 @@ class CustomSecret(BaseModel):
                 "letters/numbers/underscores, and be 1-64 characters"
             )
         return v
-
-    @field_validator("secret")
-    @classmethod
-    def _validate_secret(
-        cls, v: str | SecretStr | None, info: ValidationInfo
-    ) -> SecretStr | None:
-        return validate_secret(v, info)
-
-    @field_serializer("secret", when_used="always")
-    def _serialize_secret(self, v: SecretStr | None, info: SerializationInfo):
-        return serialize_secret(v, info)
 
 
 class Secrets(BaseModel):
@@ -495,8 +572,8 @@ class Secrets(BaseModel):
     def custom_secrets_serializer(
         self, custom_secrets: dict[str, CustomSecret], info: SerializationInfo
     ) -> dict[str, dict[str, Any]]:
-        # Delegate to CustomSecret.model_dump which uses serialize_secret
-        # This ensures cipher context flows through for encryption
+        # Delegate to CustomSecret.model_dump so the cipher context reaches
+        # its SecretField
         result = {}
         for name, secret in custom_secrets.items():
             result[name] = secret.model_dump(mode="json", context=info.context)
@@ -510,7 +587,7 @@ class Secrets(BaseModel):
         Note: We deliberately keep values as raw strings/dicts here so that
         Pydantic's field validators can handle cipher-based decryption via
         the validation context. Wrapping in SecretStr here would bypass the
-        validate_secret() call that handles decryption.
+        SecretField decryption.
         """
         if not isinstance(data, dict):
             return data
@@ -588,6 +665,59 @@ class PersistedWorkspaces(BaseModel):
             )
         payload["schema_version"] = WORKSPACES_SCHEMA_VERSION
         return cls.model_validate(payload)
+
+
+# ── Projects ─────────────────────────────────────────────────────────────
+
+PROJECTS_SCHEMA_VERSION = 1
+
+
+class ProjectItem(BaseModel):
+    """A project: a named group of conversations led by a coordinator.
+
+    Membership is not stored here. A conversation belongs to a project when
+    its ``project`` tag holds the project's id. The coordinator's workers
+    get that tag when the coordinator starts them.
+    """
+
+    id: OpenHandsUUID = Field(default_factory=uuid4)
+    name: str = Field(..., min_length=1, max_length=256)
+    description: str = Field(default="", max_length=4096)
+    coordinator_conversation_id: OpenHandsUUID | None = Field(
+        default=None,
+        description=(
+            "The conversation the user mainly talks to about this project. "
+            "It is also a member of the project."
+        ),
+    )
+    worker_agent_profile_id: OpenHandsUUID | None = Field(
+        default=None,
+        description=(
+            "Agent profile for the conversations project members start. "
+            "Unset, they start from the user's active agent profile."
+        ),
+    )
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class PersistedProjects(BaseModel):
+    schema_version: int = Field(default=PROJECTS_SCHEMA_VERSION)
+    projects: list[ProjectItem] = Field(default_factory=list)
+
+    @classmethod
+    def from_persisted(cls, data: Any) -> PersistedProjects:
+        if not isinstance(data, dict):
+            return cls.model_validate(data)
+        version = data.get("schema_version", PROJECTS_SCHEMA_VERSION)
+        if not isinstance(version, int):
+            raise ValueError("PersistedProjects schema_version must be an integer")
+        if version > PROJECTS_SCHEMA_VERSION:
+            raise ValueError(
+                f"PersistedProjects schema_version {version} is newer than "
+                f"supported {PROJECTS_SCHEMA_VERSION}"
+            )
+        return cls.model_validate({**data, "schema_version": PROJECTS_SCHEMA_VERSION})
 
 
 # ── Helper Functions ─────────────────────────────────────────────────────

@@ -92,6 +92,7 @@ export interface SkillInfo {
   type: 'repo' | 'knowledge' | 'agentskills';
   content: string;
   triggers: string[];
+  paths?: string[];
   source?: string | null;
   description?: string | null;
   is_agentskills_format?: boolean;
@@ -350,11 +351,13 @@ export interface RenameProfileRequest {
 
 /**
  * Meta-profiles: declarative model-routing configurations consumed by the
- * ``classify_and_switch_llm`` tool (agent-server ``/api/meta-profiles``).
+ * ``route_task_to_model`` tool (agent-server ``/api/meta-profiles``).
  *
- * Every model reference (``classifier_model``, ``default_model`` and each
- * class's ``model``) is the name of a saved LLM profile, not a raw model
- * string.
+ * Every model reference (``classifier_model`` and each class's ``model``) is
+ * the name of a saved LLM profile, not a raw model string. Direct-routing
+ * meta-profiles set ``prompt_template`` (rendered with ``{{ instance_text }}``
+ * and optional ``{{ model_table }}``) instead of ``classes``; the two modes are
+ * mutually exclusive.
  */
 export interface MetaProfileClass {
   description: string;
@@ -365,15 +368,17 @@ export interface MetaProfileClass {
 export interface MetaProfile {
   /** Name of the saved LLM profile used to classify the task. */
   classifier_model: string;
-  /** Name of the saved LLM profile to use when no class matches. */
-  default_model: string;
-  classes: MetaProfileClass[];
+  /** Ordered list of task classes and their target profiles (structured mode). */
+  classes?: MetaProfileClass[];
+  /** Direct-routing prompt template; must include ``{{ instance_text }}``. */
+  prompt_template?: string | null;
+  /** Text inserted into ``{{ model_table }}`` for direct-routing prompts. */
+  model_table?: string | null;
 }
 
 export interface MetaProfileInfo {
   name: string;
   classifier_model: string | null;
-  default_model: string | null;
   num_classes: number;
 }
 
@@ -395,6 +400,8 @@ export interface MetaProfileMutationResponse {
 export interface ActivateMetaProfileResponse {
   name: string;
   message: string;
+  /** False when the agent settings cannot route (e.g. ACP), so nothing was activated. */
+  applied?: boolean;
 }
 
 export type ExposeSecretsMode = 'encrypted' | 'plaintext';
@@ -417,6 +424,8 @@ export interface SettingsUpdateRequest {
 export interface SecretInfo {
   name: string;
   description?: string;
+  scope?: string | null;
+  scope_description?: string | null;
 }
 
 export interface SecretsListResponse {
@@ -436,6 +445,22 @@ export interface UpsertSecretResponse {
 
 export interface DeleteSecretResponse {
   deleted: boolean;
+}
+
+export interface GitProviderRepository {
+  id: string;
+  full_name: string;
+  git_provider: string;
+  is_public: boolean;
+  stargazers_count?: number | null;
+  pushed_at?: string | null;
+  main_branch?: string | null;
+}
+
+export interface GitProviderRepositoryPage {
+  items: GitProviderRepository[];
+  next_page_id: string | null;
+  missing_token: boolean;
 }
 
 export type SecretValueResponse = string;
@@ -475,6 +500,10 @@ export interface FileSearchSubdirsOptions {
 
 export interface HooksRequest {
   project_dir?: string | null;
+  /** Read `<project_dir>/.openhands/hooks.json` (default true). */
+  load_project_hooks?: boolean;
+  /** Read the user's `~/.openhands/hooks.json` (default true). */
+  load_user_hooks?: boolean;
 }
 
 export interface HooksResponse {

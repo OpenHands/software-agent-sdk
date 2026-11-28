@@ -78,7 +78,7 @@ class AsyncRemoteWorkspace(RemoteWorkspaceMixin):
         self,
         command: str,
         cwd: str | Path | None = None,
-        timeout: float = 30,
+        timeout: float = 30,  # noqa: ASYNC109 - sent to the server's command
     ) -> str:
         """Start a command and return its ID without waiting for completion."""
         return await self._execute(self._start_command_generator(command, cwd, timeout))
@@ -88,6 +88,14 @@ class AsyncRemoteWorkspace(RemoteWorkspaceMixin):
     ) -> dict[str, Any] | None:
         """Read the latest output; a missing exit code means it is still running."""
         return await self._execute(self._get_command_output_generator(command_id))
+
+    async def stop_command(self, command_id: str) -> None:
+        """Stop a running bash command by id.
+
+        Unknown or already-finished ids are no-ops, matching the server's
+        idempotency contract.
+        """
+        await self._execute(self._stop_command_generator(command_id))
 
     async def get_runtime_session_key(self) -> str:
         """Get the scoped worker credential for this conversation runtime."""
@@ -101,7 +109,7 @@ class AsyncRemoteWorkspace(RemoteWorkspaceMixin):
         self,
         command: str,
         cwd: str | Path | None = None,
-        timeout: float = 30.0,
+        timeout: float = 30.0,  # noqa: ASYNC109 - sent to the server's command
     ) -> CommandResult:
         """Execute a bash command on the remote system.
 

@@ -21,8 +21,15 @@ class Subscriber[T](ABC):
     async def __call__(self, event: T):
         """Invoke this subscriber"""
 
+    async def on_initial_state(self, event: T, log_length: int | None) -> None:  # noqa: ARG002
+        """Receive the state snapshot taken when ``log_length`` events existed."""
+        await self(event)
+
     async def close(self):
         """Clean up this subscriber"""
+
+    async def close_connection(self, code: int, reason: str) -> None:
+        """Close the client connection behind this subscriber, if it has one."""
 
 
 class MaxSubscribersError(Exception):
@@ -108,7 +115,29 @@ class PubSub[T]:
         await asyncio.gather(*[_notify(sid, sub) for sid, sub in subscribers])
 
     async def close(self):
-        await asyncio.gather(
-            *[subscriber.close() for subscriber in self._subscribers.values()]
+        while self._subscribers:
+            subscribers = list(self._subscribers.items())
+            self._subscribers.clear()
+            results = await asyncio.gather(
+                *[subscriber.close() for _, subscriber in subscribers],
+                return_exceptions=True,
+            )
+            for (subscriber_id, _), result in zip(subscribers, results):
+                if isinstance(result, BaseException):
+                    logger.error(
+                        f"Error closing subscriber {subscriber_id}: {result}",
+                        exc_info=result,
+                    )
+
+    async def close_connections(self, code: int, reason: str) -> None:
+        """Close every subscriber's client connection with this close code."""
+        results = await asyncio.gather(
+            *[
+                subscriber.close_connection(code, reason)
+                for subscriber in list(self._subscribers.values())
+            ],
+            return_exceptions=True,
         )
-        self._subscribers.clear()
+        for result in results:
+            if isinstance(result, Exception):
+                logger.warning("Failed to close a subscriber connection: %s", result)
