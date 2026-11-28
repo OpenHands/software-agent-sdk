@@ -95,6 +95,7 @@ class FileEditor:
         self,
         workspace_root: str | None = None,
         max_file_size_mb: int | None = None,
+        restrict_to_workspace: bool = False,
     ):
         """Initialize the editor.
 
@@ -104,7 +105,13 @@ class FileEditor:
             workspace_root: Root directory that serves as the current working
                 directory for relative path suggestions. Must be an absolute path.
                 If None, no path suggestions will be provided for relative paths.
+            restrict_to_workspace: Refuse paths that resolve (following ``..``
+                and symlinks) outside ``workspace_root``, and do not list the
+                contents of symlinked directories that point outside it.
+                Requires ``workspace_root``.
         """
+        if restrict_to_workspace and workspace_root is None:
+            raise ValueError("restrict_to_workspace requires a workspace_root")
         self._history_manager = FileHistoryManager(max_history_per_file=10)
         self._max_file_size = (
             (max_file_size_mb or self.MAX_FILE_SIZE_MB) * 1024 * 1024
@@ -122,6 +129,9 @@ class FileEditor:
             self._cwd = str(workspace_path)
         else:
             self._cwd = os.path.abspath(os.getcwd())
+        self._boundary: Path | None = (
+            Path(self._cwd).resolve() if restrict_to_workspace else None
+        )
         logger.info(f"FileEditor initialized with cwd: {self._cwd}")
 
     def __call__(
@@ -467,7 +477,7 @@ class FileEditor:
             if item.name.startswith("."):
                 continue
             visible_entries.append(item)
-            if item.is_dir():
+            if item.is_dir() and self._within_boundary(item):
                 try:
                     visible_entries.extend(
                         child
@@ -678,6 +688,14 @@ class FileEditor:
                 suggestion_message,
             )
 
+        if not self._within_boundary(path):
+            raise EditorToolParameterInvalidError(
+                "path",
+                str(path),
+                f"The path is outside the workspace {self._boundary}. "
+                "Use a path inside the workspace.",
+            )
+
         # Check if path and command are compatible
         if command == "create" and path.exists():
             raise EditorToolParameterInvalidError(
@@ -706,6 +724,16 @@ class FileEditor:
                     f"The path {path} is a directory and only the `view` command can "
                     "be used on directories.",
                 )
+
+    def _within_boundary(self, path: Path) -> bool:
+        """Whether ``path`` resolves inside the workspace, when restricted."""
+        if self._boundary is None:
+            return True
+        try:
+            resolved = path.resolve()
+        except (OSError, RuntimeError):  # Python 3.12 raises on a symlink loop
+            return False
+        return resolved.is_relative_to(self._boundary)
 
     def undo_edit(self, path: Path) -> FileEditorObservation:
         """
