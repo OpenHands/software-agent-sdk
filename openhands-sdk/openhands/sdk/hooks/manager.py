@@ -55,6 +55,7 @@ class HookManager:
         tool_name: str | None = None,
         tool_input: dict[str, Any] | None = None,
         tool_response: dict[str, Any] | None = None,
+        tool_use_id: str | None = None,
         message: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> HookEvent:
@@ -64,6 +65,7 @@ class HookManager:
             tool_name=tool_name,
             tool_input=tool_input,
             tool_response=tool_response,
+            tool_use_id=tool_use_id,
             message=message,
             session_id=self.session_id,
             working_dir=self.working_dir,
@@ -74,6 +76,8 @@ class HookManager:
         self,
         tool_name: str,
         tool_input: dict[str, Any],
+        *,
+        tool_use_id: str | None = None,
     ) -> tuple[bool, list[HookResult]]:
         """Run PreToolUse hooks. Returns (should_continue, results)."""
         hooks = self.config.get_hooks_for_event(HookEventType.PRE_TOOL_USE, tool_name)
@@ -92,6 +96,7 @@ class HookManager:
             HookEventType.PRE_TOOL_USE,
             tool_name=tool_name,
             tool_input=tool_input,
+            tool_use_id=tool_use_id,
         )
 
         results = self.executor.execute_all(hooks, event, stop_on_block=True)
@@ -106,6 +111,8 @@ class HookManager:
         tool_name: str,
         tool_input: dict[str, Any],
         tool_response: dict[str, Any],
+        *,
+        tool_use_id: str | None = None,
     ) -> list[HookResult]:
         """Run PostToolUse hooks after a tool completes."""
         hooks = self.config.get_hooks_for_event(HookEventType.POST_TOOL_USE, tool_name)
@@ -117,6 +124,7 @@ class HookManager:
             tool_name=tool_name,
             tool_input=tool_input,
             tool_response=tool_response,
+            tool_use_id=tool_use_id,
         )
 
         # PostToolUse hooks don't block - they just run
