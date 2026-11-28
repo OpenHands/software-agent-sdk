@@ -443,6 +443,22 @@ def test_kimi_k3_supports_vision(model: str):
 @pytest.mark.parametrize(
     "model",
     [
+        "deepseek-v4.1-flash",
+        "deepseek-v4-1-flash",
+        "deepseek-v4-1-flash-1017",
+        "deepseek-v4-1-flash-1017-uncensored",
+        "openai/deepseek-v4-1-flash-1017-uncensored",
+        "litellm_proxy/openai/deepseek-v4-1-flash-1017-uncensored",
+        "openhands/deepseek-v4.1-flash",
+    ],
+)
+def test_deepseek_v4_1_flash_supports_vision(model: str):
+    assert get_features(model).supports_vision is True
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
         "gpt-4o",
         "openai/gpt-4o",
         "litellm_proxy/openai/gpt-4o",
