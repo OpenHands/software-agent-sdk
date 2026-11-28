@@ -659,6 +659,37 @@ def test_failing_mcp_server_keeps_the_other_servers_tools(
     conversation.close()
 
 
+def test_mcp_server_that_failed_to_start_can_be_added_again(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        local_conversation, "_RUNTIME_MCP_TIMEOUT_SECS", STARTUP_TIMEOUT
+    )
+    missing = {"command": "missing-mcp-server-command"}
+    conversation = _mcp_conversation(
+        tmp_path, {"docs": FETCH_SERVER, "broken": missing}
+    )
+    with caplog.at_level(logging.WARNING):
+        conversation.send_message("hello")
+    assert _failed_servers(caplog) == ["broken"]
+    assert _mcp_tool_names(conversation) == {"docs_fetch"}
+
+    with pytest.raises(MCPServerStartError):
+        conversation.add_mcp_servers({"broken": MCPServer.model_validate(missing)})
+    conversation.add_mcp_servers({"broken": MCPServer.model_validate(FETCH_SERVER)})
+
+    assert _mcp_tool_names(conversation) == {"docs_fetch", "broken_fetch"}
+    assert conversation.agent.mcp_config["broken"].command == sys.executable
+    for running in ("docs", "broken"):
+        with pytest.raises(ValueError, match="MCP server already exists"):
+            conversation.add_mcp_servers(
+                {running: MCPServer.model_validate(FETCH_SERVER)}
+            )
+    conversation.close()
+
+
 def test_every_mcp_server_failing_still_runs_the_conversation(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:

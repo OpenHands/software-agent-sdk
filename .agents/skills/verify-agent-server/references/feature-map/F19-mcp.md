@@ -1250,6 +1250,8 @@ Preconditions:
   Each refusal leaves the agent's `mcp_config` as it was; the disabled
   server is stored with `enabled: false` and its command never runs; deleting
   the conversation stops the child the add started.
+  A configured server whose startup failed is not a duplicate: adding it
+  again retries it with the new config, and on success its tools are added.
 - **A server that cannot start (`F19.conversation-mcp-add-start-failure`).**
   The command exits at once, so the MCP connection closes during the
   handshake. The SDK raises `MCPServerStartError` and the route answers its
