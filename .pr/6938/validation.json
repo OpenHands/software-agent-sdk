@@ -1,0 +1,277 @@
+{
+  "status": "passed",
+  "checked_at": "2026-11-18T05:49:39.369640+08:00",
+  "base_sha": "06f643ca471eea73c662a76fef2e0b836a33c826",
+  "source_sha256": {
+    "openhands-sdk/openhands/sdk/llm/llm.py": "c2b663c1015f06ebd2a87bcf4b9a2f627f35f20d05aebb3fca6715fa66240a4f",
+    "openhands-sdk/openhands/sdk/llm/utils/retry_mixin.py": "c980c6fb5c0cfcc3289164ae35f92d3eb9a5b1b77c8c624baa210e01bbba46fc",
+    "tests/sdk/llm/test_retry_after.py": "ebfb24b5124e56e3d0f4c1cc9472f26ebf8a9f80a9ef1dc1afa143c937157eb6",
+    "tests/sdk/llm/test_retry_jitter.py": "6fb669aa98d3397e61f6c246f91dc58169819c1a06b66d142436e5619dcd0d69"
+  },
+  "environment": {
+    "platform": "macOS arm64",
+    "python": "3.13.12",
+    "dependency_lock": "unchanged uv.lock",
+    "setup": "UV_FROZEN=1 make build",
+    "loopback_proxy_bypass": "NO_PROXY=127.0.0.1,localhost,::1 and lowercase no_proxy"
+  },
+  "results": [
+    {
+      "job": "unit-baseline-final",
+      "result": "9 failed, 6 passed; expected failures without jitter",
+      "exit_code": 1,
+      "log": "unit-baseline-final.log",
+      "log_sha256": "41456ba7d8cee2ae690fb5ae1b7269b340877b1ed9d17aa5b1c710a58e71ba09"
+    },
+    {
+      "job": "affected-final",
+      "result": "173 passed, 2 existing xfailed",
+      "exit_code": 0,
+      "log": "affected-final.log",
+      "log_sha256": "3a210735da58b273149ce4a60dff8fd230548726a31a826012f0e4322a11ec41"
+    },
+    {
+      "job": "regression-loopback-final",
+      "result": "2097 passed, 2 existing xfailed, no skips",
+      "exit_code": 0,
+      "log": "regression-loopback-final.log",
+      "log_sha256": "ddc45f22aee6ea6b152e28e03895ce69c35bcb933c38dddccb533e9c66a7b8ab"
+    },
+    {
+      "job": "persisted-compat",
+      "result": "33 historical fixtures and 8 PyPI 1.62.0 baseline payloads validated",
+      "exit_code": 0,
+      "log": "persisted-compat.log",
+      "log_sha256": "9d1ae4125135d27059e7c296ebbad3bb4228b28ba5e9420dcda5fdc67c331a17"
+    },
+    {
+      "job": "precommit-final",
+      "result": "All applicable checks passed, including Pyright",
+      "exit_code": 0,
+      "log": "precommit-final.log",
+      "log_sha256": "8530f3ac2b701c5890b57b7b96adb7822d19ad4351667efda0d6542c513faea5"
+    }
+  ],
+  "http_comparison": {
+    "base_source_sha256": "b2ed7dba38517313ef745ea04584c1397cd8f5772baaa90faff7d781c867e6e8",
+    "fixed_source_sha256": "c980c6fb5c0cfcc3289164ae35f92d3eb9a5b1b77c8c624baa210e01bbba46fc",
+    "fixture_sha256": "2c3879a99985db52ba9eda53fdcb3a06f8251a0e5dd8478747a5976f09f63a12",
+    "repeats_per_entrypoint": 3,
+    "methods": [
+      {
+        "method": "completion",
+        "baseline": {
+          "peak_retries_in_100ms": [
+            17,
+            16,
+            15
+          ],
+          "failures": [
+            8,
+            8,
+            8
+          ],
+          "elapsed_seconds": [
+            8.292975582997315,
+            7.949344124994241,
+            8.668117708992213
+          ],
+          "http_attempts": [
+            72,
+            72,
+            72
+          ]
+        },
+        "fixed": {
+          "peak_retries_in_100ms": [
+            5,
+            5,
+            6
+          ],
+          "failures": [
+            0,
+            0,
+            0
+          ],
+          "elapsed_seconds": [
+            5.5872871250030585,
+            5.2402711670147255,
+            5.347493665991351
+          ],
+          "http_attempts": [
+            52,
+            52,
+            54
+          ]
+        }
+      },
+      {
+        "method": "acompletion",
+        "baseline": {
+          "peak_retries_in_100ms": [
+            19,
+            16,
+            18
+          ],
+          "failures": [
+            8,
+            8,
+            8
+          ],
+          "elapsed_seconds": [
+            7.974115040968172,
+            7.837910500005819,
+            7.763315874966793
+          ],
+          "http_attempts": [
+            72,
+            72,
+            72
+          ]
+        },
+        "fixed": {
+          "peak_retries_in_100ms": [
+            5,
+            5,
+            5
+          ],
+          "failures": [
+            0,
+            0,
+            0
+          ],
+          "elapsed_seconds": [
+            5.149532291979995,
+            5.222521540999878,
+            4.864289583987556
+          ],
+          "http_attempts": [
+            52,
+            53,
+            54
+          ]
+        }
+      },
+      {
+        "method": "responses",
+        "baseline": {
+          "peak_retries_in_100ms": [
+            19,
+            17,
+            20
+          ],
+          "failures": [
+            8,
+            8,
+            8
+          ],
+          "elapsed_seconds": [
+            7.93079466704512,
+            8.085230084019713,
+            8.00473524996778
+          ],
+          "http_attempts": [
+            72,
+            72,
+            72
+          ]
+        },
+        "fixed": {
+          "peak_retries_in_100ms": [
+            5,
+            5,
+            5
+          ],
+          "failures": [
+            0,
+            0,
+            0
+          ],
+          "elapsed_seconds": [
+            5.324517207976896,
+            5.349803167046048,
+            5.090594040986616
+          ],
+          "http_attempts": [
+            53,
+            53,
+            54
+          ]
+        }
+      },
+      {
+        "method": "aresponses",
+        "baseline": {
+          "peak_retries_in_100ms": [
+            19,
+            18,
+            17
+          ],
+          "failures": [
+            8,
+            8,
+            8
+          ],
+          "elapsed_seconds": [
+            7.735933875024784,
+            7.740848291956354,
+            7.799507499963511
+          ],
+          "http_attempts": [
+            72,
+            72,
+            72
+          ]
+        },
+        "fixed": {
+          "peak_retries_in_100ms": [
+            5,
+            5,
+            5
+          ],
+          "failures": [
+            0,
+            0,
+            0
+          ],
+          "elapsed_seconds": [
+            5.130414083017968,
+            5.227141291019507,
+            4.894572374993004
+          ],
+          "http_attempts": [
+            52,
+            53,
+            54
+          ]
+        }
+      }
+    ],
+    "limits": "Synthetic capacity-limited HTTP service, real SDK/LiteLLM transport and sleep; scaled waits, no model inference or production throughput claim."
+  },
+  "commands": {
+    "regression": "NO_PROXY=127.0.0.1,localhost,::1 no_proxy=127.0.0.1,localhost,::1 LITELLM_LOCAL_MODEL_COST_MAP=True uv run --frozen pytest tests/sdk/llm tests/sdk/test_settings.py tests/sdk/test_apply_agent_settings_diff.py tests/agent_server/test_persisted_settings_migration.py tests/cross/test_check_persisted_settings_compat.py -q",
+    "http": "LITELLM_LOCAL_MODEL_COST_MAP=True uv run --frozen python .pr/6938/retry_http_probe.py --output /tmp/retry-http-result.json",
+    "compatibility": "uv run --frozen python .github/scripts/check_persisted_settings_compat.py",
+    "lint": "uv run --frozen pre-commit run --files openhands-sdk/openhands/sdk/llm/llm.py openhands-sdk/openhands/sdk/llm/utils/retry_mixin.py tests/sdk/llm/test_retry_after.py tests/sdk/llm/test_retry_jitter.py"
+  },
+  "expected_failures": "Two existing DecisionModel non-JSON request-value cases, strict xfail in test_decision.py",
+  "earlier_failures": [
+    {
+      "result": "Initial broader run: 1 failed, 2094 passed, 2 xfailed",
+      "cause": "macOS system proxy turned a refused loopback port into HTTP503. Same failure on base; trust_env=False yields ConnectError and explicit NO_PROXY passes. No source changes made for this."
+    },
+    {
+      "result": "Initial probe client identifiers were not forwarded; first per-client metrics discarded. Corrected marker in actual request body is asserted for all24clients."
+    },
+    {
+      "result": "Initial unit fixture patched wrong imported alias and saw HTTP401 using a synthetic key; corrected alias and loopback URL. Those errors are not treated as defect reproduction."
+    }
+  ],
+  "limits": [
+    "Synthetic capacity-limited HTTP service with real transport and sleeps; scaled waits, no real inference or production throughput claim",
+    "No full repository suite, GPU, multi-node, or other-platform validation claimed",
+    "Docs generated HTML includes new section and link check passes; browser visual check unavailable",
+    "HUMAN author section requires user text; no human review claimed"
+  ]
+}

@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>LLM retry jitter: scope and evidence</title>
+<style>body{max-width:850px;margin:3rem auto;padding:0 1.5rem;font:17px/1.6 system-ui;color:#17263a;background:#f5f7fb}table{border-collapse:collapse;width:100%;background:white}td,th{padding:.7rem;border:1px solid #ccd4df;text-align:left}code{background:#e8edf5;padding:.1rem .3rem}h1,h2{line-height:1.2}a{color:#1554a2}</style>
+<h1>Spread LLM retries within existing wait bounds</h1>
+<p>Issue <a href="https://github.com/OpenHands/software-agent-sdk/issues/6938">#6938</a> reports callers retrying together against finite backend capacity. The SDK's deterministic exponential waits preserve that correlation.</p>
+<h2>Configuration and behavior</h2>
+<table><tr><th>Surface</th><th>Before</th><th>After</th></tr>
+<tr><td>LLM retry configuration</td><td>No jitter option</td><td><code>retry_jitter: float = 1.0</code>, finite and nonnegative; zero opts out</td></tr>
+<tr><td>Default synthetic waits</td><td>8, 16, 32, 64 seconds</td><td>Uniformly sampled from 8–9, 15–17, 31–33, 63–64 seconds</td></tr>
+<tr><td>At the maximum</td><td>Always 64 seconds</td><td>Still randomized below the ceiling; no clipping a positive offset into a shared timestamp</td></tr>
+<tr><td>Provider hint</td><td>max(exponential wait, hint)</td><td>max(jittered fallback, hint); no additive jitter on the hint</td></tr>
+<tr><td>Fixed / inverted bounds</td><td>Existing minimum-wait behavior</td><td>Unchanged, including min=max=0</td></tr>
+<tr><td>Other RetryMixin callers</td><td>Deterministic</td><td>Mixin defaults to zero jitter; DecisionModel remains unchanged</td></tr></table>
+<p>The shared LLM retry factory passes the new field to synchronous/asynchronous Chat Completions and Responses. No error classifiers, stop conditions, attempt counts, timeouts, provider routing, server or TypeScript contracts change. Old JSON loads with the new optional default; no schema migration is required.</p>
+<h2>Real HTTP comparison</h2>
+<p>The <a href="retry_http_probe.py">reproducer</a> runs 24 callers against a loopback HTTP server with four admission slots and 0.3-second service time. Each entry point runs three trials, with real LiteLLM transport and real sleeps. Both revisions use four attempts and scaled 1/2/4-second exponential waits.</p>
+<table><tr><th>Across 12 trials</th><th>Base</th><th>Fix</th></tr>
+<tr><td>Failures per trial</td><td>8 / 24</td><td>0 / 24</td></tr>
+<tr><td>Peak retries within any 100 ms</td><td>15–20</td><td>5–6</td></tr>
+<tr><td>Trial elapsed time</td><td>7.74–8.67 s</td><td>4.86–5.59 s</td></tr></table>
+<p>See <a href="http-comparison.json">per-trial measurements and source hashes</a>, plus raw <a href="http-baseline.json">base</a> and <a href="http-fixed.json">fixed</a> request events. These are synthetic capacity tests, with no model inference. They establish de-correlation in this workload, not a production throughput guarantee. Randomized waits may increase latency for individual calls; one-second jitter is configurable and can be disabled.</p>
+<h2>Validation and review</h2>
+<p><a href="validation.json">Validation summary</a> records baseline failures, final regressions, compatibility checks, and limitations. Prepared with AI assistance and AI self-review; no human review is claimed.</p>
+</html>

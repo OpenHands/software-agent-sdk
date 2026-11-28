@@ -386,6 +386,18 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     num_retries: int = Field(default=5, ge=0, json_schema_extra=field_meta())
     retry_multiplier: float = Field(default=8.0, ge=0, json_schema_extra=field_meta())
     retry_min_wait: int = Field(default=8, ge=0, json_schema_extra=field_meta())
+    retry_jitter: float = Field(
+        default=1.0,
+        ge=0,
+        allow_inf_nan=False,
+        description=(
+            "Maximum random variation in seconds around exponential retry waits, "
+            "bounded by retry_min_wait and retry_max_wait. Defaults to 1 second; "
+            "set to 0 for deterministic backoff. Provider Retry-After hints "
+            "remain a minimum delay. Fixed or inverted wait bounds are unchanged."
+        ),
+        json_schema_extra=field_meta(),
+    )
     retry_max_wait: int = Field(
         default=64,
         ge=0,
@@ -1314,6 +1326,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             retry_min_wait=self.retry_min_wait,
             retry_max_wait=self.retry_max_wait,
             retry_multiplier=self.retry_multiplier,
+            retry_jitter=self.retry_jitter,
             retry_listener=self._retry_listener_fn,
             timeout=self.timeout,
         )
