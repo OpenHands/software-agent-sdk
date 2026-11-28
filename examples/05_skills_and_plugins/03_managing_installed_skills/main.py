@@ -102,13 +102,13 @@ def demo_enable_disable_skill(installed_dir: Path, skill_name: str) -> None:
     ]
 
     metadata = json.loads((installed_dir / ".installed.json").read_text())
-    assert metadata["skills"][skill_name]["enabled"] is False
+    assert metadata["extensions"][skill_name]["enabled"] is False
 
     assert enable_skill(skill_name, installed_dir=installed_dir) is True
     print_state("After re-enable", installed_dir)
 
     metadata = json.loads((installed_dir / ".installed.json").read_text())
-    assert metadata["skills"][skill_name]["enabled"] is True
+    assert metadata["extensions"][skill_name]["enabled"] is True
     assert skill_name in [
         skill.name for skill in load_installed_skills(installed_dir=installed_dir)
     ]
@@ -127,8 +127,8 @@ def demo_uninstall_skill(
 
     assert not (installed_dir / skill_name).exists()
     metadata = json.loads((installed_dir / ".installed.json").read_text())
-    assert skill_name not in metadata["skills"]
-    assert remaining_skill_name in metadata["skills"]
+    assert skill_name not in metadata["extensions"]
+    assert remaining_skill_name in metadata["extensions"]
 
 
 if __name__ == "__main__":
