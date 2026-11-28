@@ -53,6 +53,7 @@ from openhands.sdk.llm._tokenizer import (
     count_tokenized_output,
     load_chat_template_tokenizer,
 )
+from openhands.sdk.llm._tool_call_pairing import ensure_tool_call_pairing
 from openhands.sdk.llm.exceptions import LLMBadRequestError
 from openhands.sdk.llm.fallback_strategy import FallbackStrategy
 from openhands.sdk.llm.utils.image_delivery import image_delivery_client
@@ -3281,7 +3282,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         return f"{OPENHANDS_SYSTEM_IDENTITY}\n\n{instructions}"
 
     def _prepare_chat_messages(self, messages: list[Message]) -> list[Message]:
-        """Apply the cache+inline+resize passes, returning detached messages."""
+        """Apply the pairing+cache+inline+resize passes, returning detached messages."""
+        messages = ensure_tool_call_pairing(messages)
         messages, vision_enabled = self._begin_chat_messages(messages)
         # Inline first (URL → data:), then resize (data: → smaller data:).
         # The resize pass only operates on ``data:image/*`` URLs, so chaining
@@ -3332,6 +3334,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         ``aformat_messages_for_responses``), because ``await`` cannot be
         used inside the synchronous helper.
         """
+        messages = ensure_tool_call_pairing(messages)
         messages, vision_enabled = self._begin_chat_messages(messages)
         messages = await amaybe_inline_image_urls(
             messages,
