@@ -852,6 +852,10 @@ elif mode == "features":
         "deepseek/deepseek-chat",
         "deepseek/deepseek-v4.1-flash",
         "litellm_proxy/deepseek-v4.1-flash",
+        # The same family as published with hyphens by some providers (#7183).
+        "openai/deepseek-v4-1-flash-1017-uncensored",
+        "deepseek-v4-1-flash",
+        "openai/e2ee-deepseek-v4-1-flash-1017",
         "moonshot/kimi-k2-0711-preview",
     ]
     table = {}
@@ -864,6 +868,7 @@ elif mode == "features":
             "prompt_cache": f.supports_prompt_cache,
             "responses_api": f.supports_responses_api,
             "vision": f.supports_vision,
+            "vision_source": f.sources.get("supports_vision"),
             "inline_images": f.requires_inline_image_data,
             "force_string": f.force_string_serializer,
             "stop_words": f.supports_stop_words,

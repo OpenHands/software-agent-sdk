@@ -170,6 +170,16 @@ The scripted bullets point a real `LLM` (`openai/...`, `anthropic/...`) at `prog
     --check sent.openrouter.openrouter_headers eq true
   ```
   A reasoning model gets `reasoning_effort` (default `high`) and loses `temperature`/`top_p`; a non-reasoning model keeps them; Azure gets `max_tokens`. `deepseek-v4.1-flash`, which LiteLLM's registry does not mark as visual, is vision-capable from the SDK's own list, under a proxy prefix too, and keeps list content. For that model's vision, `sources` says `sdk`; LiteLLM registry metadata that says `supports_vision: false` does not change it, the same statement from the endpoint's model info does (`endpoint`), and a caller override beats the endpoint (`caller`); a model nobody describes resolves by `discovery`. (Prompt-cache keys show in the Responses bullet above.)
+- **Hyphenated provider ids (`S02.model-features`).** Some providers (Venice) publish DeepSeek V4.1 Flash with hyphens and suffixes; the table should treat them as the same model, and leave the `e2ee-` variants, which reject images, text-only.
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  control-sdk program S02/llm_calls --arg features \
+    --check features.openai/deepseek-v4-1-flash-1017-uncensored.vision eq true \
+    --check features.openai/deepseek-v4-1-flash-1017-uncensored.vision_source eq sdk \
+    --check features.deepseek-v4-1-flash.vision eq true \
+    --check features.openai/e2ee-deepseek-v4-1-flash-1017.vision eq false
+  ```
+  Expected: `deepseek-v4-1-flash*` ids are vision-capable from the SDK's own list (`sdk`), with or without a provider prefix; `e2ee-deepseek-v4-1-flash-*` stays text-only. Known failure (reproduced 2026-11-28, [#7183](https://github.com/OpenHands/software-agent-sdk/issues/7183), fix in review: [#7184](https://github.com/OpenHands/software-agent-sdk/pull/7184)): the hyphenated ids resolve to `vision` false from `discovery`, so `vision_is_active()` is false and the agent answers an image message with the capability message instead of calling the model.
 - **Prompted tool calling (`S02.prompted-tool-calling`, `S02.native-tool-calling`).** `native_tool_calling=False`: the agent's tools are described in the prompt and the model's `<function=...>` text becomes real tool calls.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
