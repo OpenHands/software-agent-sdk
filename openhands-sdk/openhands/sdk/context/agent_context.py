@@ -185,6 +185,18 @@ class AgentContext(BaseModel):
         ),
         json_schema_extra={"acp_compatible": True},
     )
+    disabled_agents: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Names of sub-agents to EXCLUDE — a deny-list enforced at spawn "
+            "time by the task/delegate tools. The sub-agent registry is "
+            "process-global and shared across conversations, so a per-"
+            "conversation deny-list cannot be applied at registration time. "
+            "A listed name absent from the registry is a harmless no-op. "
+            "[] (the default) keeps every sub-agent."
+        ),
+        json_schema_extra={"acp_compatible": True},
+    )
     # Raw-string entries are encrypted at rest and decrypted on load; an entry
     # that cannot be decrypted, or is blank, is kept as given. SecretSource
     # entries serialize through their own secret fields.

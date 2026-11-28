@@ -11,6 +11,7 @@ from deprecation import DeprecatedWarning
 from pydantic import SecretStr
 
 from openhands.sdk.agent.utils import fix_malformed_tool_arguments
+from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.hooks.config import HookConfig, HookDefinition, HookMatcher
@@ -206,6 +207,58 @@ def test_close_closes_spawned_sub_agents():
     executor.close()
 
     assert sub_conversation._cleanup_initiated is True
+    assert executor._sub_agents == {}
+
+
+def test_spawn_rejects_disabled_agent_type():
+    """A sub-agent type on the parent's disabled_agents deny-list is refused,
+    and no sub-agent is created."""
+    register_builtins_agents()
+    executor, parent_conversation = create_test_executor_and_parent()
+    parent_conversation._visualizer = None
+    parent_conversation.agent.agent_context = AgentContext(
+        disabled_agents=["general-purpose"]
+    )
+
+    observation = executor(
+        DelegateAction(command="spawn", ids=["sub1"], agent_types=["general-purpose"]),
+        parent_conversation,
+    )
+
+    assert observation.is_error is True
+    assert "general-purpose" in observation.text
+    assert executor._sub_agents == {}
+
+
+@pytest.mark.parametrize(
+    ("disabled", "agent_types"),
+    [
+        # No type given: the delegate tool falls back to the default agent.
+        ("general-purpose", None),
+        ("general-purpose", [""]),
+        ("general-purpose", ["default"]),
+        ("code-explorer", ["explore"]),
+        ("bash-runner", ["bash"]),
+        # The deny-list itself may be written with an alias.
+        ("default", ["general-purpose"]),
+        ("explore", ["code-explorer"]),
+    ],
+)
+def test_spawn_rejects_disabled_agent_type_by_any_name(disabled, agent_types):
+    """The deny-list refuses an agent under every name that resolves to it,
+    including the default the tool picks when no type is given."""
+    register_builtins_agents()
+    executor, parent_conversation = create_test_executor_and_parent()
+    parent_conversation._visualizer = None
+    parent_conversation.agent.agent_context = AgentContext(disabled_agents=[disabled])
+
+    action = DelegateAction(command="spawn", ids=["sub1"])
+    if agent_types is not None:
+        action = DelegateAction(command="spawn", ids=["sub1"], agent_types=agent_types)
+    observation = executor(action, parent_conversation)
+
+    assert observation.is_error is True
+    assert "disabled" in observation.text
     assert executor._sub_agents == {}
 
 

@@ -34,7 +34,12 @@ from openhands.sdk.hooks.config import HookConfig
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import detached_delegate_context
 from openhands.sdk.security import ConfirmationPolicyBase
-from openhands.sdk.subagent.registry import AgentFactory, get_agent_factory
+from openhands.sdk.subagent.registry import (
+    AgentFactory,
+    canonical_agent_name,
+    get_agent_factory,
+    is_agent_disabled,
+)
 from openhands.sdk.subagent.scope import (
     SubAgentScope,
     inherit_mcp_config,
@@ -51,6 +56,10 @@ ConfirmationHandler = Callable[[str, list["ActionEvent"]], bool]
 logger = get_logger(__name__)
 
 _SUBAGENTS_DIR: Final[str] = "subagents"
+
+
+class DisabledAgentError(ValueError):
+    """A spawn refused by the parent conversation's disabled_agents deny-list."""
 
 
 class TaskStatus(StrEnum):
@@ -216,6 +225,7 @@ class TaskManager:
                     f"Available tasks: {', '.join(sorted(self._tasks))}"
                 )
 
+            self._check_agent_enabled(subagent_type)
             factory = get_agent_factory(subagent_type)
             worker_agent = self._get_sub_agent_from_factory(factory)
             conversation_id = self._tasks[resume].conversation_id
@@ -264,6 +274,7 @@ class TaskManager:
         1. ``factory.definition.max_iteration_per_run`` (from the agent definition)
         2. The parent conversation's ``max_iteration_per_run``
         """
+        self._check_agent_enabled(subagent_type)
         factory = get_agent_factory(subagent_type)
         worker_agent = self._get_sub_agent_from_factory(factory)
 
@@ -365,6 +376,17 @@ class TaskManager:
             "parent_session_id": str(self.parent_conversation.state.id),
             **link,
         }
+
+    def _check_agent_enabled(self, subagent_type: str) -> None:
+        """Refuse sub-agent types the parent conversation disabled."""
+        agent_context = self.parent_conversation.agent.agent_context
+        disabled = agent_context.disabled_agents if agent_context else []
+        if is_agent_disabled(subagent_type, disabled):
+            raise DisabledAgentError(
+                f"Sub-agent '{canonical_agent_name(subagent_type)}' is disabled "
+                f"for this conversation "
+                f"(agent_context.disabled_agents). Choose another sub-agent type."
+            )
 
     def _get_sub_agent(self, subagent_type: str) -> Agent:
         """Return the subagent assigned to the task.

@@ -1,0 +1,9 @@
+=== E2E RESULT ===
+task tool calls by subagent_type: ['default', 'bash-runner']
+refusals observed: 1
+  -> Failed to execute task: Sub-agent 'general-purpose' is disabled for this conversation (agent_context.disabled_agents). Choose another sub-agent type.
+final status: ConversationExecutionStatus.FINISHED
+cost: $0.0000
+final agent response: **Answer: 17 × 23 = 391**
+
+As requested, I first called the task tool with subagent_type `'default'` — that call was refused with an error stating that agent (`general-purpose`) is disabled for this conversation. Following the fallback instruction, I retried with `bash-runner`, which ran `echo $((17 * 23))` and returned **391**.
