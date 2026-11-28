@@ -267,7 +267,7 @@ async def batch_get_conversation_events_via_post(
     "",
     responses=error_responses(
         {
-            Conflict: "Gateway run in progress; message not saved",
+            Conflict: "Conversation busy; message not saved",
             RateLimited: "Message saved but server run capacity is full",
         }
     ),
@@ -280,7 +280,8 @@ async def send_message(
 ) -> Success:
     """Send a message to a conversation.
 
-    A 409 response means a gateway run is active and the message was not saved.
+    A 409 response means the message was not saved because a gateway run or
+    direct terminal action is active.
     If starting the run returns 429, the message is already saved. Retry the
     conversation's /run endpoint instead of resending the message.
 
@@ -320,6 +321,8 @@ async def send_message(
     _refuse_during_gateway_run(event_service)
     async with event_service._gateway_run_lock:
         _refuse_during_gateway_run(event_service)
+        if request.run and event_service._direct_tool_active():
+            raise Conflict("A direct terminal action is in flight; message not saved")
         await event_service.send_message(message, request.run, sender=sender)
     return Success()
 

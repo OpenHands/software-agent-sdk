@@ -86,6 +86,7 @@ from openhands.sdk.credential import (
     HttpVersionedCredentialBinding,
     VersionedCredentialBinding,
 )
+from openhands.sdk.errors import Conflict, Unprocessable
 from openhands.sdk.event import (
     AgentErrorEvent,
     ObservationBaseEvent,
@@ -117,6 +118,12 @@ from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.files import atomic_write_text
 from openhands.sdk.utils.pydantic_secrets import cipher_context, client_context
 from openhands.sdk.workspace import LocalWorkspace
+from openhands.tools.terminal import (
+    TerminalAction,
+    TerminalExecutor,
+    TerminalObservation,
+    TerminalTool,
+)
 
 
 LEASE_RENEW_INTERVAL_SECONDS = 15.0
@@ -132,6 +139,7 @@ logger = get_logger(__name__)
 
 _T = TypeVar("_T")
 _GIT_INIT_LOCK = threading.Lock()
+DIRECT_TERMINAL_CLOSE_GRACE_SECONDS = 2.0
 
 
 def _without_skill_bodies(
@@ -244,6 +252,11 @@ async def _pulse_execution_activity(stop: asyncio.Event) -> None:
             update_last_execution_time()
 
 
+def _observe_task_exception(task: asyncio.Task) -> None:
+    if not task.cancelled():
+        task.exception()
+
+
 def _log_emit_failure(event_kind: str, future: "asyncio.Future[None]") -> None:
     """Log an event emission that failed inside the executor thread."""
     if future.cancelled():
@@ -304,6 +317,12 @@ class EventService:
         default_factory=lambda: PubSub[StreamProgress](max_subscribers=50), init=False
     )
     _run_task: asyncio.Task | None = field(default=None, init=False)
+    _direct_tool_task: asyncio.Task[TerminalObservation] | None = field(
+        default=None, init=False
+    )
+    _cancel_direct_tool: asyncio.Event | None = field(default=None, init=False)
+    _close_task: asyncio.Task[None] | None = field(default=None, init=False)
+    _message_run_admissions: int = field(default=0, init=False)
     # Set when a send_message(run=True) is rejected because a run is still
     # wrapping up; consumed by _run_and_publish to re-run the stranded message.
     _rerun_requested: bool = field(default=False, init=False)
@@ -1009,6 +1028,23 @@ class EventService:
         ``keep_goal_loop`` leaves an active ``/goal`` loop running, for
         messages the server delivers rather than the user writes.
         """
+        self._message_run_admissions += int(run)
+        try:
+            await self._send_message(
+                message, run, _from_goal_loop, run_slot, sender, keep_goal_loop
+            )
+        finally:
+            self._message_run_admissions -= int(run)
+
+    async def _send_message(
+        self,
+        message: Message,
+        run: bool,
+        _from_goal_loop: bool,
+        run_slot: RunSlot | None,
+        sender: str | None,
+        keep_goal_loop: bool,
+    ) -> None:
         if not self._conversation:
             raise ServiceInactive()
         # A normal user message supersedes any active /goal loop in this
@@ -1681,6 +1717,123 @@ class EventService:
         self._run_session_slot = None
         owner.release()
 
+    def _direct_tool_active(self) -> bool:
+        task = self._direct_tool_task
+        return task is not None and not task.done()
+
+    async def execute_terminal(self, action: TerminalAction) -> TerminalObservation:
+        """Run one terminal action with server-wide admission and owned cleanup."""
+
+        def competing_admission() -> bool:
+            return bool(
+                self._active_gateway_runs
+                or self._message_run_admissions
+                or self._run_session_slot is not None
+                or self._rerun_requested
+                or self._acp_internal_rerun_requested
+                or self._direct_tool_active()
+                or (self._run_task is not None and not self._run_task.done())
+                or (
+                    self._goal_loop_task is not None and not self._goal_loop_task.done()
+                )
+            )
+
+        async with self._run_lock:
+            conversation = self._conversation
+            if conversation is None or self._closing:
+                raise ServiceInactive()
+            if not isinstance(conversation, LocalConversation):
+                raise Unprocessable("The conversation has no active terminal tool")
+            if competing_admission():
+                raise Conflict("The conversation is busy")
+            status = await self._get_execution_status()
+            if self._closing:
+                raise ServiceInactive()
+            if status == ConversationExecutionStatus.RUNNING or competing_admission():
+                raise Conflict("The conversation is busy")
+            slot = await RunSlot.acquire(self._run_semaphore)
+            cancel = asyncio.Event()
+            task = asyncio.create_task(
+                self._execute_terminal_owned(conversation, action, cancel, slot)
+            )
+            self._cancel_direct_tool = cancel
+            self._direct_tool_task = task
+            task.add_done_callback(_observe_task_exception)
+
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancel.set()
+            raise
+
+    async def _execute_terminal_owned(
+        self,
+        conversation: LocalConversation,
+        action: TerminalAction,
+        cancel: asyncio.Event,
+        slot: RunSlot,
+    ) -> TerminalObservation:
+        def resolve_terminal() -> TerminalExecutor:
+            conversation._ensure_agent_ready()
+            tool = conversation.agent.tools_map.get("terminal")
+            if not isinstance(tool, TerminalTool) or not isinstance(
+                tool.executor, TerminalExecutor
+            ):
+                raise Unprocessable("The conversation has no built-in terminal tool")
+            return tool.executor
+
+        def execute() -> TerminalObservation:
+            executor.use_persistent_shell()
+            return TerminalObservation.model_validate(
+                conversation.execute_tool("terminal", action)
+            )
+
+        with slot:
+            self.touch()
+            update_last_execution_time()
+            heartbeat_stop = asyncio.Event()
+            heartbeat = asyncio.create_task(_pulse_execution_activity(heartbeat_stop))
+            try:
+                if cancel.is_set():
+                    raise Conflict("Direct terminal action cancelled")
+                executor = await self.run_state_op(resolve_terminal)
+                if cancel.is_set():
+                    raise Conflict("Direct terminal action cancelled")
+                worker = asyncio.create_task(self.run_state_op(execute))
+                cancelled = asyncio.create_task(cancel.wait())
+                try:
+                    await asyncio.wait(
+                        (worker, cancelled), return_when=asyncio.FIRST_COMPLETED
+                    )
+                    while not worker.done():
+                        # A cancellation can race shell startup. Keep the permit
+                        # through the worker and all offloaded interrupts.
+                        await self.run_state_op(executor.interrupt)
+                        await asyncio.wait((worker,), timeout=0.25)
+                    result = worker.result()
+                    if cancel.is_set() and result.exit_code == -1:
+                        # A soft timeout can return while the command is still live.
+                        await self.run_state_op(executor.interrupt)
+                    return result
+                finally:
+                    cancelled.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await cancelled
+            finally:
+                heartbeat_stop.set()
+                await heartbeat
+                self.touch()
+                update_last_execution_time()
+                if self._rerun_requested and not self._closing:
+                    # Socket messages were already saved. Hand the terminal's
+                    # permit to their run before a competitor can take it.
+                    self._rerun_requested = False
+                    with suppress(ServiceInactive):
+                        await self.run(
+                            acp_internal_rerun_generation=self._explicit_interrupt_generation,
+                            run_slot=slot,
+                        )
+
     async def run(
         self,
         acp_internal_rerun_generation: int | None = None,
@@ -1720,9 +1873,16 @@ class EventService:
             # _run_task first: a live run holds the state lock across its step
             # (a tool call can last minutes), so reading execution status would
             # block this request behind it instead of answering at once.
-            if (self._run_task is not None and not self._run_task.done()) or (
-                await self._get_execution_status()
-                == ConversationExecutionStatus.RUNNING
+            if (
+                (
+                    self._direct_tool_active()
+                    and asyncio.current_task() is not self._direct_tool_task
+                )
+                or (self._run_task is not None and not self._run_task.done())
+                or (
+                    await self._get_execution_status()
+                    == ConversationExecutionStatus.RUNNING
+                )
             ):
                 raise ConversationAlreadyRunning()
             if self._closing:
@@ -1893,7 +2053,6 @@ class EventService:
                             None, self._callback_wrapper.wait_for_pending, 30.0
                         )
 
-                    # Clear task reference and publish state update
                     self._run_task = None
                     await self._publish_state_update()
 
@@ -1914,10 +2073,12 @@ class EventService:
                     rerun_requested = self._rerun_requested
                     acp_internal_rerun_requested = self._acp_internal_rerun_requested
                     rerun_generation = self._explicit_interrupt_generation
+                    status = (
+                        await self._get_execution_status() if rerun_requested else None
+                    )
                     self._rerun_requested = False
                     self._acp_internal_rerun_requested = False
                     if rerun_requested:
-                        status = await self._get_execution_status()
                         rerun_generation_still_valid = (
                             self._explicit_interrupt_generation == rerun_generation
                         )
@@ -2017,9 +2178,13 @@ class EventService:
                 raise GoalAlreadyRunning()
             # _run_task first: a live run holds the state lock across its step,
             # so reading execution status would block behind it.
-            if (self._run_task is not None and not self._run_task.done()) or (
-                await self._get_execution_status()
-                == ConversationExecutionStatus.RUNNING
+            if (
+                self._direct_tool_active()
+                or (self._run_task is not None and not self._run_task.done())
+                or (
+                    await self._get_execution_status()
+                    == ConversationExecutionStatus.RUNNING
+                )
             ):
                 raise ConversationAlreadyRunning()
             # Re-check after the await above: close() runs without _run_lock, so
@@ -2266,6 +2431,8 @@ class EventService:
         """
         if not self._conversation or self._closing:
             raise ServiceInactive()
+        if self._direct_tool_active():
+            raise ConversationAlreadyRunning()
         last = await self.run_state_op(self._last_goal_loop_status)
         if last is None or last.get("status") in ("complete", "capped"):
             raise ValueError("no_resumable_goal")
@@ -2291,9 +2458,13 @@ class EventService:
                 raise ServiceInactive()
             if self._goal_loop_task is not None and not self._goal_loop_task.done():
                 raise GoalAlreadyRunning()
-            if (self._run_task is not None and not self._run_task.done()) or (
-                await self._get_execution_status()
-                == ConversationExecutionStatus.RUNNING
+            if (
+                self._direct_tool_active()
+                or (self._run_task is not None and not self._run_task.done())
+                or (
+                    await self._get_execution_status()
+                    == ConversationExecutionStatus.RUNNING
+                )
             ):
                 raise ConversationAlreadyRunning()
             if self._closing:  # see start_goal_loop: close() may have begun teardown
@@ -2541,6 +2712,22 @@ class EventService:
         await self._pub_sub.close_connections(code, reason)
 
     async def close(self):
+        if self._close_task is None or (
+            self._close_task.done() and self._conversation is not None
+        ):
+            self._closing = True
+            if self._direct_tool_active() and self._cancel_direct_tool is not None:
+                self._cancel_direct_tool.set()
+            self._close_task = asyncio.create_task(self._close())
+            self._close_task.add_done_callback(_observe_task_exception)
+        await asyncio.shield(self._close_task)
+
+    async def _close(self) -> None:
+        direct = self._direct_tool_task
+        if direct is not None and not direct.done():
+            # Ctrl-C is best effort. A command may ignore it; proceed to close
+            # the terminal itself without cancelling the permit-owning task.
+            await asyncio.wait((direct,), timeout=DIRECT_TERMINAL_CLOSE_GRACE_SECONDS)
         if self.bash_event_service is not None:
             await self.bash_event_service.close()
         self._closing = True
@@ -2600,6 +2787,8 @@ class EventService:
         if self._conversation:
             await self.run_state_op(self._conversation.close)
             self._conversation = None
+        if direct is not None and not direct.done():
+            await asyncio.wait((direct,), timeout=DIRECT_TERMINAL_CLOSE_GRACE_SECONDS)
         if self._state_executor is not None:
             self._state_executor.shutdown(wait=False)
             self._state_executor = None
@@ -2799,6 +2988,7 @@ class EventService:
         if (
             self._closing
             or run_active
+            or self._direct_tool_active()
             or goal_active
             or self._rerun_requested
             or self._acp_internal_rerun_requested

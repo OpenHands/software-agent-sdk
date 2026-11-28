@@ -78,6 +78,8 @@ from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 from openhands.sdk.workspace import RemoteWorkspace
 from openhands.tools.ask_user import AskUserTool
 from openhands.tools.file_editor import FileEditorTool
+from openhands.tools.grep import GrepAction
+from openhands.tools.terminal import TerminalAction, TerminalObservation
 from tests.command_utils import python_command
 from tests.cross.conftest import live_server_env
 from tests.tools.ask_user.test_ask_user import QUESTION
@@ -685,6 +687,244 @@ def authenticated_server_env(
     ) as env:
         env["api_key"] = api_key
         yield env
+
+
+@pytest.fixture
+def terminal_server_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Generator[dict]:
+    api_key = "test-terminal-session-key"
+    with live_server_env(
+        tmp_path,
+        monkeypatch,
+        session_api_keys=[api_key],
+        config_overrides={"enable_vscode": False},
+    ) as env:
+        env["api_key"] = api_key
+        yield env
+
+
+def test_execute_tool_runs_setup_script_in_persistent_terminal(
+    terminal_server_env, monkeypatch
+):
+    workspace_dir = Path(terminal_server_env["workspace_path"])
+    setup_script = workspace_dir / ".openhands" / "setup.sh"
+    setup_script.parent.mkdir(parents=True)
+    setup_script.write_text(
+        "#!/usr/bin/env bash\n"
+        "sleep 0.5\n"
+        "touch somefile.txt\n"
+        "export OPENHANDS_SETUP_MARKER=visible\n"
+    )
+
+    commands = [
+        'sleep 0.5; printf "first:%s" "$OPENHANDS_SETUP_MARKER"',
+        'printf "second:%s" "$OPENHANDS_SETUP_MARKER"',
+    ]
+    scripted = TestLLM.from_messages(
+        [
+            Message(
+                role="assistant",
+                tool_calls=[
+                    MessageToolCall(
+                        id=f"terminal-{index}",
+                        name="terminal",
+                        arguments=json.dumps({"command": command}),
+                        origin="completion",
+                    )
+                    for index, command in enumerate(commands)
+                ],
+            ),
+            Message(
+                role="assistant",
+                tool_calls=[
+                    MessageToolCall(
+                        id="done",
+                        name="finish",
+                        arguments='{"message":"done"}',
+                        origin="completion",
+                    )
+                ],
+            ),
+        ]
+    )
+
+    async def acompletion(self, messages, tools=None, **kwargs):
+        return await scripted.acompletion(messages, tools=tools, **kwargs)
+
+    monkeypatch.setattr(LLM, "acompletion", acompletion)
+
+    agent = Agent(
+        llm=LLM(model="gpt-4o-mini", api_key=SecretStr("test")),
+        tools=[Tool(name="terminal")],
+    )
+    workspace = RemoteWorkspace(
+        host=terminal_server_env["host"],
+        working_dir=str(workspace_dir),
+        api_key=terminal_server_env["api_key"],
+    )
+    conversation = Conversation(agent=agent, workspace=workspace)
+    try:
+        with pytest.raises(httpx.HTTPStatusError) as error:
+            conversation.execute_tool("terminal", GrepAction(pattern="bootstrap"))
+        assert error.value.response.status_code == 422
+        path = f"/api/conversations/{conversation.id}/execute_tool"
+        for body in (
+            {
+                "tool_name": "grep",
+                "action": {"kind": "TerminalAction", "command": "pwd"},
+            },
+            {"tool_name": "terminal", "action": {"command": "pwd"}},
+        ):
+            assert workspace.client.post(path, json=body).status_code == 422
+
+        client = workspace.client
+        original_timeout = client.timeout
+        client.timeout = httpx.Timeout(5, read=0.2)
+        try:
+            setup = conversation.execute_tool(
+                "terminal",
+                TerminalAction(command="source .openhands/setup.sh", timeout=30),
+            )
+        finally:
+            client.timeout = original_timeout
+        check = conversation.execute_tool(
+            "terminal",
+            TerminalAction(command='printf "%s" "$OPENHANDS_SETUP_MARKER"', timeout=30),
+        )
+
+        assert isinstance(setup, TerminalObservation)
+        assert setup.exit_code == 0
+        assert (workspace_dir / "somefile.txt").exists()
+        assert isinstance(check, TerminalObservation)
+        assert check.exit_code == 0
+        assert check.text.strip() == "visible"
+
+        conversation.send_message("Read the setup environment in two terminal calls")
+        conversation.run(timeout=20)
+        outputs = [
+            event.observation.text
+            for event in conversation.state.events
+            if isinstance(event, ObservationEvent)
+            and isinstance(event.observation, TerminalObservation)
+        ]
+        assert any("first:visible" in output for output in outputs), outputs
+        assert any("second:visible" in output for output in outputs), outputs
+    finally:
+        conversation.close()
+
+
+def test_execute_tool_requires_session_key_and_masks_secrets(terminal_server_env):
+    env = terminal_server_env
+    working_dir = Path(env["workspace_path"])
+    workspace = RemoteWorkspace(
+        host=env["host"], working_dir=str(working_dir), api_key=env["api_key"]
+    )
+    agent = Agent(
+        llm=LLM(model="gpt-4o-mini", api_key=SecretStr("test")),
+        tools=[Tool(name="terminal")],
+    )
+    conversation = Conversation(agent=agent, workspace=workspace)
+    try:
+        path = f"/api/conversations/{conversation.id}/execute_tool"
+        payload = {
+            "tool_name": "terminal",
+            "action": {"kind": "TerminalAction", "command": "touch ran"},
+        }
+        with httpx.Client(base_url=env["host"]) as client:
+            assert client.post(path, json=payload).status_code == 401
+        assert not (working_dir / "ran").exists()
+        assert (
+            workspace.client.post(
+                f"/api/conversations/{uuid4()}/execute_tool", json=payload
+            ).status_code
+            == 404
+        )
+
+        secret = "setup-regression-fake-secret"
+        conversation.update_secrets({"SETUP_TEST_SECRET": secret})
+        observation = conversation.execute_tool(
+            "terminal", TerminalAction(command='printf "%s" "$SETUP_TEST_SECRET"')
+        )
+        assert isinstance(observation, TerminalObservation)
+        assert observation.exit_code == 0
+        assert observation.text.strip() == "<secret-hidden>"
+        assert secret not in observation.model_dump_json()
+    finally:
+        conversation.close()
+
+
+def test_execute_tool_rejects_overlapping_requests(terminal_server_env):
+    workspace_path = Path(terminal_server_env["workspace_path"])
+    workspace = RemoteWorkspace(
+        host=terminal_server_env["host"],
+        working_dir=str(workspace_path),
+        api_key=terminal_server_env["api_key"],
+    )
+    agent = Agent(
+        llm=LLM(model="gpt-4o-mini", api_key=SecretStr("test")),
+        tools=[Tool(name="terminal")],
+    )
+    conversation = Conversation(agent=agent, workspace=workspace)
+    path = f"/api/conversations/{conversation.id}"
+    release = workspace_path / "setup-release"
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            pending = executor.submit(
+                conversation.execute_tool,
+                "terminal",
+                TerminalAction(
+                    command=(
+                        "touch setup-started; "
+                        "while [ ! -f setup-release ]; do sleep 0.1; done"
+                    ),
+                    timeout=15,
+                ),
+            )
+            try:
+                deadline = time.monotonic() + 8
+                while not (workspace_path / "setup-started").exists():
+                    assert time.monotonic() < deadline, "Setup did not start"
+                    time.sleep(0.05)
+                with pytest.raises(httpx.HTTPStatusError) as exc:
+                    conversation.execute_tool("terminal", TerminalAction(command="pwd"))
+                assert exc.value.response.status_code == 409
+                assert (
+                    workspace.client.post(f"{path}/run", timeout=3).status_code == 409
+                )
+                assert workspace.client.get("/alive", timeout=3).status_code == 200
+                assert (
+                    workspace.client.post(
+                        f"{path}/goal", json={"objective": "example"}, timeout=3
+                    ).status_code
+                    == 409
+                )
+                assert (
+                    workspace.client.post(f"{path}/goal/resume", timeout=3).status_code
+                    == 409
+                )
+                assert (
+                    workspace.client.post(
+                        f"{path}/events",
+                        json={
+                            "role": "user",
+                            "run": True,
+                            "content": [{"type": "text", "text": "not persisted"}],
+                        },
+                        timeout=3,
+                    ).status_code
+                    == 409
+                )
+                history = workspace.client.get(f"{path}/events/search", timeout=3)
+                assert history.status_code == 200
+                assert "not persisted" not in history.text
+            finally:
+                release.touch()
+            result = pending.result(timeout=5)
+            assert isinstance(result, TerminalObservation)
+            assert result.exit_code == 0
+    finally:
+        conversation.close()
 
 
 @pytest.fixture

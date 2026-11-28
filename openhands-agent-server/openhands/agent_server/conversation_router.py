@@ -1,5 +1,6 @@
 """Conversation router for OpenHands SDK."""
 
+import asyncio
 import json
 from typing import Annotated
 from uuid import UUID
@@ -10,6 +11,7 @@ from fastapi import (
     Depends,
     Header,
     Query,
+    Request,
     Response,
     status,
 )
@@ -32,6 +34,7 @@ from openhands.agent_server.exceptions import (
     ConversationAlreadyRunning,
     GoalAlreadyRunning,
     InvalidParentConversation,
+    ServiceInactive,
     UnavailableAgentTool,
 )
 from openhands.agent_server.launch import launch_error
@@ -47,6 +50,8 @@ from openhands.agent_server.models import (
     ConversationPage,
     ConversationRuntimeInfo,
     ConversationSortOrder,
+    ExecuteToolRequest,
+    ExecuteToolResponse,
     ForkConversationRequest,
     NavigateConversationRequest,
     SetConfirmationPolicyRequest,
@@ -94,6 +99,7 @@ from openhands.sdk.plugin import PluginFetchError
 from openhands.sdk.profiles.resolver import ProfileNotFound
 from openhands.sdk.tool.client_tool import ClientToolRegistrationError
 from openhands.sdk.utils.cipher import Cipher
+from openhands.tools.terminal import TerminalAction
 
 
 conversation_catalog_router = APIRouter(prefix="/conversations", tags=["Conversations"])
@@ -430,6 +436,59 @@ async def delete_conversation(
     if not deleted:
         raise NotFound()
     return Success()
+
+
+@conversation_router.post(
+    "/{conversation_id}/execute_tool",
+    responses=error_responses(
+        {
+            Invalid: "Conversation runtime is inactive",
+            NotFound: "Conversation not found",
+            Conflict: "Conversation is busy",
+            Unprocessable: "Terminal unavailable or invalid action",
+            RateLimited: "Server conversation run capacity is full",
+        }
+    ),
+)
+async def execute_conversation_tool(
+    conversation_id: UUID,
+    request: ExecuteToolRequest,
+    http_request: Request,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> ExecuteToolResponse:
+    """Run an action in the conversation's persistent terminal while idle.
+
+    This bypasses the confirmation policy and security analyzer. Callers must
+    apply their own safeguards. The result is returned without adding a tool
+    call to the agent's event history or running tool-use hooks. Cold agent
+    initialization may still record a system prompt. Subsequent terminal
+    commands share the same shell and run serially.
+    """
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise NotFound("Conversation not found")
+    action = TerminalAction.model_validate(request.action.model_dump())
+
+    async def watch_disconnect() -> None:
+        while (await http_request.receive())["type"] != "http.disconnect":
+            pass
+
+    # ASGI does not cancel a regular HTTP handler when its client disconnects.
+    operation = asyncio.create_task(event_service.execute_terminal(action))
+    disconnect = asyncio.create_task(watch_disconnect())
+    try:
+        await asyncio.wait((operation, disconnect), return_when=asyncio.FIRST_COMPLETED)
+        if not operation.done():
+            # The actual worker belongs to EventService. Cancelling this waiter
+            # signals it to stop while retaining its admission slot.
+            raise Conflict("Client disconnected during terminal execution")
+        return ExecuteToolResponse(observation=operation.result())
+    except ServiceInactive as exc:
+        raise Invalid(str(exc)) from exc
+    finally:
+        operation.cancel()
+        disconnect.cancel()
+        await asyncio.gather(operation, disconnect, return_exceptions=True)
 
 
 @conversation_router.post(

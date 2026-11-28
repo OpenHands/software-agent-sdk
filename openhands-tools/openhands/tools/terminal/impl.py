@@ -119,6 +119,8 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         self._terminal_type = terminal_type
         self._env = normalize_terminal_env(env)
         self._max_panes = max_panes
+        self._persistent_shell = False
+        self._closed = False
         self.full_output_save_dir: str | None = full_output_save_dir
 
         # Pool mode: use TmuxPanePool for parallel execution
@@ -159,6 +161,12 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         """Whether this executor is using the tmux pane pool for concurrency."""
         return self._pool is not None
 
+    def use_persistent_shell(self) -> None:
+        """Keep all later terminal actions in the shell used for setup."""
+        self._persistent_shell = True
+        if self._pool is not None:
+            self._pool.use_single_pane()
+
     def _initialize_pool(self) -> None:
         self._pool = TmuxPanePool(
             self._working_dir,
@@ -167,6 +175,8 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
             max_panes=self._max_panes,
         )
         self._pool.initialize()
+        if self._persistent_shell:
+            self._pool.use_single_pane()
         logger.info(
             f"TerminalExecutor initialized (pool mode) "
             f"working_dir: {self._working_dir}, username: {self._username}, "
@@ -183,7 +193,7 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
 
     def _recover_tmux_pool(self, failed_pool: TmuxPanePool) -> None:
         with self._pool_recovery_lock:
-            if self._pool is not failed_pool:
+            if self._closed or self._pool is not failed_pool:
                 return
 
             with suppress(Exception):
@@ -553,7 +563,7 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
                         )
 
                 session = self._wrap_session(handle.terminal)
-                if not (
+                if not self._persistent_shell and not (
                     follow_up
                     and handle.terminal is self._unfinished_pane
                     and session.is_running()
@@ -605,6 +615,10 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         action: TerminalAction,
         conversation: "LocalConversation | None" = None,
     ) -> TerminalObservation:
+        if self._closed:
+            return TerminalObservation.from_text(
+                text="The terminal is closed.", command=action.command, is_error=True
+            )
         if action.reset and action.is_input:
             raise ValueError("Cannot use reset=True with is_input=True")
 
@@ -649,18 +663,23 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         """
         if self._pool is not None:
             with self._sessions_lock:
-                for session in self._sessions.values():
-                    with suppress(Exception):
-                        session.interrupt()
+                sessions = list(self._sessions.values())
+            for session in sessions:
+                with suppress(Exception):
+                    session.interrupt()
         elif self._session is not None:
             with suppress(Exception):
                 self._session.interrupt()
 
     def close(self) -> None:
         """Close the terminal session and clean up resources."""
-        if self._pool is not None:
-            self._pool.close()
-            with self._sessions_lock:
-                self._sessions.clear()
-        elif self._session is not None:
-            self._session.close()
+        with self._pool_recovery_lock:
+            if self._closed:
+                return
+            self._closed = True
+            if self._pool is not None:
+                self._pool.close()
+                with self._sessions_lock:
+                    self._sessions.clear()
+            elif self._session is not None:
+                self._session.close()

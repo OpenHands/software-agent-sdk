@@ -3,21 +3,34 @@
 import asyncio
 import threading
 from contextlib import asynccontextmanager, suppress
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
 
+from openhands.agent_server import event_service as event_service_module
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import ConversationService
-from openhands.agent_server.exceptions import ConversationRunLimitExceeded
+from openhands.agent_server.exceptions import (
+    ConversationRunLimitExceeded,
+    ServiceInactive,
+)
 from openhands.agent_server.openai.service import _run_agent
-from openhands.sdk import LLM, Agent, Message, TextContent
+from openhands.agent_server.session_socket import _deliver
+from openhands.sdk import LLM, Agent, Message, TextContent, Tool
 from openhands.sdk.conversation.request import StartConversationRequest
 from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.errors import Conflict
+from openhands.sdk.event import MessageEvent
 from openhands.sdk.testing import TestLLM
 from openhands.sdk.workspace import LocalWorkspace
+from openhands.tools.terminal import (
+    TerminalAction,
+    TerminalExecutor,
+    TerminalObservation,
+)
 from tests.agent_server.stress.scripts import start_conversation_with_test_llm
 
 
@@ -61,10 +74,13 @@ async def _runs(tmp_path, monkeypatch, max_concurrent_runs):
         max_concurrent_runs=max_concurrent_runs,
     ) as owner:
 
-        async def create(mode="async", fail=False):
+        async def create(mode="async", fail=False, *, terminal=False):
             info, _ = await owner.start_conversation(
                 StartConversationRequest(
-                    agent=Agent(llm=LLM(model="gpt-4o", usage_id="test"), tools=[]),
+                    agent=Agent(
+                        llm=LLM(model="gpt-4o", usage_id="test"),
+                        tools=[Tool(name="terminal")] if terminal else [],
+                    ),
                     workspace=LocalWorkspace(working_dir=str(tmp_path)),
                     autotitle=False,
                 )
@@ -449,3 +465,201 @@ async def test_terminal_status_implies_released_permit(tmp_path, monkeypatch):
             await service.wait_for_run_completion(10)
             == ConversationExecutionStatus.FINISHED
         )
+
+
+async def test_direct_terminal_holds_capacity_through_close_and_interrupt(
+    runs_one, monkeypatch
+):
+    direct = await runs_one.create(terminal=True)
+    competitor = await runs_one.create(terminal=True)
+    worker_entered, interrupt_entered = threading.Event(), threading.Event()
+    worker_done, interrupt_done = threading.Event(), threading.Event()
+    real_execute = TerminalExecutor.__call__
+
+    def execute(executor, action, conversation):
+        if action.command != "blocked":
+            return real_execute(executor, action, conversation)
+        worker_entered.set()
+        assert worker_done.wait(10)
+        return TerminalObservation.from_text(text="stopped", command="blocked")
+
+    def interrupt(_executor):
+        interrupt_entered.set()
+        assert interrupt_done.wait(10)
+
+    # Pause the two thread operations independently to test ownership of both.
+    monkeypatch.setattr(TerminalExecutor, "__call__", execute)
+    monkeypatch.setattr(TerminalExecutor, "interrupt", interrupt)
+    action = TerminalAction(command="printf ready")
+    request = asyncio.create_task(
+        direct.execute_terminal(TerminalAction(command="blocked"))
+    )
+    try:
+        await wait_until(worker_entered.is_set)
+        assert not direct.is_idle_evictable()
+        with pytest.raises(ConversationRunLimitExceeded):
+            await competitor.execute_terminal(action)
+        with pytest.raises(ConversationRunLimitExceeded):
+            await competitor.run()
+
+        close = asyncio.create_task(direct.close())
+        await wait_until(interrupt_entered.is_set)
+        close.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await close
+        with pytest.raises(ConversationRunLimitExceeded):
+            await competitor.execute_terminal(action)
+        worker_done.set()
+        # Allow the worker to settle while the interrupt is still in flight.
+        await asyncio.wait((request,), timeout=0.3)
+        assert not request.done()
+        with pytest.raises(ConversationRunLimitExceeded):
+            await competitor.execute_terminal(action)
+    finally:
+        worker_done.set()
+        interrupt_done.set()
+        await direct.close()
+        await request
+    assert (await competitor.execute_terminal(action)).text.strip() == "ready"
+
+
+async def test_direct_terminal_competes_with_running_conversation(runs_one):
+    running = await runs_one.create()
+    direct = await runs_one.create(terminal=True)
+    await running.run()
+    action = TerminalAction(command="printf ready")
+    with pytest.raises(ConversationRunLimitExceeded):
+        await direct.execute_terminal(action)
+    runs_one.release.set()
+    await running.wait_for_run_completion(5)
+    assert (await direct.execute_terminal(action)).text.strip() == "ready"
+
+
+async def test_direct_terminal_does_not_strand_rerun_during_final_publish(
+    runs, monkeypatch
+):
+    service = await runs.create(terminal=True)
+    wrapper = service._callback_wrapper
+    assert wrapper is not None
+    entered, release_tail = threading.Event(), threading.Event()
+    publishing, release_publish = asyncio.Event(), asyncio.Event()
+    original_publish = service._publish_state_update
+
+    def wait_for_pending(_timeout):
+        entered.set()
+        assert release_tail.wait(5)
+
+    async def publish():
+        if not publishing.is_set():
+            publishing.set()
+            await release_publish.wait()
+        await original_publish()
+
+    monkeypatch.setattr(wrapper, "wait_for_pending", wait_for_pending)
+    monkeypatch.setattr(service, "_publish_state_update", publish)
+    await service.run()
+    runs.release.set()
+    try:
+        await wait_until(entered.is_set)
+        await service.send_message(
+            Message(role="user", content=[TextContent(text="queued")]), run=True
+        )
+        release_tail.set()
+        async with asyncio.timeout(5):
+            await publishing.wait()
+        with pytest.raises(Conflict, match="busy"):
+            await service.execute_terminal(TerminalAction(command="pwd"))
+    finally:
+        release_tail.set()
+        release_publish.set()
+    await wait_until(lambda: runs.tracker.entered == 2)
+
+
+async def test_socket_message_waits_for_direct_terminal_and_reuses_slot(runs_one):
+    service = await runs_one.create(terminal=True)
+    conversation = service._conversation
+    assert conversation is not None
+    started = Path(conversation.workspace.working_dir) / "terminal-started"
+    release = started.with_name("terminal-release")
+    task = asyncio.create_task(
+        service.execute_terminal(
+            TerminalAction(
+                command=(
+                    "touch terminal-started; "
+                    "while [ ! -f terminal-release ]; do sleep 0.1; done"
+                ),
+                timeout=15,
+            )
+        )
+    )
+    try:
+        await wait_until(started.exists)
+        await _deliver(
+            service, Message(role="user", content=[TextContent(text="socket message")])
+        )
+        assert any(
+            isinstance(event, MessageEvent)
+            and event.llm_message.content == [TextContent(text="socket message")]
+            for event in (await service.get_state()).events
+        )
+        assert runs_one.tracker.entered == 0
+    finally:
+        release.touch()
+        await task
+    await wait_until(lambda: runs_one.tracker.entered == 1)
+
+
+async def test_direct_terminal_pulses_activity_while_running(runs, monkeypatch):
+    service = await runs.create(terminal=True)
+    signals = []
+    monkeypatch.setattr(event_service_module, "ACTIVITY_SIGNAL_INTERVAL", 0.05)
+    monkeypatch.setattr(
+        event_service_module, "update_last_execution_time", lambda: signals.append(None)
+    )
+    task = asyncio.create_task(
+        service.execute_terminal(TerminalAction(command="sleep 1", timeout=5))
+    )
+    try:
+        await wait_until(lambda: len(signals) >= 3 or task.done())
+        assert not task.done()
+    finally:
+        await task
+
+
+async def test_direct_terminal_close_stops_terminal_that_ignores_interrupt(
+    runs_one, monkeypatch
+):
+    service = await runs_one.create(terminal=True)
+    conversation = service._conversation
+    assert conversation is not None
+    started = Path(conversation.workspace.working_dir) / "ignore-int-started"
+    stop = started.with_name("ignore-int-stop")
+    monkeypatch.setattr(
+        event_service_module, "DIRECT_TERMINAL_CLOSE_GRACE_SECONDS", 0.25
+    )
+    request = asyncio.create_task(
+        service.execute_terminal(
+            TerminalAction(
+                command=(
+                    "trap '' INT; touch ignore-int-started; "
+                    "while [ ! -f ignore-int-stop ]; do echo working; sleep 0.1; done"
+                ),
+                timeout=15,
+            )
+        )
+    )
+    try:
+        await wait_until(started.exists)
+        async with asyncio.timeout(4):
+            await service.close()
+            await asyncio.gather(request, return_exceptions=True)
+        assert not service.is_open()
+        with pytest.raises(ServiceInactive):
+            await service.execute_terminal(TerminalAction(command="pwd"))
+        other = await runs_one.create(terminal=True)
+        assert (
+            await other.execute_terminal(TerminalAction(command="printf ready"))
+        ).text.strip() == "ready"
+    finally:
+        stop.touch()
+        await asyncio.gather(request, return_exceptions=True)

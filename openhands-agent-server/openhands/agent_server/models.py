@@ -6,7 +6,7 @@ from enum import Enum, StrEnum
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from openhands.sdk.agent.acp_models import ACPEffortOption, ACPModelInfo
 from openhands.sdk.agent.base import AgentBase
@@ -48,6 +48,37 @@ from openhands.sdk.utils.models import (
     OpenHandsModel,
 )
 from openhands.sdk.workspace.base import BaseWorkspace
+from openhands.tools.terminal import TerminalObservation
+
+
+class DirectTerminalAction(BaseModel):
+    """Request-only terminal action; agent event schemas remain unchanged."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["TerminalAction"]
+    command: str
+    is_input: bool = False
+    timeout: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    reset: bool = False
+
+
+class ExecuteToolRequest(BaseModel):
+    """A direct action for the conversation's terminal tool."""
+
+    tool_name: Literal["terminal"]
+    action: DirectTerminalAction
+
+    @field_validator("action")
+    @classmethod
+    def check_action_flags(cls, action: DirectTerminalAction) -> DirectTerminalAction:
+        if action.reset and action.is_input:
+            raise ValueError("Cannot use reset=True with is_input=True")
+        return action
+
+
+class ExecuteToolResponse(BaseModel):
+    observation: TerminalObservation
 
 
 class ConversationRuntimeStatus(StrEnum):

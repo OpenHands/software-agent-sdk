@@ -379,3 +379,25 @@ def test_first_terminal_shell_gets_fallback_locale(
         session.close()
 
     assert "ctype=C.UTF-8" in obs.text
+
+
+def test_persistent_shell_waits_for_original_pane_and_inherits_reset(pool):
+    pool.use_single_pane()
+    with pool.pane() as pinned:
+        # A second slot is available, but the corresponding shell wouldn't
+        # contain setup state. Direct setup must never spill into that slot.
+        with pytest.raises(TimeoutError, match="Persistent terminal pane"):
+            pool.checkout(timeout=0.01)
+        pinned.terminal = pool.replace(pinned.terminal)
+        replaced = pinned.terminal
+    with pool.pane() as next_command:
+        assert next_command.terminal is replaced
+
+
+def test_persistent_shell_honors_follow_up_to_another_pane(pool):
+    with pool.pane():
+        with pool.pane() as previous:
+            pane = previous.terminal
+        pool.use_single_pane()
+    with pool.pane(prefer=pane) as follow_up:
+        assert follow_up.terminal is pane
