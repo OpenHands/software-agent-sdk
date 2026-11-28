@@ -69,7 +69,7 @@ export function matcherMatches(matcherDef: HookMatcher, toolName?: string | null
   if (pattern.startsWith('/') && pattern.endsWith('/') && pattern.length > 2) {
     const regexStr = pattern.slice(1, -1);
     try {
-      return new RegExp(`^${regexStr}$`).test(toolName);
+      return new RegExp(`^(?:${regexStr})$`).test(toolName);
     } catch {
       return false;
     }
@@ -78,7 +78,7 @@ export function matcherMatches(matcherDef: HookMatcher, toolName?: string | null
   // Auto-detect regex: contains metacharacters
   if ([...pattern].some((c) => REGEX_METACHARACTERS.has(c))) {
     try {
-      return new RegExp(`^${pattern}$`).test(toolName);
+      return new RegExp(`^(?:${pattern})$`).test(toolName);
     } catch {
       // Invalid regex, fall through to exact match
     }
