@@ -22,7 +22,7 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from acp.exceptions import RequestError as ACPRequestError
-from acp.schema import NewSessionResponse, PromptResponse
+from acp.schema import Cost as ACPCost, NewSessionResponse, PromptResponse, UsageUpdate
 from pydantic import SecretStr
 
 import openhands.sdk.agent.acp_agent as acp_agent_module
@@ -3795,7 +3795,15 @@ class TestACPAgentTelemetry:
         assert llms[0] is agent.llm
         assert llms[0].model == "acp-managed"
 
-    def _make_step_fixtures(self, tmp_path, agent=None, usage=None, cost=None):
+    def _make_step_fixtures(
+        self,
+        tmp_path,
+        agent=None,
+        usage=None,
+        cost=None,
+        context_used=None,
+        context_updates=None,
+    ):
         """Set up agent + client + executor for step() telemetry tests."""
         if agent is None:
             agent = _make_agent()
@@ -3822,14 +3830,29 @@ class TestACPAgentTelemetry:
 
         def _fake_run_async(_coro, **_kwargs):
             mock_client.accumulated_text.append("response text")
-            if cost is not None:
-                mock_update = MagicMock()
-                mock_update.cost = MagicMock()
-                mock_update.cost.amount = cost[0]
-                mock_update.size = cost[1]
+            for used in context_updates or ():
+                asyncio.run(
+                    mock_client.session_update(
+                        "test-session",
+                        UsageUpdate(
+                            session_update="usage_update", used=used, size=1000000
+                        ),
+                    )
+                )
+            if cost is not None or context_used is not None:
+                mock_update = UsageUpdate(
+                    session_update="usage_update",
+                    used=context_used if context_used is not None else 0,
+                    size=cost[1] if cost is not None else 200000,
+                    cost=ACPCost(amount=cost[0], currency="USD")
+                    if cost is not None
+                    else None,
+                )
                 mock_client._turn_usage_updates["test-session"] = mock_update
-                mock_client._context_window_by_session["test-session"] = cost[1]
-                mock_client._context_window = cost[1]
+                mock_client._context_window_by_session["test-session"] = (
+                    mock_update.size
+                )
+                mock_client._context_window = mock_update.size
             return mock_response
 
         mock_executor = MagicMock()
@@ -3864,6 +3887,32 @@ class TestACPAgentTelemetry:
         assert usage.reasoning_tokens == 20
         assert usage.context_window == 200000
 
+    @pytest.mark.parametrize(
+        ("usage", "context_used"),
+        [
+            ({"input": 1300000, "output": 1000}, 46000),
+            ({"input": 100, "output": 50}, 0),
+            (None, 46000),
+            ({"input": 0, "output": 0}, 46000),
+        ],
+    )
+    def test_step_records_context_fill(self, tmp_path, usage, context_used):
+        agent, conversation = self._make_step_fixtures(
+            tmp_path, usage=usage, context_used=context_used
+        )
+
+        agent.step(conversation, on_event=lambda _: None)
+
+        metrics = agent.llm.metrics
+        assert len(metrics.token_usages) == 1
+        assert metrics.accumulated_token_usage is not None
+        for recorded in (metrics.token_usages[-1], metrics.accumulated_token_usage):
+            assert recorded.per_turn_token == context_used
+            assert recorded.context_window == 200000
+            assert recorded.prompt_tokens == (usage["input"] if usage else 0)
+            assert recorded.completion_tokens == (usage["output"] if usage else 0)
+        assert metrics.accumulated_cost == 0.0
+
     def test_step_handles_no_usage(self, tmp_path):
         """step() handles PromptResponse with no usage gracefully."""
         agent, conversation = self._make_step_fixtures(tmp_path)
@@ -3895,6 +3944,7 @@ class TestACPAgentTelemetry:
             agent=agent,
             usage={"input": 100, "output": 50},
             cost=(0.05, 128000),
+            context_used=100,
         )
         agent.step(conversation1, on_event=lambda _: None)
         assert agent.llm.metrics.accumulated_cost == pytest.approx(0.05)
@@ -3904,10 +3954,17 @@ class TestACPAgentTelemetry:
             agent=agent,
             usage={"input": 200, "output": 100},
             cost=(0.12, 130000),
+            context_used=70,
         )
         agent.step(conversation2, on_event=lambda _: None)
         assert agent.llm.metrics.accumulated_cost == pytest.approx(0.12)
         assert len(agent.llm.metrics.costs) == 2
+        accumulated = agent.llm.metrics.accumulated_token_usage
+        assert accumulated is not None
+        assert accumulated.prompt_tokens == 300
+        assert accumulated.completion_tokens == 150
+        assert accumulated.per_turn_token == 70
+        assert agent.llm.metrics.token_usages[-1].per_turn_token == 70
 
     def test_step_no_cost_when_usage_update_missing(self, tmp_path):
         """No cost is recorded when PromptResponse arrives without UsageUpdate."""
@@ -3922,6 +3979,9 @@ class TestACPAgentTelemetry:
         assert agent.llm.metrics.accumulated_cost == 0.0
         assert len(agent.llm.metrics.costs) == 0
         assert len(agent.llm.metrics.token_usages) == 1
+        assert agent.llm.metrics.token_usages[0].per_turn_token == 150
+        assert agent.llm.metrics.accumulated_token_usage is not None
+        assert agent.llm.metrics.accumulated_token_usage.per_turn_token == 150
 
     def test_step_records_partial_metrics_on_usage_timeout(self, tmp_path, caplog):
         """Timeout waiting for UsageUpdate logs warning but records token metrics."""
@@ -3987,6 +4047,25 @@ class TestACPAgentTelemetry:
 
         assert len(agent.llm.metrics.response_latencies) == 1
         assert agent.llm.metrics.response_latencies[0].latency >= 0.0
+
+    @pytest.mark.parametrize("used_values", [(46000, 0), (46000, 0, 12000)])
+    def test_context_fill_tracks_latest_update_after_compaction(
+        self, tmp_path, used_values
+    ):
+        agent, conversation = self._make_step_fixtures(
+            tmp_path,
+            usage={"input": 1300000, "output": 1000},
+            context_updates=used_values,
+        )
+        agent.step(conversation, on_event=lambda _: None)
+
+        metrics = agent.llm.metrics
+        assert metrics.accumulated_token_usage is not None
+        for recorded in (metrics.token_usages[-1], metrics.accumulated_token_usage):
+            assert recorded.per_turn_token == used_values[-1]
+            assert recorded.context_window == 1000000
+            assert recorded.prompt_tokens == 1300000
+            assert recorded.completion_tokens == 1000
 
     @pytest.mark.asyncio
     async def test_session_update_stores_usage_update(self):
@@ -4976,10 +5055,12 @@ class TestACPAgentAskAgent:
                     content=TextContentBlock(type="text", text="Fork answer"),
                 ),
             )
-            update = MagicMock(spec=UsageUpdate)
-            update.cost = MagicMock()
-            update.cost.amount = 0.05
-            update.size = 150000
+            update = UsageUpdate(
+                session_update="usage_update",
+                used=1234,
+                size=150000,
+                cost=ACPCost(amount=0.05, currency="USD"),
+            )
             await client.session_update("fork-session-usage", update)
             return mock_prompt_response
 
@@ -5005,6 +5086,7 @@ class TestACPAgentAskAgent:
 
         assert result == "Fork answer"
         assert agent.llm.metrics.accumulated_cost == pytest.approx(0.05)
+        assert agent.llm.metrics.token_usages[-1].per_turn_token == 1234
         assert "UsageUpdate not received" not in caplog.text
         assert elapsed < 1.0
         # The fork's window does not overwrite the main session's.
