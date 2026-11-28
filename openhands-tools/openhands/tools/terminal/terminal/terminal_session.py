@@ -443,6 +443,7 @@ class TerminalSession(TerminalSessionBase):
         return TerminalObservation.from_text(
             command=command,
             text=command_output,
+            timeout=True,
             metadata=metadata,
             exit_code=metadata.exit_code,
         )
@@ -484,6 +485,7 @@ class TerminalSession(TerminalSessionBase):
         return TerminalObservation.from_text(
             command=command,
             exit_code=metadata.exit_code,
+            timeout=True,
             text=command_output,
             metadata=metadata,
         )
