@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import re
 from collections.abc import Callable
@@ -1721,6 +1722,14 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             )
 
         # Execute actions!
+        call_kwargs: dict[str, Any] = {}
+        try:
+            tool_params = inspect.signature(tool).parameters
+        except (TypeError, ValueError):
+            tool_params = {}
+        if "parent_tool_use_id" in tool_params:
+            call_kwargs["parent_tool_use_id"] = action_event.tool_call.id
+
         try:
             if should_enable_observability():
                 tool_name = extract_action_name(action_event)
@@ -1729,11 +1738,11 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                     span_type="TOOL",
                     # Only the action is input; the conversation would serialize
                     # as a bare object repr carrying a memory address.
-                    ignore_inputs=["conversation"],
+                    ignore_inputs=["conversation", "parent_tool_use_id"],
                     metadata={"tool_call_id": action_event.tool_call.id},
-                )(tool)(action_event.action, conversation)
+                )(tool)(action_event.action, conversation, **call_kwargs)
             else:
-                observation = tool(action_event.action, conversation)
+                observation = tool(action_event.action, conversation, **call_kwargs)
             assert isinstance(observation, Observation), (
                 f"Tool '{tool.name}' executor must return an Observation"
             )

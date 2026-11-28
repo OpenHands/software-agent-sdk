@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Annotated, ClassVar
 from pydantic import ConfigDict, Field, field_validator
 from rich.text import Text
 
-from openhands.sdk.event.types import ROOT_PARENT_ID, EventID, SourceType
+from openhands.sdk.event.types import ROOT_PARENT_ID, EventID, SourceType, ToolCallID
 from openhands.sdk.llm import ImageContent, Message, TextContent
 from openhands.sdk.utils.masking import SkipSecretMasking
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
@@ -37,6 +37,14 @@ class Event(DiscriminatedUnionMixin, ABC):
             "Parent event id in the conversation tree. None for the root, or for "
             "legacy events predating the tree (see EventLog's effective-parent "
             "rule). Events sharing a parent_id are sibling branches."
+        ),
+    )
+    parent_tool_use_id: ToolCallID | None = Field(
+        default=None,
+        description=(
+            "If set, this event was produced inside a sub-agent; the value is the "
+            "tool_call_id of the parent TaskAction that spawned it. None for "
+            "main-agent events. Mirrors Anthropic's parent_tool_use_id."
         ),
     )
 

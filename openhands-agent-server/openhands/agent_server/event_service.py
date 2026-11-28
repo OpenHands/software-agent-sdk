@@ -293,6 +293,7 @@ class EventService:
     bash_event_service: BashEventService | None = field(default=None, init=False)
     owner_instance_id: str = field(default_factory=lambda: uuid4().hex)
     lease_ttl_seconds: float = DEFAULT_LEASE_TTL_SECONDS
+    forward_subagent_events: bool = False
     _conversation: LocalConversation | None = field(default=None, init=False)
     _persisted_events: EventLog | None = field(default=None, init=False)
     _pub_sub: PubSub[Event] = field(
@@ -1351,6 +1352,32 @@ class EventService:
 
         conversation.llm_registry.set_stats_update_callback(stats_callback)
 
+    def _make_subagent_event_sink(self) -> Callable[[Event], None]:
+        """Create a publish-only sink for sub-agent inner events.
+
+        Publishes forwarded sub-agent events to live subscribers (WebSocket,
+        WebhookSubscriber) without appending them to ConversationState.events.
+        When _callback_wrapper is initialized (normal server runs), routing
+        through it preserves FIFO ordering relative to TaskObservation and
+        lets wait_for_pending() flush in-flight deliveries before run settle.
+        """
+
+        def _sink(event: Event) -> None:
+            self._signal_stream_activity()
+            wrapper = self._callback_wrapper
+            if wrapper is not None:
+                wrapper(event)
+                return
+            loop = self._main_loop
+            if not loop or not loop.is_running():
+                return
+            with suppress(RuntimeError):
+                asyncio.run_coroutine_threadsafe(
+                    self._publish_to_subscribers(event), loop
+                )
+
+        return _sink
+
     @staticmethod
     def _prepare_workspace_dir(working_dir: Path) -> None:
         """Create the workspace and make it a git repo if it isn't already one.
@@ -1565,6 +1592,12 @@ class EventService:
         self._conversation._state.set_on_state_change(
             self._state_change_callback(self._conversation)
         )
+
+        # Wire publish-not-persist sub-agent event sink when forwarding is enabled
+        if self.forward_subagent_events:
+            self._conversation._state.set_sub_event_sink(
+                self._make_subagent_event_sink()
+            )
 
         # Setup LLM log streaming for remote execution
         self._setup_llm_log_streaming(self._conversation)
