@@ -179,7 +179,7 @@ The scripted bullets point a real `LLM` (`openai/...`, `anthropic/...`) at `prog
     --check features.deepseek-v4-1-flash.vision eq true \
     --check features.openai/e2ee-deepseek-v4-1-flash-1017.vision eq false
   ```
-  Expected: `deepseek-v4-1-flash*` ids are vision-capable from the SDK's own list (`sdk`), with or without a provider prefix; `e2ee-deepseek-v4-1-flash-*` stays text-only. Known failure (reproduced 2026-11-28, [#7183](https://github.com/OpenHands/software-agent-sdk/issues/7183), fix in review: [#7184](https://github.com/OpenHands/software-agent-sdk/pull/7184)): the hyphenated ids resolve to `vision` false from `discovery`, so `vision_is_active()` is false and the agent answers an image message with the capability message instead of calling the model.
+  Expected: `deepseek-v4-1-flash*` ids are vision-capable from the SDK's own list (`sdk`), with or without a provider prefix; `e2ee-deepseek-v4-1-flash-*` stays text-only. Known failure (reproduced 2026-11-28, [#7183](https://github.com/OpenHands/software-agent-sdk/issues/7183), fix in review: [#7184](https://github.com/OpenHands/software-agent-sdk/pull/7184)): the hyphenated ids resolve to `vision` false from `discovery`; `LLM.vision_is_active()` is false for them too, so (as the issue shows) the agent answers an image message with the capability message instead of calling the model.
 - **Prompted tool calling (`S02.prompted-tool-calling`, `S02.native-tool-calling`).** `native_tool_calling=False`: the agent's tools are described in the prompt and the model's `<function=...>` text becomes real tool calls.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
