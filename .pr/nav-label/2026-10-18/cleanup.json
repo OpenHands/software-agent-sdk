@@ -1,0 +1,10 @@
+{
+  "ok": true,
+  "run": "<VERIFY_RUN>",
+  "helpers": [],
+  "server": "terminated",
+  "port_closed": true,
+  "orphans_reaped": [],
+  "evidence": "<VERIFY_RUN>/evidence",
+  "evidence_files": 7
+}

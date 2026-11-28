@@ -43,6 +43,11 @@ class CanvasExtensionPage(BaseModel):
     id: str = Field(description="Unique contribution id within the extension")
     title: str = Field(description="Page title shown in Canvas navigation")
     path: str = Field(description="Route the page is mounted at, e.g. '/dashboard'")
+    nav_label: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Optional short label for the Canvas sidebar; falls back to title",
+    )
 
     @field_validator("id")
     @classmethod

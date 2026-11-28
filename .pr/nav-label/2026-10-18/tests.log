@@ -1,0 +1,181 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.13.13, pytest-9.0.3, pluggy-1.6.0
+rootdir: <TASK>/software-agent-sdk
+configfile: pyproject.toml
+plugins: libtmux-0.53.0, xdist-3.8.0, timeout-2.4.0, anyio-4.14.2, asyncio-1.3.0, forked-1.6.0, cov-7.0.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+created: 2/2 workers
+2 workers [2774 items]
+
+........................................................................ [  2%]
+........................................................................ [  5%]
+........................................................................ [  7%]
+........................................................................ [ 10%]
+........................................................................ [ 12%]
+........................................................................ [ 15%]
+........................................................................ [ 18%]
+..................s..................................................... [ 20%]
+........................................................................ [ 23%]
+........................................................................ [ 25%]
+........................................................................ [ 28%]
+........................................................................ [ 31%]
+........................................................................ [ 33%]
+........................................................................ [ 36%]
+........................................................................ [ 38%]
+........................................................................ [ 41%]
+........................................................................ [ 44%]
+........................................................................ [ 46%]
+........................................................................ [ 49%]
+........................................................................ [ 51%]
+........................................................................ [ 54%]
+........................................................................ [ 57%]
+........................................................................ [ 59%]
+........................................................................ [ 62%]
+........................................................................ [ 64%]
+........................................................................ [ 67%]
+.............ss.sssssssssssssss.s....................................... [ 70%]
+........................................................................ [ 72%]
+........................................................................ [ 75%]
+........................................................................ [ 77%]
+........................................................................ [ 80%]
+........................................................................ [ 83%]
+........................................................................ [ 85%]
+........................................................................ [ 88%]
+........................................................................ [ 90%]
+........................................................................ [ 93%]
+........s............................................................... [ 96%]
+........................................................................ [ 98%]
+......................................                                   [100%][10/18/26 10:19:05] INFO     Process exiting via atexit handler  __main__.py:229
+[10/18/26 10:19:05] INFO     Process exiting via atexit handler  __main__.py:229
+
+=============================== warnings summary ===============================
+.venv/lib/python3.13/site-packages/fastapi/testclient.py:1
+.venv/lib/python3.13/site-packages/fastapi/testclient.py:1
+  <TASK>/software-agent-sdk/.venv/lib/python3.13/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+tests/agent_server/test_profiles_router.py::test_activate_profile_with_dangling_provider_connection_fails
+tests/agent_server/test_conversation_router.py::test_switch_conversation_llm_missing_provider_connection_rejects_before_switch
+  <HOME>/.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/contextlib.py:162: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+    self.gen.throw(value)
+
+tests/agent_server/test_conversation_router.py: 2 warnings
+tests/agent_server/test_profiles_router.py: 1 warning
+tests/agent_server/test_settings_router.py: 6 warnings
+tests/agent_server/test_credential_binding.py: 5 warnings
+tests/agent_server/test_parent_child_conversations.py: 1 warning
+tests/agent_server/test_acp_router.py: 1 warning
+tests/cross/test_remote_conversation_live_server.py: 1 warning
+  <TASK>/software-agent-sdk/.venv/lib/python3.13/site-packages/fastapi/routing.py:328: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+    return await dependant.call(**values)
+
+tests/agent_server/test_settings_router.py::test_patch_settings_null_on_scalar_field_fails_loudly
+tests/agent_server/test_settings_router.py::test_patch_settings_validation_error_returns_422
+tests/agent_server/test_settings_router.py::test_patch_settings_validation_error_does_not_leak_secrets
+tests/agent_server/test_settings_router.py::test_patch_settings_corrupted_file_returns_409
+  <TASK>/software-agent-sdk/openhands-agent-server/openhands/agent_server/settings_router.py:237: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+    return _apply_settings_update(
+
+tests/agent_server/test_settings_router.py::test_secret_name_validation
+tests/agent_server/test_settings_router.py::test_secret_routes_document_the_invalid_name_status[put-/api/settings/secrets-request_kwargs2]
+tests/cross/test_remote_conversation_live_server.py::test_settings_and_secrets_api_with_live_server
+  <TASK>/software-agent-sdk/openhands-agent-server/openhands/agent_server/settings_router.py:538: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+    _validate_secret_name(secret.name)
+
+tests/agent_server/test_settings_router.py::test_secret_name_validation_on_get
+tests/agent_server/test_settings_router.py::test_secret_routes_document_the_invalid_name_status[get-/api/settings/secrets/{name}-request_kwargs0]
+  <TASK>/software-agent-sdk/openhands-agent-server/openhands/agent_server/settings_router.py:506: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+    _validate_secret_name(name)
+
+tests/agent_server/test_settings_router.py::test_secret_name_validation_on_delete
+tests/agent_server/test_settings_router.py::test_secret_routes_document_the_invalid_name_status[delete-/api/settings/secrets/{name}-request_kwargs1]
+  <TASK>/software-agent-sdk/openhands-agent-server/openhands/agent_server/settings_router.py:586: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+    _validate_secret_name(name)
+
+tests/agent_server/test_agent_profile_conv_start.py::TestConversationRouterProfileErrors::test_dangling_references_return_one_structured_422
+  <TASK>/software-agent-sdk/openhands-agent-server/openhands/agent_server/conversation_router.py:345: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+    raise launch_http_exception(e) from e
+
+tests/agent_server/test_agent_profiles_router.py::test_save_missing_required_ref_returns_422
+tests/agent_server/test_agent_profiles_router.py::test_save_schemaless_body_with_stray_skills_key_rejected
+tests/agent_server/test_agent_profiles_router.py::test_save_current_schema_version_rejects_stray_skills_key
+tests/agent_server/test_agent_profiles_router.py::test_save_extra_field_returns_422
+tests/agent_server/test_agent_profiles_router.py::test_materialize_rejects_a_draft_newer_than_save_accepts
+tests/agent_server/test_agent_profiles_router.py::test_save_rejects_params_on_a_parameterless_builtin
+  <TASK>/software-agent-sdk/openhands-agent-server/openhands/agent_server/agent_profiles_router.py:416: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+    profile = _validate_profile_payload({**body, "name": name})
+
+tests/agent_server/test_agent_profiles_router.py::test_materialize_invalid_draft_returns_422
+tests/agent_server/test_agent_profiles_router.py::test_materialize_rejects_a_draft_newer_than_save_accepts
+  <TASK>/software-agent-sdk/openhands-agent-server/openhands/agent_server/agent_profiles_router.py:604: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+    profile = _validate_profile_payload({**body.profile, "name": name})
+
+tests/agent_server/test_agent_profiles_router.py::test_save_accepts_retired_switches_as_deprecated_input
+  <TASK>/software-agent-sdk/openhands-sdk/openhands/sdk/tool/defaults.py:156: DeprecatedWarning: OpenHandsAgentProfile.enable_sub_agents and OpenHandsAgentProfile.enable_switch_llm_tool is deprecated as of 1.51.0 and will be removed in 1.56.0. Select task_tool_set and switch_llm in `tools` instead.
+    warn_deprecated(
+
+tests/agent_server/test_webhook_subscriber.py: 12 warnings
+  <TASK>/software-agent-sdk/openhands-agent-server/openhands/agent_server/conversation_service.py:2814: RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited
+    response.raise_for_status()
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/agent_server/test_init_router.py::TestEndToEndOverLifespan::test_init_rejects_empty_session_keys[session_api_keys0]
+tests/agent_server/test_init_router.py::TestEndToEndOverLifespan::test_init_rejects_empty_session_keys[session_api_keys1]
+  <TASK>/software-agent-sdk/openhands-agent-server/openhands/agent_server/init_router.py:456: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+    return await init_service.initialize(req)
+
+tests/agent_server/test_webhook_subscriber.py::TestConversationWebhookSubscriber::test_post_conversation_info_success
+tests/agent_server/test_webhook_subscriber.py::TestConversationWebhookSubscriber::test_post_conversation_info_with_session_api_key
+tests/agent_server/test_webhook_subscriber.py::TestConversationWebhookSubscriber::test_post_conversation_info_http_error_with_retries
+  <TASK>/software-agent-sdk/openhands-agent-server/openhands/agent_server/conversation_service.py:2981: RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited
+    response.raise_for_status()
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.+----------------------------------------------------------------------+
+|  OpenHands SDK v1.55.1                                               |
+|                                                                      |
+|  Report a bug: github.com/OpenHands/software-agent-sdk/issues        |
+|  Get help: openhands.dev/joinslack                                   |
+|  Scale up: openhands.dev/product/sdk                                 |
+|                                                                      |
+|  Set OPENHANDS_SUPPRESS_BANNER=1 to hide this message                |
++----------------------------------------------------------------------+
+
+
+
+tests/agent_server/test_mcp_router.py::test_browser_coordinated_oauth_callback_handler_delegates_to_fastmcp
+  <TASK>/software-agent-sdk/.venv/lib/python3.13/site-packages/fastmcp/client/auth/oauth.py:225: UserWarning: Using in-memory token storage -- tokens will be lost when the client restarts. For persistent storage across multiple MCP servers, provide an encrypted AsyncKeyValue backend. See https://gofastmcp.com/clients/auth/oauth#token-storage for details.
+    self._bind(mcp_url)
+
+tests/agent_server/test_managed_llm_key.py::test_canonical_managed_provider_refreshes[False]
+tests/agent_server/test_managed_llm_key.py::test_canonical_managed_provider_refreshes[True]
+  <TASK>/software-agent-sdk/openhands-sdk/openhands/sdk/llm/utils/telemetry.py:398: UserWarning: Cost calculation failed: This model isn't mapped yet. model=deepseek-v4.1-flash, custom_llm_provider=litellm_proxy. Add it here - https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json.
+    warnings.warn(f"Cost calculation failed: {e}")
+
+tests/agent_server/test_managed_llm_key_http.py::test_concurrent_calls_recover_independently
+tests/agent_server/test_managed_llm_key_http.py::test_refresh_does_not_block_event_loop
+  <TASK>/software-agent-sdk/.venv/lib/python3.13/site-packages/litellm/litellm_core_utils/logging_worker.py:74: RuntimeWarning: coroutine 'Logging.async_success_handler' was never awaited
+    self._queue = None
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/agent_server/test_managed_llm_key_http.py::test_refresh_does_not_block_event_loop
+  <HOME>/.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/asyncio/runners.py:70: RuntimeWarning: coroutine 'Logging.async_success_handler' was never awaited
+    _cancel_all_tasks(loop)
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/agent_server/test_tool_router.py::test_builtin_agents_registered_on_tool_router_import
+  <TASK>/software-agent-sdk/openhands-sdk/openhands/sdk/subagent/registry.py:404: DeprecatedWarning: Agent name 'default' is deprecated as of 1.12.0 and will be removed in 2.0.0. Use 'general-purpose' instead.
+    warn_deprecated(
+
+tests/agent_server/test_tool_router.py::test_builtin_agents_registered_on_tool_router_import
+  <TASK>/software-agent-sdk/openhands-sdk/openhands/sdk/subagent/registry.py:404: DeprecatedWarning: Agent name 'explore' is deprecated as of 1.12.0 and will be removed in 2.0.0. Use 'code-explorer' instead.
+    warn_deprecated(
+
+tests/agent_server/test_tool_router.py::test_builtin_agents_registered_on_tool_router_import
+  <TASK>/software-agent-sdk/openhands-sdk/openhands/sdk/subagent/registry.py:404: DeprecatedWarning: Agent name 'bash' is deprecated as of 1.12.0 and will be removed in 2.0.0. Use 'bash-runner' instead.
+    warn_deprecated(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+========== 2754 passed, 20 skipped, 68 warnings in 225.92s (0:03:45) ===========
