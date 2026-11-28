@@ -180,13 +180,33 @@ class SecretRegistry(OpenHandsModel):
 
     secret_sources: dict[str, SecretSource] = Field(default_factory=dict)
     _exported_values: dict[str, str] = PrivateAttr(default_factory=dict)
+    _masked_values: set[str] = PrivateAttr(default_factory=set)
     _exported_values_lock: RLock = PrivateAttr(default_factory=RLock)
     _failed_lookups: dict[str, float] = PrivateAttr(default_factory=dict)
 
     def track_exported_values(self, values: Mapping[str, str]) -> None:
-        """Track values for output masking."""
+        """Track values for output masking, retaining prior rotated values."""
         with self._exported_values_lock:
-            self._exported_values.update({k: v for k, v in values.items() if v})
+            for k, v in values.items():
+                if not v:
+                    continue
+                prev = self._exported_values.get(k)
+                if prev:
+                    self._masked_values.add(prev)
+                self._exported_values[k] = v
+                self._masked_values.add(v)
+
+    def get_masked_values(self) -> frozenset[str]:
+        """Return all non-empty secret values currently tracked for output masking."""
+        with self._exported_values_lock:
+            values = set(self._masked_values)
+            values.update(v for v in self._exported_values.values() if v)
+            return frozenset(values)
+
+    def track_masked_values(self, values: Collection[str]) -> None:
+        """Record historical secret values that must remain masked in output."""
+        with self._exported_values_lock:
+            self._masked_values.update(v for v in values if v)
 
     def update_secrets(
         self,
@@ -199,7 +219,13 @@ class SecretRegistry(OpenHandsModel):
                     or callable functions that return string values
         """
         secret_sources = {name: _wrap_secret(value) for name, value in secrets.items()}
-        self.secret_sources.update(secret_sources)
+        with self._exported_values_lock:
+            for name in secret_sources:
+                prev = self._exported_values.pop(name, None)
+                if prev:
+                    self._masked_values.add(prev)
+                self._failed_lookups.pop(name, None)
+            self.secret_sources.update(secret_sources)
 
     def find_secrets_in_text(self, text: str) -> set[str]:
         """Find all secret keys mentioned in the given text.
@@ -321,13 +347,11 @@ class SecretRegistry(OpenHandsModel):
         self.resolve_uncached_values()
 
         masked_text = text
-        with self._exported_values_lock:
-            exported_values = tuple(self._exported_values.values())
+        masked_values = self.get_masked_values()
         # Longest first so an overlapping shorter value cannot mask half of a
         # longer one and leave the rest in cleartext.
-        for value in sorted(exported_values, key=len, reverse=True):
-            if value:
-                masked_text = masked_text.replace(value, "<secret-hidden>")
+        for value in sorted(masked_values, key=len, reverse=True):
+            masked_text = masked_text.replace(value, "<secret-hidden>")
 
         return masked_text
 
@@ -339,8 +363,7 @@ class SecretRegistry(OpenHandsModel):
         I/O, and on the sync agent path that runs under the state lock. Masks
         less in exchange: use it for progress, not for the durable record.
         """
-        with self._exported_values_lock:
-            values = {value for value in self._exported_values.values() if value}
+        values = self.get_masked_values()
         if not values:
             return StreamOutputMask(None, 0)
         # Longest first so an overlapping shorter value cannot mask half of a

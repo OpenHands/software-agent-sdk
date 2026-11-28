@@ -13,6 +13,7 @@ import pytest
 from openhands.sdk import Agent, LocalConversation, Tool
 from openhands.sdk.conversation.secret_registry import SecretRegistry
 from openhands.sdk.llm import Message, MessageToolCall, TextContent
+from openhands.sdk.secret import SecretSource
 from openhands.sdk.subagent.registry import _reset_registry_for_tests, register_agent
 from openhands.sdk.testing import TestLLM
 from openhands.tools.task.definition import TaskAction
@@ -202,3 +203,104 @@ def test_sources_available_before_agent_initialization(tmp_path: Path, resume: b
         finally:
             manager._evict_task(task)
             manager.close()
+
+
+class TaskRotatingSecretSource(SecretSource):
+    """Issues a fresh token on every lookup to test parent <-> child sync."""
+
+    calls: int = 0
+
+    def get_value(self) -> str:
+        self.calls += 1
+        return f"task_rot_secret_v{self.calls}_hex999"
+
+
+@pytest.mark.parametrize("resume", [False, True], ids=["create", "resume"])
+def test_task_inherits_parent_rotated_masked_values_and_syncs_child_resolutions(
+    tmp_path: Path, resume: bool
+) -> None:
+    """Sub-agents mask historical rotated values from the parent SecretRegistry,
+    and dynamic secret values resolved inside the sub-agent are synced back to
+    the parent SecretRegistry for masking (#7002).
+    """
+    prior_static = "parent_prior_secret_v1_aaaa1111"
+    active_static = "parent_active_secret_v2_bbbb2222"
+    rot_source = TaskRotatingSecretSource()
+
+    prior_file = tmp_path / "legacy_remote.txt"
+    prior_file.write_text(f"https://{prior_static}@example.com/repo.git\n")
+
+    cmd = f'cat "{prior_file}" && echo DYN=$ROTATING_TOKEN && echo ACT=$STATIC_TOKEN'
+    script: list[Message | Exception] = [
+        _call("terminal", command=cmd),
+        _call("finish", message="checked secrets"),
+    ]
+    if resume:
+        script.insert(0, _call("finish", message="initial turn"))
+
+    llm = TestLLM.from_messages(script)
+    register_agent(
+        "rot-probe",
+        lambda llm: Agent(
+            llm=llm,
+            tools=[
+                Tool(
+                    name=TerminalTool.name,
+                    params={"terminal_type": "subprocess"},
+                )
+            ],
+        ),
+        "Probe rotated secrets",
+    )
+
+    manager = TaskManager()
+    executor = TaskExecutor(manager)
+    with closing(
+        LocalConversation(
+            agent=Agent(llm=llm),
+            workspace=tmp_path,
+            persistence_dir=tmp_path / "persist",
+            visualizer=None,
+            secrets={
+                "STATIC_TOKEN": prior_static,
+                "ROTATING_TOKEN": rot_source,
+            },
+        )
+    ) as parent:
+        # Resolve v1 of STATIC_TOKEN in parent, then rotate STATIC_TOKEN to v2
+        assert (
+            parent.state.secret_registry.mask_secrets_in_output(prior_static)
+            == "<secret-hidden>"
+        )
+        parent.update_secrets({"STATIC_TOKEN": active_static})
+        try:
+            first = executor(
+                TaskAction(prompt="step 1", subagent_type="rot-probe"), parent
+            )
+            assert first.status == "completed"
+            if resume:
+                second = executor(
+                    TaskAction(
+                        prompt="step 2",
+                        subagent_type="rot-probe",
+                        resume=first.task_id,
+                    ),
+                    parent,
+                )
+                assert second.status == "completed"
+
+            # Sub-agent resolved v2 of ROTATING_TOKEN (v1 resolved in parent)
+            child_resolved_dyn = "task_rot_secret_v2_hex999"
+            assert (
+                parent.state.secret_registry.mask_secrets_in_output(child_resolved_dyn)
+                == "<secret-hidden>"
+            )
+        finally:
+            executor.close()
+
+    for path in (tmp_path / "persist").rglob("events/*.json"):
+        raw = path.read_text()
+        assert prior_static not in raw
+        assert active_static not in raw
+        assert "task_rot_secret_v1_hex999" not in raw
+        assert "task_rot_secret_v2_hex999" not in raw

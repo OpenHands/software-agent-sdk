@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Final
 
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.response_utils import get_agent_final_response
+from openhands.sdk.conversation.secret_registry import SecretRegistry
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
@@ -240,12 +241,22 @@ class DelegateExecutor(ToolExecutor):
                     "_mcp_config_from_parent": True,
                 }
 
+                parent_registry = getattr(
+                    parent_conversation.state, "secret_registry", None
+                )
+                if isinstance(parent_registry, SecretRegistry):
+                    conv_kwargs["secrets"] = parent_registry.secret_sources
+
                 if factory.definition.max_iteration_per_run is not None:
                     conv_kwargs["max_iteration_per_run"] = (
                         factory.definition.max_iteration_per_run
                     )
 
                 sub_conversation = LocalConversation(**conv_kwargs)
+                if isinstance(parent_registry, SecretRegistry):
+                    sub_conversation.state.secret_registry.track_masked_values(
+                        parent_registry.get_masked_values()
+                    )
                 created_sub_agents.append((agent_id, agent_type, sub_conversation))
 
                 # Apply permission_mode: explicit mode from definition,
@@ -365,6 +376,18 @@ class DelegateExecutor(ToolExecutor):
                     errors[agent_id] = error_msg
                     logger.error(error_msg, exc_info=True)
 
+            parent_registry = getattr(
+                parent_conversation.state, "secret_registry", None
+            )
+            if isinstance(parent_registry, SecretRegistry):
+                parent_masked = parent_registry.get_masked_values()
+                for agent_id in action.tasks:
+                    sub_conv = self._sub_agents[agent_id]
+                    sub_reg = getattr(sub_conv.state, "secret_registry", None)
+                    if isinstance(sub_reg, SecretRegistry):
+                        sub_conv.update_secrets(parent_registry.secret_sources)
+                        sub_reg.track_masked_values(parent_masked)
+
             # Start all tasks in parallel
             for agent_id, task in action.tasks.items():
                 conversation = self._sub_agents[agent_id]
@@ -379,6 +402,17 @@ class DelegateExecutor(ToolExecutor):
             # Wait for all threads to complete
             for thread in threads:
                 thread.join()
+
+            if isinstance(parent_registry, SecretRegistry):
+                for agent_id in action.tasks:
+                    if agent_id in self._sub_agents:
+                        sub_reg = getattr(
+                            self._sub_agents[agent_id].state, "secret_registry", None
+                        )
+                        if isinstance(sub_reg, SecretRegistry):
+                            parent_registry.track_masked_values(
+                                sub_reg.get_masked_values()
+                            )
 
             # Sync sub-agent metrics into parent conversation.
             # Sub-agent metrics are cumulative, so replace (not merge)
