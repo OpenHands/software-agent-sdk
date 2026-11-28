@@ -500,26 +500,22 @@ Preconditions:
   ```
   Both are 200 with `valid: false` and a typed `error`; the provider's
   message is passed through redacted and does not contain the posted key.
-- **DeepSeek 401 type (`F20.validate-bad-key-type`), known bug.** The invalid
+- **DeepSeek 401 type (`F20.validate-bad-key-type`).** The invalid
   DeepSeek key should be classified like any provider 401.
   ```sh
   control-agent-server api POST /api/profiles/qa-draft/validate --timeout 120 --expect 200 \
     --json '{"llm": {"model": "deepseek/deepseek-flash", "api_key": "sk-qa-f20-invalid-key", "num_retries": 0}}' \
     --check valid eq false --check error.message contains authentication_error --check error.message not-contains sk-qa-f20-invalid-key \
     --save F20.validate-bad-key-type/deepseek-401 | tee "$F20/bad-key.json"
-  control-agent-server assert --json "$F20/bad-key.json" --check response.body.error.type eq LLMAuthenticationError  # bug: value.status eq 200 && value.response.body.error.type eq LLMBadRequestError
+  control-agent-server assert --json "$F20/bad-key.json" --check response.body.error.type eq LLMAuthenticationError
   ```
   The call itself proves the case: `valid: false`, and the provider's error
   passed through in `error.message` is DeepSeek's typed
   `"type":"authentication_error"`. Expected `error.type`
   `LLMAuthenticationError` (what an OpenAI-compatible 401 gives in
-  `F20.validate-provider-errors`). Today it is `LLMBadRequestError`, so the
-  check marked `# bug` fails: DeepSeek answers HTTP 401 with
-  `Authentication Fails, Your api key: ... is invalid`, LiteLLM raises it as
-  `BadRequestError`, and the SDK's auth heuristics (`AUTH_PATTERNS` in
-  `openhands-sdk/openhands/sdk/llm/exceptions/classifier.py`) match neither
-  that text nor the `authentication_error` type, so clients cannot tell a bad
-  key from a bad request.
+  `F20.validate-provider-errors`). LiteLLM may raise the provider's 401 as
+  `BadRequestError`; classification uses its HTTP status even when the
+  message does not match the auth wording heuristics.
 - **Provider failures (`F20.validate-provider-errors`).** Script an
   `llm-stub` to answer 401, 500, a transient 429 and to hang, and point a
   draft with retries off at it and at a closed port.
