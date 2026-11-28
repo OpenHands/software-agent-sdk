@@ -737,3 +737,104 @@ class TestEventsToMessages:
         assert msgs[0].role == "assistant"
         assert msgs[1].role == "tool"
         assert msgs[1].tool_call_id == "call_ne"
+
+
+def _rejected_call(tool_call_id: str, llm_response_id: str) -> ActionEvent:
+    """The ActionEvent(action=None) persisted for a call that failed validation."""
+    return ActionEvent(
+        source="agent",
+        thought=[],
+        action=None,
+        tool_name="terminal",
+        tool_call_id=tool_call_id,
+        tool_call=create_tool_call(tool_call_id, "terminal", {"bogus": 1}),
+        llm_response_id=llm_response_id,
+    )
+
+
+def _validation_error(tool_call_id: str) -> AgentErrorEvent:
+    return AgentErrorEvent(
+        error=f"Error validating tool 'terminal' for {tool_call_id}",
+        tool_name="terminal",
+        tool_call_id=tool_call_id,
+    )
+
+
+def _observation(action: ActionEvent, result: str) -> ObservationEvent:
+    return ObservationEvent(
+        source="environment",
+        observation=EventsToMessagesMockObservation(result=result),
+        action_id=action.id,
+        tool_name=action.tool_name,
+        tool_call_id=action.tool_call_id,
+    )
+
+
+def test_validation_error_between_batch_actions_keeps_one_assistant_message():
+    action_a = create_action_event(
+        "Shared thought", "terminal", "call_A", "response_1", {"command": "a"}
+    ).model_copy(
+        update={
+            "reasoning_content": "shared reasoning",
+            "thinking_blocks": [ThinkingBlock(thinking="think", signature="sig")],
+            "responses_reasoning_item": ReasoningItemModel(id="rs_1"),
+        }
+    )
+    action_c = create_action_event(
+        "", "terminal", "call_C", "response_1", {"command": "c"}
+    ).model_copy(update={"thought": []})
+    events: list[LLMConvertibleEvent] = [
+        action_a,
+        _rejected_call("call_B", "response_1"),
+        _validation_error("call_B"),
+        action_c,
+        _observation(action_a, "A real result"),
+        _observation(action_c, "C real result"),
+        MessageEvent(
+            source="user",
+            llm_message=Message(role="user", content=[TextContent(text="next")]),
+        ),
+    ]
+
+    messages = LLMConvertibleEvent.events_to_messages(events)
+
+    assert [m.role for m in messages] == ["assistant", "tool", "tool", "tool", "user"]
+    assistant = messages[0]
+    assert [c.id for c in assistant.tool_calls or []] == ["call_A", "call_B", "call_C"]
+    assert assistant.content == [TextContent(text="Shared thought")]
+    assert assistant.reasoning_content == "shared reasoning"
+    assert assistant.thinking_blocks == action_a.thinking_blocks
+    assert assistant.responses_reasoning_item == ReasoningItemModel(id="rs_1")
+    results = {
+        m.tool_call_id: cast(TextContent, m.content[0]).text for m in messages[1:4]
+    }
+    assert results == {
+        "call_B": "Error validating tool 'terminal' for call_B",
+        "call_A": "A real result",
+        "call_C": "C real result",
+    }
+
+
+def test_validation_error_does_not_join_batches_with_reused_tool_call_id():
+    retry = create_action_event(
+        "retry", "terminal", "call_1", "response_2", {"command": "ok"}
+    )
+    events: list[LLMConvertibleEvent] = [
+        _rejected_call("call_1", "response_1"),
+        _validation_error("call_1"),
+        retry,
+        _observation(retry, "ok"),
+    ]
+
+    messages = LLMConvertibleEvent.events_to_messages(events)
+
+    assert [(m.role, m.tool_call_id) for m in messages] == [
+        ("assistant", None),
+        ("tool", "call_1"),
+        ("assistant", None),
+        ("tool", "call_1"),
+    ]
+    assert [[c.id for c in m.tool_calls or []] for m in messages[::2]] == [
+        ["call_1"],
+        ["call_1"],
+    ]

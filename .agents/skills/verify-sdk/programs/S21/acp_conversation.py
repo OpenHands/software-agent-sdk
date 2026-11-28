@@ -15,12 +15,15 @@ Usage: acp_conversation.py MODE
   codex      a server launched as a `codex-acp` binary: file secrets, data
              dir isolation, auth method choice, model + reasoning effort
   discovery  discover_acp_models() and ACPAgentSettings.create_agent()
+  close      a server that started a helper child: agent.close(), then
+             Conversation.close() on a second one
 """
 
 import asyncio
 import json
 import logging
 import os
+import signal
 import sys
 import time
 from pathlib import Path
@@ -442,6 +445,68 @@ elif mode == "resume":
     ) or any("sess-forgotten" in e["detail"] for e in errors_of(forgotten))
     forgotten.agent.close()
     forgotten.close()
+    # A persisted conversation whose server lost its session for a while: the
+    # reopened conversation fails without replacing the saved id, and once
+    # the server can load the session again the same conversation resumes it.
+    sessions_file = Path(os.environ["FAKE_ACP_SESSIONS"])
+    kept = Conversation(
+        agent=ACPAgent(acp_command=FAKE),
+        workspace=str(workspace),
+        persistence_dir=str(store),
+        visualizer=None,
+    )
+    kept_id = kept.id
+    run_turn(kept, "kept: first turn")
+    kept_session = kept.state.agent_state.get("acp_session_id")
+    kept.agent.close()
+    kept.close()
+    remembered = sessions_file.read_text()
+    sessions_file.write_text(remembered.replace(f"{kept_session}\n", ""))
+    news_before = len(journal("session_new"))
+    reopened = Conversation(
+        agent=ACPAgent(acp_command=FAKE),
+        workspace=str(workspace),
+        persistence_dir=str(store),
+        conversation_id=kept_id,
+        visualizer=None,
+    )
+    lost_error = run_turn(reopened, "kept: second turn")
+    base_state = next(
+        p for p in store.rglob("base_state.json") if kept_id.hex in str(p)
+    )
+    result["lost"] = {
+        "error": lost_error,
+        "status": reopened.state.execution_status.value,
+        "errors": errors_of(reopened),
+        "session_id_kept": reopened.state.agent_state.get("acp_session_id")
+        == kept_session,
+        "persisted_id_kept": json.loads(base_state.read_text())["agent_state"].get(
+            "acp_session_id"
+        )
+        == kept_session,
+        "new_sessions": len(journal("session_new")) - news_before,
+    }
+    sessions_file.write_text(remembered)  # the server can load it again
+    loads_before = len(journal("session_load"))
+    prompts_before = len(journal("prompt"))
+    retry_error = run_turn(reopened, "kept: third turn")
+    retry_prompts = journal("prompt")[prompts_before:]
+    result["lost_retry"] = {
+        "error": retry_error,
+        "status": reopened.state.execution_status.value,
+        "loaded_known": [
+            load["known"]
+            for load in journal("session_load")[loads_before:]
+            if load["session"] == kept_session
+        ],
+        "prompt_sessions_same": bool(retry_prompts)
+        and all(p["session"] == kept_session for p in retry_prompts),
+        "session_id_kept": reopened.state.agent_state.get("acp_session_id")
+        == kept_session,
+        "new_sessions": len(journal("session_new")) - news_before,
+    }
+    reopened.agent.close()
+    reopened.close()
 
 elif mode == "errors":
     cases: dict = {}
@@ -770,5 +835,43 @@ elif mode == "discovery":
     result["created_current_model"] = conversation.agent.current_model_id
     conversation.agent.close()
     conversation.close()
+
+elif mode == "close":
+    # The server starts a helper child (as CLIs that spawn workers or MCP
+    # servers do); shutting the agent down must not leave it behind.
+    os.environ["FAKE_ACP_CHILD"] = "1"
+    program_pgid = os.getpgid(0)
+    started: list[int] = []
+
+    def close_case(how: str) -> dict:
+        conversation = Conversation(
+            agent=ACPAgent(acp_command=FAKE), workspace=str(workspace), visualizer=None
+        )
+        error = run_turn(conversation, f"close case {how}")
+        start = journal("start")[-1]
+        leader, child = start["pid"], start["child_pid"]
+        started.extend([leader, child])
+        facts = {
+            "turn_error": error,
+            "leader_own_group": start["pgid"] == leader,
+            "leader_group_is_programs": start["pgid"] == program_pgid,
+            "child_in_leader_group": os.getpgid(child) == start["pgid"],
+            "alive_before": [pid_alive(leader), pid_alive(child)],
+        }
+        t0 = time.monotonic()
+        if how == "agent":
+            conversation.agent.close()
+        conversation.close()
+        facts["close_seconds"] = round(time.monotonic() - t0, 2)
+        time.sleep(0.5)
+        facts["alive_after"] = [pid_alive(leader), pid_alive(child)]
+        return facts
+
+    result["agent_close"] = close_case("agent")
+    result["conversation_close"] = close_case("conversation")
+    result["program_survived"] = True
+    for pid in started:  # do not leave a helper behind whatever happened
+        if pid_alive(pid):
+            os.kill(pid, signal.SIGKILL)
 
 emit(result)

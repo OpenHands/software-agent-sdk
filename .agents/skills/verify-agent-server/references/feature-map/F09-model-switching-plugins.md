@@ -82,6 +82,8 @@ Routes: `POST /api/conversations/{conversation_id}/switch_profile`,
 - `F09.model-router-run`: after a first turn, a route added from the `deepseek-flash` profile and pinned serves the next turn (its tokens under `profile:deepseek-flash`, `last_route_name` the route), and after a return to `auto` the next turn runs on the first route (`default`) again.
 - `F09.model-router-before-first-run`: a route added and pinned before the conversation's first message serves the first run, and that run's tokens are recorded under the route's `usage_id` `profile:deepseek-flash`.
 - `F09.model-router-restart`: after a restart the routes and the pinned selection are still in place and the selection can be changed again; conversations whose router a switch replaced stay plain.
+- `F09.acp-delete-teardown`: deleting an ACP conversation whose session is live ends the ACP server subprocess and every process it spawned (its whole process group), not only the process the server launched.
+- `F09.acp-resume-failure`: after a restart, when the ACP server refuses `session/load` for the saved session, the run ends in `error` with an `ACPInitError` `ConversationErrorEvent` saying `No new session was started`, `agent_state.acp_session_id` keeps the saved id and no `session/new` is sent; once the provider loads it again, the next run resumes that same session.
 
 ## How to get to it (agent POV)
 
@@ -1375,6 +1377,102 @@ Preconditions:
   `qa-f09-route-a` pin, and accepts a new pin; `RM`, whose router
   `switch_profile` replaced, is still plain, and `RQ2` still has the router
   built after its `switch_llm`.
+- **ACP subprocess ends with its conversation (`F09.acp-delete-teardown`).**
+  A stand-in ACP server (`FA/server.py`, written below: a stdio JSON-RPC
+  server that advertises `loadSession`, answers `session/new`,
+  `session/load` and `session/prompt` from files under the state directory
+  it gets as its argument, records every method in `calls`, fails
+  `session/load` with -32603 while a `fail-load` file exists, and on start
+  spawns a `sleep 600` child and writes both pids to `pids`) runs as a
+  `custom` ACP command; no real provider can be told to keep a grandchild
+  or to refuse a load on demand. `TD` runs one turn, then is deleted.
+  ```sh
+  FA="$AGENT_SERVER_VERIFY_RUN/qa-f09-acp"; mkdir -p "$FA"
+  cat > "$FA/server.py" <<'PY'
+  import json, os, subprocess, sys
+  from pathlib import Path
+  root = Path(sys.argv[1]); (root / "sessions").mkdir(parents=True, exist_ok=True)
+  child = subprocess.Popen(["sleep", "600"])
+  with (root / "pids").open("a") as f:
+      f.write(f"{os.getpid()} {child.pid}\n")
+  def send(obj): print(json.dumps(obj), flush=True)
+  for line in sys.stdin:
+      req = json.loads(line); method = req.get("method", "")
+      with (root / "calls").open("a") as f: f.write(method + "\n")
+      if "id" not in req: continue
+      params = req.get("params") or {}; result = {}
+      if method == "initialize":
+          result = {"protocolVersion": 1, "agentCapabilities": {"loadSession": True}, "authMethods": [], "agentInfo": {"name": "qa-fake-acp", "version": "1.0"}}
+      elif method == "session/new":
+          sid = f"sess-{len(list((root / 'sessions').iterdir())) + 1}"
+          (root / "sessions" / sid).write_text("0"); result = {"sessionId": sid}
+      elif method == "session/load" and (root / "fail-load").exists():
+          send({"jsonrpc": "2.0", "id": req["id"], "error": {"code": -32603, "message": "Internal error", "data": {"reason": "session store locked"}}}); continue
+      elif method == "session/prompt":
+          sid = params["sessionId"]; path = root / "sessions" / sid
+          n = int(path.read_text()) + 1 if path.exists() else 1; path.write_text(str(n))
+          send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": sid, "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": f"{sid} turn {n}"}}}})
+          result = {"stopReason": "end_turn"}
+      send({"jsonrpc": "2.0", "id": req["id"], "result": result})
+  PY
+  TBODY=$(jq -cn --arg s "$FA/server.py" --arg d "$FA/td" '{agent_settings: {agent_kind: "acp", acp_server: "custom", acp_command: ["python3", $s, $d]}}')
+  TD=$(control-agent-server conversation start --no-autotitle --body-json "$TBODY" --prompt 'hello' --wait --until finished,error --timeout 120 --print-id)
+  control-agent-server api GET "/api/conversations/$TD" --quiet --check execution_status eq finished --check agent_state.acp_session_id eq sess-1 \
+    --check agent_state.acp_agent_name eq qa-fake-acp --save F09.acp-delete-teardown/live
+  read -r TPID TCHILD < "$FA/td/pids"
+  test "$(ps -o stat= -p "$TPID,$TCHILD" | grep -vc Z)" = 2
+  control-agent-server api DELETE "/api/conversations/$TD" --expect 200 --check success eq true --save F09.acp-delete-teardown/delete
+  for _ in $(seq 25); do LIVE=$(ps -o pid=,stat= -p "$TPID,$TCHILD" | grep -v Z || true); test -z "$LIVE" && break; sleep 0.2; done
+  test -z "$LIVE"
+  ```
+  Before the delete the ACP server (`TPID`) and its `sleep` child are both
+  alive; within 5 s of the 200 neither is (a zombie awaiting its reaper
+  counts as ended). The server launches the ACP command in its own process
+  group and signals the group, so a provider's helper processes (an `npx`
+  wrapper's `node`, a language server) do not outlive the conversation.
+  A graceful server `restart` ends them too (`F09.acp-resume-failure`).
+- **A failed resume keeps the session (`F09.acp-resume-failure`).** `RS`,
+  on the same stand-in with its own state directory, runs one turn
+  (`sess-1`); the server restarts, so the next run must `session/load` it.
+  The provider first refuses the load (`fail-load`), then accepts it.
+
+  Requires: `F09.acp-delete-teardown`
+  ```sh
+  FA="$AGENT_SERVER_VERIFY_RUN/qa-f09-acp"; test -f "$FA/server.py"
+  RBODY=$(jq -cn --arg s "$FA/server.py" --arg d "$FA/rs" '{agent_settings: {agent_kind: "acp", acp_server: "custom", acp_command: ["python3", $s, $d]}}')
+  RS=$(control-agent-server conversation start --no-autotitle --body-json "$RBODY" --prompt 'hello' --wait --until finished,error --timeout 120 --print-id)
+  control-agent-server api GET "/api/conversations/$RS" --quiet --check execution_status eq finished --check agent_state.acp_session_id eq sess-1
+  read -r RPID RCHILD < "$FA/rs/pids"
+  control-agent-server restart
+  LIVE=$(ps -o pid=,stat= -p "$RPID,$RCHILD" | grep -v Z || true); test -z "$LIVE"
+  touch "$FA/rs/fail-load"
+  control-agent-server conversation send "$RS" --text 'second' --wait --until finished,error --timeout 120
+  control-agent-server api GET "/api/conversations/$RS" --until-ok 30 --quiet --check execution_status eq error \
+    --check agent_state.acp_session_id eq sess-1 --save F09.acp-resume-failure/refused
+  control-agent-server conversation events "$RS" --kinds ConversationErrorEvent --contains 'No new session was started' \
+    --expect-kind ConversationErrorEvent --full --save F09.acp-resume-failure/error-events
+  control-agent-server conversation events "$RS" --kinds ConversationErrorEvent --contains ACPInitError --expect-min 1
+  test "$(grep -c '^session/load$' "$FA/rs/calls")" = 1
+  test "$(grep -c '^session/new$' "$FA/rs/calls")" = 1
+  rm "$FA/rs/fail-load"
+  control-agent-server conversation send "$RS" --text 'third' --wait --until finished,error --timeout 120
+  control-agent-server api GET "/api/conversations/$RS" --until-ok 30 --quiet --check execution_status eq finished \
+    --check agent_state.acp_session_id eq sess-1 --save F09.acp-resume-failure/resumed
+  test "$(grep -c '^session/new$' "$FA/rs/calls")" = 1
+  test ! -e "$FA/rs/sessions/sess-2"
+  control-agent-server conversation events "$RS" --kinds MessageEvent --contains sess-2 --expect-count 0
+  ```
+  The restart ends the first ACP server and its child. The refused load
+  ends the run in `error` with two
+  `ConversationErrorEvent`s (`ACPInitError` from the agent and the run's
+  `RequestError`), whose detail reads `Could not resume the existing ACP
+  session, so the agent would not see the earlier conversation. No new
+  session was started. ... Provider error: [-32603] Internal error:
+  {"reason": "session store locked"}` (the session id, if a provider echoes
+  it, is replaced by a fingerprint). `acp_session_id` stays `sess-1` and
+  the provider saw one `session/load` and no new `session/new`. The next
+  message after the provider recovers loads `sess-1` again and the run
+  finishes there; no `sess-2` is ever created.
 
 ## Gotchas
 

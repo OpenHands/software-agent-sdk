@@ -1,6 +1,6 @@
 [project]
 name = "openhands-tools"
-version = "1.64.0"
+version = "1.64.1"
 description = "OpenHands Tools - Runtime tools for AI agents"
 
 requires-python = ">=3.12"
@@ -11,10 +11,10 @@ dependencies = [
     "tree-sitter-bash>=0.23",
     "binaryornot>=0.6.0",
     "cachetools",
-    "filelock>=4.2.10",
+    "filelock>=4.2.12",
     "libtmux>=0.62.0",
     "psutil>=7.2.2",
-    "pydantic>=2.14.3",
+    "pydantic>=2.14.4",
     "browser-use>=0.8.0",
     "func-timeout>=4.3.5",
     "tom-swe>=1.0.3",

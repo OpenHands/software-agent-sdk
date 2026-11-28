@@ -5,20 +5,39 @@ Type a new id field as ``EventID``, ``ToolCallID`` or ``UnmaskedID`` from
 keep the ``SkipSecretMasking`` marker that ``Event.timestamp`` carries.
 """
 
+import gc
 import importlib
 import pkgutil
 from typing import get_args
 
+import pytest
 from pydantic import BaseModel
 
 from openhands.sdk.conversation.secret_registry import SecretRegistry
 from openhands.sdk.event import Event
 from openhands.sdk.tool import Observation
 from openhands.sdk.utils.masking import SkipSecretMasking, field_has_marker
+from openhands.sdk.utils.models import clear_subclass_cache
 from openhands.tools.child_conversation.definition import (
     StartChildConversationObservation,
 )
 from openhands.tools.task.definition import TaskObservation
+
+
+@pytest.fixture(autouse=True)
+def _collect_local_event_subclass():
+    """Drop the throwaway ``Event`` subclass the guard test defines.
+
+    ``_NewEvent`` is only reachable through reference cycles (its pydantic core
+    schema points back at the class), so until a cyclic collection runs it stays
+    in ``Event.__subclasses__()`` and makes ``_get_checked_concrete_subclasses``
+    raise "Local classes not supported!" in *unrelated* later tests that
+    deserialize events. Collecting on teardown, once the test frame is gone,
+    keeps that leak local.
+    """
+    yield
+    gc.collect()
+    clear_subclass_cache()
 
 
 SECRET = "a1b"

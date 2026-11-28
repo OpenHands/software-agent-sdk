@@ -1,6 +1,6 @@
 [project]
 name = "openhands-agent-server"
-version = "1.64.0"
+version = "1.64.1"
 description = "OpenHands Agent Server - REST/WebSocket interface for OpenHands AI Agent"
 
 requires-python = ">=3.12"
@@ -13,7 +13,7 @@ dependencies = [
   "openhands-sdk",
   "openhands-tools",
   "openai>=2.33.0,<3",
-  "pydantic>=2.14.3",
+  "pydantic>=2.14.4",
   "sqlalchemy>=2.1.9",
   "uvicorn>=0.54.0",
   "websockets>=12",
@@ -25,7 +25,7 @@ dependencies = [
 # library/headless consumer must be able to run without a vendor analytics SDK
 # on the import path. Constrained to the major already resolved in uv.lock so
 # installing the extra cannot force a resolver conflict.
-posthog = ["posthog>=7.91.2,<8"]
+posthog = ["posthog>=8.0.2,<9"]
 
 [project.urls]
 Source = "https://github.com/OpenHands/software-agent-sdk"

@@ -802,7 +802,7 @@ Preconditions:
   ```
   All three are 422 and the receiving log keeps its count.
 - **A message during a tool call (`F06.send-during-tool-call`), known bug #6729.**
-  Last bullet. A scripted model asks for `terminal` `sleep 20` on every
+  Last bullet. A scripted model asks for `terminal` `sleep 40` on every
   call (a real model cannot be held inside a tool call on demand); once its
   `ActionEvent` is logged and no observation is, a message is appended with
   `run: false`. The run slot is free: `HOLD` was interrupted and the
@@ -810,7 +810,7 @@ Preconditions:
 
   Needs: `tmux`
   ```sh
-  TOOL_STUB=$(control-agent-server fixture llm-stub --name qa-f06-tool --step 'tool:terminal:{"command":"sleep 20"}' --print-path)
+  TOOL_STUB=$(control-agent-server fixture llm-stub --name qa-f06-tool --step 'tool:terminal:{"command":"sleep 40"}' --print-path)
   TOOL_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key\", \"base_url\": \"$TOOL_STUB/v1\", \"num_retries\": 0}, \"tools\": [{\"name\": \"terminal\"}]}"
   TC=$(control-agent-server conversation start --body-json "{\"agent\": $TOOL_AGENT}" --no-autotitle --print-id)
   control-agent-server api POST "/api/conversations/$TC/events" \
@@ -829,7 +829,8 @@ Preconditions:
   while the command still runs (no observation yet); the agent sees it at
   its next step. Today the POST waits for the state lock, which the run
   loop holds for the whole tool call, so it answers 200 only when
-  `sleep 20` ends, about 20 s later (#6729; the same lock makes `/pause`
+  `sleep 40` ends, up to 40 s later and at least 15 s even on a loaded
+  machine that is slow to send it (#6729; the same lock makes `/pause`
   wait, F05). The message is then saved. A user's correction to a busy
   agent waits as long as the running command.
 

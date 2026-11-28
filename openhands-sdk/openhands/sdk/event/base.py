@@ -113,7 +113,7 @@ class LLMConvertibleEvent(Event, ABC):
         immutable once created and appended, so merges build new content
         lists rather than mutating the events' own messages.
         """
-        from openhands.sdk.event.llm_convertible import ActionEvent
+        from openhands.sdk.event.llm_convertible import ActionEvent, AgentErrorEvent
 
         messages = []
         i = 0
@@ -125,16 +125,29 @@ class LLMConvertibleEvent(Event, ABC):
                 # Collect all ActionEvents from same LLM response
                 # This happens when function calling happens
                 batch_events: list[ActionEvent] = [event]
+                batch_errors: list[AgentErrorEvent] = []
                 response_id = event.llm_response_id
 
-                # Look ahead for related events
+                # Look ahead for related events. A call that failed validation is
+                # persisted as ActionEvent(action=None) immediately followed by its
+                # AgentErrorEvent, between sibling actions of the same response.
                 j = i + 1
-                while j < len(events) and isinstance(events[j], ActionEvent):
+                while j < len(events):
                     event = events[j]
-                    assert isinstance(event, ActionEvent)  # for type checker
-                    if event.llm_response_id != response_id:
+                    previous = batch_events[-1]
+                    if isinstance(event, ActionEvent):
+                        if event.llm_response_id != response_id:
+                            break
+                        batch_events.append(event)
+                    elif (
+                        isinstance(event, AgentErrorEvent)
+                        and events[j - 1] is previous
+                        and previous.action is None
+                        and event.tool_call_id == previous.tool_call_id
+                    ):
+                        batch_errors.append(event)
+                    else:
                         break
-                    batch_events.append(event)
                     j += 1
 
                 # Create combined message for the response
@@ -145,6 +158,7 @@ class LLMConvertibleEvent(Event, ABC):
                     )
                 else:
                     messages.append(msg)
+                messages.extend(error.to_llm_message() for error in batch_errors)
                 i = j
             else:
                 # Regular event - direct conversion

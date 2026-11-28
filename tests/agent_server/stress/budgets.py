@@ -118,12 +118,16 @@ class LeaseContentionBudget:
 class TaskDispatchIdleHeartbeatBudget:
     # How long the test holds a real Task child's single LLM call on a gate
     # before sampling /server_info and releasing it. idle_time is truncated
-    # to whole seconds server-side, so this clears idle_time_threshold_s by
-    # a full second of jitter margin -- not an exact-equality race.
+    # to whole seconds server-side (int(now - last_event_time)), so 2.8s
+    # produces a reading of 2: the truncation boundary is crossed at 2.0s,
+    # leaving 0.8s of timing slack past that boundary before the reading
+    # would slip down to 1 -- not an exact-equality race.
     hold_sample_s: float = 2.8
-    # /server_info idle_time (seconds, truncated) must stay under this while
-    # the child is held and once the run has finished. #5384: without a
-    # run-level heartbeat, idle_time grows for the whole hold instead.
+    # While the child is held, idle_time must stay under this (the heartbeat
+    # keeps active calls' idle reading low); once the run has finished and
+    # the heartbeat has stopped, idle_time must climb back above it. #5384:
+    # without a run-level heartbeat, idle_time grows for the whole hold
+    # instead of only after completion.
     idle_time_threshold_s: float = 1.5
     # Heartbeat pulse interval under test (shared with the ACP/stream
     # activity throttle); shrunk so hold_sample_s only needs one pulse.

@@ -59,6 +59,21 @@ class ConversationStats(BaseModel):
         total_metrics = Metrics()
         for metrics in self.usage_to_metrics.values():
             total_metrics.merge(metrics)
+        # merge() never populates model_name; attribute the aggregate when
+        # the rolled-up usage is single-model, and keep "default" otherwise
+        # so mixed usage (e.g. a condenser on another model) isn't misattributed.
+        # A child's mixed rollup is already "default", so counting it as
+        # non-model-bearing would let a parent attribute the child's usage
+        # to the parent's model — treat it as unidentified instead.
+        models = {
+            m.model_name for m in self.usage_to_metrics.values() if m.model_name != ""
+        }
+        if len(models) == 1:
+            model_name = models.pop()
+            if model_name != "default":
+                total_metrics.model_name = model_name
+                if total_metrics.accumulated_token_usage is not None:
+                    total_metrics.accumulated_token_usage.model = model_name
         return total_metrics
 
     def get_metrics_for_usage(self, usage_id: str) -> Metrics:

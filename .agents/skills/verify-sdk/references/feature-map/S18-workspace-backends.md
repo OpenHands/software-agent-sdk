@@ -4,13 +4,13 @@ A workspace is where an agent's commands and files live, and the SDK object a pr
 
 Source: `openhands-sdk/openhands/sdk/workspace/`, `openhands-workspace/openhands/workspace/docker/`, `openhands-workspace/openhands/workspace/remote_api/`, `openhands-workspace/openhands/workspace/cloud/`, `openhands-workspace/openhands/workspace/apptainer/`, `openhands-workspace/openhands/workspace/agent_sandbox/`
 
-Needs: `docker` (DockerWorkspace, DockerDevWorkspace), `apptainer` (ApptainerWorkspace), `cloud` (OpenHandsCloudWorkspace, APIRemoteWorkspace runtime API), `k8s` (AgentSandboxWorkspace), `network` (image pulls, remote APIs), `llm` (examples), `git` (git_changes / git_diff)
+Needs: `docker` (DockerWorkspace, DockerDevWorkspace), `apptainer` (ApptainerWorkspace), `cloud` (OpenHandsCloudWorkspace, APIRemoteWorkspace runtime API, the Sail sandbox example), `k8s` (AgentSandboxWorkspace), `network` (image pulls, remote APIs), `llm` (examples), `git` (git_changes / git_diff)
 
-Examples: `examples/02_remote_agent_server/02_convo_with_docker_sandboxed_server.py`, `examples/02_remote_agent_server/04_convo_with_api_sandboxed_server.py`, `examples/02_remote_agent_server/07_convo_with_cloud_workspace.py`, `examples/02_remote_agent_server/08_convo_with_apptainer_sandboxed_server.py`, `examples/02_remote_agent_server/10_cloud_workspace_share_credentials.py`, `examples/02_remote_agent_server/17_convo_with_agent_sandbox_server.py`
+Examples: `examples/02_remote_agent_server/02_convo_with_docker_sandboxed_server.py`, `examples/02_remote_agent_server/04_convo_with_api_sandboxed_server.py`, `examples/02_remote_agent_server/07_convo_with_cloud_workspace.py`, `examples/02_remote_agent_server/08_convo_with_apptainer_sandboxed_server.py`, `examples/02_remote_agent_server/10_cloud_workspace_share_credentials.py`, `examples/02_remote_agent_server/17_convo_with_agent_sandbox_server.py`, `examples/02_remote_agent_server/18_convo_with_sail_sandboxed_server.py`
 
 ## Sub-features
 
-- `S18.workspace-factory`: `Workspace(working_dir=...)` returns a `LocalWorkspace` and `Workspace(host=..., api_key=...)` a `RemoteWorkspace`; `working_dir` accepts `str` or `Path`. Unit: **none (untested)**; nothing calls the `Workspace` factory. Example: none. Real-LLM: none.
+- `S18.workspace-factory`: `Workspace(working_dir=...)` returns a `LocalWorkspace` and `Workspace(host=..., api_key=...)` a `RemoteWorkspace`; `working_dir` accepts `str` or `Path`. Unit: `tests/sdk/workspace/remote/test_working_dir_path.py` (remote, through the factory too). Example: none. Real-LLM: none.
 - `S18.local-ops`: `LocalWorkspace.execute_command(cmd, cwd=None, timeout=...)` returns a `CommandResult` (`exit_code`, `stdout`, `stderr`, `timeout_occurred`), `file_upload`/`file_download` copy files (creating parent directories) and return a `FileOperationResult`, and `git_changes`/`git_diff` report the repository state. Unit: **none (untested)** for the workspace methods; the git helpers they call are covered by `tests/sdk/git/test_git_changes.py` and `tests/sdk/git/test_git_diff.py`. Example: none. Real-LLM: none.
 - `S18.local-pause-resume`: `LocalWorkspace.pause()` and `resume()` do nothing and do not raise. Unit: `tests/workspace/test_workspace_pause_resume.py` (`test_local_workspace_pause_is_noop`, `test_local_workspace_resume_is_noop`). Example: none. Real-LLM: none.
 - `S18.conversation-binding`: `Conversation(workspace=<path or LocalWorkspace>)` builds a `LocalConversation`, `Conversation(workspace=<RemoteWorkspace subclass>)` a `RemoteConversation`, with parameters forwarded to each. Unit: `tests/sdk/conversation/test_conversation_factory.py`. Example: `examples/02_remote_agent_server/02_convo_with_docker_sandboxed_server.py`. Real-LLM: none.
@@ -96,7 +96,7 @@ Preconditions:
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
   control-sdk program S18/remote_workspace --arg ops --check path_working_dir_error missing --check type eq RemoteWorkspace
   ```
-  Known failure (reproduced 2026-11-17, [#6654](https://github.com/OpenHands/software-agent-sdk/issues/6654)): `Workspace(host=..., working_dir=Path(...))` (and `RemoteWorkspace(working_dir=Path(...))`) raises `pydantic_core.ValidationError: 1 validation error for RemoteWorkspace working_dir Input should be a valid string [type=string_type, input_type=PosixPath]`. `RemoteWorkspaceMixin` redeclares `working_dir: str` without the `BeforeValidator` that `BaseWorkspace` uses to accept a `Path`; the local branch accepts one.
+  Expected: the `Path` is accepted and stored as a string, as for local workspaces: `Workspace(host=..., working_dir=Path(...))` builds a `RemoteWorkspace` without a `ValidationError` (agent-server map `F14.sdk-workspace` and `F33.workspace-exec` also check that `RemoteWorkspace(working_dir=Path(...))` stores the string).
 - **Settings from the server (`S18.remote-settings`).** LLM settings, an LLM profile, two secrets and an MCP server are stored through the server's settings API; the workspace reads them back.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
@@ -180,6 +180,11 @@ Preconditions:
   control-sdk exec --model-env -- python examples/02_remote_agent_server/07_convo_with_cloud_workspace.py
   control-sdk exec --model-env -- python examples/02_remote_agent_server/10_cloud_workspace_share_credentials.py
   ```
+- **A remote workspace on a Sail sandbox (`S18.workspace-factory`, `S18.remote-command-exec`, `S18.conversation-binding`), blocked: needs `SAIL_API_KEY` (a Sail Research account) and network.** Example 18 starts the agent-server image in a Sailbox, connects `Workspace(host=<its HTTPS URL>, api_key=<session key>)`, runs `execute_command` and two conversation turns, and terminates the sandbox.
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --llm deepseek-flash --field run)
+  control-sdk exec --model-env --expect-output EXAMPLE_COST -- python examples/02_remote_agent_server/18_convo_with_sail_sandboxed_server.py
+  ```
 - **Apptainer and agent-sandbox (`S18.apptainer`, `S18.agent-sandbox`), blocked: need `apptainer`, or a Kubernetes cluster with the agent-sandbox controller and `openhands-workspace[agent-sandbox]`.**
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --llm deepseek-flash --field run)
@@ -190,10 +195,12 @@ Preconditions:
 ## Gotchas
 
 - `DockerWorkspace` and `ApptainerWorkspace` default to `platform="linux/amd64"`; the examples compute the platform and pick the arm64 image themselves. On an arm host without that, the amd64 image runs under emulation or fails.
-- The examples pick `ghcr.io/openhands/agent-server:<SDK_SHA[:7]>-python-<arch>` when `SDK_SHA` or `GITHUB_SHA` is set, else `latest-python`; a stale `GITHUB_SHA` in your shell points at an image that may not exist.
-- `examples/02_remote_agent_server/17_convo_with_agent_sandbox_server.py` (needs a cluster and the `agent-sandbox` extra) and `05_vscode_with_docker_sandboxed_server.py` (interactive `input()`) are in `_EXCLUDED_EXAMPLES` of `tests/examples/test_examples.py`.
+- The examples pick `ghcr.io/openhands/agent-server:<SDK_SHA[:7]>-python-<arch>` when `SDK_SHA` or `GITHUB_SHA` is set; otherwise the Docker and Apptainer examples (02, 08) fall back to `latest-python`, while the runtime API and Sail examples (04, 18) build the tag from `main` (`main-python-amd64`). A stale `GITHUB_SHA` in your shell points at an image that may not exist.
+- `examples/02_remote_agent_server/04_convo_with_api_sandboxed_server.py` (needs a runtime API deployment; it requires both `RUNTIME_API_URL` and `RUNTIME_API_KEY` and has no default URL), `17_convo_with_agent_sandbox_server.py` (needs a cluster and the `agent-sandbox` extra) and `05_vscode_with_docker_sandboxed_server.py` (interactive `input()`) are in `_EXCLUDED_EXAMPLES` of `tests/examples/test_examples.py`, so CI never runs a real `APIRemoteWorkspace`.
+- `examples/02_remote_agent_server/18_convo_with_sail_sandboxed_server.py` is the remote-sandbox example CI runs (with `SAIL_API_KEY`): it starts the agent-server image in a Sail sandbox with the `sail` client (a dev dependency, not part of `openhands-workspace`), then uses a plain `Workspace(host=<the sandbox's HTTPS URL>, api_key=...)`, so it proves `S18.workspace-factory`, `S18.remote-command-exec` and `S18.conversation-binding` against a hosted server rather than a workspace backend of its own.
 - Example 07's docstring tells you to run `06_convo_with_cloud_workspace.py`; the file is `07_convo_with_cloud_workspace.py`. Its LLM must be reachable from the cloud sandbox (not a local proxy).
 - `OpenHandsCloudWorkspace.pause()` raises `NotImplementedError`; only `resume()` works on the cloud backend.
 - Backends clean up in `__exit__` and `__del__`; a process killed hard can leave containers, runtimes or sandboxes running. `keep_alive=True` (API and cloud) leaves them on purpose.
 - Docker readiness waits up to `health_check_timeout` (120 s by default) and must be positive; the first image pull can take longer than that on a slow link, so pull the image first.
 - Nothing in the repository's test suite starts a real container, runtime or sandbox; every `tests/workspace` test mocks `docker`, `apptainer`, Kubernetes and HTTP, so the examples are the only end-to-end proof.
+- The automation completion callback is a single POST with no retry, and a non-2xx answer counts as sent: a transient 502 loses it, and only `Completion callback sent (COMPLETED): 502` is logged at INFO ([#7099](https://github.com/OpenHands/software-agent-sdk/issues/7099), `S18.completion-callback`).
