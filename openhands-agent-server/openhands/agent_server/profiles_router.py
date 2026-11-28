@@ -26,6 +26,13 @@ from openhands.agent_server.persistence import (
     ProviderConnectionStore,
     run_store,
 )
+from openhands.agent_server.upstream_models import (
+    UPSTREAM_MODELS_TIMEOUT_SECONDS,
+    fetch_upstream_models,
+    model_matches_upstream_catalog,
+    normalize_upstream_base_url,
+    redact_upstream_message,
+)
 from openhands.sdk.errors import Conflict, NotFound, OperationFailed
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.exceptions import (
@@ -273,6 +280,14 @@ class ValidateProfileRequest(BaseModel):
     """
 
     llm: LLM
+    check_upstream_catalog: bool = Field(
+        default=False,
+        description=(
+            "When True and ``llm.base_url`` is configured, also query the "
+            "upstream model catalog and return a non-blocking warning if "
+            "``llm.model`` is not listed."
+        ),
+    )
 
 
 class ValidateProfileError(BaseModel):
@@ -287,6 +302,10 @@ class ValidateProfileResponse(BaseModel):
 
     valid: bool
     error: ValidateProfileError | None = None
+    warnings: list[str] | None = Field(
+        default=None,
+        description="Non-blocking warnings detected during validation.",
+    )
 
 
 # Errors that should NOT block saving — they are transient and unrelated to
@@ -324,9 +343,50 @@ def _invalid(name: str, exc: LLMError) -> ValidateProfileResponse:
     )
 
 
+async def _upstream_catalog_warnings(
+    name: str, llm: LLM, *, enabled: bool
+) -> list[str]:
+    """Optionally check ``llm.model`` against the upstream ``/v1/models`` catalog.
+
+    Always non-blocking: catalog fetch failures are logged at debug level and
+    return an empty list rather than failing validation.
+    """
+    if not enabled or not llm.base_url:
+        return []
+    api_key_value = (
+        llm.api_key.get_secret_value().strip()
+        if isinstance(llm.api_key, SecretStr)
+        else None
+    )
+    try:
+        catalog_models = await fetch_upstream_models(
+            llm.base_url,
+            api_key=api_key_value or None,
+            request_timeout=min(
+                PREFLIGHT_TIMEOUT_SECONDS, UPSTREAM_MODELS_TIMEOUT_SECONDS
+            ),
+        )
+        if catalog_models and not model_matches_upstream_catalog(
+            llm.model, catalog_models
+        ):
+            safe_url = normalize_upstream_base_url(llm.base_url)
+            return [
+                f"Model '{llm.model}' was not found in the upstream catalog at "
+                f"{safe_url}."
+            ]
+    except Exception as exc:  # noqa: BLE001 - warning-only check
+        logger.debug(
+            "Profile '%s' upstream catalog check skipped due to error: %s",
+            name,
+            redact_upstream_message(str(exc) or type(exc).__name__, api_key_value),
+        )
+    return []
+
+
 @profiles_router.post(
     "/{name}/validate",
     response_model=ValidateProfileResponse,
+    response_model_exclude_unset=True,
 )
 async def validate_profile(
     name: ProfileName,
@@ -398,7 +458,12 @@ async def validate_profile(
             f"Profile '{name}' pre-flight hit a transient error "
             f"({type(exc).__name__}); not blocking save."
         )
-        return ValidateProfileResponse(valid=True)
+        warnings = await _upstream_catalog_warnings(
+            name, llm, enabled=body.check_upstream_catalog
+        )
+        if warnings:
+            return ValidateProfileResponse(valid=True, error=None, warnings=warnings)
+        return ValidateProfileResponse(valid=True, error=None)
     except (
         # LLMServiceUnavailableError (provider 503) is intentionally treated as
         # a blocking config error: at this layer a provider outage is
@@ -421,7 +486,12 @@ async def validate_profile(
             ),
         )
 
-    return ValidateProfileResponse(valid=True)
+    warnings = await _upstream_catalog_warnings(
+        name, llm, enabled=body.check_upstream_catalog
+    )
+    if warnings:
+        return ValidateProfileResponse(valid=True, error=None, warnings=warnings)
+    return ValidateProfileResponse(valid=True, error=None)
 
 
 @profiles_router.delete("/{name}", response_model=ProfileMutationResponse)

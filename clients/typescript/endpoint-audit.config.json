@@ -87,6 +87,12 @@
       "owner": "OpenHands SDK maintainers"
     },
     {
+      "endpoints": ["GET /api/llm/models/upstream"],
+      "reason": "Client-ahead API for upstream model discovery, added with the Agent Server endpoint in the same PR.",
+      "owner": "OpenHands SDK maintainers",
+      "tracking": "https://github.com/OpenHands/software-agent-sdk/issues/7005"
+    },
+    {
       "endpoints": ["POST /api/profiles/{}/validate"],
       "reason": "Client-ahead API stacked on the pending Agent Server pre-flight LLM validation endpoint.",
       "owner": "OpenHands TypeScript client maintainers",

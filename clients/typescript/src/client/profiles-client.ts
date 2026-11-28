@@ -6,6 +6,7 @@ import {
   ProfileListResponse,
   ProfileMutationResponse,
   SaveProfileRequest,
+  ValidateProfileRequest,
   ValidateProfileResponse,
 } from '../models/api';
 
@@ -102,7 +103,7 @@ export class ProfilesClient {
    */
   async validateProfile(
     name: string,
-    request: SaveProfileRequest
+    request: ValidateProfileRequest
   ): Promise<ValidateProfileResponse> {
     const response = await this.client.post<ValidateProfileResponse>(
       `/api/profiles/${encodeURIComponent(name)}/validate`,

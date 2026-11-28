@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import secrets
 import time
 from collections.abc import Iterator
@@ -10,22 +11,39 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 
 import httpx
-from fastapi import APIRouter, Query
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel, Field, SecretStr
 
-from openhands.sdk.errors import NotFound, UpstreamFailed, UpstreamTimeout
+from openhands.agent_server._secrets_exposure import profile_key_mismatch
+from openhands.agent_server.dependencies import get_cipher, get_llm_profile_store
+from openhands.agent_server.errors import error_responses
+from openhands.agent_server.persistence import run_store
+from openhands.agent_server.upstream_models import (
+    build_upstream_models_url,
+    fetch_upstream_models,
+)
+from openhands.sdk.errors import (
+    Conflict,
+    Invalid,
+    NotFound,
+    UpstreamFailed,
+    UpstreamTimeout,
+)
 from openhands.sdk.llm.auth.openai import (
     DEVICE_CODE_TIMEOUT_SECONDS,
     OPENAI_CODEX_MODELS,
     DeviceCode,
     OpenAISubscriptionAuth,
 )
+from openhands.sdk.llm.llm_profile_store import PROFILE_NAME_PATTERN, LLMProfileStore
 from openhands.sdk.llm.utils.unverified_models import (
     _extract_model_and_provider,
     _get_litellm_provider_names,
     get_supported_llm_models,
 )
 from openhands.sdk.llm.utils.verified_models import VERIFIED_MODELS
+from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.pydantic_secrets import SecretDecryptionError
 
 
 llm_router = APIRouter(prefix="/llm", tags=["LLM"])
@@ -183,6 +201,98 @@ async def list_verified_models() -> VerifiedModelsResponse:
     with OpenHands.
     """
     return VerifiedModelsResponse(models=VERIFIED_MODELS)
+
+
+@llm_router.get(
+    "/models/upstream",
+    response_model=ModelsResponse,
+    responses=error_responses(
+        {
+            Invalid: "Invalid base_url, profile_name, or disallowed upstream target",
+            NotFound: "Referenced LLM profile not found",
+            Conflict: "Stored profile API key cannot be decrypted with current cipher",
+            UpstreamFailed: "Upstream model catalog unreachable or invalid response",
+            UpstreamTimeout: "Upstream model catalog request timed out",
+        }
+    ),
+)
+async def list_upstream_models(
+    base_url: str | None = Query(
+        default=None,
+        description=(
+            "OpenAI-compatible upstream base URL to query for available models "
+            "(fetches GET {base_url}/v1/models)."
+        ),
+    ),
+    profile_name: str | None = Query(
+        default=None,
+        description=(
+            "Optional saved LLM profile name whose base_url and stored API key "
+            "(or linked provider connection key) are used server-side."
+        ),
+    ),
+    store: LLMProfileStore = Depends(get_llm_profile_store),
+    cipher: Cipher | None = Depends(get_cipher),
+) -> ModelsResponse:
+    """Discover available models from an OpenAI-compatible custom ``base_url``.
+
+    When ``profile_name`` is supplied, the server loads the stored profile
+    (resolving any linked provider connection) and uses its API key server-side
+    for authenticated catalog endpoints; secrets never leave the server.
+    """
+    cleaned_base_url = base_url.strip() if base_url is not None else None
+    cleaned_base_url = cleaned_base_url or None
+    cleaned_profile_name = profile_name.strip() if profile_name is not None else None
+    cleaned_profile_name = cleaned_profile_name or None
+
+    if not cleaned_base_url and not cleaned_profile_name:
+        raise Invalid("Either base_url or profile_name must be provided")
+
+    effective_base_url = cleaned_base_url
+    api_key: str | None = None
+
+    if cleaned_profile_name is not None:
+        if not re.fullmatch(PROFILE_NAME_PATTERN, cleaned_profile_name):
+            raise Invalid(f"Invalid profile name '{cleaned_profile_name}'")
+        try:
+            llm = await run_store(
+                store.load, cleaned_profile_name, cipher=cipher, strict=True
+            )
+        except SecretDecryptionError as exc:
+            raise profile_key_mismatch(cleaned_profile_name, exc)
+        except FileNotFoundError:
+            raise NotFound(f"Profile '{cleaned_profile_name}' not found")
+
+        profile_base_url = llm.base_url
+        if effective_base_url is None:
+            if not profile_base_url:
+                raise Invalid(
+                    f"Profile '{cleaned_profile_name}' does not define a base_url"
+                )
+            effective_base_url = profile_base_url
+
+        # Only attach the profile's stored credential when querying the
+        # profile's own configured upstream endpoint, preventing credential
+        # leakage to an arbitrary caller-supplied URL.
+        should_attach_key = False
+        if cleaned_base_url is None:
+            should_attach_key = True
+        elif profile_base_url:
+            target_url = build_upstream_models_url(cleaned_base_url)
+            try:
+                profile_url = build_upstream_models_url(profile_base_url)
+            except Invalid:
+                profile_url = None
+            should_attach_key = profile_url is not None and target_url == profile_url
+
+        if should_attach_key and isinstance(llm.api_key, SecretStr):
+            secret = llm.api_key.get_secret_value().strip()
+            if secret:
+                api_key = secret
+
+    assert effective_base_url is not None
+    models = await fetch_upstream_models(effective_base_url, api_key=api_key)
+    return ModelsResponse(models=models)
 
 
 @llm_router.get(
