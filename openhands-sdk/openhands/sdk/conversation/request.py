@@ -342,9 +342,14 @@ class ConversationConfig(BaseModel):
     plugins: list[PluginSource] | None = Field(
         default=None,
         description=(
-            "List of plugins to load for this conversation. Plugins are loaded "
-            "and their skills/MCP config are merged into the agent. "
-            "Hooks are extracted and stored for runtime execution."
+            "Plugins to load for this conversation. They are fetched on the "
+            "first message, and their skills, MCP config, and hooks are merged "
+            "into the agent. The list cannot be changed after creation. If a "
+            "source uses ${VAR}, set it with "
+            "POST /api/conversations/{conversation_id}/secrets "
+            "and send the message again. If the source was down, retry the "
+            "send once it recovers. To use a different source, start a new "
+            "conversation."
         ),
     )
     hook_config: HookConfig | None = Field(

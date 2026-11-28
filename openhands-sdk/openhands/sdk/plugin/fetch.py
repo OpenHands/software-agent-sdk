@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from uuid import UUID
 
+from openhands.sdk.errors import UpstreamFailed
 from openhands.sdk.extensions.fetch import (
     ExtensionFetchError,
     SourceType,
@@ -19,14 +21,54 @@ from openhands.sdk.extensions.fetch import (
 from openhands.sdk.git.cached_repo import GitHelper
 from openhands.sdk.plugin.paths import get_pinned_plugin_cache_path
 from openhands.sdk.utils.path import get_user_persistence_dir
+from openhands.sdk.utils.redact import (
+    public_url_locator,
+    redact_urls_for_client_text,
+)
 
 
 DEFAULT_CACHE_DIR = get_user_persistence_dir() / "cache" / "plugins"
 _FULL_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 
 
-class PluginFetchError(Exception):
-    """Raised when fetching a plugin fails."""
+PLUGIN_FETCH_CLIENT_MESSAGE = (
+    "The plugin could not be fetched. Set a ${VAR} with "
+    "POST /api/conversations/{conversation_id}/secrets and retry this send, "
+    "retry after the source recovers, or start a new conversation to change "
+    "the source."
+)
+
+
+class PluginFetchError(UpstreamFailed):
+    """A plugin source could not be fetched.
+
+    A single string still constructs the error. ``str(exc)`` stays that
+    operational line for logs and callers that already match on it, with URL
+    userinfo, query, and fragment removed. ``detail`` is what a REST client
+    is shown: a fixed ``message``, ``code`` ``PluginFetchError``, and a
+    locator taken only from the original ``source``.
+    """
+
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        source: str | None = None,
+        conversation_id: UUID | None = None,
+    ) -> None:
+        log_message = redact_urls_for_client_text(message)
+        safe_source = public_url_locator(source) if source else None
+        detail: dict[str, object] = {
+            "code": "PluginFetchError",
+            "message": PLUGIN_FETCH_CLIENT_MESSAGE,
+        }
+        if safe_source is not None:
+            detail["source"] = safe_source
+        if conversation_id is not None:
+            detail["conversation_id"] = str(conversation_id)
+        super().__init__(detail, message=log_message)
+        self.source = safe_source
+        self.conversation_id = conversation_id
 
 
 def _cached_pinned_plugin(

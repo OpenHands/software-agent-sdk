@@ -14,7 +14,7 @@ import copy
 import re
 from collections.abc import Mapping
 from typing import Any
-from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qs, urlencode, urlparse, urlsplit, urlunparse, urlunsplit
 
 import httpx
 
@@ -203,6 +203,79 @@ def redact_url_credentials_in_text(text: str) -> str:
         'no credentials here'
     """
     return _EMBEDDED_URL_CREDENTIALS_RE.sub(r"\g<1>****@", text)
+
+
+def public_url_locator(value: str) -> str | None:
+    """Return a plugin source locator that is safe to show a client.
+
+    An absolute URL keeps its scheme, host, port, and path. Userinfo, the
+    query, and the fragment are removed, including a ``${VAR}`` left in the
+    userinfo. ``preserve_placeholders`` is for a stored source that will be
+    fetched again; this locator is only for an error a client reads.
+
+    A value that is not an absolute URL is returned without a query or
+    fragment. ``None`` means the credentials could not be separated from the
+    rest, so the caller should omit the value instead of showing it.
+
+    Examples:
+        >>> public_url_locator("https://user:secret@host/repo.git?token=s#f")
+        'https://host/repo.git'
+        >>> public_url_locator("github:owner/repo")
+        'github:owner/repo'
+        >>> public_url_locator("file://user:secret@/tmp/repo") is None
+        True
+    """
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        parts = urlsplit(text)
+        host = parts.hostname
+        port = parts.port
+    except ValueError:
+        return None
+    if parts.scheme and parts.netloc:
+        if not host:
+            return None
+        if ":" in host:
+            host = f"[{host}]"
+        netloc = f"{host}:{port}" if port is not None else host
+        return urlunsplit((parts.scheme, netloc, parts.path, "", ""))
+    if parts.scheme and "://" in text:
+        # file:///tmp/plugin.git has a scheme and no authority. A userinfo
+        # that urlsplit could not separate from that authority stays hidden.
+        if parts.username or parts.password:
+            return None
+        return urlunsplit((parts.scheme, "", parts.path, "", ""))
+    if "://" in text:
+        return None
+    userinfo, separator, _rest = text.partition("@")
+    if separator and ":" in userinfo:
+        return None
+    cleaned = text.split("#", 1)[0].split("?", 1)[0].strip()
+    return cleaned or None
+
+
+_CLIENT_URL_RE = re.compile(r"(?:https?|file)://[^\s<>'\"]+", re.IGNORECASE)
+
+
+def redact_urls_for_client_text(text: str) -> str:
+    """Replace absolute URLs in text with :func:`public_url_locator` results.
+
+    Query values, fragments, and userinfo are dropped. A URL whose credentials
+    cannot be separated is replaced with ``<redacted-source>``.
+    """
+
+    def replace(match: re.Match[str]) -> str:
+        raw = match.group(0)
+        trimmed = raw.rstrip(".,);]")
+        suffix = raw[len(trimmed) :]
+        locator = public_url_locator(trimmed)
+        if locator is None:
+            return "<redacted-source>" + suffix
+        return locator + suffix
+
+    return _CLIENT_URL_RE.sub(replace, text)
 
 
 def redact_url_params(url: str) -> str:

@@ -112,6 +112,7 @@ from openhands.sdk.observability.laminar import (
 from openhands.sdk.observability.utils import extract_action_name
 from openhands.sdk.plugin import (
     Plugin,
+    PluginFetchError,
     PluginSource,
     ResolvedPluginSource,
     fetch_plugin_with_resolution,
@@ -145,8 +146,8 @@ from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.pydantic_secrets import client_context
 from openhands.sdk.utils.redact import (
+    public_url_locator,
     redact_text_secrets,
-    redact_url_credentials,
     redact_url_credentials_in_text,
 )
 from openhands.sdk.workspace import LocalWorkspace
@@ -274,6 +275,7 @@ class LocalConversation(BaseConversation):
     _plugin_specs: list[PluginSource] | None
     _resolved_plugins: list[ResolvedPluginSource] | None
     _plugins_loaded: bool
+    _reported_auto_load_errors: set[tuple[str, str]]
     _pending_hook_config: HookConfig | None  # Hook config to combine with plugin hooks
     _mcp_tool_provider: MCPToolProvider
     _mcp_startup_budget: float | None
@@ -412,6 +414,7 @@ class LocalConversation(BaseConversation):
         self._plugin_specs = plugins
         self._resolved_plugins = None
         self._plugins_loaded = False
+        self._reported_auto_load_errors = set()
         self._pending_hook_config = hook_config  # Will be combined with plugin hooks
         self._agent_ready = False  # Agent initialized lazily after plugins loaded
         self._mcp_tool_provider = mcp_tool_provider or DefaultMCPToolProvider()
@@ -880,19 +883,30 @@ class LocalConversation(BaseConversation):
             ConversationErrorEvent(source="environment", code=code, detail=detail)
         )
 
-    def _emit_auto_load_error(self, code: str, detail: str) -> None:
+    def _emit_auto_load_error(self, code: str, detail: str, *, identity: str) -> None:
         """Tell the user an auto-loaded marketplace or plugin was skipped.
 
         Auto-load failures do not stop the conversation, but a dropped
         marketplace silently loses its agents and hooks, so surface the
         failure as a non-fatal ConversationErrorEvent (the run status is
         left untouched).
+
+        ``identity`` is the marketplace or plugin name, not the error text.
+        One conversation object reports each item once across the retries
+        that happen before plugins finish loading. A different item still
+        gets its own event. The set is in memory only, so a new process can
+        report the same item again.
         """
+        safe_detail = redact_url_credentials_in_text(detail)
+        key = (code, identity)
+        if key in self._reported_auto_load_errors:
+            return
+        self._reported_auto_load_errors.add(key)
         self._on_event(
             ConversationErrorEvent(
                 source="environment",
                 code=code,
-                detail=redact_url_credentials_in_text(detail),
+                detail=safe_detail,
             )
         )
 
@@ -1225,8 +1239,13 @@ class LocalConversation(BaseConversation):
         has_mcp_config = bool(merged_mcp)
         marketplace_skills_loaded = False
 
-        plugins_to_load: list[tuple[PluginSource, bool]] = []
+        plugins_to_load: list[tuple[PluginSource, str | None, str | None]] = []
         if merged_context is not None and merged_context.registered_marketplaces:
+            original_marketplaces = list(merged_context.registered_marketplaces)
+            originals_by_name = {
+                registration.name: registration
+                for registration in original_marketplaces
+            }
             registrations = [
                 registration.model_copy(
                     update={
@@ -1236,16 +1255,20 @@ class LocalConversation(BaseConversation):
                         else None,
                     }
                 )
-                for registration in merged_context.registered_marketplaces
+                for registration in original_marketplaces
             ]
             registry = MarketplaceRegistry(registrations)
             marketplace_skills: list[Skill] = []
             for registration in registry.get_auto_load_registrations():
+                original = originals_by_name.get(registration.name, registration)
+                locator = (
+                    public_url_locator(original.source) or "the configured marketplace"
+                )
                 try:
                     marketplace, marketplace_path = registry.get_marketplace(
                         registration.name
                     )
-                except Exception as exc:
+                except Exception:
                     logger.warning(
                         "Failed to load marketplace '%s'; continuing without it",
                         registration.name,
@@ -1253,10 +1276,10 @@ class LocalConversation(BaseConversation):
                     )
                     self._emit_auto_load_error(
                         "MarketplaceLoadError",
-                        f"Marketplace '{registration.name}' "
-                        f"({redact_url_credentials(registration.source)}) could "
+                        f"Marketplace '{registration.name}' ({locator}) could "
                         "not be loaded, so its plugin skills, agents and hooks "
-                        f"are unavailable: {exc}",
+                        "are unavailable.",
+                        identity=f"marketplace:{registration.name}",
                     )
                     continue
                 for entry in marketplace.plugins:
@@ -1278,7 +1301,13 @@ class LocalConversation(BaseConversation):
                             exc_info=True,
                         )
                         continue
-                    plugins_to_load.append((plugin_source, True))
+                    plugins_to_load.append(
+                        (
+                            plugin_source,
+                            f"plugin:{registration.name}:{entry.name}",
+                            f"'{entry.name}' from marketplace '{registration.name}'",
+                        )
+                    )
                 # Standalone skills. Merged below as low precedence; plugins
                 # loaded afterwards override same-named skills, matching the
                 # catalog.
@@ -1298,15 +1327,15 @@ class LocalConversation(BaseConversation):
                 marketplace_skills_loaded = True
 
         if self._plugin_specs:
-            plugins_to_load.extend((spec, False) for spec in self._plugin_specs)
+            plugins_to_load.extend((spec, None, None) for spec in self._plugin_specs)
 
         # Load plugins if specified or registered for auto-load
         if plugins_to_load:
             logger.info(f"Loading {len(plugins_to_load)} plugin(s)...")
             self._resolved_plugins = []
 
-            for spec, auto_loaded in plugins_to_load:
-                if auto_loaded:
+            for spec, auto_load_identity, auto_load_label in plugins_to_load:
+                if auto_load_identity is not None:
                     fetch_source = spec.source
                     fetch_ref = spec.ref
                 else:
@@ -1327,19 +1356,27 @@ class LocalConversation(BaseConversation):
                 except Exception as exc:
                     # Attaching a plugin that cannot load is an error, but an
                     # auto-loaded one must not prevent the conversation from
-                    # starting.
-                    if not auto_loaded:
+                    # starting. The client message names the marketplace and
+                    # entry already in hand, not the resolved source.
+                    if auto_load_identity is None:
+                        if type(exc) is PluginFetchError:
+                            raise PluginFetchError(
+                                str(exc),
+                                source=spec.source,
+                                conversation_id=self.id,
+                            ) from exc
                         raise
+                    label = auto_load_label or "the configured plugin"
                     logger.warning(
-                        "Failed to load plugin '%s'; continuing without it",
-                        redact_url_credentials(spec.source),
+                        "Failed to load plugin %s; continuing without it",
+                        label,
                         exc_info=True,
                     )
                     self._emit_auto_load_error(
                         "PluginLoadError",
-                        f"Plugin {redact_url_credentials(spec.source)} could not "
-                        "be loaded, so its skills, agents and hooks are "
-                        f"unavailable: {exc}",
+                        f"Plugin {label} could not be loaded, so its skills, "
+                        "agents and hooks are unavailable.",
+                        identity=auto_load_identity,
                     )
                     continue
 
