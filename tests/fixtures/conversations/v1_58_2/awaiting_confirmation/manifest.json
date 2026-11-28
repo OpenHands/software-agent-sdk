@@ -1,0 +1,42 @@
+{
+  "scenario": "awaiting_confirmation",
+  "sdk_version": "1.58.2",
+  "resumed_llm_input": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "cache_prompt": false,
+          "type": "text",
+          "text": "Think, but ask first."
+        }
+      ],
+      "tool_calls": null,
+      "tool_call_id": null
+    },
+    {
+      "role": "tool",
+      "content": [
+        {
+          "cache_prompt": false,
+          "type": "text",
+          "text": "Your thought has been logged."
+        }
+      ],
+      "tool_calls": null,
+      "tool_call_id": "call_think_1"
+    },
+    {
+      "role": "tool",
+      "content": [
+        {
+          "cache_prompt": false,
+          "type": "text",
+          "text": "Your thought has been logged."
+        }
+      ],
+      "tool_calls": null,
+      "tool_call_id": "call_think_2"
+    }
+  ]
+}

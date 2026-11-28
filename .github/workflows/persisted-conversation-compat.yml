@@ -1,0 +1,33 @@
+---
+name: Persisted conversation compatibility checks
+
+on:
+    push:
+        branches: [main]
+    pull_request:
+        branches: [main]
+
+jobs:
+    persisted-conversation-compat:
+        name: Persisted conversations
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v7.0.1
+
+            - name: Install uv
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+              with:
+                  enable-cache: true
+
+            - name: Install workspace deps (dev)
+              run: uv sync --frozen --group dev
+
+            # Resumes conversations written by the latest PyPI release; the
+            # checked-in older releases run with the cross tests.
+            - name: Resume conversations from the latest release
+              env:
+                  OPENHANDS_SUPPRESS_BANNER: '1'
+              run: uv run python .github/scripts/check_persisted_conversation_compat.py
