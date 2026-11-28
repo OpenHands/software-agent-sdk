@@ -1,0 +1,23 @@
+=== BEFORE (upstream): concurrent navigation during Turn 2 ===
+  leaf after navigate : agent2
+  agent2 parent_id    : user1
+  PASS  bug reproduced: agent2 attached to Turn 1: parent=user1 (expected user1 for the broken case)
+  PASS  navigation was silently accepted: errors=[]
+
+=== AFTER (patched): concurrent navigation during Turn 2 ===
+  leaf after navigate : agent2
+  agent2 parent_id    : user2
+  navigation error    : ['Cannot navigate while the conversation is running']
+  PASS  navigation rejected while run is active: errors=['Cannot navigate while the conversation is running']
+  PASS  agent2 keeps the correct Turn 2 parent: parent=user2 (expected user2)
+  PASS  HEAD still advanced to the new agent event: leaf=agent2
+
+=== CONTROL: navigation outside a run still works ===
+  PASS  idle navigation not regressed: leaf=user1
+
+=== MUTATION: drop the guard -> regression must come back ===
+  PASS  reverted guard again corrupts lineage: parent=user1
+  PASS  reverted guard again accepts navigation: errors=[]
+
+8/8 checks passed
+RESULT: race reproduced, fix restores lineage, mutation is caught

@@ -38,7 +38,10 @@ from openhands.sdk import LLM, Agent, AgentContext, Conversation, Message, TextC
 from openhands.sdk.conversation import RemoteConversation
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.event_store import EventLog
-from openhands.sdk.conversation.exceptions import WebSocketConnectionError
+from openhands.sdk.conversation.exceptions import (
+    ConversationRunInProgressError,
+    WebSocketConnectionError,
+)
 from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
@@ -326,6 +329,87 @@ def test_deferred_init_refreshes_persistence_ciphers(
                 ).status_code
                 == 200
             )
+
+
+@pytest.mark.parametrize("empty_head", [False, True])
+def test_navigate_during_live_run_preserves_persisted_branch(
+    server_env, patched_llm, monkeypatch, tmp_path, empty_head
+):
+    started = threading.Event()
+    release = threading.Event()
+    original = LLM.acompletion
+
+    async def gated_completion(self, messages, tools=None, **kwargs):
+        started.set()
+        assert await asyncio.to_thread(release.wait, 15)
+        return await original(self, messages, tools, **kwargs)
+
+    monkeypatch.setattr(LLM, "acompletion", gated_completion)
+    agent = Agent(llm=LLM(model="gpt-4o-mini", api_key=SecretStr("test")), tools=[])
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir=str(server_env["workspace_path"])
+    )
+    conversation = Conversation(agent=agent, workspace=workspace, visualizer=None)
+    try:
+        conversation.send_message("Earlier branch")
+        root = next(e for e in conversation.state.events if isinstance(e, MessageEvent))
+        target = None if empty_head else root.id
+        conversation.send_message("Active turn")
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            running = pool.submit(conversation.run)
+            try:
+                assert started.wait(10), "the run never reached LLM I/O"
+                user = [
+                    e for e in conversation.state.events if isinstance(e, MessageEvent)
+                ][-1]
+                with httpx.Client(
+                    base_url=server_env["host"], trust_env=False
+                ) as client:
+                    response = client.post(
+                        f"/api/conversations/{conversation.id}/navigate",
+                        json={"event_id": target},
+                    )
+                assert response.status_code == 409, response.text
+                with pytest.raises(ConversationRunInProgressError) as rejected:
+                    conversation.navigate_to(target)
+                assert isinstance(rejected.value, httpx.HTTPStatusError)
+                assert rejected.value.response.status_code == 409
+            finally:
+                release.set()
+            running.result(timeout=15)
+
+        events = list(conversation.state.events)
+        reply = next(
+            e
+            for e in reversed(events)
+            if isinstance(e, MessageEvent) and e.source == "agent"
+        )
+        by_id = {event.id: event for event in events}
+        ancestors = set()
+        cursor = reply
+        while cursor.parent_id in by_id:
+            ancestors.add(cursor.parent_id)
+            cursor = by_id[cursor.parent_id]
+        assert user.id in ancestors, (
+            "the in-flight reply was attached to the earlier branch"
+        )
+
+        persisted = EventLog(
+            LocalFileStore(str(tmp_path / "conversations" / conversation.id.hex))
+        )
+        stored_reply = next(e for e in persisted if e.id == reply.id)
+        assert stored_reply.parent_id == reply.parent_id
+        assert user.id in {e.id for e in persisted.path_to_root(reply.id)}
+
+        conversation.navigate_to(target)
+        with httpx.Client(base_url=server_env["host"], trust_env=False) as client:
+            info = client.get(f"/api/conversations/{conversation.id}")
+        info.raise_for_status()
+        assert info.json()["leaf_event_id"] == target
+    finally:
+        release.set()
+        conversation.close()
+        workspace.client.close()
 
 
 def test_health_endpoints_return_ok_json(server_env):

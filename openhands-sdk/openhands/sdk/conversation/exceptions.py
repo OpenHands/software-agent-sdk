@@ -25,6 +25,25 @@ class WebSocketConnectionError(RuntimeError):
         super().__init__(message or default_msg)
 
 
+class ConversationRunInProgressError(RuntimeError):
+    """Raised when HEAD is re-rooted while an agent run is still active.
+
+    Navigation changes ``leaf_event_id``. If it lands while ``_arun()`` has
+    released the state lock for LLM I/O, the in-flight assistant event is
+    stamped with the navigated leaf instead of the user turn that triggered it.
+    """
+
+
+class RemoteConversationRunInProgressError(
+    httpx.HTTPStatusError, ConversationRunInProgressError
+):
+    """An active remote run rejected navigation (HTTP 409).
+
+    Preserves the HTTP request and response while sharing the local navigation
+    error, so callers can handle either the SDK error or the HTTP status.
+    """
+
+
 class ConversationRunError(RuntimeError):
     """Raised when a conversation run fails.
 

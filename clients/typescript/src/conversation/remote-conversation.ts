@@ -482,7 +482,8 @@ export class RemoteConversation implements IConversation {
    *
    * The cached state is refreshed afterwards so a subsequent `state` read
    * reflects the new HEAD — `leaf_event_id` is not broadcast over the
-   * WebSocket. Throws on 404 if the server rejects the event id.
+   * WebSocket. Throws HttpError with status 404 for an unknown event, or
+   * status 409 while the conversation is running; either leaves the cache unchanged.
    */
   async navigateTo(eventId: string | null): Promise<void> {
     const request: NavigateConversationRequest = { event_id: eventId };

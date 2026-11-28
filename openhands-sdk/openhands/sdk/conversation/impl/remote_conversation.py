@@ -28,6 +28,7 @@ from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.exceptions import (
     ConversationRunError,
+    RemoteConversationRunInProgressError,
     RemoteConversationValueError,
     WebSocketConnectionError,
 )
@@ -2004,6 +2005,8 @@ class RemoteConversation(BaseConversation):
             RemoteConversationValueError: If the server does not know the event
                 id. It is both a ``ValueError`` and an ``httpx.HTTPStatusError``
                 (404).
+            RemoteConversationRunInProgressError: If a run is still active.
+                Also an ``httpx.HTTPStatusError`` with status 409.
             httpx.HTTPStatusError: For other server errors.
         """
         try:
@@ -2014,6 +2017,10 @@ class RemoteConversation(BaseConversation):
                 json={"event_id": event_id},
             )
         except httpx.HTTPStatusError as error:
+            if error.response.status_code == 409:
+                raise RemoteConversationRunInProgressError(
+                    str(error), request=error.request, response=error.response
+                ) from error
             if error.response.status_code == 404:
                 raise RemoteConversationValueError.from_http_error(error) from error
             raise

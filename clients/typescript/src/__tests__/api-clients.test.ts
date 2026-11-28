@@ -2408,6 +2408,38 @@ describe('Auxiliary API clients', () => {
     );
   });
 
+  it.each(['client', 'conversation'] as const)(
+    '%s navigation surfaces 409 without refreshing cached state',
+    async (entrypoint) => {
+      const agent = new Agent({ llm: { model: 'gpt-4o', api_key: 'k' } });
+      const workspace = new RemoteWorkspace({ host: 'http://example.com', workingDir: '/tmp' });
+      const conversation = new RemoteConversation(agent, workspace, { conversationId: 'conv-123' });
+      const client = new ConversationClient({ host: 'http://example.com' });
+      global.fetch = vi.fn().mockImplementation(() =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify({ detail: 'Cannot navigate while the conversation is running' }),
+            {
+              status: 409,
+              statusText: 'Conflict',
+              headers: { 'content-type': 'application/json' },
+            }
+          )
+        )
+      ) as typeof fetch;
+      const result =
+        entrypoint === 'client'
+          ? client.navigateConversation('conv-123', { event_id: 'root' })
+          : conversation.navigateTo('root');
+      await expect(result).rejects.toMatchObject({ status: 409 });
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+      expect(global.fetch).toHaveBeenCalledWith(
+        'http://example.com/api/conversations/conv-123/navigate',
+        expect.objectContaining({ method: 'POST', body: JSON.stringify({ event_id: 'root' }) })
+      );
+    }
+  );
+
   it('RemoteConversation.navigateTo passes a null event_id for the empty tree', async () => {
     // Fresh Response per call: navigateTo posts and then refreshes state.
     global.fetch = vi.fn().mockImplementation(() =>

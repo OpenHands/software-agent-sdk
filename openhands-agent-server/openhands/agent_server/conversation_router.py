@@ -62,6 +62,7 @@ from openhands.agent_server.models import (
 )
 from openhands.agent_server.persistence import run_store
 from openhands.sdk import LLM
+from openhands.sdk.conversation.exceptions import ConversationRunInProgressError
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.types import (
     PROJECT_TAG_KEY,
@@ -1053,7 +1054,12 @@ async def start_child_conversation(
 
 @conversation_router.post(
     "/{conversation_id}/navigate",
-    responses=error_responses({NotFound: "Conversation or event not found"}),
+    responses=error_responses(
+        {
+            NotFound: "Conversation or event not found",
+            Conflict: "An agent run is active; navigation was rejected",
+        }
+    ),
 )
 async def navigate_conversation(
     conversation_id: UUID,
@@ -1071,6 +1077,8 @@ async def navigate_conversation(
         info = await conversation_service.navigate_conversation(
             conversation_id, event_id=request.event_id
         )
+    except ConversationRunInProgressError as exc:
+        raise Conflict(str(exc)) from exc
     except ValueError as exc:
         # An unknown ``event_id`` against an existing conversation is a 404;
         # other ValueErrors (e.g. ServiceInactive) are genuine server errors.
