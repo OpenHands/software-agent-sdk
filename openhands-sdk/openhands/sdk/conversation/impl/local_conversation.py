@@ -43,6 +43,7 @@ from openhands.sdk.credential import CredentialBindingError
 from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
+    Condensation,
     CondensationRequest,
     Event,
     EventID,
@@ -3813,15 +3814,15 @@ class LocalConversation(BaseConversation):
                 ")"
             )
 
-        # Add a condensation request event
-        condensation_request = CondensationRequest()
-        self._on_event(condensation_request)
-
-        # Force the agent to take a single step to process the condensation request
-        # This will trigger the condenser if it handles condensation requests
+        # Call the condenser directly: an agent step would first run any actions
+        # still awaiting confirmation.
         with self._state:
-            # Take a single step to process the condensation request
-            self.agent.step(self, on_event=self._on_event, on_token=self._on_token)
+            self._on_event(CondensationRequest())
+            condensation = self.agent.condenser.condense(
+                self._state.view, agent_llm=self.agent.llm
+            )
+            if isinstance(condensation, Condensation):
+                self._on_event(condensation)
 
         logger.info("Condensation request processed")
 
