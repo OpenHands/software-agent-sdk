@@ -106,7 +106,16 @@ class TerminalAction(Action):
     timeout: float | None = Field(
         default=None,
         ge=0,
-        description=f"Optional. Sets a maximum time limit (in seconds) for running the command. If the command takes longer than this limit, you’ll be asked whether to continue or stop it. If you don’t set a value, the command will instead pause and ask for confirmation when it produces no new output for {NO_CHANGE_TIMEOUT_SECONDS} seconds. Use a higher value if the command is expected to take a long time (like installation or testing), or if it has a known fixed duration (like sleep).",  # noqa
+        description=f"Optional. Sets a maximum time limit (in seconds) for running the command. If the command takes longer than this limit, you’ll be asked whether to continue or stop it (unless `hard_timeout=True`, which terminates the command immediately). If you don’t set a value, the command will instead pause and ask for confirmation when it produces no new output for {NO_CHANGE_TIMEOUT_SECONDS} seconds. Use a higher value if the command is expected to take a long time (like installation or testing), or if it has a known fixed duration (like sleep).",  # noqa
+    )
+    hard_timeout: bool = Field(
+        default=False,
+        description=(
+            "If True and `timeout` is set, terminate the running command when "
+            "the timeout expires instead of leaving it running in the "
+            "background, and return `is_error=True` with partial output "
+            "preserved. Default is False."
+        ),
     )
     reset: bool = Field(
         default=False,
@@ -134,7 +143,8 @@ class TerminalAction(Action):
 
         if self.timeout is not None:
             content.append(" ", style="white")
-            content.append(f"[timeout: {self.timeout}s]", style="cyan")
+            label = "hard timeout" if self.hard_timeout else "timeout"
+            content.append(f"[{label}: {self.timeout}s]", style="cyan")
 
         if self.reset:
             content.append(" ", style="white")
@@ -155,6 +165,13 @@ class TerminalObservation(Observation):
     )
     timeout: bool = Field(
         default=False, description="Whether the command execution timed out."
+    )
+    process_terminated: bool = Field(
+        default=False,
+        description=(
+            "Whether the running command was automatically terminated after "
+            "hitting a hard timeout."
+        ),
     )
     metadata: CmdOutputMetadata = Field(
         default_factory=CmdOutputMetadata,

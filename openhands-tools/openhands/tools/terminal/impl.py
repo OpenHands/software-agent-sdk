@@ -492,6 +492,7 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
                 command_action = TerminalAction(
                     command=action.command,
                     timeout=action.timeout,
+                    hard_timeout=action.hard_timeout,
                     is_input=False,
                 )
                 self._export_envs(command_action, conversation, session=session)
@@ -569,6 +570,7 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
                     else TerminalAction(
                         command=action.command,
                         timeout=action.timeout,
+                        hard_timeout=action.hard_timeout,
                         is_input=False,
                     )
                 )
