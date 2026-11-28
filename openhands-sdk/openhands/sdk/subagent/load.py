@@ -39,11 +39,30 @@ from pathlib import Path
 from typing import Final
 
 from openhands.sdk.logger import get_logger
-from openhands.sdk.subagent.schema import AgentDefinition
+from openhands.sdk.subagent.schema import AgentDefinition, AgentDefinitionError
 from openhands.sdk.utils.path import get_user_persistence_dir, resolves_within
 
 
 logger = get_logger(__name__)
+
+
+# Load failures keyed by agent name, so a lookup can raise the real cause instead
+# of only "Unknown agent '<name>'".
+_definition_errors: dict[str, AgentDefinitionError] = {}
+
+
+def record_definition_error(error: AgentDefinitionError) -> None:
+    if error.name:
+        _definition_errors[error.name] = error
+
+
+def get_definition_error(name: str) -> AgentDefinitionError | None:
+    return _definition_errors.get(name)
+
+
+def clear_definition_errors() -> None:
+    """Forget recorded load failures (tests)."""
+    _definition_errors.clear()
 
 
 # Directories to scan for agent definitions, in priority order.
@@ -192,8 +211,8 @@ def load_agents_from_dir(
         no valid agents.
 
     Note:
-        Failures to load individual files are logged as warnings with stack traces
-        but do not halt the overall loading process.
+        Failures to load individual files do not halt loading. Most are logged as
+        warnings; invalid ``condenser:`` mappings are recorded for a later lookup.
     """
     if not agents_dir.is_dir():
         return []
@@ -214,6 +233,10 @@ def load_agents_from_dir(
             agent_def = AgentDefinition.load(md_file)
             definitions.append(agent_def)
             logger.debug(f"Loaded agent definition '{agent_def.name}' from {md_file}")
+        except AgentDefinitionError as e:
+            # Record it so a lookup raises the cause (file + field), not silence.
+            record_definition_error(e)
+            logger.error(f"Invalid agent definition in {md_file}: {e}")
         except Exception:
             logger.warning(
                 f"Failed to load agent definition from {md_file}", exc_info=True

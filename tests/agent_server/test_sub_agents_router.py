@@ -149,3 +149,48 @@ def test_get_sub_agents_follows_the_browser_setting(enable_browser: bool):
 
     assert {"general-purpose", "code-explorer", "bash-runner"} <= names
     assert ("web-researcher" in names) is enable_browser
+
+
+def test_get_sub_agents_condenser_tuning_mapping(client, tmp_path: Path):
+    """A tuning-only condenser mapping loads and is reported losslessly."""
+    agents_dir = tmp_path / ".agents" / "agents"
+    agents_dir.mkdir(parents=True)
+    (agents_dir / "tuned.md").write_text(
+        "---\n"
+        "name: tuned\n"
+        "condenser:\n"
+        "  max_size: 600\n"
+        "  keep_first: 8\n"
+        "  max_tokens: 4096\n"
+        "---\n\n"
+        "Tuned agent."
+    )
+
+    response = client.post(
+        "/api/sub-agents",
+        json={"load_builtin": False, "load_user": False, "project_dir": str(tmp_path)},
+    )
+    assert response.status_code == 200
+    agent = {a["name"]: a for a in response.json()["agents"]}["tuned"]
+
+    assert agent["condenser"]["kind"] == "llm_summarizing"
+    assert agent["condenser"]["max_size"] == 600
+    assert agent["condenser"]["keep_first"] == 8
+    assert agent["condenser"]["max_tokens"] == 4096
+
+
+def test_get_sub_agents_condenser_enabled_false(client, tmp_path: Path):
+    """``enabled: false`` is reported as tuning params, not dropped."""
+    agents_dir = tmp_path / ".agents" / "agents"
+    agents_dir.mkdir(parents=True)
+    (agents_dir / "off.md").write_text(
+        "---\nname: off\ncondenser:\n  enabled: false\n---\n\nOff."
+    )
+
+    response = client.post(
+        "/api/sub-agents",
+        json={"load_builtin": False, "load_user": False, "project_dir": str(tmp_path)},
+    )
+    assert response.status_code == 200
+    agent = {a["name"]: a for a in response.json()["agents"]}["off"]
+    assert agent["condenser"]["enabled"] is False

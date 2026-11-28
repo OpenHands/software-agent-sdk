@@ -21,7 +21,7 @@ from openhands.sdk.subagent.registry import (
     register_file_agents,
     register_plugin_agents,
 )
-from openhands.sdk.subagent.schema import AgentDefinition
+from openhands.sdk.subagent.schema import AgentDefinition, AgentDefinitionError
 from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
 
 
@@ -1092,3 +1092,106 @@ def test_factory_explicit_condenser_preserves_distinct_usage_id() -> None:
     agent = factory(_make_test_llm())
     assert isinstance(agent.condenser, LLMSummarizingCondenser)
     assert agent.condenser.llm.usage_id == "my-condenser"
+
+
+def _register_yaml_agent(tmp_path: Path, filename: str, frontmatter: str) -> list[str]:
+    agents_dir = tmp_path / ".agents" / "agents"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    (agents_dir / filename).write_text(f"---\n{frontmatter}\n---\n\nPrompt.\n")
+    with patch(
+        "openhands.sdk.subagent.load.Path.home", return_value=tmp_path / "no_user"
+    ):
+        return register_file_agents(tmp_path)
+
+
+def test_frontmatter_condenser_tuning_end_to_end(tmp_path: Path) -> None:
+    """A YAML tuning mapping reaches the built condenser (load -> factory)."""
+    registered = _register_yaml_agent(
+        tmp_path,
+        "tuned.md",
+        "name: tuned\ncondenser:\n  max_size: 600\n  keep_first: 8\n  max_tokens: 4096",
+    )
+
+    assert "tuned" in registered
+    agent = get_agent_factory("tuned").factory_func(_make_test_llm())
+
+    assert isinstance(agent.condenser, LLMSummarizingCondenser)
+    assert agent.condenser.max_size == 600
+    assert agent.condenser.keep_first == 8
+    assert agent.condenser.max_tokens == 4096
+    # The condenser LLM is injected at factory time with its own usage_id.
+    assert agent.condenser.llm.usage_id == "condenser"
+
+
+def test_frontmatter_condenser_enabled_false_builds_noop(tmp_path: Path) -> None:
+    registered = _register_yaml_agent(
+        tmp_path, "off.md", "name: off\ncondenser:\n  enabled: false"
+    )
+
+    assert "off" in registered
+    agent = get_agent_factory("off").factory_func(_make_test_llm())
+    assert isinstance(agent.condenser, NoOpCondenser)
+
+
+def test_frontmatter_condenser_omitted_keeps_subagent_default(tmp_path: Path) -> None:
+    registered = _register_yaml_agent(tmp_path, "plain.md", "name: plain")
+
+    assert "plain" in registered
+    agent = get_agent_factory("plain").factory_func(_make_test_llm())
+    assert isinstance(agent.condenser, LLMSummarizingCondenser)
+    assert agent.condenser.max_size == 80
+    assert agent.condenser.keep_first == 4
+    assert agent.condenser.llm.usage_id == "condenser"
+
+
+def test_frontmatter_condenser_invalid_is_visible_on_lookup(tmp_path: Path) -> None:
+    """A broken condenser surfaces on lookup, not just "Unknown agent"."""
+    registered = _register_yaml_agent(
+        tmp_path,
+        "broken.md",
+        "name: broken\ncondenser:\n  max_size: 600\n  llm:\n    model: gpt-4o",
+    )
+
+    assert "broken" not in registered
+    with pytest.raises(AgentDefinitionError) as excinfo:
+        get_agent_factory("broken")
+
+    error = excinfo.value
+    assert error.field == "llm"
+    assert error.source is not None and error.source.endswith("broken.md")
+    assert "field 'llm'" in str(error)
+
+
+def test_frontmatter_condenser_inline_llm_preserved(tmp_path: Path) -> None:
+    """A legacy full spec keeps its dedicated summarizer LLM through the factory."""
+    registered = _register_yaml_agent(
+        tmp_path,
+        "legacy.md",
+        "name: legacy\ncondenser:\n  kind: LLMSummarizingCondenser\n"
+        "  max_size: 600\n  keep_first: 8\n  llm:\n    model: gpt-4o\n"
+        "    usage_id: sum-llm",
+    )
+
+    assert "legacy" in registered
+    agent = get_agent_factory("legacy").factory_func(_make_test_llm())
+
+    assert isinstance(agent.condenser, LLMSummarizingCondenser)
+    assert agent.condenser.max_size == 600
+    assert agent.condenser.keep_first == 8
+    assert agent.condenser.llm.model == "gpt-4o"
+    assert agent.condenser.llm.usage_id == "sum-llm"
+
+
+def test_frontmatter_condenser_partial_mapping_keeps_defaults(tmp_path: Path) -> None:
+    """Unset tuning keys resolve to the shared sub-agent default window."""
+    registered = _register_yaml_agent(
+        tmp_path, "partial.md", "name: partial\ncondenser:\n  max_tokens: 4096"
+    )
+
+    assert "partial" in registered
+    condenser = get_agent_factory("partial").factory_func(_make_test_llm()).condenser
+
+    assert isinstance(condenser, LLMSummarizingCondenser)
+    assert condenser.max_size == 80
+    assert condenser.keep_first == 4
+    assert condenser.max_tokens == 4096

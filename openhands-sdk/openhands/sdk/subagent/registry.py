@@ -32,10 +32,15 @@ from typing import TYPE_CHECKING, NamedTuple
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.logger import get_logger
 from openhands.sdk.subagent.load import (
+    clear_definition_errors,
+    get_definition_error,
     load_project_agents,
     load_user_agents,
 )
-from openhands.sdk.subagent.schema import AgentDefinition
+from openhands.sdk.subagent.schema import (
+    AgentDefinition,
+    SubAgentCondenserSettings,
+)
 from openhands.sdk.utils.deprecation import warn_deprecated
 
 
@@ -258,7 +263,10 @@ def agent_definition_to_factory(
         # top-level agent) so deep runs auto-compact instead of erroring on context
         # overflow. The condenser LLM needs a distinct usage_id or its tokens are
         # reported together with the agent's. A NoOpCondenser disables condensation.
-        if agent_def.condenser is not None:
+        if isinstance(agent_def.condenser, SubAgentCondenserSettings):
+            # Tuning params only; the condenser LLM is the agent's own LLM.
+            condenser = agent_def.condenser.build_condenser(llm)
+        elif agent_def.condenser is not None:
             condenser = agent_def.condenser
             if isinstance(condenser, LLMSummarizingCondenser):
                 # Freshen per spawn: a distinct LLM with its own metrics (so
@@ -435,6 +443,8 @@ def get_agent_factory(name: str | None) -> AgentFactory:
         available = sorted(_agent_factories.keys())
 
     if factory is None:
+        if definition_error := get_definition_error(factory_name):
+            raise definition_error
         available_list = ", ".join(available) if available else "none registered"
         raise ValueError(
             f"Unknown agent '{name}'. Available types: {available_list}. "
@@ -481,3 +491,4 @@ def _reset_registry_for_tests() -> None:
     """Clear the registry for tests to avoid cross-test contamination."""
     with _registry_lock:
         _agent_factories.clear()
+    clear_definition_errors()

@@ -14,7 +14,12 @@ from openhands.sdk.subagent.registry import (
     register_file_agents,
     register_plugin_agents,
 )
-from openhands.sdk.subagent.schema import AgentDefinition, AgentDefinitionLevel
+from openhands.sdk.subagent.schema import (
+    AgentDefinition,
+    AgentDefinitionError,
+    AgentDefinitionLevel,
+    SubAgentCondenserSettings,
+)
 from openhands.sdk.subagent.scope import SubAgentScope
 
 
@@ -34,7 +39,9 @@ __all__ = [
     "get_registered_agent_definitions",
     # Agent def and factory
     "AgentDefinition",
+    "AgentDefinitionError",
     "AgentDefinitionLevel",
+    "SubAgentCondenserSettings",
     "agent_definition_to_factory",
     "SubAgentScope",
 ]
