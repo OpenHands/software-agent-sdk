@@ -24,6 +24,7 @@ from openhands.agent_server.conversation_lease import (
     ConversationLease,
     ConversationLeaseHeldError,
 )
+from openhands.agent_server.durable_webhook import DurableWebhookSubscriber
 from openhands.agent_server.event_service import (
     LEASE_RENEW_INTERVAL_SECONDS,
     EventService,
@@ -2800,7 +2801,14 @@ class ConversationService:
             await asyncio.gather(
                 *[
                     event_service.subscribe_to_events(
-                        WebhookSubscriber(
+                        DurableWebhookSubscriber(
+                            conversation_id=stored.id,
+                            service=event_service,
+                            spec=webhook_spec,
+                            session_api_key=self.session_api_key,
+                        )
+                        if webhook_spec.durable_events
+                        else WebhookSubscriber(
                             conversation_id=stored.id,
                             service=event_service,
                             spec=webhook_spec,

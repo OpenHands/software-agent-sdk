@@ -100,6 +100,12 @@ class EventLog(EventsListBase):
             raise IndexError("Event index out of range")
         return self._idx_to_id[idx]
 
+    def get_event_json(self, idx: int) -> str:
+        if idx < 0:
+            idx += self._length
+        event_id = self.get_id(idx)
+        return self._fs.read(self._path(idx, event_id=event_id))
+
     def get_seq(self, idx: int) -> int:
         """Return the durable sequence number of the event at ``idx``.
 

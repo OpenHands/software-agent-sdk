@@ -1,5 +1,6 @@
 import asyncio
 import contextvars
+import json
 import threading
 import time
 import traceback
@@ -146,9 +147,13 @@ def _without_skill_bodies(
         event = event.model_copy(update={"value": agent})
     else:
         return event
-    if agent.get("agent_context"):
-        agent["agent_context"]["skills"] = []
+    _strip_agent_skill_bodies(agent)
     return event
+
+
+def _strip_agent_skill_bodies(agent: dict[str, Any]) -> None:
+    if isinstance(context := agent.get("agent_context"), dict) and context:
+        context["skills"] = []
 
 
 class _RunPermit:
@@ -615,6 +620,60 @@ class EventService:
         if self._conversation is None:
             raise ServiceInactive()
         return self._conversation._state.events
+
+    def webhook_event_batch(
+        self, after_seq: int, limit: int, max_bytes: int
+    ) -> list[dict[str, Any]]:
+        events = self._events_for_read()
+        if after_seq >= 0 and (not events or after_seq > events.get_seq(-1)):
+            raise ValueError("Durable webhook acknowledgement exceeds local event log")
+        start = events.index_after_seq(after_seq)
+        batch: list[dict[str, Any]] = []
+        size = len(b'{"events":[]}')
+        for index in range(start, min(start + limit, len(events))):
+            seq = events.get_seq(index)
+            expected = after_seq + len(batch) + 1
+            if seq != expected:
+                if batch:
+                    break
+                raise ValueError(f"Missing persisted event at sequence {expected}")
+            try:
+                payload = json.loads(events.get_event_json(index))
+                if (
+                    not isinstance(payload, dict)
+                    or payload.get("id") != events.get_id(index)
+                    or not isinstance(payload.get("kind"), str)
+                ):
+                    raise ValueError("Invalid persisted event envelope")
+            except (ValueError, FileNotFoundError):
+                if batch:
+                    break
+                raise ValueError(
+                    f"Unreadable persisted event at sequence {seq}"
+                ) from None
+            if payload["kind"] == "ConversationStateUpdateEvent":
+                value = payload.get("value")
+                if isinstance(value, dict):
+                    agent = (
+                        value.get("agent")
+                        if payload.get("key") == FULL_STATE_KEY
+                        else value
+                    )
+                    if payload.get("key") in (FULL_STATE_KEY, "agent") and isinstance(
+                        agent, dict
+                    ):
+                        _strip_agent_skill_bodies(agent)
+            entry = {"seq": seq, "event": payload}
+            entry_size = len(
+                json.dumps(
+                    entry, ensure_ascii=False, separators=(",", ":"), allow_nan=False
+                ).encode()
+            )
+            if batch and size + 1 + entry_size > max_bytes:
+                break
+            size += entry_size + bool(batch)
+            batch.append(entry)
+        return batch
 
     def _get_event_sync(self, event_id: str) -> Event | None:
         """Private sync function to get a single event.
@@ -2595,11 +2654,13 @@ class EventService:
         # permit now that teardown has dropped any pin.
         self._maybe_end_run_session()
 
-        await self._pub_sub.close()
         await self._stream_pub_sub.close()
-        if self._conversation:
-            await self.run_state_op(self._conversation.close)
-            self._conversation = None
+        try:
+            if self._conversation:
+                await self.run_state_op(self._conversation.close)
+        finally:
+            await self._pub_sub.close()
+        self._conversation = None
         if self._state_executor is not None:
             self._state_executor.shutdown(wait=False)
             self._state_executor = None
