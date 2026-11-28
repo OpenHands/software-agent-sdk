@@ -10,13 +10,14 @@ from openhands.sdk import LLM, Agent
 from openhands.sdk.context import AgentContext
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.hooks.config import HookDefinition, HookMatcher
-from openhands.sdk.mcp.config import coerce_mcp_config
+from openhands.sdk.mcp.config import coerce_mcp_config, dump_mcp_config
 from openhands.sdk.plugin import (
     PluginFetchError,
     PluginSource,
     load_plugins,
 )
 from openhands.sdk.skills import Skill
+from openhands.sdk.skills.utils import expand_mcp_servers
 
 
 @pytest.fixture
@@ -235,6 +236,68 @@ class TestLoadPluginsSinglePlugin:
 
         assert "test-server" in updated_agent.mcp_config
         assert hooks is None
+
+    @pytest.mark.parametrize("with_secrets", [False, True])
+    def test_load_plugins_mcp_secret_wins_over_host_env(
+        self,
+        tmp_path: Path,
+        basic_agent,
+        monkeypatch: pytest.MonkeyPatch,
+        with_secrets: bool,
+    ):
+        """Secrets beat the host environment; without secrets the host still
+        fills ${VAR} (#6643)."""
+        plugin_dir = create_test_plugin(
+            tmp_path / "plugin",
+            name="test-plugin",
+            mcp_config={
+                "mcpServers": {
+                    "test-server": {"command": "test-cmd", "env": {"T": "${TOKEN}"}}
+                }
+            },
+        )
+        monkeypatch.setenv("TOKEN", "host-token")
+
+        updated_agent, _ = load_plugins(
+            [PluginSource(source=str(plugin_dir))],
+            basic_agent,
+            get_secret={"TOKEN": "secret-token"}.get if with_secrets else None,
+        )
+
+        env = dump_mcp_config(updated_agent.mcp_config)["test-server"]["env"]
+        assert env == {"T": "secret-token" if with_secrets else "host-token"}
+
+    def test_load_plugins_without_secrets_keeps_defaults_for_secrets(
+        self, tmp_path: Path, basic_agent, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Without secrets, ${VAR:-default} waits for the conversation's pass,
+        so a conversation secret still beats the plugin's default (#6643)."""
+        plugin_dir = create_test_plugin(
+            tmp_path / "plugin",
+            name="test-plugin",
+            mcp_config={
+                "mcpServers": {
+                    "test-server": {
+                        "command": "test-cmd",
+                        "env": {"D": "${DEF:-fallback}"},
+                    }
+                }
+            },
+        )
+        monkeypatch.delenv("DEF", raising=False)
+
+        updated_agent, _ = load_plugins(
+            [PluginSource(source=str(plugin_dir))], basic_agent
+        )
+        env = dump_mcp_config(updated_agent.mcp_config)["test-server"]["env"]
+        assert env == {"D": "${DEF:-fallback}"}
+
+        later = expand_mcp_servers(
+            updated_agent.mcp_config, {"DEF": "conversation-secret"}.get
+        )
+        assert dump_mcp_config(later)["test-server"]["env"] == {
+            "D": "conversation-secret"
+        }
 
     def test_load_single_plugin_with_hooks(self, tmp_path: Path, basic_agent):
         """Test loading a plugin with hooks returns hook config."""

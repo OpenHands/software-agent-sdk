@@ -131,11 +131,12 @@ class ClaudeCodePluginFormat(PluginFormat):
             return {}
 
         try:
-            # expand_defaults=False: preserve ${VAR:-default} placeholders for
-            # later expansion with per-conversation secrets. Only SKILL_ROOT is
-            # expanded now.
+            # Leave ${VAR} for the conversation, so its secrets win over host env.
             config = load_mcp_config(
-                mcp_json, skill_root=plugin_dir, expand_defaults=False
+                mcp_json,
+                skill_root=plugin_dir,
+                expand_defaults=False,
+                expand_env=False,
             )
             if config and "mcpServers" in config:
                 logger.info(
