@@ -168,6 +168,9 @@ class ResponseDispatchMixin:
                 "TextContent - ignoring non-text content"
             )
 
+        # Tool-call arguments are left as-is: the tool runs on them.
+        message = self._mask_secrets(message, conversation)
+
         thought_content = [c for c in message.content if isinstance(c, TextContent)]
 
         action_events: list[ActionEvent] = []
@@ -215,6 +218,9 @@ class ResponseDispatchMixin:
         Delegates tool execution to :meth:`_aexecute_actions` so each
         tool call runs in its own thread and multiple calls are scheduled
         concurrently via :func:`asyncio.gather`.
+
+        ``message`` must already be masked: resolving secrets can block, so
+        :meth:`Agent.astep` does it off the event loop before dispatching.
         """
         if not all(isinstance(c, TextContent) for c in message.content):
             logger.warning(

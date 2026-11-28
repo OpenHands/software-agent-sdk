@@ -590,6 +590,74 @@ def test_reasoning_only_response_masks_registered_secret():
     assert msg_event.llm_message.reasoning_content == "the value is <secret-hidden> now"
 
 
+def _tool_call_with_text(name: str, *, text: str, reasoning: str | None) -> Message:
+    return Message(
+        role="assistant",
+        content=[TextContent(text=text)],
+        reasoning_content=reasoning,
+        tool_calls=[
+            MessageToolCall(
+                id="tc-1",
+                name=name,
+                arguments='{"message": "All done"}',
+                origin="completion",
+            )
+        ],
+    )
+
+
+def test_tool_call_response_masks_registered_secret_in_thought():
+    """Text sent alongside a tool call is masked like a text-only reply.
+
+    It becomes the ``ActionEvent``'s thought and reasoning, which are stored
+    and replayed the same way a ``MessageEvent`` is (#5525).
+    """
+    msg = _tool_call_with_text(
+        "finish",
+        text="the value is supersecret now",
+        reasoning="I will send supersecret",
+    )
+    events, _ = _run_single_step(
+        _make_llm_response(msg), secrets={"TOKEN": "supersecret"}
+    )
+
+    action_event = next(e for e in events if isinstance(e, ActionEvent))
+    assert action_event.action is not None
+    assert action_event.thought == [
+        TextContent(text="the value is <secret-hidden> now")
+    ]
+    assert action_event.reasoning_content == "I will send <secret-hidden>"
+
+
+def test_rejected_tool_call_masks_registered_secret_in_thought():
+    """A tool call that never runs still leaves an ``ActionEvent`` behind."""
+    msg = _tool_call_with_text(
+        "no_such_tool",
+        text="the value is supersecret now",
+        reasoning="I will send supersecret",
+    )
+    events, _ = _run_single_step(
+        _make_llm_response(msg), secrets={"TOKEN": "supersecret"}
+    )
+
+    action_event = next(e for e in events if isinstance(e, ActionEvent))
+    assert action_event.action is None
+    assert action_event.thought == [
+        TextContent(text="the value is <secret-hidden> now")
+    ]
+    assert action_event.reasoning_content == "I will send <secret-hidden>"
+
+
+def test_tool_call_response_without_secrets_leaves_thought_alone():
+    """With nothing registered, the thought is passed through unchanged."""
+    msg = _tool_call_with_text("finish", text="nothing to hide", reasoning=None)
+    events, _ = _run_single_step(_make_llm_response(msg))
+
+    action_event = next(e for e in events if isinstance(e, ActionEvent))
+    assert action_event.thought == [TextContent(text="nothing to hide")]
+    assert action_event.reasoning_content is None
+
+
 def test_content_response_masks_value_dropped_from_secret_sources():
     """Masking follows the tracked values, not the registry's source list.
 
