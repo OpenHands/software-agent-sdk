@@ -783,10 +783,12 @@ Preconditions:
   stays open after them. A `role` other than `user` is rejected by an
   `assert` in `LocalConversation.send_message` (code `AssertionError`); under
   `python -O` that check would disappear (see the REST variant in F06).
-- The 4 MiB frame cap and the 16 MiB per-connection write budget are marked
-  provisional in `session_protocol.py`. An event over 4 MiB can never be
-  delivered on this socket: every replay that reaches it closes with 1013,
-  so a client must skip it with a cursor and read it over REST.
+- The frame cap defaults to 4 MiB and is configurable with
+  `session_max_frame_bytes` (`OH_SESSION_MAX_FRAME_BYTES`); the per-connection
+  write budget is 4x the cap (16 MiB by default). The defaults are marked
+  provisional in `session_protocol.py`. An event over the configured cap can
+  never be delivered on this socket: every replay that reaches it closes with
+  1013, so a client must skip it with a cursor and read it over REST.
 - Whether a stalled reader trips the 16 MiB budget depends on how much the
   kernel buffers: the server's socket send buffer (`net.ipv4.tcp_wmem` max,
   4 MiB here) plus one frame in flight and one in uvicorn's transport. The

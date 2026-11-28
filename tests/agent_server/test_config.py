@@ -101,6 +101,43 @@ def test_conversation_idle_ttl_rejects_non_positive_values():
         Config(conversation_idle_ttl_seconds=0)
 
 
+@pytest.mark.parametrize("value", [0, -1, 1.5])
+def test_session_max_frame_bytes_rejects_invalid_values(value):
+    with pytest.raises(ValidationError):
+        Config(session_max_frame_bytes=value)
+
+
+@pytest.mark.parametrize("value", ["abc", "1.5", "0"])
+def test_invalid_session_max_frame_bytes_env_fails_config_load(
+    monkeypatch, tmp_path, value
+):
+    monkeypatch.setenv(CONFIG_PATH_ENV, str(tmp_path / "missing.json"))
+    monkeypatch.setenv("OH_SESSION_MAX_FRAME_BYTES", value)
+
+    with pytest.raises(ValueError):
+        load_config()
+
+
+def test_session_max_frame_bytes_env_overrides_config_file(monkeypatch, tmp_path):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({"session_max_frame_bytes": 8 * 1024 * 1024}))
+    monkeypatch.setenv(CONFIG_PATH_ENV, str(config_path))
+    monkeypatch.delenv("OH_SESSION_MAX_FRAME_BYTES", raising=False)
+
+    assert load_config().session_max_frame_bytes == 8 * 1024 * 1024
+
+    monkeypatch.setenv("OH_SESSION_MAX_FRAME_BYTES", str(16 * 1024 * 1024))
+    assert load_config().session_max_frame_bytes == 16 * 1024 * 1024
+
+
+def test_session_max_frame_bytes_description_names_env_default_and_budget():
+    doc = Config.model_fields["session_max_frame_bytes"].description or ""
+
+    assert "OH_SESSION_MAX_FRAME_BYTES" in doc
+    assert "4 MiB" in doc
+    assert "4x" in doc
+
+
 def test_load_config_ignores_empty_session_api_key_slots(monkeypatch, tmp_path):
     monkeypatch.setenv(CONFIG_PATH_ENV, str(tmp_path / "missing.json"))
     monkeypatch.delenv("SESSION_API_KEY", raising=False)

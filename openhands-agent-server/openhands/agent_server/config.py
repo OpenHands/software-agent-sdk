@@ -23,6 +23,7 @@ from openhands.agent_server.env_parser import (
     get_env_parser,
     merge,
 )
+from openhands.agent_server.session_protocol import MAX_FRAME_BYTES
 from openhands.agent_server.telemetry_types import DeploymentKind
 from openhands.sdk.marketplace.registration import MarketplaceRegistration
 from openhands.sdk.utils.cipher import Cipher
@@ -353,6 +354,17 @@ class Config(BaseModel):
             "concurrently, across native async runs and synchronous runs. "
             "Creating a conversation also reserves capacity during initialization. "
             "When full, create and run requests are rejected with HTTP 429."
+        ),
+    )
+    session_max_frame_bytes: int = Field(
+        default=MAX_FRAME_BYTES,
+        ge=1,
+        description=(
+            "Largest serialized frame, in bytes, that /sockets/session/{id} "
+            "sends; a bigger event closes the connection with 1013 "
+            "frame_too_large. Each connection may also queue up to 4x this "
+            "many unsent bytes before it is dropped as a slow consumer. "
+            "Defaults to 4 MiB. Set with OH_SESSION_MAX_FRAME_BYTES."
         ),
     )
     secret_key: SecretStr | None = Field(
