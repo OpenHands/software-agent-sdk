@@ -16,6 +16,7 @@ from openhands.sdk.llm.options.common import (
 
 if TYPE_CHECKING:
     from openhands.sdk.llm.call_context import LLMCallContext
+    from openhands.sdk.llm.utils.litellm_provider import LLMProvider
 
 
 def select_responses_options(
@@ -25,6 +26,7 @@ def select_responses_options(
     include: list[str] | None,
     store: bool | None,
     call_context: LLMCallContext | None = None,
+    gateway_provider: LLMProvider | None = None,
 ) -> dict[str, Any]:
     """Behavior-preserving extraction of _normalize_responses_kwargs."""
     # Apply defaults for keys that are not forced by policy
@@ -92,6 +94,7 @@ def select_responses_options(
         context,
         supports_prompt_cache_key=model_features.supports_prompt_cache_key,
         openrouter=is_openrouter(llm),
+        gateway_provider=gateway_provider,
         codex_subscription=llm.is_subscription,
     )
 

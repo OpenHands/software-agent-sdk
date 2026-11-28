@@ -424,13 +424,6 @@ class LocalConversation(BaseConversation):
         # telemetry per usage_id); the call context carries them to every LLM
         # call. Agent LLMs are registered later, in _ensure_agent_ready().
         self.llm_registry = LLMRegistry()
-        self._llm_call_context = (
-            _parent_llm_call_context or LLMCallContext()
-        ).for_conversation(
-            str(desired_id),
-            prompt_cache_key=prompt_cache_key,
-            sessions=self.llm_registry.sessions,
-        )
 
         # Resolve client-defined tools, then register them and inject the matching
         # Tool specs into the agent so the agent can call them. Execution is
@@ -496,6 +489,16 @@ class LocalConversation(BaseConversation):
             stuck_detection=stuck_detection,
             cipher=cipher,
             tags=tags,
+        )
+        # Use the restored state on resume. Delegated conversations inherit
+        # the root's tags, even when they load a different LLM profile.
+        parent_context = _parent_llm_call_context or LLMCallContext(
+            tags=tuple(sorted(self._state.tags.items())),
+        )
+        self._llm_call_context = parent_context.for_conversation(
+            str(self._state.id),
+            prompt_cache_key=prompt_cache_key,
+            sessions=self.llm_registry.sessions,
         )
         # base_state.json is the source of truth for the agent. On resume with
         # ``agent=None`` the state holds the persisted agent; adopt it here so
@@ -1049,7 +1052,6 @@ class LocalConversation(BaseConversation):
                 # Same cipher as the source, so the fork's base_state.json keeps
                 # secrets encrypted rather than redacted (#5465).
                 cipher=self._cipher,
-                _parent_llm_call_context=self._llm_call_context,
             )
 
             # Branch slice copies path_to_root(event) (root-first, re-rootable);

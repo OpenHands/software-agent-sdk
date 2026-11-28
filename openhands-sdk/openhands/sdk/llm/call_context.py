@@ -2,15 +2,28 @@
 
 from __future__ import annotations
 
+import json
+import os
+import re
 from collections.abc import Iterator, Mapping, MutableMapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
+from functools import lru_cache
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
+
+from openhands.sdk.logger import get_logger
 
 
 if TYPE_CHECKING:
     from openhands.sdk.llm.llm_session import LLMSession
+    from openhands.sdk.llm.utils.litellm_provider import LLMProvider
+
+
+logger = get_logger(__name__)
+_TAG_KEY = re.compile(r"[a-z0-9]{1,64}")
+_TAG_VALUE = re.compile(r"[!-~](?:[ -~]{0,254}[!-~])?")
 
 
 @dataclass(frozen=True)
@@ -33,6 +46,9 @@ class LLMCallContext:
         default=None, compare=False, repr=False
     )
 
+    root_session_id: str | None = None
+    tags: tuple[tuple[str, str], ...] = field(default=(), repr=False)
+
     def for_conversation(
         self,
         conversation_id: str,
@@ -51,6 +67,7 @@ class LLMCallContext:
             self,
             prompt_cache_key=prompt_cache_key or conversation_id,
             session_id=conversation_id,
+            root_session_id=self.root_session_id or conversation_id,
             sessions=sessions,
         )
 
@@ -85,6 +102,7 @@ def apply_llm_call_context(
     supports_prompt_cache_key: bool = False,
     openrouter: bool = False,
     codex_subscription: bool = False,
+    gateway_provider: LLMProvider | None = None,
 ) -> None:
     """Apply SDK-owned call context to provider request options in one place.
 
@@ -120,3 +138,103 @@ def apply_llm_call_context(
             extra_body = dict(options.get("extra_body") or {})
             extra_body.setdefault("session_id", context.session_id)
             options["extra_body"] = extra_body
+
+    if attribution := _gateway_attribution_headers(options, context, gateway_provider):
+        existing = options.get("extra_headers") or {}
+        options["extra_headers"] = {
+            **{
+                key: value
+                for key, value in existing.items()
+                if key.lower() != "x-openhands-root-session-id"
+                and not key.lower().startswith("x-openhands-tag-")
+            },
+            **attribution,
+        }
+
+
+def _gateway_base_url(value: str) -> tuple[str, str, int, str]:
+    url = urlsplit(value)
+    if (
+        url.scheme not in {"http", "https"}
+        or not url.hostname
+        or url.username is not None
+        or url.query
+        or url.fragment
+    ):
+        raise ValueError("Expected an HTTP(S) gateway base URL")
+    port = url.port
+    if port is None:
+        port = 443 if url.scheme == "https" else 80
+    return url.scheme, url.hostname, port, url.path.rstrip("/")
+
+
+@lru_cache(maxsize=1)
+def _gateway_attribution_routes(
+    setting: str,
+) -> dict[tuple[str, str, int, str], frozenset[str]]:
+    """Parse deployment-owned endpoint and tag allowlists without logging values.
+
+    Configure the final trusted API base. This gate checks the selected route
+    before transport. The gateway must keep attribution within its boundary,
+    including avoiding redirects to destinations outside that boundary.
+    """
+    try:
+        routes = json.loads(setting)
+        if not isinstance(routes, dict):
+            raise ValueError("Expected an object")
+        result = {}
+        for url, keys in routes.items():
+            if not isinstance(keys, list) or not all(
+                isinstance(key, str) and _TAG_KEY.fullmatch(key) for key in keys
+            ):
+                raise ValueError("Expected a list of lowercase alphanumeric tag keys")
+            base = _gateway_base_url(url)
+            if base in result:
+                raise ValueError("Duplicate gateway base URL")
+            result[base] = frozenset(keys)
+        return result
+    except ValueError:
+        logger.warning("Ignoring invalid OH_LLM_GATEWAY_ATTRIBUTION configuration")
+        return {}
+
+
+def _gateway_attribution_headers(
+    options: Mapping[str, Any],
+    context: LLMCallContext,
+    provider: LLMProvider | None,
+) -> dict[str, str]:
+    if (
+        not context.root_session_id
+        or not _TAG_VALUE.fullmatch(context.root_session_id)
+        or provider is None
+        or provider.name not in {"openai", "openai_like", "litellm_proxy"}
+        or not provider.api_base
+        or options.keys()
+        & {
+            "api_base",
+            "base_url",
+            "custom_llm_provider",
+            "model",
+            "fallbacks",
+            "context_window_fallback_dict",
+        }
+    ):
+        return {}
+    setting = os.getenv("OH_LLM_GATEWAY_ATTRIBUTION")
+    if not setting:
+        return {}
+    try:
+        base = _gateway_base_url(provider.api_base)
+    except ValueError:
+        return {}
+    keys = _gateway_attribution_routes(setting).get(base)
+    if keys is None:
+        return {}
+    return {
+        "x-openhands-root-session-id": context.root_session_id,
+        **{
+            f"x-openhands-tag-{key}": value
+            for key, value in context.tags
+            if key in keys and _TAG_VALUE.fullmatch(value)
+        },
+    }
