@@ -879,7 +879,8 @@ Preconditions:
   control-agent-server api GET /api/conversations/search --query limit=1 --expect 200 --check items len-eq 0 \
     --check broken_items len-eq 1 --check broken_items.0.id eq "$DM" --check next_page_id exists --quiet
   control-agent-server api GET /api/conversations/search --query limit=100 --query status=idle --expect 200 \
-    --check items contains "$DP" --check broken_items len-eq 0 --quiet
+    --check items contains "$DP" --check broken_items len-eq 1 --check broken_items.0.id eq "$DB" \
+    --check broken_items.0.reason eq state --quiet
   control-agent-server api DELETE "/api/conversations/$DB" --expect 200 --check success eq true \
     --save F31.search-unreadable-record/delete-bad-state
   test ! -e "$CONV_DIR/${DB//-/}"
@@ -900,8 +901,9 @@ Preconditions:
   `base_state.json` fails validation as `reason: state` with the title and
   tags its `meta.json` still holds. A damaged record fills a page slot
   (`limit=1` returns only the newest one, with a `next_page_id`), a search
-  filtered by `status` leaves them out, and the unfiltered count
-  includes both. The normal DELETE
+  filtered by `status=idle` lists the bad-state fork in `broken_items` (its
+  `base_state.json` reads `idle`) and leaves out the bad-`meta.json` fork,
+  and the unfiltered count includes both. The normal DELETE
   answers 200 for each and removes its directory; the source, its GET and
   the shared workspace file stay, and search and count no longer list them.
 
@@ -978,9 +980,11 @@ Preconditions:
   secrets (a takeover of one with encrypted secrets is not mapped).
 - An unreadable conversation directory (a `meta.json` that does not parse,
   or a `base_state.json` that fails validation) is reported in search's
-  `broken_items`, never in `items`, and only when no `status` filter is
-  given; it still takes a slot of `limit` and is in the
-  unfiltered count. Remove one with the normal DELETE
+  `broken_items`, never in `items`; it takes a slot of `limit` and is in
+  the unfiltered count. With a `status` filter, search and count both keep
+  a record whose `base_state.json` is unreadable under the status the
+  catalog holds for it, and both leave out one whose `meta.json` does not
+  parse. Remove one with the normal DELETE
   (`F31.search-unreadable-record`).
 - When the conversations disk fills during a run (`ENOSPC`), the run ends
   without reaching `error`: no `ConversationErrorEvent` is stored or pushed,

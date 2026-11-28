@@ -1,9 +1,14 @@
 """Tests for conversation_router.py endpoints."""
 
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import NamedTuple
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
+import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -363,6 +368,158 @@ def test_count_conversations_zero_result(client, mock_conversation_service):
         assert response.json() == 0
     finally:
         client.app.dependency_overrides.clear()
+
+
+class _DamagedStore(NamedTuple):
+    http: httpx.AsyncClient
+    conversations_dir: Path
+    workspace: Path
+    oldest: str
+    no_state: str
+    bad_meta: str
+    invalid_state: str
+    newest: str
+
+
+@asynccontextmanager
+async def _serve(conversations_dir: Path) -> AsyncIterator[httpx.AsyncClient]:
+    """The conversation routes over a real service on ``conversations_dir``."""
+    app = FastAPI()
+    add_domain_error_handler(app)
+    app.include_router(conversation_router, prefix="/api")
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        install_test_context(app, conversation_service=service)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as http:
+            yield http
+
+
+@pytest.fixture
+async def damaged_store(tmp_path) -> AsyncIterator[_DamagedStore]:
+    """Five conversations, three of them damaged on disk before a restart.
+
+    ``no_state`` has no ``base_state.json``, ``invalid_state`` has one that
+    fails validation but reads ``finished``, and ``bad_meta`` has a
+    ``meta.json`` that does not parse. ``oldest`` and ``newest`` are readable.
+    """
+    conversations_dir = tmp_path / "conversations"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "keep.txt").write_text("keep")
+
+    ids: list[str] = []
+    async with _serve(conversations_dir) as http:
+        for _ in range(5):
+            response = await http.post(
+                "/api/conversations",
+                json={
+                    "workspace": {"working_dir": str(workspace)},
+                    "agent": {
+                        "kind": "Agent",
+                        "llm": {"model": "openai/test", "usage_id": "test"},
+                    },
+                },
+            )
+            assert response.status_code == 201, response.text
+            ids.append(response.json()["id"])
+    oldest, no_state, bad_meta, invalid_state, newest = ids
+
+    def stored_file(conversation_id: str, name: str) -> Path:
+        return conversations_dir / UUID(conversation_id).hex / name
+
+    stored_file(no_state, "base_state.json").unlink()
+    stored_file(bad_meta, "meta.json").write_text("{not json")
+    stored_file(invalid_state, "base_state.json").write_text(
+        '{"execution_status": "finished", "agent": null}'
+    )
+
+    async with _serve(conversations_dir) as http:
+        yield _DamagedStore(
+            http=http,
+            conversations_dir=conversations_dir,
+            workspace=workspace,
+            oldest=oldest,
+            no_state=no_state,
+            bad_meta=bad_meta,
+            invalid_state=invalid_state,
+            newest=newest,
+        )
+
+
+@pytest.mark.asyncio
+async def test_status_count_equals_status_search_on_a_damaged_store(damaged_store):
+    """For every status, the count is what the search lists across its pages.
+
+    Regression coverage for #7157: a record whose state is unreadable was
+    counted under its status but left out of the search for that status.
+    """
+    http = damaged_store.http
+    listed: dict[ConversationExecutionStatus, list[tuple[str, str]]] = {}
+    for status in ConversationExecutionStatus:
+        params: dict[str, str | int] = {"status": status.value, "limit": 1}
+        entries: list[tuple[str, str]] = []
+        for _ in range(6):  # one page more than the store has conversations
+            response = await http.get("/api/conversations/search", params=params)
+            assert response.status_code == 200, response.text
+            page = response.json()
+            on_page = [(item["id"], "readable") for item in page["items"]]
+            on_page += [(item["id"], item["reason"]) for item in page["broken_items"]]
+            assert len(on_page) <= 1
+            entries += on_page
+            if page["next_page_id"] is None:
+                break
+            params["page_id"] = page["next_page_id"]
+        else:
+            pytest.fail(f"{status}: paging did not end")
+
+        count = await http.get(
+            "/api/conversations/count", params={"status": status.value}
+        )
+        assert count.json() == len(entries), status
+        listed[status] = entries
+
+    assert listed.pop(ConversationExecutionStatus.IDLE) == [
+        (damaged_store.newest, "readable"),
+        (damaged_store.no_state, "state"),
+        (damaged_store.oldest, "readable"),
+    ]
+    assert listed.pop(ConversationExecutionStatus.FINISHED) == [
+        (damaged_store.invalid_state, "state")
+    ]
+    # ``bad_meta`` has no status on disk: no status lists or counts it.
+    assert not any(listed.values())
+
+
+@pytest.mark.asyncio
+async def test_unfiltered_listing_and_delete_on_a_damaged_store(damaged_store):
+    """Without a filter every damaged record is listed, counted and deletable."""
+    http = damaged_store.http
+    damaged = {
+        damaged_store.no_state: "state",
+        damaged_store.bad_meta: "metadata",
+        damaged_store.invalid_state: "state",
+    }
+    readable = [damaged_store.newest, damaged_store.oldest]
+
+    page = (await http.get("/api/conversations/search")).json()
+    assert [item["id"] for item in page["items"]] == readable
+    assert {item["id"]: item["reason"] for item in page["broken_items"]} == damaged
+    assert (await http.get("/api/conversations/count")).json() == 5
+
+    for conversation_id in damaged:
+        response = await http.delete(f"/api/conversations/{conversation_id}")
+        assert response.status_code == 200, response.text
+        directory = damaged_store.conversations_dir / UUID(conversation_id).hex
+        assert not directory.exists()
+    assert (damaged_store.workspace / "keep.txt").read_text() == "keep"
+
+    idle = {"status": ConversationExecutionStatus.IDLE.value}
+    assert (await http.get("/api/conversations/count")).json() == 2
+    assert (await http.get("/api/conversations/count", params=idle)).json() == 2
+    page = (await http.get("/api/conversations/search", params=idle)).json()
+    assert [item["id"] for item in page["items"]] == readable
+    assert page["broken_items"] == []
 
 
 def test_get_conversation_success(
