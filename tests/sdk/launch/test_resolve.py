@@ -126,6 +126,62 @@ def test_an_llm_override_for_an_acp_profile_is_rejected():
         resolve(ACPAgentProfile(name="a"), fakes.stores(), llm_profile_ref="fast")
 
 
+def _acp_profile(**kwargs) -> ACPAgentProfile:
+    return ACPAgentProfile(name=kwargs.pop("name", "a"), **kwargs)
+
+
+def _acp(resolved) -> ACPAgentSettings:
+    assert isinstance(resolved.settings, ACPAgentSettings)
+    return resolved.settings
+
+
+def test_an_acp_model_override_is_used_for_this_launch_only():
+    profile = _acp_profile(acp_model="stored-model", acp_effort="low")
+
+    resolved = resolve(
+        profile, fakes.stores(), acp_model="picked-model", acp_effort="high"
+    )
+
+    settings = _acp(resolved)
+    assert settings.acp_model == "picked-model"
+    assert settings.acp_effort == "high"
+    # The stored profile is untouched.
+    assert profile.acp_model == "stored-model"
+    assert profile.acp_effort == "low"
+
+
+def test_an_acp_model_override_leaves_the_other_field_alone():
+    profile = _acp_profile(acp_model="stored-model", acp_effort="stored-effort")
+
+    resolved = resolve(profile, fakes.stores(), acp_model="picked-model")
+
+    settings = _acp(resolved)
+    assert settings.acp_model == "picked-model"
+    assert settings.acp_effort == "stored-effort"
+
+
+def test_an_acp_override_without_an_override_keeps_the_profile_values():
+    profile = _acp_profile(acp_model="stored-model", acp_effort="stored-effort")
+
+    resolved = resolve(profile, fakes.stores())
+
+    settings = _acp(resolved)
+    assert settings.acp_model == "stored-model"
+    assert settings.acp_effort == "stored-effort"
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"acp_model": "picked"}, "ACP Agent Profile"),
+        ({"acp_effort": "high"}, "ACP Agent Profile"),
+    ],
+)
+def test_an_acp_override_for_an_openhands_profile_is_rejected(kwargs, message):
+    with pytest.raises(AgentLaunchError, match=message):
+        resolve(_profile(), fakes.stores(), **kwargs)
+
+
 @pytest.mark.parametrize(
     ("refs", "expected"),
     [(None, ["a", "b"]), ([], []), (["b"], ["b"])],
