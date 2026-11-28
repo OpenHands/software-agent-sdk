@@ -18,6 +18,7 @@ from openhands.sdk.hooks.types import HookDecision, HookEvent, HookEventType
 from openhands.sdk.llm import LLM, Message, TextContent, content_to_str
 from openhands.sdk.llm.call_context import LLMCallContext
 from openhands.sdk.llm.utils.metrics import Metrics
+from openhands.sdk.plugin import Plugin
 from tests.command_utils import python_command
 
 
@@ -171,6 +172,86 @@ class TestHookExecutor:
 
         assert result.success
         assert result.stdout.strip() == "False"
+
+    def test_execute_exports_claude_plugin_root_for_claude_code_hook(
+        self, executor, sample_event, tmp_path
+    ):
+        plugin_dir = tmp_path / "claude-plugin"
+        hooks_dir = plugin_dir / "hooks"
+        hooks_dir.mkdir(parents=True)
+        command = python_command("import os; print(os.environ['CLAUDE_PLUGIN_ROOT'])")
+        (hooks_dir / "hooks.json").write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "PreToolUse": [
+                            {"matcher": "*", "hooks": [{"command": command}]}
+                        ]
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        plugin = Plugin.load(plugin_dir)
+        assert plugin.hooks is not None
+        [hook] = plugin.hooks.pre_tool_use[0].hooks
+
+        result = executor.execute(hook, sample_event)
+
+        assert result.success
+        assert result.stdout.strip() == str(plugin_dir.resolve())
+
+    def test_agent_plugin_hook_does_not_receive_claude_plugin_root(
+        self, executor, sample_event, monkeypatch
+    ):
+        monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", "/inherited/root")
+        plugin = Plugin.load("tests/fixtures/plugins/agent_plugins/full-package")
+        assert plugin.hooks is not None
+        loaded_hook = plugin.hooks.pre_tool_use[0].hooks[0]
+        hook = loaded_hook.model_copy(
+            update={
+                "command": python_command(
+                    "import os; print('CLAUDE_PLUGIN_ROOT' in os.environ)"
+                )
+            }
+        )
+
+        result = executor.execute(hook, sample_event)
+
+        assert result.success
+        assert result.stdout.strip() == "False"
+
+    @pytest.mark.parametrize(
+        ("output", "expected"),
+        [
+            pytest.param(
+                {"additionalContext": "top-level"}, "top-level", id="top-level"
+            ),
+            pytest.param(
+                {"hookSpecificOutput": {"additionalContext": "nested"}},
+                "nested",
+                id="nested",
+            ),
+            pytest.param(
+                {
+                    "additionalContext": "top-level",
+                    "hookSpecificOutput": {"additionalContext": "nested"},
+                },
+                "top-level",
+                id="both-prefer-top-level",
+            ),
+        ],
+    )
+    def test_execute_parses_claude_code_additional_context(
+        self, executor, sample_event, output, expected
+    ):
+        hook = HookDefinition(
+            command=python_command(f"import json; print(json.dumps({output!r}))")
+        )
+
+        result = executor.execute(hook, sample_event)
+
+        assert result.additional_context == expected
 
     def test_execute_timeout(self, executor, sample_event):
         """Test that timeout is enforced."""

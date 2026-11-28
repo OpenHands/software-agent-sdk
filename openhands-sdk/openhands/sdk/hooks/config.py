@@ -7,7 +7,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
 from openhands.sdk.hooks.types import HookEventType
 from openhands.sdk.utils.path import get_user_persistence_dir
@@ -72,6 +72,12 @@ class HookDefinition(BaseModel):
             "not come from a plugin."
         ),
     )
+    _plugin_format: str | None = PrivateAttr(default=None)
+
+    @property
+    def plugin_format(self) -> str | None:
+        """Format of the plugin that supplied this hook, if any."""
+        return self._plugin_format
 
     model_config = {
         "populate_by_name": True,  # Allow both 'async' and 'async_' in input
@@ -361,14 +367,21 @@ class HookConfig(BaseModel):
                 raise RuntimeError(f"Unhandled hook event type: {event_type}")
 
     def get_hooks_for_event(
-        self, event_type: HookEventType, tool_name: str | None = None
+        self,
+        event_type: HookEventType,
+        tool_name: str | None = None,
+        *,
+        source: str | None = None,
     ) -> list[HookDefinition]:
         """Get all hooks that should run for an event."""
         matchers = self._get_matchers_for_event(event_type)
+        match_value = tool_name
+        if event_type == HookEventType.SESSION_START and source is not None:
+            match_value = source
 
         result: list[HookDefinition] = []
         for matcher in matchers:
-            if matcher.matches(tool_name):
+            if matcher.matches(match_value):
                 result.extend(matcher.hooks)
 
         return result

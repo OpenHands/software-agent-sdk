@@ -1,5 +1,7 @@
 """Tests for HookManager."""
 
+import json
+
 import pytest
 
 from openhands.sdk.hooks.config import HookConfig
@@ -125,6 +127,21 @@ class TestHookManager:
         assert len(results) == 1
         assert results[0].success
         assert marker_file.exists()
+
+    def test_run_session_start_passes_source_to_hook(self, tmp_working_dir):
+        hook = {
+            "type": "command",
+            "command": python_command("import sys; sys.stdout.write(sys.stdin.read())"),
+        }
+        config = HookConfig.from_dict(
+            {"hooks": {"SessionStart": [{"matcher": "resume", "hooks": [hook]}]}}
+        )
+        manager = HookManager(config=config, working_dir=tmp_working_dir)
+
+        assert manager.run_session_start(source="startup") == []
+        [result] = manager.run_session_start(source="resume")
+
+        assert json.loads(result.stdout)["metadata"]["source"] == "resume"
 
     def test_run_stop_blocked_means_continue(self, tmp_working_dir, tmp_path):
         """Test that blocking Stop hook means agent should continue."""
