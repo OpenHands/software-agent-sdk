@@ -129,7 +129,7 @@ class MCPToolExecutor(ToolExecutor):
         disabling all MCP tools for the remainder of the conversation.
         """
         if not self.client.is_connected():
-            if self.client._closed:
+            if self.client.is_closed:
                 return MCPToolObservation.from_text(
                     text=(
                         f"MCP client not connected for tool '{self.tool_name}'. "

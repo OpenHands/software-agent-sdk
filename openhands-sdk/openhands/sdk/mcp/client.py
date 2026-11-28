@@ -73,12 +73,25 @@ class MCPClient(AsyncMCPClient):
         """The MCP tools using this client connection (returns a copy)."""
         return list(self._tools)
 
+    @property
+    def is_closed(self) -> bool:
+        """Whether this client has been synchronously closed."""
+        return self._closed
+
+    @property
+    def tools_reconciled_callback(self) -> ToolsReconciledCallback | None:
+        return self._tools_reconciled_callback
+
+    def set_tools_reconciled_callback(
+        self, callback: ToolsReconciledCallback | None
+    ) -> None:
+        self._tools_reconciled_callback = callback
+
+    def replace_tools(self, tools: Sequence["MCPToolDefinition"]) -> None:
+        self._tools = list(tools)
+
     async def connect(self) -> None:
         """Establish connection to the MCP server."""
-        async with self._session_state.lock:
-            session_task = self._session_state.session_task
-            if session_task is not None and session_task.done():
-                self._reset_session_state(full=True)
         try:
             await self.__aenter__()
         except RuntimeError as exc:
