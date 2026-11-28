@@ -1174,11 +1174,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         error: Exception,
         fallback_call_fn: Callable[[LLM], LLMResponse],
         session: LLMSession | None = None,
+        call_context: LLMCallContext | None = None,
     ) -> LLMResponse:
         """Handle an error from completion/responses: try fallback, then map and raise.
 
         Must be called from within an except block. Either returns an
         LLMResponse (fallback succeeded) or re-raises (mapped or original).
+        A fallback profile is decrypted with the cipher of ``call_context``.
         """
         if session is None:
             session = self.session
@@ -1190,6 +1192,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 primary_metrics=session.metrics,
                 call_fn=fallback_call_fn,
                 primary=self,
+                cipher=resolve_llm_call_context(call_context).cipher,
             )
             if result is not None:
                 return result
@@ -1203,6 +1206,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         error: Exception,
         fallback_call_fn: Callable[[LLM], LLMResponse],
         session: LLMSession | None = None,
+        call_context: LLMCallContext | None = None,
     ) -> LLMResponse:
         """Async variant of :meth:`_handle_error`.
 
@@ -1222,6 +1226,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 session.metrics,
                 fallback_call_fn,
                 primary=self,
+                cipher=resolve_llm_call_context(call_context).cipher,
             )
             if result is not None:
                 return result
@@ -2081,6 +2086,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     **_caller_kwargs,
                 ),
                 session,
+                call_context,
             )
 
     # =========================================================================
@@ -2210,6 +2216,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     **_caller_kwargs,
                 ),
                 session,
+                call_context,
             )
 
     # =========================================================================
@@ -2391,6 +2398,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     **_caller_kwargs,
                 ),
                 session,
+                call_context,
             )
 
     # =========================================================================
@@ -2589,6 +2597,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     **_caller_kwargs,
                 ),
                 session,
+                call_context,
             )
 
     # =========================================================================

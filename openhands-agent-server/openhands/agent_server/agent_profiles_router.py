@@ -184,9 +184,9 @@ def _seed_default_llm_profile(
     ``list()`` membership check — that mismatch would otherwise let ``save()``
     silently clobber it.
     """
-    llm_store = stores.llm_profiles
+    llm_store = stores.llm_profiles.with_cipher(cipher)
     try:
-        llm_store.load(SEED_PROFILE_NAME, cipher=cipher)
+        llm_store.load(SEED_PROFILE_NAME)
         return SEED_PROFILE_NAME
     except FileNotFoundError:
         pass
@@ -213,7 +213,6 @@ def _seed_default_llm_profile(
             SEED_PROFILE_NAME,
             llm,
             include_secrets=True,
-            cipher=cipher,
             max_profiles=MAX_PROFILES,
         )
         logger.info(f"Seeded default LLM profile '{SEED_PROFILE_NAME}'")

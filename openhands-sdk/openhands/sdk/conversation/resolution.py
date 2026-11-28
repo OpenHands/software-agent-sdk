@@ -45,6 +45,7 @@ from openhands.sdk.llm.llm import LLM
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.message import Message, TextContent
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils.deprecation import warn_deprecated
 
 
 if TYPE_CHECKING:
@@ -355,21 +356,30 @@ def resolution_judge(
 
     When ``store`` has no such profile yet, a copy of ``fallback`` (the
     conversation's own LLM) is saved under that name first, with its
-    secrets (encrypted when ``cipher`` is given). The judge keeps its own
-    timeout and retries: the profile's would nest inside the judge's retry
-    loop.
+    secrets (encrypted under the cipher ``store`` is bound to). The judge
+    keeps its own timeout and retries: the profile's would nest inside the
+    judge's retry loop.
+
+    ``cipher`` is deprecated: pass a store bound to it.
 
     Raises:
         Exception: Whatever the store raises when the profile can be neither
             loaded nor saved.
     """
+    if cipher is not None:
+        warn_deprecated(
+            "resolution_judge(cipher=...)",
+            deprecated_in="1.65.0",
+            removed_in="1.70.0",
+            details="Pass a store bound to the cipher: "
+            "LLMProfileStore(cipher=...) or LLMProfileStore.with_cipher(cipher).",
+        )
+        store = store.with_cipher(cipher)
     try:
-        llm = store.load(RESOLUTION_JUDGE_PROFILE_NAME, cipher=cipher)
+        llm = store.load(RESOLUTION_JUDGE_PROFILE_NAME)
     except FileNotFoundError:
         llm = fallback.model_copy(update={"usage_id": RESOLUTION_JUDGE_PROFILE_NAME})
-        store.save(
-            RESOLUTION_JUDGE_PROFILE_NAME, llm, include_secrets=True, cipher=cipher
-        )
+        store.save(RESOLUTION_JUDGE_PROFILE_NAME, llm, include_secrets=True)
         logger.info(
             "Saved the %r LLM profile from %s",
             RESOLUTION_JUDGE_PROFILE_NAME,

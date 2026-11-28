@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, cast
 from uuid import UUID
 
 from pydantic import SecretStr
@@ -29,12 +29,19 @@ from openhands.sdk.profiles.resolver import (
 )
 from openhands.sdk.settings.model import ACPAgentSettings, OpenHandsAgentSettings
 from openhands.sdk.skills import Skill
+from openhands.sdk.utils.deprecation import warn_deprecated
 
 
 if TYPE_CHECKING:
     from openhands.sdk.llm.llm import LLM
     from openhands.sdk.llm.llm_profile_store import LLMProfileLoader
     from openhands.sdk.utils.cipher import Cipher
+
+
+class _PerCallCipherLoader(Protocol):
+    """An LLM profile loader from before the cipher moved onto the store."""
+
+    def load(self, name: str, *, cipher: Cipher | None) -> LLM: ...
 
 
 class AgentProfileLoader(Protocol):
@@ -63,7 +70,20 @@ class LaunchStores:
     agent_profiles: AgentProfileLoader | None = None
     meta_profiles: MetaProfileLoader | None = None
     llm_profile_names: Callable[[], Sequence[str]] | None = None
+    # Deprecated: ``llm_profiles`` decrypts what it loads, so bind the cipher
+    # there. While this is set, it is handed to ``llm_profiles.load`` per call.
     cipher: Cipher | None = None
+
+    def __post_init__(self) -> None:
+        if self.cipher is not None:
+            warn_deprecated(
+                "LaunchStores(cipher=...)",
+                deprecated_in="1.65.0",
+                removed_in="1.70.0",
+                details="Bind the cipher on the LLM profile store instead: "
+                "LLMProfileStore(cipher=...).",
+                stacklevel=4,
+            )
 
 
 @dataclass(frozen=True)
@@ -220,7 +240,10 @@ def _load_llm(stores: LaunchStores, name: str) -> LLM | None:
     from openhands.sdk.llm.provider_connection_store import ProviderConnectionNotFound
 
     try:
-        return stores.llm_profiles.load(name, cipher=stores.cipher)
+        if stores.cipher is None:
+            return stores.llm_profiles.load(name)
+        legacy = cast(_PerCallCipherLoader, stores.llm_profiles)
+        return legacy.load(name, cipher=stores.cipher)
     except FileNotFoundError:
         return None
     except ProviderConnectionNotFound as exc:

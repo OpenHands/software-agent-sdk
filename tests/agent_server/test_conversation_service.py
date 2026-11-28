@@ -3844,6 +3844,13 @@ class TestAutoTitle:
         )
 
     @staticmethod
+    def _profile_store() -> MagicMock:
+        """A store double; the subscriber binds it to the service's cipher."""
+        store = MagicMock(spec=LLMProfileStore)
+        store.with_cipher.return_value = store
+        return store
+
+    @staticmethod
     async def _drain_title_task(
         predicate=lambda: True, max_iterations: int = 50, step: float = 0.02
     ) -> None:
@@ -3998,7 +4005,7 @@ class TestAutoTitle:
         service = self._make_service(title_llm_profile="cheap-model")
         mock_llm = LLM(model="gpt-3.5-turbo", usage_id="title-llm")
 
-        profile_store = MagicMock(spec=LLMProfileStore)
+        profile_store = self._profile_store()
 
         with (
             patch(
@@ -4014,9 +4021,8 @@ class TestAutoTitle:
             await subscriber(self._user_message_event())
             await self._drain_title_task(lambda: service.stored.title is not None)
 
-            mock_store_instance.load.assert_called_once_with(
-                "cheap-model", cipher=service.cipher
-            )
+            profile_store.with_cipher.assert_called_once_with(service.cipher)
+            mock_store_instance.load.assert_called_once_with("cheap-model")
             # Profile-loaded LLM wins over agent.llm
             assert mock_generate_title.called
             assert mock_generate_title.call_args.args[1] is mock_llm
@@ -4030,7 +4036,7 @@ class TestAutoTitle:
         service = self._make_service(title_llm_profile="nonexistent-profile")
         agent_llm = service._conversation.agent.llm
 
-        profile_store = MagicMock(spec=LLMProfileStore)
+        profile_store = self._profile_store()
 
         with (
             patch(
@@ -4081,7 +4087,7 @@ class TestAutoTitle:
         service = self._make_service(title_llm_profile="corrupted-profile")
         agent_llm = service._conversation.agent.llm
 
-        profile_store = MagicMock(spec=LLMProfileStore)
+        profile_store = self._profile_store()
 
         with (
             patch(
@@ -4135,7 +4141,7 @@ class TestAutoTitle:
         service._conversation.agent.llm = ACPAgentSettings().create_agent().llm
         profile_llm = LLM(model="gpt-3.5-turbo", usage_id="title-llm")
 
-        profile_store = MagicMock(spec=LLMProfileStore)
+        profile_store = self._profile_store()
 
         with (
             patch(

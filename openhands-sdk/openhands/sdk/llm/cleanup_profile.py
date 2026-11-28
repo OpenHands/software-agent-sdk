@@ -72,7 +72,7 @@ def _load_cleanup_llm(cipher: Cipher | None) -> LLM | None:
     through unchanged.
     """
     try:
-        return LLMProfileStore().load(CLEANUP_PROFILE_NAME, cipher=cipher)
+        return LLMProfileStore(cipher=cipher).load(CLEANUP_PROFILE_NAME)
     except FileNotFoundError:
         # No cleanup profile configured: feature is simply off.
         return None

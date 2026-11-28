@@ -309,7 +309,7 @@ def _load_active_profile_llm(
     # cipher cannot decrypt is refused
     # (409) rather than applied to settings as ``null``.
     try:
-        llm = profile_store.load(profile_name, cipher=cipher, strict=True)
+        llm = profile_store.with_cipher(cipher).load(profile_name, strict=True)
     except SecretDecryptionError as e:
         raise profile_key_mismatch(profile_name, e)
     except FileNotFoundError:

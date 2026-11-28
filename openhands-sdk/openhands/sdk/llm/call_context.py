@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from openhands.sdk.llm.llm_session import LLMSession
+    from openhands.sdk.utils.cipher import Cipher
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,10 @@ class LLMCallContext:
     sessions: Mapping[str, LLMSession] | None = field(
         default=None, compare=False, repr=False
     )
+    # The conversation's cipher. A fallback strategy decrypts the profiles it
+    # loads with it, so the cipher follows the call instead of living on an
+    # ``LLM`` that several conversations may share.
+    cipher: Cipher | None = field(default=None, compare=False, repr=False)
 
     def for_conversation(
         self,
@@ -39,19 +44,23 @@ class LLMCallContext:
         *,
         prompt_cache_key: str | None = None,
         sessions: Mapping[str, LLMSession] | None = None,
+        cipher: Cipher | None = None,
     ) -> LLMCallContext:
         """Derive context for a conversation while preserving inheritable fields.
 
         Conversation identity is always replaced, and so are the sessions: a
-        child conversation never records into its parent's. Any additional
-        fields added to this dataclass are inherited automatically unless this
-        method explicitly gives them conversation-local semantics.
+        child conversation never records into its parent's. A conversation
+        given no ``cipher`` keeps its parent's, so a sub-agent reads the same
+        encrypted profiles. Any additional fields added to this dataclass are
+        inherited automatically unless this method explicitly gives them
+        conversation-local semantics.
         """
         return replace(
             self,
             prompt_cache_key=prompt_cache_key or conversation_id,
             session_id=conversation_id,
             sessions=sessions,
+            cipher=cipher if cipher is not None else self.cipher,
         )
 
 

@@ -201,9 +201,7 @@ def get_profile(
     try:
         # Runtime reads need current provider credentials. Editor reads
         # retain the stored reference, including dangling references.
-        llm = store.load(
-            name, cipher=cipher, resolve_provider=expose_mode == "plaintext"
-        )
+        llm = store.load(name, resolve_provider=expose_mode == "plaintext")
     except FileNotFoundError:
         raise NotFound(f"Profile '{name}' not found")
 
@@ -250,7 +248,6 @@ def save_profile(
             name,
             llm,
             include_secrets=body.include_secrets,
-            cipher=cipher,
             max_profiles=MAX_PROFILES,
         )
     except SecretDecryptionError as e:
@@ -353,7 +350,7 @@ async def validate_profile(
     # Check a draft linked to a provider connection with the connection's
     # credentials, as activation and ``switch_llm`` run it. No-op without
     # ``provider_connection_id``; a dangling link is a 422 naming it.
-    llm = await run_store(store.resolve_provider_connection, llm, cipher=cipher)
+    llm = await run_store(store.resolve_provider_connection, llm)
 
     messages = [
         Message(
@@ -496,7 +493,6 @@ def activate_profile(
     name: ProfileName,
     profile_store: LLMProfileStore = Depends(get_llm_profile_store),
     settings_store: FileSettingsStore = Depends(get_settings_store),
-    cipher: Cipher | None = Depends(get_cipher),
 ) -> ActivateProfileResponse:
     """Activate a saved LLM profile.
 
@@ -519,7 +515,7 @@ def activate_profile(
     # rotation re-resolves on the next activation or launch.
     # A dangling provider_connection_id raises ProviderConnectionNotFound (422).
     try:
-        llm = profile_store.load(name, cipher=cipher, strict=True)
+        llm = profile_store.load(name, strict=True)
     except SecretDecryptionError as e:
         raise profile_key_mismatch(name, e)
     except FileNotFoundError:

@@ -697,9 +697,7 @@ async def switch_conversation_llm(
     # reference or missing credential surfaces as 422 before the working LLM
     # is replaced. Inline-key configs without a provider_connection_id are
     # byte-identical to the old path.
-    llm = await run_store(
-        llm_profile_store.resolve_provider_connection, llm, cipher=cipher
-    )
+    llm = await run_store(llm_profile_store.resolve_provider_connection, llm)
     try:
         conversation.switch_llm(llm)
     except ValueError as e:

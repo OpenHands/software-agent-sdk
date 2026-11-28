@@ -71,7 +71,7 @@ _SECRETS_ADAPTER: TypeAdapter[dict[str, SecretSource]] = TypeAdapter(
 def server_launch_stores(
     settings: PersistedSettings, stores: ServerStores, cipher: Cipher | None
 ) -> LaunchStores:
-    llm_store = stores.llm_profiles
+    llm_store = stores.llm_profiles.with_cipher(cipher)
     verification = getattr(settings.agent_settings, "verification", None)
     return LaunchStores(
         llm_profiles=llm_store,
@@ -82,7 +82,6 @@ def server_launch_stores(
         critic_api_key=verification.critic_api_key if verification else None,
         agent_profiles=stores.agent_profiles,
         meta_profiles=MetaProfileStore(base_dir=default_meta_profile_dir()),
-        cipher=cipher,
     )
 
 
