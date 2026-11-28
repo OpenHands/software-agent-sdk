@@ -238,15 +238,65 @@ class FileEditor:
             # is the replacement content, and stripping it would silently drop
             # meaningful leading/trailing whitespace (e.g. a Markdown hard line
             # break or intentional indentation) the caller asked to write.
-            old_str = old_str.strip()
+            old_str_stripped = old_str.strip()
             occurrences = [
                 (
                     file_content.count("\n", 0, start) + 1,  # line number
-                    old_str,  # matched text
+                    old_str_stripped,  # matched text
                     start,  # start position
                 )
-                for start in _occurrence_starts(file_content, old_str)
+                for start in _occurrence_starts(file_content, old_str_stripped)
             ]
+            
+            # Second fallback: relative indentation multi-line matching
+            if not occurrences:
+                old_lines = [line.strip() for line in old_str.split("\n") if line.strip()]
+                if old_lines:
+                    content_lines = file_content.split("\n")
+                    matched_line_indices = []
+                    for i in range(len(content_lines) - len(old_lines) + 1):
+                        window = [content_lines[i + j].strip() for j in range(len(old_lines))]
+                        if window == old_lines:
+                            matched_line_indices.append(i)
+                    
+                    if len(matched_line_indices) == 1:
+                        target_idx = matched_line_indices[0]
+                        start_char = len("\n".join(content_lines[:target_idx])) + (1 if target_idx > 0 else 0)
+                        matched_lines_slice = content_lines[target_idx : target_idx + len(old_lines)]
+                        matched_raw_text = "\n".join(matched_lines_slice)
+                        
+                        base_indent = len(matched_lines_slice[0]) - len(matched_lines_slice[0].lstrip())
+                        model_base_indent = 0
+                        for line in old_str.split("\n"):
+                            if line.strip():
+                                model_base_indent = len(line) - len(line.lstrip())
+                                break
+                        
+                        reindented_lines = []
+                        indent_delta = base_indent - model_base_indent
+                        for line in new_str.split("\n"):
+                            if not line.strip():
+                                reindented_lines.append("")
+                            else:
+                                line_indent = len(line) - len(line.lstrip())
+                                new_indent = max(0, line_indent + indent_delta)
+                                reindented_lines.append(" " * new_indent + line.lstrip())
+                        new_str = "\n".join(reindented_lines)
+                        
+                        occurrences = [
+                            (
+                                target_idx + 1,
+                                matched_raw_text,
+                                start_char,
+                            )
+                        ]
+                    elif len(matched_line_indices) > 1:
+                        line_numbers = [idx + 1 for idx in matched_line_indices]
+                        raise ToolError(
+                            f"No replacement was performed. Indentation-tolerant search found multiple occurrences "
+                            f"of old_str in lines {line_numbers}. Please ensure it is unique."
+                        )
+
             if not occurrences:
                 raise ToolError(
                     f"No replacement was performed, old_str `{old_str}` did not "
