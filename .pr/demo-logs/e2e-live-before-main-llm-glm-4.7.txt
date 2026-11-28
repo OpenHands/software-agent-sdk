@@ -1,0 +1,37 @@
+[11/23/26 04:45:37] WARNING  Default prompt text changed; cannot   project.py:63
+                             find "\n* When you run into any major              
+                             issue while executing a plan from the              
+                             user, please don't try to directly                 
+                             work around it. Instead, propose a                 
+                             new plan and confirm with the user                 
+                             before proceeding."                                
++----------------------------------------------------------------------+
+|  OpenHands SDK v1.63.1                                               |
+|                                                                      |
+|  Report a bug: github.com/OpenHands/software-agent-sdk/issues        |
+|  Get help: openhands.dev/joinslack                                   |
+|  Scale up: openhands.dev/product/sdk                                 |
+|                                                                      |
+|  Set OPENHANDS_SUPPRESS_BANNER=1 to hide this message                |
++----------------------------------------------------------------------+
+
+[11/23/26 04:45:39] WARNING  No persistence_dir provided; falling   state.py:688
+                             back to InMemoryFileStore. EventLog                
+                             data will not persist across requests.             
+[11/23/26 04:45:39] INFO     Created new conversation               state.py:773
+                             94b5fd63-308d-49f4-ac5d-3c2c2bced1ad               
+[11/23/26 04:45:39] INFO     TmuxPanePool initialized:     tmux_pane_pool.py:152
+                             session=openhands-pool-None-d                      
+                             bf7deae-64fe-4f72-bd42-e790db                      
+                             8afb90, max_panes=4                                
+[11/23/26 04:45:39] INFO     TerminalExecutor initialized (pool      impl.py:170
+                             mode) working_dir:                                 
+                             /tmp/e2e_prompt_composition__u38xqod,              
+                             username: None, max_panes: 4                       
+[11/23/26 04:45:39] INFO     Loaded 1 tools from spec                base.py:599
+/home/gerg/repos/software-agent-sdk-feat-llm-prompt-composition-metrics/openhands-sdk/openhands/sdk/llm/utils/telemetry.py:555: UserWarning: Cost calculation failed: This model isn't mapped yet. model=glm-4.7, custom_llm_provider=openai. Add it here - https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json.
+  warnings.warn(f"Cost calculation failed: {e}")
+=== LOGGED TOOLS ===
+openai__glm-4.7-1795409142.833-4d8f.json: [(None, None, []), (None, None, [])]
+openai__glm-4.7-1795409145.986-2151.json: [(None, None, []), (None, None, [])]
+final status: ConversationExecutionStatus.FINISHED

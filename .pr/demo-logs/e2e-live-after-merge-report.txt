@@ -1,0 +1,35 @@
+[11/23/26 04:45:14] WARNING  Default prompt text changed; cannot   project.py:63
+                             find "\n* When you run into any major              
+                             issue while executing a plan from the              
+                             user, please don't try to directly                 
+                             work around it. Instead, propose a                 
+                             new plan and confirm with the user                 
+                             before proceeding."                                
++----------------------------------------------------------------------+
+|  OpenHands SDK v1.63.1                                               |
+|                                                                      |
+|  Report a bug: github.com/OpenHands/software-agent-sdk/issues        |
+|  Get help: openhands.dev/joinslack                                   |
+|  Scale up: openhands.dev/product/sdk                                 |
+|                                                                      |
+|  Set OPENHANDS_SUPPRESS_BANNER=1 to hide this message                |
++----------------------------------------------------------------------+
+
+Prompt composition per call (S=system T=tool_schema H=history L=latest, bar width ~50 chars)
+   seq  composition                                         est_total   provider
+     0  SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSTTTTTTTTTTT         4399       4603
+     1  SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSTTTTTTTTTTTHL       4519       4710
+
+Trend over seq:
+   seq |   system | tool_schema |  history |   latest | est_total | provider |  ratio | latency_s
+     0 |     3346 |        1031 |        0 |       22 |      4399 |     4603 |   0.96 |      6.01
+     1 |     3346 |        1031 |       53 |       89 |      4519 |     4710 |   0.96 |      2.76
+
+Summary:
+  calls: 2 (skipped files: 0, uncountable tool schemas: 0)
+  avg system: 3346.0
+  avg tool_schema: 1031.0
+  avg history: 26.5
+  avg latest: 55.5
+  avg est total: 4459.0  avg provider prompt: 4656.5
+  est/provider median ratio: 0.958 (over 2 calls)
