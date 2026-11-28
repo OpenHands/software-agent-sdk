@@ -1,6 +1,7 @@
 from collections.abc import AsyncIterable, AsyncIterator, Iterable, Iterator
 from typing import Protocol, runtime_checkable
 
+from litellm.exceptions import APIConnectionError
 from litellm.types.llms.base import BaseLiteLLMOpenAIResponseObject
 from litellm.types.llms.openai import (
     OutputTextDeltaEvent,
@@ -83,17 +84,54 @@ def _response_event(event: object) -> ResponseStreamEvent | None:
     return None
 
 
+# LiteLLM's wording when a Responses stream closes cleanly but never sent
+# response.completed, response.incomplete or response.failed. Transport errors
+# (reset, protocol error) are raised differently and stay transient errors.
+_ENDED_WITHOUT_TERMINAL_EVENT = "closed the responses stream before any terminal event"
+
+
+def _ended_without_terminal_event(error: BaseException) -> bool:
+    """Whether ``error`` (or what it wraps) says the stream simply ended early.
+
+    Before any output LiteLLM wraps its ``APIConnectionError`` in a
+    ``MidStreamFallbackError``, so the cause chain is walked as well.
+    """
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, APIConnectionError) and (
+            _ENDED_WITHOUT_TERMINAL_EVENT in str(current)
+        ):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+_NO_RESPONSE = "Responses stream finished without a completed response"
+
+
 def response_events(stream: Iterable[object]) -> Iterator[ResponseStreamEvent]:
-    for event in stream:
-        normalized = _response_event(event)
-        if normalized is not None:
-            yield normalized
+    try:
+        for event in stream:
+            normalized = _response_event(event)
+            if normalized is not None:
+                yield normalized
+    except Exception as e:
+        if _ended_without_terminal_event(e):
+            raise LLMNoResponseError(_NO_RESPONSE) from e
+        raise
 
 
 async def async_response_events(
     stream: AsyncIterable[object],
 ) -> AsyncIterator[ResponseStreamEvent]:
-    async for event in stream:
-        normalized = _response_event(event)
-        if normalized is not None:
-            yield normalized
+    try:
+        async for event in stream:
+            normalized = _response_event(event)
+            if normalized is not None:
+                yield normalized
+    except Exception as e:
+        if _ended_without_terminal_event(e):
+            raise LLMNoResponseError(_NO_RESPONSE) from e
+        raise
