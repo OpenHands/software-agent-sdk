@@ -44,9 +44,4 @@ class ManipulationIndices(set[int]):
         This is equivalent to saying that manipulations can be done anywhere inside the
         sequence without issue.
         """
-        manipulation_indices = ManipulationIndices()
-
-        manipulation_indices.update(range(0, len(events)))
-        manipulation_indices.add(len(events))
-
-        return manipulation_indices
+        return ManipulationIndices(range(len(events) + 1))

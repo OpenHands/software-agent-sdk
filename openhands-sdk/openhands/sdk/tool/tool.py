@@ -1,7 +1,6 @@
 import asyncio
 import copy
 import json
-import re
 import threading
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
@@ -33,6 +32,7 @@ from pydantic import (
     field_serializer,
     field_validator,
 )
+from pydantic.alias_generators import to_snake
 from pydantic.json_schema import SkipJsonSchema
 
 from openhands.sdk.security import risk
@@ -196,20 +196,6 @@ def _shallow_response_ref(node: dict[str, Any]) -> dict[str, Any]:
     if "description" in node:
         result["description"] = node["description"]
     return result
-
-
-def _camel_to_snake(name: str) -> str:
-    """Convert CamelCase to snake_case.
-
-    Examples:
-        TerminalTool -> bash_tool
-        FileEditorTool -> file_editor_tool
-        XMLHttpRequest -> xml_http_request
-    """
-    # Insert underscore before uppercase letters (except the first one)
-    s1 = re.sub("(.)([A-Z][a-z]+)", r"\1_\2", name)
-    # Insert underscore before uppercase letters that follow lowercase letters
-    return re.sub("([a-z0-9])([A-Z])", r"\1_\2", s1).lower()
 
 
 class ToolAnnotations(BaseModel):
@@ -405,7 +391,7 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
         super().__init_subclass__(**kwargs)
         # Only set automatically if not explicitly defined in the current class
         if "name" not in cls.__dict__:
-            cls.name = _camel_to_snake(cls.__name__).removesuffix("_tool")
+            cls.name = to_snake(cls.__name__).removesuffix("_tool")
 
     description: str
     action_type: type[Action] = Field(repr=False)
