@@ -230,6 +230,22 @@ _SHELL_PROMPT_TIMEOUT_SECONDS = 10
 _CLEAR_PROMPT_TIMEOUT_SECONDS: Final[float] = 5
 
 
+def shell_setup_command(ps1: str) -> str:
+    """The command that prepares a fresh tmux pane's shell for the agent.
+
+    - ``stty -echoctl``: tmux answers terminal queries (e.g. a cursor-position
+      request) by typing the reply into the pane. With ``echoctl`` the tty
+      echoes that reply as visible text (``^[[13;2R``); without it the echo is
+      the escape sequence itself, which tmux consumes instead of showing.
+    - ``set +H``: no history expansion, so ``!`` reaches commands unchanged.
+    - A plain ``PS1`` the session can find, and no ``PS2``.
+    """
+    return (
+        "stty -echoctl 2>/dev/null; set +H; "
+        f'export PROMPT_COMMAND=\'export PS1="{ps1}"\'; export PS2=""'
+    )
+
+
 class TmuxTerminal(TerminalInterface):
     """Tmux-based terminal backend.
 
@@ -320,10 +336,7 @@ class TmuxTerminal(TerminalInterface):
 
     def _initialize_shell(self) -> None:
         """Configure Bash and wait until its prompt is ready for input."""
-        command = (
-            f"set +H; export PROMPT_COMMAND='export PS1=\"{self.PS1}\"'; "
-            'export PS2=""; clear'
-        )
+        command = f"{shell_setup_command(self.PS1)}; clear"
         self._run_shell_command_and_wait(command)
         self.pane.cmd("clear-history")
 
@@ -461,7 +474,9 @@ class TmuxTerminal(TerminalInterface):
         if not self._initialized or not isinstance(self.pane, libtmux.Pane):
             raise RuntimeError("Tmux terminal is not initialized")
 
-        self._send_then_enter("clear")
+        # C-u first: drop anything left on the input line (e.g. a terminal
+        # query reply that arrived after the prompt) so it does not run.
+        self._send_then_enter("C-u", "clear")
         time.sleep(0.1)
         self.pane.cmd("clear-history")
         # Bash redraws the prompt only after PROMPT_COMMAND returns. If the
