@@ -29,6 +29,10 @@ from openhands.sdk.llm import (
     MetricsSnapshot,
     TextContent,
 )
+from tests.sdk.context.view.conftest import (
+    create_action_event,
+    create_observation_event,
+)
 
 
 def message_event(content: str) -> MessageEvent:
@@ -1181,3 +1185,69 @@ def test_llm_summarizing_condenser_requires_llm() -> None:
     """LLMSummarizingCondenser raises ValidationError when llm is missing."""
     with pytest.raises(ValidationError):
         LLMSummarizingCondenser()  # type: ignore[call-arg]
+
+
+# --------------------------------------------------------------------------- #
+# A tool loop that starts inside keep_first and runs to the end of the view
+# (#6048): only the first response of the loop carries thinking blocks, so the
+# whole loop is one atomic unit.
+# --------------------------------------------------------------------------- #
+
+
+def _long_tool_loop_view(with_user_message: bool) -> tuple[list[Event], View]:
+    events: list[Event] = [_system_prompt_event()]
+    if with_user_message:
+        events.append(message_event("do the task"))
+    for i in range(60):
+        action = create_action_event(
+            f"resp_{i}", f"call_{i}", thinking="plan" if i == 0 else None
+        )
+        observation = create_observation_event(f"call_{i}", content=f"out {i}")
+        events += [action, observation.model_copy(update={"action_id": action.id})]
+    return events, View.from_events(events)
+
+
+@pytest.mark.parametrize("with_user_message", [True, False])
+@patch("openhands.sdk.llm.llm.LLM._transport_call", autospec=True)
+def test_soft_condense_forgets_tool_loop_that_straddles_keep_first(
+    mock_transport, with_user_message: bool
+) -> None:
+    mock_transport.return_value = _summary_response("Loop summary")
+    condenser = LLMSummarizingCondenser(
+        llm=LLM(model="gpt-4o", api_key=SecretStr("k"), usage_id="condenser"),
+        max_size=80,
+        keep_first=4,
+    )
+    events, view = _long_tool_loop_view(with_user_message)
+    loop_start = 2 if with_user_message else 1
+    assert condenser.condensation_requirement(view) == CondensationRequirement.SOFT
+
+    result = condenser.condense(view)
+
+    assert isinstance(result, Condensation)
+    assert result.summary == "Loop summary"
+    assert result.summary_offset == loop_start
+    assert set(result.forgotten_event_ids) == {e.id for e in events[loop_start:]}
+    messages = _applied_messages(result, view)
+    assert messages[0].role == "system"
+    assert all(m.role != "tool" and not m.tool_calls for m in messages)
+
+
+@pytest.mark.asyncio
+@patch("openhands.sdk.llm.llm.LLM._atransport_call", new_callable=AsyncMock)
+async def test_async_soft_condense_forgets_tool_loop_that_straddles_keep_first(
+    mock_atransport,
+) -> None:
+    mock_atransport.return_value = _summary_response("Loop summary")
+    condenser = LLMSummarizingCondenser(
+        llm=LLM(model="gpt-4o", api_key=SecretStr("k"), usage_id="condenser"),
+        max_size=80,
+        keep_first=4,
+    )
+    events, view = _long_tool_loop_view(with_user_message=True)
+
+    result = await condenser.acondense(view)
+
+    assert isinstance(result, Condensation)
+    assert result.summary_offset == 2
+    assert set(result.forgotten_event_ids) == {e.id for e in events[2:]}
