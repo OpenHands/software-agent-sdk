@@ -10,6 +10,7 @@ a temporary directory, ensuring the state can be restored
 if the task is resumed for further work later.
 """
 
+import json
 import shutil
 import tempfile
 import threading
@@ -51,6 +52,7 @@ ConfirmationHandler = Callable[[str, list["ActionEvent"]], bool]
 logger = get_logger(__name__)
 
 _SUBAGENTS_DIR: Final[str] = "subagents"
+_TASKS_INDEX_FILE: Final[str] = "tasks_index.json"
 
 
 class TaskStatus(StrEnum):
@@ -78,6 +80,10 @@ class Task(BaseModel):
     )
     result: str | None = Field(default=None, description="Result of the task.")
     error: str | None = Field(default=None, description="Error if task failed.")
+    subagent_type: str | None = Field(
+        default=None,
+        description="Sub-agent type the task was created with; reused on resume.",
+    )
     conversation: LocalConversation | None = Field(
         default=None,
         exclude=True,
@@ -140,6 +146,7 @@ class TaskManager:
             if parent_persistence_dir is not None:
                 self._persistence_dir = Path(parent_persistence_dir) / _SUBAGENTS_DIR
                 self._persistence_dir.mkdir(parents=True, exist_ok=True)
+                self._load_persisted_tasks()
             else:
                 self._persistence_dir = Path(
                     tempfile.mkdtemp(prefix="openhands_tasks_")
@@ -161,12 +168,46 @@ class TaskManager:
         uuid_ = uuid.uuid4()
         return task_id, uuid_
 
+    def _load_persisted_tasks(self) -> None:
+        if self._persistence_dir is None:
+            return
+        index_path = self._persistence_dir / _TASKS_INDEX_FILE
+        if not index_path.is_file():
+            return
+        try:
+            payload = json.loads(index_path.read_text(encoding="utf-8"))
+            with self._tasks_lock:
+                for raw_task in payload.get("tasks", []):
+                    restored = Task.model_validate(raw_task)
+                    self._tasks[restored.id] = restored
+        except Exception as e:
+            logger.warning(f"Failed to load persisted subagent tasks index: {e}")
+
+    def _save_persisted_tasks_unlocked(self) -> None:
+        if (
+            self._persistence_dir is None
+            or self._parent_conversation is None
+            or self._parent_conversation.state.persistence_dir is None
+        ):
+            return
+        index_path = self._persistence_dir / _TASKS_INDEX_FILE
+        tmp_path = index_path.with_suffix(".json.tmp")
+        payload = {
+            "tasks": [
+                t.model_dump(mode="json", exclude={"conversation"})
+                for t in self._tasks.values()
+            ]
+        }
+        tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        tmp_path.replace(index_path)
+
     def _evict_task(self, task: Task) -> None:
         if task.conversation:
             task.conversation.pause()
             task.conversation.close()
         with self._tasks_lock:
             self._tasks[task.id] = task.model_copy(update={"conversation": None})
+            self._save_persisted_tasks_unlocked()
 
     def start_task(
         self,
@@ -216,6 +257,9 @@ class TaskManager:
                     f"Available tasks: {', '.join(sorted(self._tasks))}"
                 )
 
+            # Resume with the sub-agent type the task was created with, so the
+            # restored conversation's tool set matches its persisted agent.
+            subagent_type = self._tasks[resume].subagent_type or subagent_type
             factory = get_agent_factory(subagent_type)
             worker_agent = self._get_sub_agent_from_factory(factory)
             conversation_id = self._tasks[resume].conversation_id
@@ -299,6 +343,7 @@ class TaskManager:
 
             self._tasks[task_id] = Task(
                 id=task_id,
+                subagent_type=subagent_type,
                 conversation_id=conversation_id,
                 conversation=sub_conversation,
                 status=TaskStatus.RUNNING,
