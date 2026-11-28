@@ -281,6 +281,7 @@ def test_verified_lists_keep_two_latest_versions_per_line():
             {
                 "nemotron-3.5-lightning-30b-a3b",
                 "nemotron-3.5-super-vl-120b-a12b",
+                "nemotron-3.5-bolt-e4b",
                 "nemotron-3-nano",
             },
             set(),
