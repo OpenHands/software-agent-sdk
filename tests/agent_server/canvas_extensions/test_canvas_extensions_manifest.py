@@ -45,6 +45,7 @@ def test_manifest_with_page_contribution():
     assert manifest.contributes.pages[0].id == "dashboard"
     assert manifest.contributes.pages[0].title == "Dashboard"
     assert manifest.contributes.pages[0].path == "/dashboard"
+    assert manifest.contributes.pages[0].nav_label is None
 
 
 def test_manifest_with_multiple_distinct_pages():
@@ -159,7 +160,12 @@ def test_manifest_round_trips_through_json_dict():
         "entrypoint": "dist/index.js",
         "contributes": {
             "pages": [
-                {"id": "dashboard", "title": "Dashboard", "path": "/dashboard"},
+                {
+                    "id": "dashboard",
+                    "title": "Dashboard",
+                    "path": "/dashboard",
+                    "nav_label": "Home",
+                },
             ]
         },
     }
