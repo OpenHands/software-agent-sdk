@@ -79,6 +79,61 @@ def test_launch_additions_accept_context_and_forbid_unknown_fields():
         AgentLaunchAdditions.model_validate({"tools_append": []})
 
 
+def test_an_acp_model_override_reaches_the_launched_agent():
+    agent = ACPAgent(
+        acp_command=["echo", "test"],
+        acp_model="stored-model",
+        acp_effort="low",
+    )
+
+    launched = finalize(
+        agent,
+        LaunchRuntime(),
+        additions=AgentLaunchAdditions(
+            acp_model="picked-model",
+            acp_effort="high",
+        ),
+    ).agent
+
+    assert launched.acp_model == "picked-model"
+    assert launched.acp_effort == "high"
+    # The sentinel LLM shows the model actually in use.
+    assert launched.llm.model == "picked-model"
+    assert launched.llm.metrics.model_name == "picked-model"
+    # The agent that was handed in is untouched.
+    assert agent.acp_model == "stored-model"
+    assert agent.acp_effort == "low"
+
+
+def test_an_acp_model_override_leaves_the_other_field_alone():
+    agent = ACPAgent(
+        acp_command=["echo", "test"],
+        acp_model="stored-model",
+        acp_effort="stored-effort",
+    )
+
+    launched = finalize(
+        agent,
+        LaunchRuntime(),
+        additions=AgentLaunchAdditions(acp_model="picked-model"),
+    ).agent
+
+    assert launched.acp_model == "picked-model"
+    assert launched.acp_effort == "stored-effort"
+
+
+def test_an_acp_override_does_not_apply_to_a_non_acp_agent():
+    agent = _agent("PROFILE_BASELINE")
+
+    launched = finalize(
+        agent,
+        LaunchRuntime(),
+        additions=AgentLaunchAdditions(acp_model="picked-model"),
+    ).agent
+
+    assert not isinstance(launched, ACPAgent)
+
+
 def test_launch_addition_uses_existing_acp_prompt_path():
     agent = ACPAgent(
         acp_command=["echo", "test"],

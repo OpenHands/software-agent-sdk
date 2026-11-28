@@ -159,6 +159,26 @@ class AgentLaunchAdditions(BaseModel):
             "`agent_profile_id`."
         ),
     )
+    acp_model: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "ACP model to launch an ACP Agent Profile with instead of the "
+            "profile's own `acp_model`. The stored profile is not modified; "
+            "the override is recorded on the launched conversation's agent. "
+            "Only valid with `agent_profile_id` and an ACP Agent Profile."
+        ),
+    )
+    acp_effort: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "ACP reasoning effort to launch an ACP Agent Profile with instead "
+            "of the profile's own `acp_effort`. Applied after the model. The "
+            "stored profile is not modified. Only valid with "
+            "`agent_profile_id` and an ACP Agent Profile."
+        ),
+    )
 
 
 class ConversationContainerOptions(BaseModel):

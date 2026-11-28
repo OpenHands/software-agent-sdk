@@ -21,6 +21,7 @@ from openhands.sdk.logger import get_logger
 
 if TYPE_CHECKING:
     from openhands.sdk.conversation.conversation_stats import ConversationStats
+    from openhands.sdk.conversation.secret_registry import SecretRegistry
     from openhands.sdk.conversation.state import ConversationState
     from openhands.sdk.llm import LLM
     from openhands.sdk.llm.call_context import LLMCallContext
@@ -443,6 +444,7 @@ def create_hook_callback(
     | ConversationVisualizerBase
     | None = None,
     conversation_stats: "ConversationStats | None" = None,
+    secret_registry: "SecretRegistry | None" = None,
 ) -> tuple[HookEventProcessor, Any]:
     """Create a hook-enabled event callback. Returns (processor, callback).
 
@@ -460,6 +462,10 @@ def create_hook_callback(
         persistence_dir: Directory used to persist agent hook sub-conversation events.
         visualizer: Visualizer instance passed to agent hook sub-conversations.
         conversation_stats: Parent conversation stats that should include hook spend.
+        secret_registry: The conversation's secret registry. Command hooks are
+            opaque consumers, so they receive every registered secret in their
+            subprocess environment; agent hooks forward them to their
+            sub-conversation.
 
     Returns:
         Tuple of (HookEventProcessor, callback function).
@@ -474,6 +480,7 @@ def create_hook_callback(
         persistence_dir=persistence_dir,
         visualizer=visualizer,
         conversation_stats=conversation_stats,
+        secret_registry=secret_registry,
     )
 
     processor = HookEventProcessor(

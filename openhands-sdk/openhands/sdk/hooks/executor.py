@@ -23,9 +23,11 @@ from openhands.sdk.utils import sanitized_env
 if TYPE_CHECKING:
     from openhands.sdk.conversation.base import BaseConversation
     from openhands.sdk.conversation.conversation_stats import ConversationStats
+    from openhands.sdk.conversation.secret_registry import SecretRegistry
     from openhands.sdk.llm import LLM
     from openhands.sdk.llm.call_context import LLMCallContext
     from openhands.sdk.llm.utils.metrics import Metrics
+    from openhands.sdk.secret import SecretSource
 
 
 class HookResult(BaseModel):
@@ -173,6 +175,7 @@ class HookExecutor:
         | ConversationVisualizerBase
         | None = None,
         conversation_stats: "ConversationStats | None" = None,
+        secret_registry: "SecretRegistry | None" = None,
     ):
         self.working_dir = working_dir or os.getcwd()
         self.async_process_manager = async_process_manager or AsyncProcessManager()
@@ -185,6 +188,10 @@ class HookExecutor:
         self.persistence_dir = persistence_dir
         self.visualizer = visualizer
         self.conversation_stats = conversation_stats
+        # The conversation's secrets. Command hooks are opaque consumers: their
+        # command string is never name-scanned, so they cannot be given only the
+        # secrets they mention. They get the whole registry instead.
+        self.secret_registry = secret_registry
 
     @property
     def llm(self) -> "LLM | None":
@@ -276,6 +283,7 @@ class HookExecutor:
                 visualizer=hook_visualizer,
                 max_iteration_per_run=hook.max_iterations,
                 _parent_llm_call_context=self.llm_call_context,
+                secrets=self._hook_sub_conversation_secrets(),
             )
             conversation.send_message(
                 f"Evaluate this {event_type} hook event and make your decision.\n\n"
@@ -465,6 +473,62 @@ class HookExecutor:
             else:
                 self.conversation_stats.usage_to_metrics[usage_id] = metrics.deep_copy()
 
+    def _hook_sub_conversation_secrets(self) -> "dict[str, SecretSource] | None":
+        """The parent's registered secrets, for an agent hook's sub-conversation.
+
+        The sub-agent runs bash like any other agent, and it must see the same
+        secrets as the conversation the hook belongs to. The secret sources are
+        shared, so a lookup is not repeated against the provider.
+        """
+        registry = self.secret_registry
+        if registry is None:
+            return None
+        return dict(registry.secret_sources) or None
+
+    def _hook_secret_env(self) -> dict[str, str]:
+        """The conversation's secrets as environment variables for a hook.
+
+        Returns an empty mapping when the conversation has no secret registry
+        or no registered secrets, so a hook with zero secrets behaves exactly
+        as it did before. A secret whose lookup fails or resolves to an empty
+        value is omitted instead of failing the hook.
+        """
+        registry = self.secret_registry
+        if registry is None:
+            return {}
+        try:
+            return registry.get_all_secrets_as_env_vars()
+        except Exception as e:
+            logger.warning(
+                f"Failed to resolve secrets for hook environment: "
+                f"{type(e).__name__}: {e}"
+            )
+            return {}
+
+    def _mask_hook_output(self, result: HookResult) -> HookResult:
+        """Mask secret values in a hook's captured output.
+
+        The hook subprocess received the secrets, so its stdout and stderr can
+        contain them. The persisted ``HookExecutionEvent`` must not.
+        """
+        registry = self.secret_registry
+        if registry is None:
+            return result
+        try:
+            result.stdout = registry.mask_secrets_in_output(result.stdout)
+            result.stderr = registry.mask_secrets_in_output(result.stderr)
+            if result.reason:
+                result.reason = registry.mask_secrets_in_output(result.reason)
+            if result.additional_context:
+                result.additional_context = registry.mask_secrets_in_output(
+                    result.additional_context
+                )
+        except Exception as e:
+            logger.warning(
+                f"Failed to mask secrets in hook output: {type(e).__name__}: {e}"
+            )
+        return result
+
     def execute(
         self,
         hook: HookDefinition,
@@ -488,6 +552,13 @@ class HookExecutor:
             # Set after the inherited environment so a parent-process value
             # cannot shadow the owning plugin's root.
             hook_env["PLUGIN_ROOT"] = hook.plugin_root
+
+        # The conversation's registered secrets, so a hook command can use them
+        # (e.g. `curl -H "Authorization: Bearer $TOKEN"`). A hook command is
+        # never name-scanned, so it cannot be given only the secrets it
+        # mentions. Resolved values are tracked for output masking; a secret
+        # that cannot be resolved is omitted rather than failing the hook.
+        hook_env.update(self._hook_secret_env())
 
         if env:
             hook_env.update(env)
@@ -619,7 +690,7 @@ class HookExecutor:
                     # Not JSON, that's okay - just use stdout as-is
                     pass
 
-            return hook_result
+            return self._mask_hook_output(hook_result)
 
         except subprocess.TimeoutExpired:
             return HookResult(

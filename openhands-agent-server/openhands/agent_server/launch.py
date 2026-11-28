@@ -150,9 +150,23 @@ def launch_source(
     context = _decryption_context(request, cipher)
     additions = request.agent_launch_additions
     llm_profile_ref = additions.llm_profile_ref if additions else None
+    acp_model = additions.acp_model if additions else None
+    acp_effort = additions.acp_effort if additions else None
     if request.agent_profile_id is not None:
         return resolve(
-            request.agent_profile_id, stores(), llm_profile_ref=llm_profile_ref
+            request.agent_profile_id,
+            stores(),
+            llm_profile_ref=llm_profile_ref,
+            acp_model=acp_model,
+            acp_effort=acp_effort,
+        )
+    if acp_model is not None or acp_effort is not None:
+        # Without a profile there is nothing to override: the request carries
+        # its own agent settings. Dropping the pick silently would run the
+        # conversation on a model the caller did not choose.
+        raise AgentLaunchError(
+            "agent_launch_additions.acp_model and acp_effort require "
+            "agent_profile_id"
         )
     agent: AgentBase | None = request.agent
     if agent is not None:
@@ -265,6 +279,8 @@ def forward_to_runtime(
     additions = dict(payload.get("agent_launch_additions") or {})
     # Already applied by resolve; without a profile source it is invalid.
     additions.pop("llm_profile_ref", None)
+    additions.pop("acp_model", None)
+    additions.pop("acp_effort", None)
     payload["agent_launch_additions"] = additions or None
     return payload
 

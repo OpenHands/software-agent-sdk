@@ -1560,6 +1560,7 @@ class LocalConversation(BaseConversation):
                 persistence_dir=hook_persistence_dir,
                 visualizer=self._visualizer,
                 conversation_stats=self._state.stats,
+                secret_registry=self._state.secret_registry,
             )
             self._on_event = self._tree_stamping(self._rules_injecting(raw_on_event))
             self._hook_processor.set_conversation_state(self._state)
@@ -1654,6 +1655,7 @@ class LocalConversation(BaseConversation):
             persistence_dir=hook_persistence_dir,
             visualizer=self._visualizer,
             conversation_stats=self._state.stats,
+            secret_registry=self._state.secret_registry,
         )
         self._on_event = self._tree_stamping(self._rules_injecting(raw_on_event))
         self._hook_processor.set_conversation_state(self._state)

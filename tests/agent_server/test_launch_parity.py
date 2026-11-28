@@ -26,10 +26,10 @@ from openhands.agent_server.persistence import (
 )
 from openhands.sdk import LLM
 from openhands.sdk.conversation.request import StartConversationRequest
-from openhands.sdk.launch import finalize, preview_launch, resolve
+from openhands.sdk.launch import AgentLaunchError, finalize, preview_launch, resolve
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.profiles import OpenHandsAgentProfile
-from openhands.sdk.profiles.agent_profile import ProfileVerificationSettings
+from openhands.sdk.profiles.agent_profile import ACPAgentProfile, ProfileVerificationSettings
 from openhands.sdk.settings.model import (
     OpenHandsAgentSettings,
     VerificationSettings,
@@ -38,7 +38,10 @@ from openhands.sdk.settings.model import (
 from openhands.sdk.skills import Skill
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
+from openhands.sdk.agent import Agent
+from openhands.sdk.context.agent_context import AgentContext
 from tests.agent_server.conftest import client_context
+from tests.sdk.launch import fakes
 
 
 CATALOG = [
@@ -393,3 +396,54 @@ def test_a_docker_host_preview_matches_what_the_container_launches(
     assert ("browser_tool_set" in launched_tools[0]) is image_has_browser
     assert agent.agent_context is not None
     assert preview.resolved_skills == [s.name for s in agent.agent_context.skills]
+
+
+def _agent() -> Agent:
+    return Agent(
+        llm=LLM(model="gpt-4o", usage_id="llm"),
+        tools=[],
+        agent_context=AgentContext(),
+    )
+
+
+def test_an_acp_model_override_is_applied_and_not_forwarded_twice(tmp_path):
+    """A launch-time ACP pick reaches the agent, and the container payload
+    does not carry the already-applied override."""
+    from openhands.sdk.conversation.request import AgentLaunchAdditions
+    from openhands.sdk.profiles.agent_profile import ACPAgentProfile
+
+    profile = ACPAgentProfile(name="acp", acp_model="stored-model", acp_effort="low")
+    stores = fakes.stores(profile)
+    request = StartConversationRequest(
+        agent_profile_id=profile.id,
+        workspace=LocalWorkspace(working_dir="/workspace"),
+        agent_launch_additions=AgentLaunchAdditions(
+            acp_model="picked-model",
+            acp_effort="high",
+        ),
+    )
+
+    resolved = launch_source(request, lambda: stores, None)
+    settings = resolved.settings
+    assert settings.acp_model == "picked-model"
+    assert settings.acp_effort == "high"
+
+    payload = forward_to_runtime(
+        request, resolved, {}, Cipher("container-key"), load_memory=False
+    )
+    # Already applied by resolve; the container must not apply it again.
+    assert not (payload.get("agent_launch_additions") or {}).get("acp_model")
+    assert not (payload.get("agent_launch_additions") or {}).get("acp_effort")
+
+
+def test_an_acp_model_override_without_a_profile_is_rejected():
+    from openhands.sdk.conversation.request import AgentLaunchAdditions
+
+    request = StartConversationRequest(
+        agent=_agent(),
+        workspace=LocalWorkspace(working_dir="/workspace"),
+        agent_launch_additions=AgentLaunchAdditions(acp_model="picked-model"),
+    )
+
+    with pytest.raises(AgentLaunchError, match="agent_profile_id"):
+        launch_source(request, lambda: fakes.stores(), None)
