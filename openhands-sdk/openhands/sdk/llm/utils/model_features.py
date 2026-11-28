@@ -271,6 +271,12 @@ _MODEL_CAPABILITIES: tuple[tuple[str, dict[str, bool | str]], ...] = (
     ("deepseek-v4-flash", {"send_reasoning_content": True}),
     # Verified user and tool images through the OpenHands proxy (#5460, #5523).
     ("deepseek-v4.1-flash", {"supports_vision": True, "send_reasoning_content": True}),
+    # Providers such as Venice publish the same family with hyphens and dated or
+    # variant suffixes (#7183). The anchored pattern leaves e2ee-* variants alone.
+    (
+        "deepseek-v4-1-flash*",
+        {"supports_vision": True, "send_reasoning_content": True},
+    ),
     # URL restrictions are properties of the serving route, not the model family.
     ("moonshot/kimi-k2.6", {"requires_inline_image_data": True}),
     ("moonshot/kimi-k3", {"requires_inline_image_data": True}),
