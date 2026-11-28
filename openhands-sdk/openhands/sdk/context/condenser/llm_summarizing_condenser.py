@@ -43,6 +43,17 @@ def _leading_system_prompt_index(events: Sequence[LLMConvertibleEvent]) -> int |
     return None
 
 
+def _summary_text(message: Message) -> str:
+    text = "\n".join(
+        part.text for part in message.content if isinstance(part, TextContent)
+    )
+    if not text.strip():
+        raise NoCondensationAvailableException(
+            "Summarization LLM returned no summary text"
+        )
+    return text
+
+
 class Reason(Enum):
     """Reasons for condensation."""
 
@@ -265,16 +276,9 @@ class LLMSummarizingCondenser(RollingCondenser):
                 f"Summarization LLM call failed: {e}"
             ) from e
 
-        # Extract summary from the LLMResponse message
-        summary = None
-        if llm_response.message.content:
-            first_content = llm_response.message.content[0]
-            if isinstance(first_content, TextContent):
-                summary = first_content.text
-
         return Condensation(
             forgotten_event_ids={event.id for event in forgotten_events},
-            summary=summary,
+            summary=_summary_text(llm_response.message),
             summary_offset=summary_offset,
             llm_response_id=llm_response.id,
         )
@@ -469,15 +473,9 @@ class LLMSummarizingCondenser(RollingCondenser):
                 f"Summarization LLM call failed: {e}"
             ) from e
 
-        summary = None
-        if llm_response.message.content:
-            first_content = llm_response.message.content[0]
-            if isinstance(first_content, TextContent):
-                summary = first_content.text
-
         return Condensation(
             forgotten_event_ids={event.id for event in forgotten_events},
-            summary=summary,
+            summary=_summary_text(llm_response.message),
             summary_offset=summary_offset,
             llm_response_id=llm_response.id,
         )
