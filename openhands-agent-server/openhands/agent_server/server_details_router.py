@@ -94,6 +94,7 @@ class ServerInfo(BaseModel):
             "conversation_model_router_routes_v1",
             "conversation_configuration_additions_v1",
             "conversation_mcp_install_v1",
+            "conversation_token_v1",
         ]
     )
     app_backend_ingress_url: str | None = Field(

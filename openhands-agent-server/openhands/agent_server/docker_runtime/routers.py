@@ -569,7 +569,9 @@ async def _proxy_socket(
 ) -> None:
     from openhands.agent_server.sockets import _accept_authenticated_websocket
 
-    if not await _accept_authenticated_websocket(websocket, session_api_key, config):
+    if not await _accept_authenticated_websocket(
+        websocket, session_api_key, config, conversation_id
+    ):
         return
     if not isinstance(registry, DockerConversationRegistry):
         await websocket.close(code=1011)

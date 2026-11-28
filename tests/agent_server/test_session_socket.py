@@ -624,7 +624,7 @@ async def test_a_message_sent_while_a_step_runs_is_saved_after_the_client_leaves
     service = _LockedEventService()
     ws = _ClientSocket([_user_frame("wait, actually")])
 
-    async def accept(websocket, key, config):
+    async def accept(websocket, key, config, conversation_id=None):
         return True
 
     monkeypatch.setattr(module, "_accept_authenticated_websocket", accept)
