@@ -65,6 +65,47 @@ def test_pool_waits_for_slow_shell_initialization(tmp_path):
         executor.close()
 
 
+@pytest.mark.parametrize("terminal_type", ["tmux", "subprocess"])
+def test_leading_comments_do_not_complete_the_command(tmp_path, terminal_type):
+    executor = TerminalExecutor(
+        working_dir=str(tmp_path), terminal_type=terminal_type, max_panes=1
+    )
+    command = (
+        "# Print a synthetic status line.\n\n"
+        "  # Then return a failed status.\n"
+        "sleep 1 && printf '%s\\n' 'synthetic-status-output' && false"
+    )
+    try:
+        result = executor(TerminalAction(command=command, timeout=5))
+
+        assert result.text.strip() == "synthetic-status-output"
+        assert result.exit_code == 1
+        assert result.command == command
+    finally:
+        executor.close()
+
+
+@pytest.mark.parametrize("terminal_type", ["tmux", "subprocess"])
+def test_leading_comment_keeps_key_name_as_shell_command(tmp_path, terminal_type):
+    executor = TerminalExecutor(
+        working_dir=str(tmp_path), terminal_type=terminal_type, max_panes=1
+    )
+    try:
+        result = executor(
+            TerminalAction(command="ENTER() { printf 'function ran\\n'; }")
+        )
+        assert result.exit_code == 0
+
+        result = executor(
+            TerminalAction(command="# Run the function.\nENTER", timeout=5)
+        )
+
+        assert result.text.strip() == "function ran"
+        assert result.exit_code == 0
+    finally:
+        executor.close()
+
+
 class TestDeclaredResources:
     def test_pool_mode_opts_out_of_framework_locking(self, pool_executor):
         """In pool mode, declared_resources returns empty keys so the
