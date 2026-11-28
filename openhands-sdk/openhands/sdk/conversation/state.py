@@ -338,6 +338,8 @@ class ConversationState(OpenHandsModel):
     )  # FIFO lock for thread safety
     _save_depth: int = PrivateAttr(default=0)  # context-manager nesting depth
     _dirty: bool = PrivateAttr(default=False)  # pending unsaved field changes
+    # The pending changes already failed to save and that error was raised once.
+    _save_failure_raised: bool = PrivateAttr(default=False)
 
     @model_validator(mode="before")
     @classmethod
@@ -795,6 +797,7 @@ class ConversationState(OpenHandsModel):
             # so that multiple field mutations produce a single I/O write.
             if self._save_depth > 0:
                 self._dirty = True
+                self._save_failure_raised = False
             else:
                 try:
                     self._save_base_state(fs)
@@ -967,7 +970,14 @@ class ConversationState(OpenHandsModel):
         """Context manager exit — flushes any deferred save."""
         try:
             self._save_depth -= 1
-            self._flush_deferred_save()
+            if exc_type is None:
+                self._flush_deferred_save()
+            else:
+                try:
+                    self._flush_deferred_save()
+                except Exception:
+                    # Never replace the exception that is already propagating.
+                    logger.exception("Failed to persist conversation state")
         finally:
             self._lock.release()
 
@@ -983,7 +993,17 @@ class ConversationState(OpenHandsModel):
                 self._save_base_state(fs)
             except Exception:
                 self._dirty = True
+                # Raise once per batch of unsaved changes; later blocks that add
+                # nothing just retry, so a full disk cannot wedge read-only users.
+                if self._save_failure_raised:
+                    logger.warning(
+                        "Conversation state is still unsaved; will retry",
+                        exc_info=True,
+                    )
+                    return
+                self._save_failure_raised = True
                 raise
+            self._save_failure_raised = False
 
     def save_soon(self) -> None:
         """Persist a change made inside a field, without waiting for the lock.
@@ -995,6 +1015,7 @@ class ConversationState(OpenHandsModel):
         running step (``ask_agent``) never does.
         """
         self._dirty = True
+        self._save_failure_raised = False
         if not self._lock.acquire(blocking=False):
             return
         try:
