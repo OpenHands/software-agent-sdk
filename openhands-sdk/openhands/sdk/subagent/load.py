@@ -39,7 +39,7 @@ from pathlib import Path
 from typing import Final
 
 from openhands.sdk.logger import get_logger
-from openhands.sdk.subagent.schema import AgentDefinition
+from openhands.sdk.subagent.schema import AgentDefinition, InvalidCondenserConfigError
 from openhands.sdk.utils.path import get_user_persistence_dir, resolves_within
 
 
@@ -214,6 +214,8 @@ def load_agents_from_dir(
             agent_def = AgentDefinition.load(md_file)
             definitions.append(agent_def)
             logger.debug(f"Loaded agent definition '{agent_def.name}' from {md_file}")
+        except InvalidCondenserConfigError:
+            raise
         except Exception:
             logger.warning(
                 f"Failed to load agent definition from {md_file}", exc_info=True

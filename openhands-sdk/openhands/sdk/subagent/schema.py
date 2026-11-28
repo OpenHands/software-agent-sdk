@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal
 
 import frontmatter
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from openhands.sdk.context.condenser import CondenserBase, NoOpCondenser
 from openhands.sdk.hooks.config import HookConfig
@@ -172,12 +172,29 @@ def _extract_hooks(fm: dict[str, object]) -> HookConfig | None:
     return hooks
 
 
-def _extract_condenser(fm: dict[str, Any]) -> CondenserBase | None:
+class InvalidCondenserConfigError(ValueError):
+    """An agent file contains an invalid condenser configuration."""
+
+
+class SubagentCondenserTuning(BaseModel):
+    """Overrides for the default condenser, whose LLM is chosen at spawn."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    max_size: int | None = Field(default=None, gt=0)
+    keep_first: int | None = Field(default=None, ge=0)
+    max_tokens: int | None = Field(default=None, gt=0)
+
+
+def _extract_condenser(
+    fm: dict[str, Any],
+) -> CondenserBase | SubagentCondenserTuning | None:
     """Extract the condenser config from frontmatter.
 
     Absent / 'default' / None -> None (a default summarizing condenser is applied
     at factory time). 'none'/'off'/false -> NoOpCondenser (disable condensation).
-    A mapping -> a full condenser spec validated against the discriminated union.
+    A mapping with a kind specifies a full condenser; otherwise it tunes the default.
     """
     raw = fm.get("condenser")
     if raw is None or isinstance(raw, CondenserBase):
@@ -195,7 +212,9 @@ def _extract_condenser(fm: dict[str, Any]) -> CondenserBase | None:
             "or a mapping with a condenser config."
         )
     if isinstance(raw, dict):
-        return CondenserBase.model_validate(raw)
+        if "kind" in raw:
+            return CondenserBase.model_validate(raw)
+        return SubagentCondenserTuning.model_validate(raw)
     raise ValueError(f"Invalid condenser value: {raw!r}")
 
 
@@ -279,7 +298,7 @@ class AgentDefinition(BaseModel):
         description="Path to the directory where LLM profiles are stored. "
         "If None, the default profile store directory is used.",
     )
-    condenser: CondenserBase | None = Field(
+    condenser: CondenserBase | SubagentCondenserTuning | None = Field(
         default=None,
         description="Context condenser for the sub-agent. None applies a default "
         "summarizing condenser; set a NoOpCondenser to disable condensation.",
@@ -360,7 +379,12 @@ class AgentDefinition(BaseModel):
         mcp_config: dict[str, MCPServer] | None = _extract_mcp_config(fm)
         profile_store_dir: str | None = _extract_profile_store_dir(fm)
         hooks: HookConfig | None = _extract_hooks(fm)
-        condenser: CondenserBase | None = _extract_condenser(fm)
+        try:
+            condenser = _extract_condenser(fm)
+        except ValueError as exc:
+            raise InvalidCondenserConfigError(
+                f"{agent_path}: invalid condenser configuration: {exc}"
+            ) from exc
 
         # Extract whenToUse examples from description
         when_to_use_examples = _extract_examples(description)
