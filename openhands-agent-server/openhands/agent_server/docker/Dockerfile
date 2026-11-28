@@ -38,7 +38,7 @@ ARG ENABLE_VSCODE=true
 # newly published Debian packages have a three-day observation period.
 ####################################################################################
 FROM python:3.13.15-slim-trixie AS python-runtime
-FROM node:24.22.2-trixie-slim AS node-runtime
+FROM node:24.22.3-trixie-slim AS node-runtime
 
 # pip 26.2.2 vendors urllib3 2.7.0 (CVE-2026-97689) and msgpack 1.1.2
 # (GHSA-6v7p-g79w-8964), and no pip release vendors the fixed versions yet.
@@ -310,13 +310,13 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*; \
     ARCH=$(uname -m); \
     case "$ARCH" in \
-      x86_64|amd64) NARCH=x64; NODE_SHA256=48cc0e21e048790e54c0cf5749c2725005313d652651c40b7a21feb9697aaf75;; \
-      aarch64|arm64) NARCH=arm64; NODE_SHA256=eb187837a2230d4047161ac0be008584e16b46f726e9c9490ee35dc6b17d9ba8;; \
+      x86_64|amd64) NARCH=x64; NODE_SHA256=4f2b175a6d53a5c617a80dba2676238a0688cef28c6da4eba35c7d844e66fcfb;; \
+      aarch64|arm64) NARCH=arm64; NODE_SHA256=6e51a2ada00f0011cc266f65d98922b403d7ad88f809ca2aa615a5fe1ce6e86c;; \
       *) echo "Unsupported architecture for ACP providers: '$ARCH'" >&2; exit 1;; \
     esac; \
-    NODE_TARBALL="/tmp/node-v24.22.2-linux-${NARCH}.tar.xz"; \
+    NODE_TARBALL="/tmp/node-v24.22.3-linux-${NARCH}.tar.xz"; \
     curl -fsSL --retry 5 --retry-delay 2 --retry-connrefused \
-        "https://nodejs.org/dist/v24.22.2/node-v24.22.2-linux-${NARCH}.tar.xz" -o "$NODE_TARBALL"; \
+        "https://nodejs.org/dist/v24.22.3/node-v24.22.3-linux-${NARCH}.tar.xz" -o "$NODE_TARBALL"; \
     echo "$NODE_SHA256  $NODE_TARBALL" | sha256sum -c -; \
     tar -xJ --strip-components=1 -C "$ACP_NODE_DIR" -f "$NODE_TARBALL"; \
     rm -f "$NODE_TARBALL"; \
@@ -543,9 +543,16 @@ ARG CODE_SERVER_VERSION="4.145.0"
 ARG CODE_SERVER_AMD64_SHA256=771bf6038658034d7caf509fcc44af50f0b8bdac5e738177b6cf9c4181dd3382
 ARG CODE_SERVER_ARM64_SHA256=425d3bc5167c85dc070427d2aa93760083b02aec852ea9ce75c2906c99138f45
 # code-server's bundled Node must stay at or above the version that fixed
-# the Brotli decoder overflow (CVE-2026-111497). This is a floor, not an
-# exact pin, so upstream patch bumps do not churn the image build.
-ARG CODE_SERVER_NODE_MIN_VERSION=24.22.1
+# the Brotli decoder overflow (CVE-2026-111497) and the 19 CVEs in
+# CERTFR-2026-AVI-1531. This is a floor, not an exact pin, so upstream patch
+# bumps do not churn the image build.
+ARG CODE_SERVER_NODE_MIN_VERSION=24.22.3
+# Official Node builds used to replace the editor's bundled Node while the
+# bundled copy is below the floor above; code-server 4.145.0 ships 24.22.1.
+# Digests are the linux 64-bit tarballs listed in
+# nodejs.org/dist/v${CODE_SERVER_NODE_MIN_VERSION}/SHASUMS256.txt.
+ARG CODE_SERVER_NODE_AMD64_SHA256=061ec3e3062115705b56b51fa9cc330ab50d34b6969387d4e4b1a50c6809acc2
+ARG CODE_SERVER_NODE_ARM64_SHA256=261af2af250dfd7e9f25cf151d1b2713a0adf8f10a9ad116c4947f68627affe8
 # Minimum undici the editor may ship with (7.29.1 in 4.145.0 is vulnerable
 # to CVE-2026-109383, CVE-2026-109829, CVE-2026-109869, CVE-2026-87018).
 # If the bundled copy is below this floor it is replaced with exactly this
@@ -572,6 +579,25 @@ RUN set -eux; \
     rm /tmp/code-server.tar.gz; \
     cp "${CODE_SERVER_ROOT}/lib/vscode/bin/remote-cli/code-server" "${CODE_SERVER_ROOT}/lib/vscode/bin/remote-cli/code"; \
     BUNDLED_NODE_VERSION=$("${CODE_SERVER_NODE}" --version | sed 's/^v//'); \
+    # Self-retiring Node floor: replace the bundled binary only while it is
+    # below CODE_SERVER_NODE_MIN_VERSION, the way the undici block below
+    # replaces a vulnerable bundled copy. Once code-server ships at or above
+    # the floor, the download is skipped and only the check remains.
+    if [ "$(printf '%s\n%s\n' "${CODE_SERVER_NODE_MIN_VERSION}" "${BUNDLED_NODE_VERSION}" | sort -V | head -n1)" != "${CODE_SERVER_NODE_MIN_VERSION}" ]; then \
+        case "${arch}" in \
+          amd64) NODE_ARCH=x64; NODE_SHA256="${CODE_SERVER_NODE_AMD64_SHA256}";; \
+          arm64) NODE_ARCH=arm64; NODE_SHA256="${CODE_SERVER_NODE_ARM64_SHA256}";; \
+          *) echo "Unsupported architecture for the code-server Node replacement" >&2; exit 1;; \
+        esac; \
+        NODE_TMP=$(mktemp -d); \
+        curl -fsSL --retry 5 --retry-delay 2 --retry-connrefused \
+            -o "${NODE_TMP}/node.tar.gz" "https://nodejs.org/dist/v${CODE_SERVER_NODE_MIN_VERSION}/node-v${CODE_SERVER_NODE_MIN_VERSION}-linux-${NODE_ARCH}.tar.gz"; \
+        echo "${NODE_SHA256}  ${NODE_TMP}/node.tar.gz" | sha256sum -c -; \
+        tar -xzf "${NODE_TMP}/node.tar.gz" -C "${NODE_TMP}" --strip-components=1; \
+        cp "${NODE_TMP}/bin/node" "${CODE_SERVER_NODE}"; \
+        rm -rf "${NODE_TMP}"; \
+        BUNDLED_NODE_VERSION=$("${CODE_SERVER_NODE}" --version | sed 's/^v//'); \
+    fi; \
     if [ "$(printf '%s\n%s\n' "${CODE_SERVER_NODE_MIN_VERSION}" "${BUNDLED_NODE_VERSION}" | sort -V | head -n1)" != "${CODE_SERVER_NODE_MIN_VERSION}" ]; then \
         echo "code-server bundled Node ${BUNDLED_NODE_VERSION} is below required floor ${CODE_SERVER_NODE_MIN_VERSION}" >&2; \
         exit 1; \
