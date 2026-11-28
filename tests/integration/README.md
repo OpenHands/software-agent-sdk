@@ -99,6 +99,8 @@ These tests must pass for releases and verify that the agent can successfully co
 - **t06_github_pr_browsing** - Tests GitHub PR browsing
 - **t07_interactive_commands** - Tests interactive command handling
 - **t08_image_file_viewing** - Tests image file viewing capabilities
+- **t10_streaming_protocol** - Tests that streamed deltas match the durable events they become (one attempt per response, contiguous order, exactly-once retirement, text and reasoning parity)
+- **t11_streaming_secret_masking** - Tests that a registered secret never reaches stream deltas unmasked across real chunk boundaries
 
 ### Behavior Tests (`b*.py`) - **Optional**
 
