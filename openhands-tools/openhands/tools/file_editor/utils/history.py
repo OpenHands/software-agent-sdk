@@ -62,6 +62,14 @@ class FileHistoryManager:
 
         self.cache.set(metadata_key, metadata)
 
+    def peek_last_history(self, file_path: Path) -> str | None:
+        """Return the most recent history entry without removing it."""
+        metadata = self.cache.get(self._get_metadata_key(file_path), {"entries": []})
+        entries = metadata["entries"]
+        if not entries:
+            return None
+        return self.cache.get(self._get_history_key(file_path, entries[-1]))
+
     def pop_last_history(self, file_path: Path) -> str | None:
         """Pop and return the most recent history entry for a file."""
         metadata_key = self._get_metadata_key(file_path)
