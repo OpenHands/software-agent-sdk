@@ -38,7 +38,7 @@ from openhands.tools.terminal import TerminalTool
 api_key = os.getenv("LLM_API_KEY")
 assert api_key, "Set LLM_API_KEY in your environment."
 
-model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
+model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-5-5")
 base_url = os.getenv("LLM_BASE_URL")
 
 llm = LLM(
