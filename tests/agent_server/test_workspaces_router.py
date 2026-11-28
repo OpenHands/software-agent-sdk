@@ -104,6 +104,197 @@ def test_delete_workspace_returns_404_when_path_absent(client):
     assert remaining["workspaces"] == []
 
 
+def test_rename_workspace_changes_only_the_name(client):
+    # Arrange: two workspaces, so the rename can prove it leaves its neighbour
+    # and the identity fields (``id``/``path``) alone.
+    client.post(
+        "/api/workspaces",
+        json={
+            "workspaces": [
+                {"id": "/a", "name": "a", "path": "/a"},
+                {"id": "/b", "name": "b", "path": "/b", "parentPath": "/parents/root"},
+            ]
+        },
+    )
+
+    # Act
+    response = client.patch(
+        "/api/workspaces", params={"path": "/a"}, json={"name": "Renamed"}
+    )
+    listed = client.get("/api/workspaces")
+    on_disk = json.loads(
+        (Path(os.environ["OH_PERSISTENCE_DIR"]) / "workspaces.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    # Assert: wire response and subsequent read agree, and the rename is on disk.
+    assert response.status_code == 200, response.text
+    for body in (response.json(), listed.json(), on_disk):
+        assert [w["path"] for w in body["workspaces"]] == ["/a", "/b"]
+        assert body["workspaces"][0] == {"id": "/a", "name": "Renamed", "path": "/a"}
+        assert body["workspaces"][1] == {
+            "id": "/b",
+            "name": "b",
+            "path": "/b",
+            "parentPath": "/parents/root",
+        }
+
+
+def test_rename_workspace_parent_changes_only_the_name(client):
+    # Arrange: a parent and a workspace, to prove the two lists stay separate.
+    client.post(
+        "/api/workspaces",
+        json={"workspaces": [{"id": "/w", "name": "w", "path": "/w"}]},
+    )
+    client.post(
+        "/api/workspaces/parents",
+        json={"parents": [{"id": "/p", "name": "p", "path": "/p"}]},
+    )
+
+    # Act
+    response = client.patch(
+        "/api/workspaces/parents",
+        params={"path": "/p"},
+        json={"name": "Renamed parent"},
+    )
+    listed = client.get("/api/workspaces").json()
+
+    # Assert
+    assert response.status_code == 200, response.text
+    assert response.json() == listed
+    assert listed["workspaceParents"] == [
+        {"id": "/p", "name": "Renamed parent", "path": "/p"}
+    ]
+    assert listed["workspaces"] == [{"id": "/w", "name": "w", "path": "/w"}]
+
+
+def test_rename_returns_404_for_unknown_path_and_creates_no_file(client):
+    # Arrange: fresh persistence directory, no ``workspaces.json`` yet.
+    persist_dir = Path(os.environ["OH_PERSISTENCE_DIR"])
+
+    # Act
+    workspace = client.patch(
+        "/api/workspaces", params={"path": "/never"}, json={"name": "x"}
+    )
+    parent = client.patch(
+        "/api/workspaces/parents", params={"path": "/never"}, json={"name": "x"}
+    )
+
+    # Assert: same refusal as the deletes — 404, and a no-op writes nothing.
+    assert workspace.status_code == 404
+    assert workspace.json()["detail"] == "Workspace not found"
+    assert parent.status_code == 404
+    assert parent.json()["detail"] == "Workspace parent not found"
+    assert not (persist_dir / "workspaces.json").exists()
+
+
+def test_rename_validates_name(client):
+    # Arrange
+    client.post(
+        "/api/workspaces",
+        json={"workspaces": [{"id": "/a", "name": "a", "path": "/a"}]},
+    )
+
+    # Act
+    empty = client.patch("/api/workspaces", params={"path": "/a"}, json={"name": ""})
+    too_long = client.patch(
+        "/api/workspaces", params={"path": "/a"}, json={"name": "n" * 257}
+    )
+    missing_name = client.patch("/api/workspaces", params={"path": "/a"}, json={})
+    missing_path = client.patch("/api/workspaces", json={"name": "x"})
+    at_limit = client.patch(
+        "/api/workspaces", params={"path": "/a"}, json={"name": "n" * 256}
+    )
+
+    # Assert: the model keeps the schema limits; the value at the limit is kept
+    # verbatim, since only the GUI applies the 64-character product cap.
+    assert empty.status_code == 422
+    assert too_long.status_code == 422
+    assert missing_name.status_code == 422
+    assert missing_path.status_code == 422
+    assert at_limit.status_code == 200
+    assert at_limit.json()["workspaces"][0]["name"] == "n" * 256
+
+
+def test_rename_stores_whitespace_and_multiline_names_verbatim(client):
+    """The registry does not trim or reject whitespace: ``"   "`` satisfies
+    ``min_length=1``, and refusing it is the client's job (the GUI trims and
+    rejects whitespace-only or multiline input before calling this route)."""
+    # Arrange
+    client.post(
+        "/api/workspaces",
+        json={"workspaces": [{"id": "/a", "name": "a", "path": "/a"}]},
+    )
+
+    # Act
+    blank = client.patch("/api/workspaces", params={"path": "/a"}, json={"name": "   "})
+    multiline = client.patch(
+        "/api/workspaces", params={"path": "/a"}, json={"name": "two\nlines"}
+    )
+
+    # Assert
+    assert blank.status_code == 200
+    assert blank.json()["workspaces"][0]["name"] == "   "
+    assert multiline.status_code == 200
+    assert multiline.json()["workspaces"][0]["name"] == "two\nlines"
+
+
+def test_rename_to_the_same_name_does_not_rewrite_the_file(client):
+    # Arrange
+    client.post(
+        "/api/workspaces",
+        json={
+            "workspaces": [{"id": "/a", "name": "a", "path": "/a"}],
+        },
+    )
+    client.post(
+        "/api/workspaces/parents",
+        json={"parents": [{"id": "/p", "name": "p", "path": "/p"}]},
+    )
+    ws_file = Path(os.environ["OH_PERSISTENCE_DIR"]) / "workspaces.json"
+    stamp = (ws_file.stat().st_ino, ws_file.stat().st_mtime_ns)
+
+    # Act
+    workspace = client.patch(
+        "/api/workspaces", params={"path": "/a"}, json={"name": "a"}
+    )
+    parent = client.patch(
+        "/api/workspaces/parents", params={"path": "/p"}, json={"name": "p"}
+    )
+
+    # Assert: both answer normally but neither saves.
+    assert workspace.status_code == 200
+    assert [w["name"] for w in workspace.json()["workspaces"]] == ["a"]
+    assert parent.status_code == 200
+    assert [p["name"] for p in parent.json()["workspaceParents"]] == ["p"]
+    assert (ws_file.stat().st_ino, ws_file.stat().st_mtime_ns) == stamp
+
+
+def test_rename_returns_409_when_persisted_file_is_corrupted(client):
+    # Arrange
+    client.post(
+        "/api/workspaces",
+        json={"workspaces": [{"id": "/a", "name": "a", "path": "/a"}]},
+    )
+    ws_file = Path(os.environ["OH_PERSISTENCE_DIR"]) / "workspaces.json"
+    ws_file.write_text("{not valid json", encoding="utf-8")
+
+    # Act
+    workspace = client.patch(
+        "/api/workspaces", params={"path": "/a"}, json={"name": "renamed"}
+    )
+    parent = client.patch(
+        "/api/workspaces/parents", params={"path": "/a"}, json={"name": "renamed"}
+    )
+
+    # Assert: refused like every other write, and the broken bytes survive.
+    assert workspace.status_code == 409
+    assert "corrupt" in workspace.json()["detail"].lower()
+    assert parent.status_code == 409
+    assert ws_file.read_text(encoding="utf-8") == "{not valid json"
+
+
 def test_workspace_parents_add_and_remove_independent_of_workspaces(client):
     # Arrange: seed one workspace and one parent so we can prove they don't
     # collide when mutated independently.
@@ -323,6 +514,12 @@ def test_workspaces_endpoints_require_session_api_key_when_configured(
     no_header_parents_delete = client_with_auth.delete(
         "/api/workspaces/parents", params={"path": "/p"}
     )
+    no_header_rename = client_with_auth.patch(
+        "/api/workspaces", params={"path": "/a"}, json={"name": "renamed"}
+    )
+    no_header_parents_rename = client_with_auth.patch(
+        "/api/workspaces/parents", params={"path": "/p"}, json={"name": "renamed"}
+    )
     bad_header = client_with_auth.get(
         "/api/workspaces", headers={"X-Session-API-Key": "wrong-key"}
     )
@@ -333,6 +530,8 @@ def test_workspaces_endpoints_require_session_api_key_when_configured(
     assert no_header_delete.status_code == 401
     assert no_header_parents_post.status_code == 401
     assert no_header_parents_delete.status_code == 401
+    assert no_header_rename.status_code == 401
+    assert no_header_parents_rename.status_code == 401
     assert bad_header.status_code == 401
 
 

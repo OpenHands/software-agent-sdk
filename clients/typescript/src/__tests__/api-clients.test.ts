@@ -1337,6 +1337,119 @@ describe('Auxiliary API clients', () => {
     expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 
+  it('WorkspacesClient renames workspaces and workspace parents via PATCH', async () => {
+    const workspaceBody = {
+      workspaces: [{ id: '/repo', name: 'renamed', path: '/repo' }],
+      workspaceParents: [{ id: '/home', name: 'home', path: '/home' }],
+    };
+    const parentBody = {
+      workspaces: [{ id: '/repo', name: 'renamed', path: '/repo' }],
+      workspaceParents: [{ id: '/home', name: 'home renamed', path: '/home' }],
+    };
+    const responses = [
+      { version: '1.63.0', uptime: 1, idle_time: 0 },
+      workspaceBody,
+      parentBody,
+    ];
+    global.fetch = vi.fn().mockImplementation(() => {
+      const body = responses.shift();
+      return Promise.resolve(
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      );
+    }) as typeof fetch;
+
+    const client = new WorkspacesClient({ host: 'http://example.com' });
+    const renamed = await client.renameWorkspace('/repo', 'renamed');
+    const parentRenamed = await client.renameWorkspaceParent('/home', 'home renamed');
+
+    expect(renamed.workspaces).toEqual(workspaceBody.workspaces);
+    expect(renamed.workspaceParents).toEqual(workspaceBody.workspaceParents);
+    expect(parentRenamed.workspaceParents).toEqual(parentBody.workspaceParents);
+
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      1,
+      'http://example.com/server_info',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      2,
+      'http://example.com/api/workspaces?path=%2Frepo',
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({ name: 'renamed' }),
+        headers: expect.objectContaining({ 'Content-Type': 'application/json' }),
+      })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      3,
+      'http://example.com/api/workspaces/parents?path=%2Fhome',
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({ name: 'home renamed' }),
+        headers: expect.objectContaining({ 'Content-Type': 'application/json' }),
+      })
+    );
+  });
+
+  it('WorkspacesClient gates rename on its own minimum version', async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ version: '1.62.0', uptime: 1, idle_time: 0 }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+
+    const client = new WorkspacesClient({ host: 'http://example.com' });
+
+    const workspaceError = await client.renameWorkspace('/repo', 'renamed').catch((e: unknown) => e);
+    const parentError = await client
+      .renameWorkspaceParent('/home', 'home renamed')
+      .catch((e: unknown) => e);
+
+    for (const error of [workspaceError, parentError]) {
+      expect(error).toBeInstanceOf(AgentServerVersionError);
+      expect(error).toMatchObject({
+        code: 'AGENT_SERVER_VERSION_TOO_OLD',
+        feature: 'workspace-rename',
+        requiredVersion: '1.63.0',
+        actualVersion: '1.62.0',
+      });
+    }
+
+    const patchCalls = vi
+      .mocked(global.fetch)
+      .mock.calls.filter(([, init]) => init?.method === 'PATCH');
+    expect(patchCalls).toHaveLength(0);
+  });
+
+  it('WorkspacesClient propagates an unknown rename path as HttpError', async () => {
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ version: '1.63.0', uptime: 1, idle_time: 0 }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ detail: 'Workspace not found' }), {
+          status: 404,
+          statusText: 'Not Found',
+          headers: { 'content-type': 'application/json' },
+        })
+      ) as typeof fetch;
+
+    const client = new WorkspacesClient({ host: 'http://example.com' });
+    const error = await client.renameWorkspace('/missing', 'renamed').catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(HttpError);
+    expect((error as HttpError).status).toBe(404);
+    expect((error as HttpError).detail).toBe('Workspace not found');
+  });
+
   it('compares agent-server semantic versions', () => {
     expect(compareAgentServerVersions('1.23.0', '1.23.0')).toBe(0);
     expect(compareAgentServerVersions('v1.24.0+build.1', '1.23.0')).toBe(1);
