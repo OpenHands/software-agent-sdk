@@ -87,7 +87,9 @@ from openhands.sdk.credential import (
     VersionedCredentialBinding,
 )
 from openhands.sdk.event import (
+    ActionEvent,
     AgentErrorEvent,
+    MessageEvent,
     ObservationBaseEvent,
     ReactionEvent,
     StreamingDeltaEvent,
@@ -104,6 +106,7 @@ from openhands.sdk.event.conversation_state import (
 )
 from openhands.sdk.event.error_classification import ErrorClassification, FailureKind
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
+from openhands.sdk.event.user_action import PauseEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.io import LocalFileStore
@@ -1681,12 +1684,49 @@ class EventService:
         self._run_session_slot = None
         owner.release()
 
+    async def run_shutdown_paused_update(
+        self, message_id: str, generation: int
+    ) -> None:
+        # Wait outside the run lock so capacity does not block manual requests.
+        if self._explicit_interrupt_generation != generation:
+            return
+        with await RunSlot.acquire(self._run_semaphore, wait=True) as slot:
+            await self.run(
+                run_slot=slot,
+                shutdown_update_id=message_id,
+                expected_interrupt_generation=generation,
+            )
+
+    def _can_resume_shutdown_update(self, message_id: str) -> bool:
+        if self._conversation is None:
+            return False
+        state = self._conversation._state
+        with state:
+            if (
+                state.execution_status != ConversationExecutionStatus.PAUSED
+                or state.last_user_message_id != message_id
+                or message_id in state.blocked_messages
+                or state.waiting_actions()
+            ):
+                return False
+            shutdown_paused = False
+            for event in state.walk_back():
+                if isinstance(event, PauseEvent) and not shutdown_paused:
+                    if event.source != "environment":
+                        return False
+                    shutdown_paused = True
+                if isinstance(event, (ActionEvent, MessageEvent)):
+                    return shutdown_paused and event.id == message_id
+            return False
+
     async def run(
         self,
         acp_internal_rerun_generation: int | None = None,
         *,
         run_slot: RunSlot | None = None,
         wait_for_capacity: bool = False,
+        shutdown_update_id: str | None = None,
+        expected_interrupt_generation: int | None = None,
     ):
         """Run the conversation asynchronously in the background.
 
@@ -1705,10 +1745,19 @@ class EventService:
         """
         if not self._conversation or self._closing:
             raise ServiceInactive()
-        request_generation = self._explicit_interrupt_generation
+        request_generation = (
+            self._explicit_interrupt_generation
+            if expected_interrupt_generation is None
+            else expected_interrupt_generation
+        )
 
         # Use lock to make check-and-set atomic, preventing race conditions
         async with self._run_lock:
+            if (
+                expected_interrupt_generation is not None
+                and self._explicit_interrupt_generation != request_generation
+            ):
+                return
             # A stale internal ACP rerun is dropped before any refusal: an
             # explicit stop that landed while we waited on _run_lock must win,
             # and a refusal would make the caller re-arm the rerun.
@@ -1761,8 +1810,19 @@ class EventService:
                 # A reservation offered on top of an already-held session is
                 # redundant; return it so it is not leaked.
                 run_slot.release()
+            can_resume = True
+            if shutdown_update_id is not None:
+                try:
+                    can_resume = await self.run_state_op(
+                        self._can_resume_shutdown_update, shutdown_update_id
+                    )
+                except BaseException:
+                    if new_owner:
+                        owner.release()
+                    raise
             if (
-                self._closing
+                not can_resume
+                or self._closing
                 or self._explicit_interrupt_generation != request_generation
             ):
                 if new_owner:
@@ -2573,7 +2633,9 @@ class EventService:
         if run_task is not None and not run_task.done():
             if self._conversation is not None:
                 try:
-                    await self.run_state_op(self._conversation.pause)
+                    await self.run_state_op(
+                        self._conversation._pause_for_server_shutdown
+                    )
                 except Exception:
                     logger.warning(
                         "Failed to pause conversation during close", exc_info=True

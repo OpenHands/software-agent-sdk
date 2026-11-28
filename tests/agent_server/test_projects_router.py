@@ -1882,3 +1882,99 @@ def test_a_workspace_file_opens_where_files_cannot_be_nonblocking(
 
     with open_workspace_file(tmp_path, "notes.md") as file:
         assert file.read() == b"hello"
+
+
+@pytest.mark.parametrize("pause_origin", ["shutdown", "user", "answered"])
+@pytest.mark.asyncio
+async def test_restart_runs_persisted_worker_update_without_resending(
+    client, stores, service, tmp_path, monkeypatch, pause_origin
+):
+    """A delivered worker update still needs handling after shutdown."""
+    from openhands.agent_server.project_board import ConversationOutcomeSubscriber
+    from openhands.sdk.conversation.impl.local_conversation import LocalConversation
+    from openhands.sdk.event.user_action import PauseEvent
+
+    async def unseen(self, event) -> None:
+        return None
+
+    monkeypatch.setattr(ConversationOutcomeSubscriber, "__call__", unseen)
+    cat = await _start(service, tmp_path, title="coordinator")
+    worker = await _start(service, tmp_path, title="worker")
+    project = await _project_led_by(client, stores, service, cat)
+    await _join(service, project["id"], worker)
+    worker_service = await service.get_event_service(worker)
+    coordinator = await service.get_event_service(cat)
+    assert worker_service is not None and coordinator is not None
+
+    await worker_service.send_message(
+        Message(role="user", content=[TextContent(text="Pick a database.")]),
+        sender=f"conversation:{cat.hex}",
+    )
+    await _agent_says(
+        service, worker, "Postgres.", ConversationExecutionStatus.FINISHED
+    )
+    await coordinator.send_message(
+        Message(
+            role="user", content=[TextContent(text="[Update from worker] Postgres.")]
+        ),
+        run=False,
+        sender=f"conversation:{worker.hex}",
+    )
+    if pause_origin == "answered":
+        await _agent_says(
+            service, cat, "I saw the update.", ConversationExecutionStatus.IDLE
+        )
+
+    wakes = asyncio.Event()
+    first_run = asyncio.Event()
+    run_started = 0
+    restarting = False
+
+    async def run_without_model(self: LocalConversation) -> None:
+        nonlocal run_started
+        if not restarting:
+            with self._state:
+                self._state.execution_status = ConversationExecutionStatus.RUNNING
+            first_run.set()
+            await asyncio.Future()
+            return
+        run_started += 1
+        with self._state:
+            self._state.execution_status = ConversationExecutionStatus.FINISHED
+        wakes.set()
+
+    monkeypatch.setattr(LocalConversation, "arun", run_without_model)
+    messages_before = await _user_messages(service, cat)
+    if pause_origin == "user":
+        await coordinator.pause()
+    else:
+        await coordinator.run()
+        await asyncio.wait_for(first_run.wait(), timeout=3)
+    await service.__aexit__(None, None, None)
+
+    restarting = True
+    async with ConversationService(
+        conversations_dir=tmp_path / "conversations",
+        stores=stores,
+        reconcile_projects_on_start=True,
+    ) as restarted:
+        # The actual startup task owns the reconciliation pass.
+        assert restarted.projects._reconcile_task is not None
+        await restarted.projects._reconcile_task
+        restored = await restarted.get_event_service(cat)
+        assert restored is not None
+        marker = await restored.scan_events(
+            lambda events: next(
+                (event for event in events if isinstance(event, PauseEvent)), None
+            )
+        )
+        assert marker is not None
+        assert marker.source == ("user" if pause_origin == "user" else "environment")
+        if pause_origin == "shutdown":
+            await asyncio.wait_for(wakes.wait(), timeout=3)
+            assert run_started == 1
+        else:
+            assert not wakes.is_set()
+        await reconcile_coordinator_updates(restarted)
+        assert await _user_messages(restarted, cat) == messages_before
+        assert run_started == (1 if pause_origin == "shutdown" else 0)
