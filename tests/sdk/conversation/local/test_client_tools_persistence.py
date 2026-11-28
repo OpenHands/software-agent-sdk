@@ -8,7 +8,12 @@ import pytest
 
 from openhands.sdk import LLM, Agent, Conversation
 from openhands.sdk.settings import OpenHandsAgentSettings
-from openhands.sdk.tool import Tool, client_tool as ct, registry as reg
+from openhands.sdk.tool import (
+    Tool,
+    client_tool as ct,
+    registry as reg,
+    unregister_tool,
+)
 from openhands.sdk.tool.client_tool import ClientToolSpec, register_client_tools
 from openhands.sdk.utils.models import clear_subclass_cache
 
@@ -41,9 +46,7 @@ def _wipe_client_tool_globals(names: list[str]) -> None:
     ct._client_action_types.clear()
     ct._client_action_schemas.clear()
     for name in names:
-        reg._REG.pop(name, None)
-        reg._USABILITY_REG.pop(name, None)
-        reg._TOOL_CLASSES.pop(name, None)
+        unregister_tool(name)
 
 
 def test_persisted_client_tools_resume_without_respecifying(tmp_path: Path) -> None:
