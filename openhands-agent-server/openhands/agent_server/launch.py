@@ -145,8 +145,15 @@ def launch_source(
     request: StartConversationRequest,
     stores: Callable[[], LaunchStores],
     cipher: Cipher | None,
+    server_context_compacting: Any | None = None,
 ) -> LaunchSource:
-    """Turn the request's agent source into a launch source (blocking)."""
+    """Turn the request's agent source into a launch source (blocking).
+
+    ``server_context_compacting`` is the server-level ``context_compacting``
+    section (e.g. pointing compaction to GPU0). When present, it is injected
+    into the request's ``agent_settings`` so the condenser always runs on the
+    configured endpoint, regardless of the client-provided settings.
+    """
     context = _decryption_context(request, cipher)
     additions = request.agent_launch_additions
     llm_profile_ref = additions.llm_profile_ref if additions else None
@@ -164,6 +171,8 @@ def launch_source(
         )
     if request.agent_settings is None:
         raise AgentLaunchError("The start request has no agent source")
+    if server_context_compacting is not None:
+        request.agent_settings["context_compacting"] = server_context_compacting
     try:
         settings = validate_agent_settings(request.agent_settings, context=context)
     except (TypeError, ValueError) as exc:

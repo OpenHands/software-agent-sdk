@@ -349,6 +349,80 @@ class NoOpCondenserSettings(CondenserSettings):
         return NoOpCondenser()
 
 
+class ContextCompactingSettings(BaseModel):
+    """Server-level settings for context compaction (summarization).
+
+    Unlike :class:`CondenserSettings` (which live per-conversation in
+    ``AgentSettings.condenser``), these settings are server-level: they apply
+    to every conversation started by this agent server regardless of the
+    model the conversation itself runs on.
+
+    The single most important knob is :attr:`llm`: when set, context
+    compaction is always executed on this LLM (for example a dedicated,
+    stable endpoint such as ``GPU0``), instead of reusing the conversation
+    model. This keeps compaction on a predictable endpoint even when the
+    active conversation model is busy or on a different endpoint.
+    """
+
+    enabled: bool = Field(
+        default=True,
+        description=(
+            "Enable server-level context compaction. When disabled, no "
+            "summarizing condenser is built for any conversation."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Enable context compaction",
+                prominence=SettingProminence.CRITICAL,
+            ).model_dump()
+        },
+    )
+    llm: LLM | None = Field(
+        default=None,
+        description=(
+            "LLM to use for context compaction. When set, compaction always "
+            "runs on this model (including its base_url/api_key), independent "
+            "of the model the conversation itself uses. Leave ``None`` to "
+            "fall back to the conversation's own model."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Compaction LLM",
+                prominence=SettingProminence.CRITICAL,
+            ).model_dump()
+        },
+    )
+
+    def build_condenser(self, llm: LLM) -> CondenserBase | None:
+        """Create a condenser, honoring a dedicated compaction LLM when set.
+
+        ``llm`` is the conversation model; it is only used as a fallback for
+        the compaction token budget and (when no dedicated LLM is configured)
+        as the compaction model itself.
+        """
+        if not self.enabled:
+            return None
+
+        from openhands.sdk.context.condenser import LLMSummarizingCondenser
+
+        # A dedicated compaction LLM wins over the conversation model. This
+        # is the whole point of the server-level ``context_compacting``
+        # section: compaction always runs on one predictable endpoint even
+        # when the conversation runs on a different (or busy) model.
+        base_llm = self.llm if self.llm is not None else llm
+        condenser_llm = base_llm.model_copy(update={"usage_id": "condenser"})
+
+        condenser_kwargs = self.model_dump(
+            exclude={"enabled", "llm"}, exclude_none=True
+        )
+        if "max_tokens" not in self.model_fields_set:
+            effective_max_input_tokens = base_llm.effective_max_input_tokens
+            if effective_max_input_tokens is not None:
+                condenser_kwargs["max_tokens"] = effective_max_input_tokens
+        return LLMSummarizingCondenser(llm=condenser_llm, **condenser_kwargs)
+
+
+
 def _condenser_settings_discriminator(value: Any) -> str:
     """Discriminator for :data:`CondenserSettingsConfig`.
 
@@ -1630,6 +1704,22 @@ class OpenHandsAgentSettings(AgentSettingsBase):
             ).model_dump()
         },
     )
+    context_compacting: ContextCompactingSettings = Field(
+        default_factory=ContextCompactingSettings,
+        description=(
+            "Server-level context compaction settings. Applies to every "
+            "conversation started by this agent server, independent of the "
+            "model the conversation itself runs on. Set ``llm`` to force "
+            "compaction onto a dedicated endpoint (for example GPU0)."
+        ),
+        json_schema_extra={
+            SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
+                key="context_compacting",
+                label="Context compaction",
+                variant="openhands",
+            ).model_dump()
+        },
+    )
     condenser: CondenserSettingsConfig = Field(
         default_factory=LLMSummarizingCondenserSettings,
         description="Condenser settings for the agent.",
@@ -1664,6 +1754,26 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         if type(value) is CondenserSettings:
             return LLMSummarizingCondenserSettings.model_validate(value.model_dump())
         return value
+
+    def build_condenser(self, llm: LLM) -> CondenserBase | None:  # noqa: F811
+        """Build the agent condenser, honoring a server-level compaction LLM.
+
+        When :attr:`context_compacting` is enabled and carries a dedicated
+        ``llm`` (the server-level ``context_compacting`` section), compaction
+        runs on that model instead of the conversation model ``llm``. This
+        makes compaction deterministic across sessions regardless of which
+        model the conversation itself uses. Otherwise we fall back to the
+        conversation model (the pre-existing behavior).
+        """
+        if self.context_compacting.enabled and self.context_compacting.llm is not None:
+            base_llm = self.context_compacting.llm
+            return self.context_compacting.build_condenser(base_llm)
+        else:
+            # No dedicated compaction LLM: build the condenser from the regular
+            # per-conversation ``condenser`` settings (the pre-existing behavior).
+            base_llm = llm.model_copy(update={"usage_id": "condenser"})
+            return self.condenser.build_condenser(base_llm)
+
 
     def create_agent(self) -> Agent:
         """Build an :class:`Agent` purely from these settings.
@@ -1726,9 +1836,6 @@ class OpenHandsAgentSettings(AgentSettingsBase):
             tool_concurrency_limit=self.tool_concurrency_limit,
         )
 
-    def build_condenser(self, llm: LLM) -> CondenserBase | None:
-        """Create a condenser from these settings, or ``None`` if disabled."""
-        return self.condenser.build_condenser(llm)
 
     def build_critic(self) -> CriticBase | None:
         """Create an :class:`APIBasedCritic` from these settings.
@@ -2511,32 +2618,75 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
                         and nested_key in type(section_default).model_fields
                     ):
                         default_value = dict(section_default).get(nested_key)
-                    field_schema = SettingsFieldSchema(
-                        key=f"{explicit_section_metadata.key}.{nested_key}",
-                        label=(
-                            metadata.label
-                            if metadata.label is not None
-                            else _humanize_name(nested_key)
-                        ),
-                        description=nested_field.description,
-                        section=section.key,
-                        section_label=section.label,
-                        value_type=_infer_value_type(nested_field.annotation),
-                        default=_normalize_default(default_value),
-                        prominence=metadata.prominence,
-                        depends_on=[
-                            f"{explicit_section_metadata.key}.{dependency}"
-                            for dependency in metadata.depends_on
-                        ],
-                        secret=_contains_secret(nested_field.annotation),
-                        choices=_extract_choices(nested_field.annotation),
-                        # Field-level variant falls back to the enclosing
-                        # section's variant — nested fields inherit their
-                        # parent section's variant by default.
-                        variant=metadata.variant or section.variant,
-                    )
-                    seen_nested_fields[nested_key] = field_schema
-                    section.fields.append(field_schema)
+                    # Expand LLM fields into their sub-fields so the UI can
+                    # render them as individual inputs instead of a single
+                    # JSON textarea.
+                    llm_sub_models = [
+                        m for m in _nested_model_types(nested_field.annotation)
+                        if m.__name__ == "LLM"
+                    ]
+                    if llm_sub_models:
+                        for sub_key, sub_field in llm_sub_models[0].model_fields.items():
+                            if sub_field.exclude:
+                                continue
+                            sub_meta = settings_metadata(sub_field)
+                            if sub_meta is None:
+                                continue
+                            sub_default = (
+                                dict(default_value).get(sub_key)
+                                if isinstance(default_value, BaseModel)
+                                else None
+                            )
+                            section.fields.append(
+                                SettingsFieldSchema(
+                                    key=f"{explicit_section_metadata.key}.{nested_key}.{sub_key}",
+                                    label=(
+                                        sub_meta.label
+                                        if sub_meta.label is not None
+                                        else _humanize_name(sub_key)
+                                    ),
+                                    description=sub_field.description,
+                                    section=section.key,
+                                    section_label=section.label,
+                                    value_type=_infer_value_type(sub_field.annotation),
+                                    default=_normalize_default(sub_default),
+                                    prominence=sub_meta.prominence,
+                                    depends_on=[
+                                        f"{explicit_section_metadata.key}.{nested_key}.{dep}"
+                                        for dep in sub_meta.depends_on
+                                    ],
+                                    secret=_contains_secret(sub_field.annotation),
+                                    choices=_extract_choices(sub_field.annotation),
+                                    variant=section.variant,
+                                )
+                            )
+                    else:
+                        field_schema = SettingsFieldSchema(
+                            key=f"{explicit_section_metadata.key}.{nested_key}",
+                            label=(
+                                metadata.label
+                                if metadata.label is not None
+                                else _humanize_name(nested_key)
+                            ),
+                            description=nested_field.description,
+                            section=section.key,
+                            section_label=section.label,
+                            value_type=_infer_value_type(nested_field.annotation),
+                            default=_normalize_default(default_value),
+                            prominence=metadata.prominence,
+                            depends_on=[
+                                f"{explicit_section_metadata.key}.{dependency}"
+                                for dependency in metadata.depends_on
+                            ],
+                            secret=_contains_secret(nested_field.annotation),
+                            choices=_extract_choices(nested_field.annotation),
+                            # Field-level variant falls back to the enclosing
+                            # section's variant — nested fields inherit their
+                            # parent section's variant by default.
+                            variant=metadata.variant or section.variant,
+                        )
+                        seen_nested_fields[nested_key] = field_schema
+                        section.fields.append(field_schema)
             continue
 
         metadata = settings_metadata(field)
