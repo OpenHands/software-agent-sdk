@@ -841,6 +841,37 @@ def test_owned_vision_capability_survives_stale_registry(model):
     assert features.sources["supports_vision"] == "sdk"
 
 
+@pytest.mark.parametrize(
+    "model",
+    [
+        "deepseek-v4-1-flash",
+        "deepseek-v4-1-flash-1017",
+        "deepseek-v4-1-flash-1017-uncensored",
+        "deepseek-v4-1-flash-uncensored",
+        "openai/deepseek-v4-1-flash",
+        "openai/deepseek-v4-1-flash-1017",
+        "openai/deepseek-v4-1-flash-1017-uncensored",
+        "litellm_proxy/deepseek-v4-1-flash-1017",
+    ],
+)
+def test_hyphenated_deepseek_v4_1_flash_ids_are_vision_capable(model):
+    features = get_features(model)
+    assert features.supports_vision
+    assert features.sources["supports_vision"] == "sdk"
+    assert features.send_reasoning_content
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "e2ee-deepseek-v4-1-flash-1017",
+        "openai/e2ee-deepseek-v4-1-flash-1017-uncensored",
+    ],
+)
+def test_e2ee_deepseek_v4_1_flash_variants_stay_text_only(model):
+    assert not get_features(model).supports_vision
+
+
 @pytest.mark.parametrize("value", [True, False])
 def test_endpoint_and_caller_vision_decisions_are_authoritative(value):
     model = "openhands/deepseek-v4.1-flash"
