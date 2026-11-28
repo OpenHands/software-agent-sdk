@@ -24,6 +24,7 @@ Example usage:
 """
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from threading import RLock
@@ -36,6 +37,8 @@ from openhands.sdk.subagent.load import (
     load_user_agents,
 )
 from openhands.sdk.subagent.schema import AgentDefinition
+from openhands.sdk.tool.registry import is_tool_available
+from openhands.sdk.tool.spec import Tool
 from openhands.sdk.utils.deprecation import warn_deprecated
 
 
@@ -47,11 +50,33 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
+@dataclass(frozen=True)
+class _DefinitionFactory:
+    definition: AgentDefinition
+    factory_func: Callable[["LLM"], "Agent"]
+
+    def __call__(self, llm: "LLM") -> "Agent":
+        return self.factory_func(llm)
+
+
 class AgentFactory(NamedTuple):
     """Container for an agent factory function and its definition."""
 
     factory_func: Callable[["LLM"], "Agent"]
     definition: AgentDefinition
+
+    @property
+    def inherits_tools(self) -> bool:
+        """Whether the parent's tools replace those the factory builds.
+
+        Only factories built by :func:`agent_definition_to_factory` from a
+        definition that omitted ``tools`` do. A hand-written factory registered
+        with :func:`register_agent` owns its tools, whatever its definition says.
+        """
+        return (
+            isinstance(self.factory_func, _DefinitionFactory)
+            and self.factory_func.definition.tools is None
+        )
 
 
 # Global registry for user-registered agent factories
@@ -80,7 +105,8 @@ def _resolve_agent_definition(
     """
     if isinstance(description, AgentDefinition):
         return description
-    return AgentDefinition(name=name, description=description)
+    # A plain-string description carries no tool metadata.
+    return AgentDefinition(name=name, description=description, tools=[])
 
 
 def register_agent(
@@ -207,6 +233,15 @@ def agent_definition_to_factory(
                 )
             resolved_skills.append(available[name])
 
+    # Resolve tool names eagerly so an unknown name fails at load time.
+    if agent_def.tools is not None:
+        for tool_name in agent_def.tools:
+            if not is_tool_available(tool_name, check_usable=False):
+                raise ValueError(
+                    f"Tool '{tool_name}' not registered but was given to agent "
+                    f"'{agent_def.name}'."
+                )
+
     def _factory(llm: "LLM") -> "Agent":
         from openhands.sdk.agent.agent import Agent
         from openhands.sdk.context.agent_context import AgentContext
@@ -214,8 +249,6 @@ def agent_definition_to_factory(
             LLMSummarizingCondenser,
             default_condenser,
         )
-        from openhands.sdk.tool.registry import list_registered_tools
-        from openhands.sdk.tool.spec import Tool
 
         # Load LLM profile if agent_def.model is different from
         # 'inherit' and empty string
@@ -243,16 +276,7 @@ def agent_definition_to_factory(
             else None
         )
 
-        # Resolve tools
-        tools: list[Tool] = []
-        registered_tools: set[str] = set(list_registered_tools())
-        for tool_name in agent_def.tools:
-            if tool_name not in registered_tools:
-                raise ValueError(
-                    f"Tool '{tool_name}' not registered"
-                    f"but was given to agent {agent_def.name}."
-                )
-            tools.append(Tool(name=tool_name))
+        tools = [Tool(name=name) for name in agent_def.tools or []]
 
         # Sub-agents get a summarizing condenser by default (parity with the
         # top-level agent) so deep runs auto-compact instead of erroring on context
@@ -286,7 +310,7 @@ def agent_definition_to_factory(
             condenser=condenser,
         )
 
-    return _factory
+    return _DefinitionFactory(definition=agent_def, factory_func=_factory)
 
 
 def register_file_agents(

@@ -54,19 +54,16 @@ def _extract_color(fm: dict[str, object]) -> str | None:
     return color
 
 
-def _extract_tools(fm: dict[str, object]) -> list[str]:
-    """Extract tools from frontmatter."""
-    tools_raw = fm.get("tools", [])
-
-    # Ensure tools is a list of strings
-    tools: list[str]
+def _extract_tools(fm: dict[str, object]) -> list[str] | None:
+    """Extract tools from frontmatter; ``None`` means inherit the parent's."""
+    tools_raw = fm.get("tools")
+    if tools_raw is None:
+        return None
     if isinstance(tools_raw, str):
-        tools = [tools_raw]
-    elif isinstance(tools_raw, list):
-        tools = [str(t) for t in tools_raw]
-    else:
-        tools = []
-    return tools
+        return [name.strip() for name in tools_raw.split(",") if name.strip()]
+    if isinstance(tools_raw, list):
+        return [str(t) for t in tools_raw]
+    return []
 
 
 def _extract_skills(fm: dict[str, object]) -> list[str]:
@@ -212,8 +209,10 @@ class AgentDefinition(BaseModel):
         default="inherit", description="Model to use ('inherit' uses parent model)"
     )
     color: str | None = Field(default=None, description="Display color for the agent")
-    tools: list[str] = Field(
-        default_factory=list, description="List of allowed tools for this agent"
+    tools: list[str] | None = Field(
+        default=None,
+        description="List of allowed tools for this agent. None inherits the "
+        "delegating agent's tools; an empty list declares no tools.",
     )
     skills: list[str] = Field(
         default_factory=list,
@@ -323,7 +322,8 @@ class AgentDefinition(BaseModel):
         Agent Markdown files have YAML frontmatter with:
         - name: Agent name
         - description: Description with optional <example> tags for triggering
-        - tools (optional): List of allowed tools
+        - tools (optional): List of allowed tools, or a comma-separated string.
+          Omitted inherits the delegating agent's tools; ``[]`` declares none.
         - skills (optional): Comma-separated skill names or list of skill names
         - mcp_config (optional): MCP server configurations mapping
         - model (optional): Model profile to use (default: 'inherit')
@@ -352,7 +352,7 @@ class AgentDefinition(BaseModel):
         description: str = str(fm.get("description") or "")
         model: str = str(fm.get("model") or "inherit")
         color: str | None = _extract_color(fm)
-        tools: list[str] = _extract_tools(fm)
+        tools: list[str] | None = _extract_tools(fm)
         skills: list[str] = _extract_skills(fm)
         permission_mode: str | None = _extract_permission_mode(fm)
         max_iteration_per_run: int | None = _extract_max_iteration_per_run(fm)

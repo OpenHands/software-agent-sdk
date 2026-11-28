@@ -49,7 +49,7 @@ def test_load_project_agents(tmp_path: Path) -> None:
     # Verify the code-reviewer was parsed correctly
     reviewer = next(a for a in agents if a.name == "code-reviewer")
     assert reviewer.description == "Reviews code"
-    assert "ReadTool" in reviewer.tools
+    assert reviewer.tools == ["ReadTool"]
     assert reviewer.system_prompt == "You are a code reviewer."
 
 

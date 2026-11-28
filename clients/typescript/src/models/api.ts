@@ -191,7 +191,8 @@ export interface SubAgentInfo {
   description: string;
   model: string;
   color: string | null;
-  tools: string[];
+  /** `null` inherits the parent's tools; `[]` declares none. */
+  tools: string[] | null;
   skills: string[];
   system_prompt: string;
   when_to_use_examples: string[];

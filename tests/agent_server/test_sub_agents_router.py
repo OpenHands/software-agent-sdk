@@ -134,6 +134,27 @@ def test_get_sub_agents_exposes_full_frontmatter(client, tmp_path: Path):
     assert agent["metadata"]["custom_key"] == "custom_value"
 
 
+def test_get_sub_agents_keeps_absent_tools_distinct_from_empty(client, tmp_path: Path):
+    """The catalog preserves "omitted tools" (null) versus "tools: []"."""
+    agents_dir = tmp_path / ".agents" / "agents"
+    agents_dir.mkdir(parents=True)
+    (agents_dir / "inherit.md").write_text(
+        "---\nname: inherit\ndescription: Inherits\n---\n\nBody."
+    )
+    (agents_dir / "empty.md").write_text(
+        "---\nname: empty\ndescription: None\ntools: []\n---\n\nBody."
+    )
+
+    response = client.post(
+        "/api/sub-agents",
+        json={"load_builtin": False, "load_user": False, "project_dir": str(tmp_path)},
+    )
+    assert response.status_code == 200
+    agents = {a["name"]: a for a in response.json()["agents"]}
+    assert agents["inherit"]["tools"] is None
+    assert agents["empty"]["tools"] == []
+
+
 @pytest.mark.parametrize("enable_browser", [True, False])
 def test_get_sub_agents_follows_the_browser_setting(enable_browser: bool):
     """The browser-only web-researcher is listed only while the browser is enabled."""

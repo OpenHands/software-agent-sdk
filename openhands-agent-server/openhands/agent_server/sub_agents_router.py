@@ -61,7 +61,7 @@ class SubAgentInfo(BaseModel):
     description: str = ""
     model: str = "inherit"
     color: str | None = None
-    tools: list[str] = Field(default_factory=list)
+    tools: list[str] | None = None
     skills: list[str] = Field(default_factory=list)
     system_prompt: str = ""
     when_to_use_examples: list[str] = Field(default_factory=list)

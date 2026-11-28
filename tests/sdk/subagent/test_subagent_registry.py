@@ -22,6 +22,7 @@ from openhands.sdk.subagent.registry import (
     register_plugin_agents,
 )
 from openhands.sdk.subagent.schema import AgentDefinition
+from openhands.sdk.tool.builtins import FinishTool
 from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
 
 
@@ -115,7 +116,7 @@ def test_register_plugin_agents(tmp_path: Path) -> None:
         name="plugin-agent",
         description="From plugin",
         model="inherit",
-        tools=["ReadTool"],
+        tools=["ClassifyAndSwitchLLMTool"],
         system_prompt="Plugin prompt.",
     )
 
@@ -124,6 +125,7 @@ def test_register_plugin_agents(tmp_path: Path) -> None:
     assert registered == ["plugin-agent"]
     factory = get_agent_factory("plugin-agent")
     assert factory.definition.description == "From plugin"
+    assert factory.inherits_tools is False
 
 
 def test_register_plugin_agents_skips_existing(tmp_path: Path) -> None:
@@ -188,6 +190,74 @@ def test_register_file_agents_skips_agent_with_missing_skill(tmp_path: Path) -> 
     assert "bad-agent" in warning
     assert str(bad_file) in warning
     assert "missing-skill" in warning
+
+
+def test_register_file_agents_skips_agent_with_unknown_tool(tmp_path: Path) -> None:
+    """An agent naming an unregistered tool is skipped at load time.
+
+    The warning names the definition file and the missing tool, and the other
+    definitions in the directory still register.
+    """
+    agents_dir = tmp_path / ".agents" / "agents"
+    agents_dir.mkdir(parents=True)
+    bad_file = agents_dir / "bad-agent.md"
+    bad_file.write_text(
+        "---\nname: bad-agent\ndescription: Bad\ntools: [no_such_tool]\n---\n\nBad."
+    )
+    (agents_dir / "good-agent.md").write_text(
+        "---\nname: good-agent\ndescription: Good\n---\n\nGood."
+    )
+
+    with (
+        patch(
+            "openhands.sdk.subagent.load.Path.home", return_value=tmp_path / "no_user"
+        ),
+        patch("openhands.sdk.subagent.registry.logger") as mock_logger,
+    ):
+        registered = register_file_agents(tmp_path)
+
+    assert registered == ["good-agent"]
+    assert get_agent_factory("good-agent").inherits_tools is True
+    with pytest.raises(ValueError, match="Unknown agent 'bad-agent'"):
+        get_agent_factory("bad-agent")
+
+    warning = mock_logger.warning.call_args.args[0]
+    assert "bad-agent" in warning
+    assert str(bad_file) in warning
+    assert "no_such_tool" in warning
+
+
+def test_handwritten_factory_never_inherits_tools_even_if_definition_omits_them():
+    """A programmatic factory owns its tools; only definition-built ones inherit."""
+    definition = AgentDefinition(name="custom", description="Custom")
+    assert definition.tools is None
+
+    def factory(llm: LLM) -> Agent:
+        return Agent(llm=llm, tools=[])
+
+    register_agent(name="custom", factory_func=factory, description=definition)
+    register_agent(
+        name="from-definition",
+        factory_func=agent_definition_to_factory(definition),
+        description=definition,
+    )
+
+    assert get_agent_factory("custom").inherits_tools is False
+    assert get_agent_factory("from-definition").inherits_tools is True
+
+
+def test_agent_definition_to_factory_rejects_unknown_tool_at_creation() -> None:
+    """An unknown tool fails when the factory is built, not when it is called."""
+    with pytest.raises(ValueError, match="Tool 'no_such_tool' not registered but"):
+        agent_definition_to_factory(AgentDefinition(name="bad", tools=["no_such_tool"]))
+
+
+def test_agent_definition_to_factory_accepts_a_builtin_tool() -> None:
+    """Built-in tools resolve even though they are not in the tool registry."""
+    factory = agent_definition_to_factory(
+        AgentDefinition(name="builtin", tools=[FinishTool.name])
+    )
+    assert factory is not None
 
 
 def test_register_plugin_agents_skips_agent_with_missing_skill(

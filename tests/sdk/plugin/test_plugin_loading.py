@@ -348,8 +348,7 @@ You are a test agent. Help users with testing.
         agent = plugin.agents[0]
         assert agent.name == "test-agent"
         assert agent.model == "inherit"
-        assert "Read" in agent.tools
-        assert "Write" in agent.tools
+        assert agent.tools == ["Read", "Write"]
         assert len(agent.when_to_use_examples) == 1
         assert "When user asks about testing" in agent.when_to_use_examples[0]
         assert "You are a test agent" in agent.system_prompt

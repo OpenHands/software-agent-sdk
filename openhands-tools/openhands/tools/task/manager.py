@@ -38,6 +38,7 @@ from openhands.sdk.subagent.registry import AgentFactory, get_agent_factory
 from openhands.sdk.subagent.scope import (
     SubAgentScope,
     inherit_mcp_config,
+    inherit_tools,
     scope_delegation_tools,
 )
 
@@ -387,6 +388,9 @@ class TaskManager:
         sub_agent_llm.reset_metrics()
 
         sub_agent = factory.factory_func(sub_agent_llm)
+
+        if factory.inherits_tools:
+            sub_agent = inherit_tools(parent.agent, sub_agent)
 
         if self._sub_agent_scope.restricts and not isinstance(sub_agent, Agent):
             raise ValueError(
