@@ -38,7 +38,11 @@ from openhands.sdk import LLM, Agent, AgentContext, Conversation, Message, TextC
 from openhands.sdk.conversation import RemoteConversation
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.event_store import EventLog
-from openhands.sdk.conversation.exceptions import WebSocketConnectionError
+from openhands.sdk.conversation.exceptions import (
+    ConversationRunError,
+    WebSocketConnectionError,
+)
+from openhands.sdk.conversation.request import StartConversationRequest
 from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
@@ -75,7 +79,7 @@ from openhands.sdk.testing import TestLLM
 from openhands.sdk.tool import Tool
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
-from openhands.sdk.workspace import RemoteWorkspace
+from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
 from openhands.tools.ask_user import AskUserTool
 from openhands.tools.file_editor import FileEditorTool
 from tests.command_utils import python_command
@@ -494,6 +498,43 @@ def _wait_for_no_trajectory_temp_zips(
             f"trajectory temp zips were not removed: {[p.name for p in leftover]}"
         )
         time.sleep(0.01)
+
+
+def test_failed_run_recovery_report_is_available_over_live_http(server_env):
+    working_dir = str(server_env["workspace_path"])
+    conversation = RemoteConversation.create(
+        RemoteWorkspace(host=server_env["host"], working_dir=working_dir),
+        StartConversationRequest(
+            agent=Agent(
+                llm=LLM(model="gpt-4o-mini", api_key=SecretStr("test")),
+                tools=[],
+            ),
+            workspace=LocalWorkspace(working_dir=working_dir),
+            autotitle=False,
+        ),
+        visualizer=None,
+    )
+    try:
+        event_service = server_env["conversation_service"]._event_services[
+            conversation.id
+        ]
+        event_service.get_conversation().switch_llm(
+            TestLLM.from_messages(
+                [RuntimeError("test failure")], usage_id="recovery-report-live"
+            )
+        )
+        conversation.send_message("Run the deterministic failure.")
+        with pytest.raises(ConversationRunError):
+            conversation.run()
+
+        report = conversation.get_recovery_report()
+        assert report is not None
+        assert report.outcome.value == "failed"
+        assert report.reason_code == "RuntimeError"
+        assert report.run_id
+        assert report.evidence_coverage.value == "complete"
+    finally:
+        conversation.close()
 
 
 def test_trajectory_downloads_are_independent(tmp_path, monkeypatch):

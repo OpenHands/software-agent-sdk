@@ -17,6 +17,8 @@ import type {
   ConversationEventSearchOptions,
   ConversationInfo,
   ConversationRuntimeInfo,
+  RecoveryReport,
+  RecoveryReportResult,
   ConversationSearchRequest,
   ConversationSearchResponse,
   ForkConversationRequest,
@@ -402,6 +404,24 @@ export class ConversationClient {
       `/api/conversations/${conversationId}/agent_final_response`
     );
     return response.data;
+  }
+
+  async getRecoveryReport(
+    conversationId: string,
+    options: { signal?: AbortSignal } = {}
+  ): Promise<RecoveryReportResult> {
+    try {
+      const response = await this.client.get<RecoveryReport | null>(
+        `/api/conversations/${conversationId}/recovery_report`,
+        { signal: options.signal }
+      );
+      return { supported: true, report: response.data };
+    } catch (error) {
+      if (error instanceof HttpError && error.status === 404) {
+        return { supported: false };
+      }
+      throw error;
+    }
   }
 
   async setConfirmationPolicy(

@@ -2,6 +2,7 @@
 
 import time
 import uuid
+from datetime import UTC, datetime
 from unittest.mock import Mock, patch
 
 import httpx
@@ -18,6 +19,11 @@ from openhands.sdk.conversation.exceptions import (
 )
 from openhands.sdk.conversation.impl import remote_conversation as remote_module
 from openhands.sdk.conversation.impl.remote_conversation import RemoteConversation
+from openhands.sdk.conversation.recovery import (
+    EvidenceCoverage,
+    RecoveryReport,
+    RunOutcome,
+)
 from openhands.sdk.conversation.request import StartConversationRequest
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.visualizer import DefaultConversationVisualizer
@@ -76,6 +82,39 @@ def test_mutation_updates_state_before_websocket_delivery(
                 assert conversation.state.execution_status.value == "paused"
         finally:
             conversation.close()
+
+
+@pytest.mark.parametrize("available", [True, False])
+def test_remote_conversation_get_recovery_report(available: bool) -> None:
+    conversation_id = uuid.uuid4()
+    report = RecoveryReport(
+        run_id="run-1",
+        outcome=RunOutcome.FAILED,
+        summary="The run stopped after an error.",
+        started_at=datetime(2026, 1, 1, tzinfo=UTC),
+        evidence_coverage=EvidenceCoverage.COMPLETE,
+    )
+    requests: list[httpx.Request] = []
+
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if not available:
+            return httpx.Response(404)
+        return httpx.Response(200, json=report.model_dump(mode="json"))
+
+    with httpx.Client(
+        transport=httpx.MockTransport(handle_request), base_url="http://test"
+    ) as client:
+        conversation = RemoteConversation.__new__(RemoteConversation)
+        conversation._client = client
+        conversation._id = conversation_id
+
+        assert conversation.get_recovery_report() == (report if available else None)
+
+    assert len(requests) == 1
+    assert requests[0].url.path == (
+        f"/api/conversations/{conversation_id}/recovery_report"
+    )
 
 
 class TestRemoteConversation:

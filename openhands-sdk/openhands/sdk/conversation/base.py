@@ -45,6 +45,7 @@ def _conversation_tag_attributes(
 
 if TYPE_CHECKING:
     from openhands.sdk.agent.base import AgentBase
+    from openhands.sdk.conversation.recovery import RecoveryReport
     from openhands.sdk.conversation.secret_registry import SecretRegistry
     from openhands.sdk.conversation.state import ConversationExecutionStatus
     from openhands.sdk.hooks import HookConfig
@@ -306,11 +307,14 @@ class BaseConversation(ABC):
         Returns True if BOTH conditions are met:
         1. The conversation state has a security analyzer set (not None)
         2. The confirmation policy is active
-
         """
         return (
             self.state.security_analyzer is not None and self.confirmation_policy_active
         )
+
+    def get_recovery_report(self) -> "RecoveryReport | None":
+        """Return the latest persisted run report when supported."""
+        return None
 
     @abstractmethod
     def reject_pending_actions(

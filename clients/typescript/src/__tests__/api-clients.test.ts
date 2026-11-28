@@ -2373,6 +2373,66 @@ describe('Auxiliary API clients', () => {
     );
   });
 
+  it('ConversationClient.getRecoveryReport reads the persisted report', async () => {
+    const report = {
+      run_id: 'run-1',
+      outcome: 'failed',
+      reason_code: 'LLMRateLimitError',
+      summary: 'The model provider rate limit was reached.',
+      started_at: '2026-01-01T00:00:00Z',
+      ended_at: '2026-01-01T00:01:00Z',
+      error_event_id: 'event-2',
+      evidence_coverage: 'complete',
+      omitted_event_count: 0,
+      last_agent_update: null,
+      recent_activity: [],
+      incomplete_tasks: [],
+      uncertain_operations: [],
+    };
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(report), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+
+    const result = await new ConversationClient({ host: 'http://example.com' }).getRecoveryReport(
+      'conversation-1'
+    );
+
+    expect(result).toEqual({ supported: true, report });
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/conversations/conversation-1/recovery_report',
+      expect.objectContaining({ method: 'GET' })
+    );
+  });
+
+  it('ConversationClient.getRecoveryReport distinguishes no report from unsupported', async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response('null', {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+
+    await expect(
+      new ConversationClient({ host: 'http://example.com' }).getRecoveryReport('conversation-1')
+    ).resolves.toEqual({ supported: true, report: null });
+  });
+
+  it('ConversationClient.getRecoveryReport marks older servers as unsupported', async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ detail: 'Not found' }), {
+        status: 404,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+
+    await expect(
+      new ConversationClient({ host: 'http://example.com' }).getRecoveryReport('conversation-1')
+    ).resolves.toEqual({ supported: false });
+  });
+
   it('RemoteConversation.navigateTo POSTs to /navigate then refreshes cached state', async () => {
     // navigateTo posts to the route and then GETs the conversation to refresh
     // the cache (leaf_event_id is not broadcast over the WebSocket). Two calls

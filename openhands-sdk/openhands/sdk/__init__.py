@@ -12,12 +12,21 @@ from openhands.sdk.context.condenser import (
     LLMSummarizingCondenser,
 )
 from openhands.sdk.conversation import (
+    AgentUpdate,
     BaseConversation,
     Conversation,
     ConversationCallbackType,
     ConversationExecutionStatus,
+    EvidenceCoverage,
+    IncompleteTask,
     LocalConversation,
+    RecoveryEvidence,
+    RecoveryReport,
     RemoteConversation,
+    RunOutcome,
+    RunReceipt,
+    RunReceiptPhase,
+    UncertainOperation,
 )
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.event import Event, HookExecutionEvent, LLMConvertibleEvent
@@ -155,6 +164,15 @@ __all__ = [
     "LocalConversation",
     "RemoteConversation",
     "ConversationExecutionStatus",
+    "AgentUpdate",
+    "EvidenceCoverage",
+    "IncompleteTask",
+    "RecoveryEvidence",
+    "RecoveryReport",
+    "RunOutcome",
+    "RunReceipt",
+    "RunReceiptPhase",
+    "UncertainOperation",
     "ConversationCallbackType",
     "Event",
     "LLMConvertibleEvent",

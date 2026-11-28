@@ -12,7 +12,7 @@ from openhands.agent_server.conversation_lease import (
 )
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.models import StartConversationRequest
-from openhands.sdk import LLM, Agent
+from openhands.sdk import LLM, Agent, EvidenceCoverage, RunOutcome
 from openhands.sdk.context.view import View, get_observation_dispositions
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import (
@@ -239,6 +239,15 @@ async def test_crash_recovery_error_is_on_active_branch_for_next_turn(tmp_path):
             assert recovery_error.classification is not None
             assert recovery_error.classification.kind == FailureKind.INTERNAL
             assert recovery_error.classification.retryable is False
+
+            report = await recovered.get_recovery_report()
+            assert report is not None
+            assert report.outcome == RunOutcome.INTERRUPTED_UNKNOWN
+            assert report.reason_code == "ServerRestarted"
+            assert report.evidence_coverage == EvidenceCoverage.PARTIAL
+            assert [
+                operation.action_event_id for operation in report.uncertain_operations
+            ] == [running_action.id]
 
             # Resume exactly as a follow-up automation does.
             await recovered.send_message(

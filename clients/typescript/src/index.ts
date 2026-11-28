@@ -308,6 +308,10 @@ export type {
   AgentResponseResult,
   ConversationEvent as ConversationApiEvent,
   ConversationEventPage,
+  RecoveryReport,
+  RecoveryReportResult,
+  RecoveryRunOutcome,
+  RecoveryEvidenceCoverage,
 } from './models/conversation';
 
 // Client options

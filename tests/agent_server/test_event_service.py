@@ -138,6 +138,52 @@ def event_service(sample_stored_conversation, sample_agent):
 
 
 @pytest.mark.asyncio
+async def test_recovery_report_waits_for_an_active_failed_run(
+    event_service, monkeypatch
+):
+    report = object()
+    event_service._conversation = MagicMock()
+    event_service._conversation.get_recovery_report.return_value = report
+    monkeypatch.setattr(
+        event_service,
+        "_get_execution_status",
+        AsyncMock(return_value=ConversationExecutionStatus.ERROR),
+    )
+    release_run = asyncio.Event()
+    run_task = asyncio.create_task(release_run.wait())
+    event_service._run_task = run_task
+
+    report_task = asyncio.create_task(event_service.get_recovery_report())
+    await asyncio.sleep(0)
+    assert not report_task.done()
+    event_service._conversation.get_recovery_report.assert_not_called()
+
+    release_run.set()
+    assert await report_task is report
+    event_service._conversation.get_recovery_report.assert_called_once()
+    assert run_task.done()
+
+
+@pytest.mark.asyncio
+async def test_recovery_report_does_not_wait_for_a_completed_run(
+    event_service, monkeypatch
+):
+    report = object()
+    event_service._conversation = MagicMock()
+    event_service._conversation.get_recovery_report.return_value = report
+    monkeypatch.setattr(
+        event_service,
+        "_get_execution_status",
+        AsyncMock(return_value=ConversationExecutionStatus.ERROR),
+    )
+    event_service._run_task = asyncio.create_task(asyncio.sleep(0))
+    await event_service._run_task
+
+    assert await event_service.get_recovery_report() is report
+    event_service._conversation.get_recovery_report.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_gateway_does_not_save_while_a_previous_run_remains_active(
     event_service, monkeypatch
 ):

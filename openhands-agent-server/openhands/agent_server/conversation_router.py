@@ -62,6 +62,7 @@ from openhands.agent_server.models import (
 )
 from openhands.agent_server.persistence import run_store
 from openhands.sdk import LLM
+from openhands.sdk.conversation.recovery import RecoveryReport
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.types import (
     PROJECT_TAG_KEY,
@@ -261,6 +262,21 @@ async def get_conversation(
     if not include_skills:
         conversation = trim_conversation_response_skills(conversation)
     return _with_runtime_info(registry, conversation)
+
+
+@conversation_router.get(
+    "/{conversation_id}/recovery_report",
+    responses=error_responses({NotFound: "Conversation not found"}),
+)
+async def get_conversation_recovery_report(
+    conversation_id: UUID,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> RecoveryReport | None:
+    """Get the latest run's persisted failure and continuation evidence."""
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise NotFound()
+    return await event_service.get_recovery_report()
 
 
 @conversation_router.get("/{conversation_id}/runtime")
