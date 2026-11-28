@@ -1,3 +1,7 @@
+import random
+import shutil
+import subprocess
+
 import pytest
 
 from openhands.tools.terminal.terminal.terminal_session import (
@@ -5,6 +9,7 @@ from openhands.tools.terminal.terminal.terminal_session import (
 )
 from openhands.tools.terminal.utils.command import (
     escape_bash_special_chars,
+    find_unterminated_heredoc,
     needs_heredoc_completion_boundary,
     split_bash_commands,
 )
@@ -583,3 +588,248 @@ def test_escape_bash_special_chars_with_chained_commands():
         assert result == expected, (
             f'Failed on input "{input_cmd}"\nExpected: "{expected}"\nGot: "{result}"'
         )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cat <<EOF\nbody\nEOF",
+        "cat <<EOF\nbody\nEOF\n",
+        "cat <<EOF\nEOF",
+        "cat <<'EOF'\nbody\nEOF",
+        'cat <<"EOF"\nbody\nEOF',
+        "cat <<\\EOF\nbody\nEOF",
+        'cat <<E"OF"\nbody\nEOF',
+        "cat << EOF\nbody\nEOF",
+        "cat <<-EOF\n\tbody\n\t\tEOF",
+        "cat <<EOF | grep b\nbody\nEOF",
+        "cat <<EOF > out.txt && echo ok\nbody\nEOF",
+        "cat <<EOF # it's a comment\nbody\nEOF",
+        "cat <<EOF \\\n -n\nbody\nEOF",
+        "cat <<EOF 'a\nb'\nbody\nEOF",
+        "cat <<A <<B\na\nA\nb\nB",
+        "cat <<EOF\nbody\nEOF\ncat <<END\nmore\nEND",
+        "cat <<EOF\ncat <<INNER\nEOF",
+        "cat <<EOF\nEOFX\n EOF\nEOF",
+        "cat <<'EOF'\ntrailing \\\nEOF",
+        # A lone backslash joins to the terminator line and leaves it intact.
+        "cat <<EOF\n\\\nEOF",
+        "cat <<$'EOF'\nbody\nEOF",
+        "x=$(cat <<EOF\nbody\nEOF\n)",
+        "if true; then\ncat <<EOF\nbody\nEOF\nfi",
+        "python - <<'PY'\nprint('<<EOF')\nPY",
+        "git commit -m \"$(cat <<'EOF'\nfix: thing\n\nbody << text\nEOF\n)\"",
+        "cat > f.c <<'EOF'\nint x = 1 << 2;\nchar *s = \"<<EOF\";\nEOF\ngcc f.c",
+        "ssh host 'bash -s' <<'REMOTE'\ncat <<LOCAL\nx\nLOCAL\nREMOTE",
+        "cat <<EOF > a.txt; cat <<EOF2 > b.txt\none\nEOF\ntwo\nEOF2",
+    ],
+)
+def test_closed_heredoc_is_not_reported(command):
+    assert find_unterminated_heredoc(command) is None
+
+
+@pytest.mark.parametrize(
+    "command, delimiter",
+    [
+        ("cat <<EOF", "EOF"),
+        ("cat <<EOF\n", "EOF"),
+        ("cat <<EOF\nbody", "EOF"),
+        ("cat <<'EOF'\nbody", "EOF"),
+        ('cat <<E"OF"\nbody', "EOF"),
+        ("cat > out.txt <<EOF && echo ok\nbody", "EOF"),
+        # The terminator must be the whole line: these are the ways it goes
+        # missing while the command still looks complete.
+        ("cat <<EOF\n  body\n  EOF", "EOF"),
+        ("cat <<EOF\nbody\nEOF ", "EOF"),
+        ("cat <<EOF\nbody\nEOFX", "EOF"),
+        ("cat <<EOF\nbody\nEOF;", "EOF"),
+        ("cat <<EOF\nbody\neof", "EOF"),
+        ("cat <<-EOF\n\tbody\n    EOF", "EOF"),
+        ("cat <<EOF\ntrailing \\\nEOF", "EOF"),
+        ("cat <<A <<B\na\nA\nb", "B"),
+        ("cat <<EOF\nbody\nEOF\ncat <<END\nmore", "END"),
+        ("x=$(cat <<EOF\nbody\n)", "EOF"),
+        ("if true; then\ncat <<EOF\nbody\nfi", "EOF"),
+        ("git commit -m \"$(cat <<'EOF'\nfix: thing\n   EOF\n)\"", "EOF"),
+        ("ssh host 'bash -s' <<'REMOTE'\ncat <<LOCAL\nx\nLOCAL", "REMOTE"),
+        ("cat <<EOF > a.txt; cat <<EOF2 > b.txt\none\nEOF\ntwo", "EOF2"),
+    ],
+)
+def test_unterminated_heredoc_reports_its_delimiter(command, delimiter):
+    assert find_unterminated_heredoc(command) == delimiter
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo hello",
+        "cat <<< 'here string'",
+        "echo $((1<<2))",
+        "(( x = 1 << 3 ))",
+        "for ((i=1<<2; i<9; i++)); do echo $i; done",
+        "echo '<<EOF'",
+        'echo "a <<EOF b"',
+        "echo \\<\\<EOF",
+        "# cat <<EOF",
+        "echo a # <<EOF",
+        'python -c "x = 1 << 3\nprint(x)"',
+        "echo ${x:-<<EOF}\necho next",
+        # An unclosed quote is a different error; it must not be reported as
+        # a heredoc problem.
+        "cat <<EOF 'unclosed\nbody",
+    ],
+)
+def test_commands_without_a_heredoc_are_not_reported(command):
+    assert find_unterminated_heredoc(command) is None
+
+
+def _generate_heredoc_command(rng: random.Random) -> str:
+    """Build a command around one or two heredocs, closed or not."""
+    delimiters = ["EOF", "END", "PY", "E_O-F"]
+    body_lines = [
+        "hello",
+        "",
+        "  indented",
+        "\ttabbed",
+        "it's a quote",
+        'say "hi"',
+        "$(echo sub)",
+        "cat <<INNER",
+        "INNER",
+        "a # b",
+        "x << y",
+        "trailing \\",
+        "\\",
+        "x\\\\",
+        "fi",
+        ")",
+    ]
+    same_line = [
+        "",
+        " | grep h",
+        " && echo ok",
+        " > f.txt",
+        " # it's a comment",
+        " ; echo after",
+        " 'q'",
+        " \\\n -n",
+        " &",
+    ]
+    lookalikes = [
+        "echo $((1<<2))",
+        "cat <<< 'here string'",
+        "echo '<<EOF'",
+        'echo "a <<EOF b"',
+        "# cat <<EOF",
+        "(( x = 1 << 3 ))",
+        "echo \\<\\<EOF",
+    ]
+
+    def heredoc() -> tuple[str, list[str]]:
+        delimiter = rng.choice(delimiters)
+        operator = rng.choice(["<<", "<<", "<<-"])
+        word = rng.choice(
+            [
+                delimiter,
+                f"'{delimiter}'",
+                f'"{delimiter}"',
+                f"\\{delimiter}",
+                f'{delimiter[0]}"{delimiter[1:]}"',
+                f"$'{delimiter}'",
+                f" {delimiter}",
+            ]
+        )
+        lines = [rng.choice(body_lines) for _ in range(rng.randint(0, 4))]
+        if rng.random() < 0.6:
+            tabs = "\t" * rng.randint(0, 2) if operator == "<<-" else ""
+            lines.append(tabs + delimiter)
+        elif rng.random() < 0.7:
+            lines.append(
+                rng.choice(
+                    [
+                        f" {delimiter}",
+                        f"{delimiter} ",
+                        f"{delimiter}X",
+                        f"    {delimiter}",
+                        f"{delimiter};",
+                        f"{delimiter})",
+                        f"'{delimiter}'",
+                    ]
+                )
+            )
+        return operator + word, lines
+
+    if rng.random() < 0.1:
+        return rng.choice(lookalikes)
+    heredocs = [heredoc() for _ in range(1 if rng.random() < 0.8 else 2)]
+    command = (
+        rng.choice(["cat", "cat > out.txt", "python -", "grep h"])
+        + " "
+        + " ".join(operator for operator, _ in heredocs)
+        + rng.choice(same_line)
+    )
+    body = "\n".join("\n".join(lines) for _, lines in heredocs)
+    if body or rng.random() < 0.7:
+        command += "\n" + body
+    wrapper = rng.random()
+    if wrapper < 0.1:
+        command = f"x=$({command}\n)"
+    elif wrapper < 0.2:
+        command = f"if true; then\n{command}\nfi"
+    elif wrapper < 0.25:
+        command = f"f() {{\n{command}\n}}"
+    elif wrapper < 0.3:
+        command = f"{rng.choice(lookalikes)}; {command}"
+    return command + rng.choice(["", "\n", "\necho done", "\n# trailing"])
+
+
+def _bash_reports_unterminated_heredocs() -> bool:
+    """Whether ``bash -n`` warns about a heredoc cut off by end of input.
+
+    bash 4.0 added the warning. Older versions, including the 3.2 that macOS
+    ships as ``/bin/bash``, accept such input silently and so cannot serve as
+    the reference.
+    """
+    if shutil.which("bash") is None:
+        return False
+    probe = subprocess.run(
+        ["bash", "-n"], input=b"cat <<EOF\nbody", capture_output=True, check=False
+    )
+    return b"delimited by end-of-file" in probe.stderr
+
+
+@pytest.mark.skipif(
+    not _bash_reports_unterminated_heredocs(),
+    reason="needs bash >= 4, which warns about an unterminated heredoc",
+)
+def test_unterminated_heredoc_detection_agrees_with_bash():
+    """bash itself is the reference for what an unterminated heredoc is.
+
+    ``bash -n`` warns "here-document ... delimited by end-of-file" exactly when
+    an interactive shell would go on waiting for the terminator. The detector
+    refuses commands, so it must never report one bash considers complete, and
+    it should not miss one either.
+    """
+    rng = random.Random(7048)
+    commands = sorted({_generate_heredoc_command(rng) for _ in range(400)})
+
+    wrongly_refused = []
+    missed = []
+    for command in commands:
+        check = subprocess.run(
+            ["bash", "-n"], input=command.encode(), capture_output=True, check=False
+        )
+        expected = b"delimited by end-of-file" in check.stderr
+        reported = find_unterminated_heredoc(command) is not None
+        if reported and not expected and b"syntax error" in check.stderr:
+            # `bash -n` stops at the first syntax error, so it never reached
+            # the heredoc further down. An interactive shell runs line by line
+            # and would. bash gives no verdict here.
+            continue
+        if reported and not expected:
+            wrongly_refused.append(command)
+        if expected and not reported:
+            missed.append(command)
+
+    assert wrongly_refused == []
+    assert missed == []

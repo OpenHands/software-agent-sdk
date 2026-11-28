@@ -62,7 +62,10 @@ def test_shell_death_returns_and_cleans_up(executor: TerminalExecutor, command: 
     assert terminal.reader_thread is not None and not terminal.reader_thread.is_alive()
 
 
-@pytest.mark.parametrize("command", ["printf 'unfinished", "cat <<'END'\nunfinished"])
+# A heredoc that is opened on one line may still have its body typed with
+# `is_input`; one that already carries body lines but no terminator is refused
+# before it is sent (see test_terminal_session.py).
+@pytest.mark.parametrize("command", ["printf 'unfinished", "cat <<'END'"])
 def test_incomplete_input_soft_returns(executor: TerminalExecutor, command: str):
     executor.session.max_observation_wait_seconds = 0.2
     start = time.monotonic()
