@@ -1210,6 +1210,22 @@ class ConversationSettings(BaseModel):
             ).model_dump()
         },
     )
+    max_budget_per_run: float | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Default maximum accumulated LLM cost, in USD, for new "
+            "conversations. Each new conversation stops once its cost reaches "
+            "it. Changing it does not affect existing conversations. Leave "
+            "empty for no limit."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Default budget per conversation (USD)",
+                prominence=SettingProminence.MAJOR,
+            ).model_dump()
+        },
+    )
     confirmation_mode: bool = Field(
         default=False,
         description="Require user confirmation before executing risky actions.",
@@ -1447,6 +1463,7 @@ class ConversationSettings(BaseModel):
         payload.setdefault("confirmation_policy", self._build_confirmation_policy())
         payload.setdefault("security_analyzer", self._build_security_analyzer())
         payload.setdefault("max_iterations", self.max_iterations)
+        payload.setdefault("max_budget_per_run", self.max_budget_per_run)
         return payload
 
     def create_request(
