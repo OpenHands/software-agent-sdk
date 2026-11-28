@@ -51,6 +51,14 @@ class MCPToolObservation(Observation):
     """Observation from MCP tool execution."""
 
     tool_name: str = Field(description="Name of the tool that was called")
+    structured_content: dict[str, Any] | None = Field(
+        default=None,
+        description="Optional structured_content payload returned by the MCP tool.",
+    )
+    mcp_content_blocks: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Lossless serialized MCP content blocks from CallToolResult.",
+    )
 
     @classmethod
     def from_call_tool_result(
@@ -59,6 +67,10 @@ class MCPToolObservation(Observation):
         """Create an MCPToolObservation from a CallToolResult."""
 
         native_content: list[mcp.types.ContentBlock] = result.content
+        raw_blocks = [
+            block.model_dump(mode="json", by_alias=True, exclude_none=True)
+            for block in native_content
+        ]
         content: list[TextContent | ImageContent] = [
             TextContent(text=f"[Tool '{tool_name}' executed.]")
         ]
@@ -71,15 +83,42 @@ class MCPToolObservation(Observation):
                         image_urls=[f"data:{block.mime_type};base64,{block.data}"],
                     )
                 )
+            elif isinstance(block, mcp.types.EmbeddedResource):
+                res = block.resource
+                uri = str(getattr(res, "uri", ""))
+                if hasattr(res, "text"):
+                    content.append(TextContent(text=f"[Resource {uri}]\n{res.text}"))
+                elif hasattr(res, "blob"):
+                    mime = getattr(res, "mime_type", None) or "application/octet-stream"
+                    content.append(
+                        TextContent(
+                            text=f"[Binary Resource {uri} ({mime}) base64={res.blob}]"
+                        )
+                    )
             else:
-                logger.warning(
-                    f"Unsupported MCP content block type: {type(block)}. Ignoring."
+                content.append(
+                    TextContent(
+                        text=json.dumps(
+                            block.model_dump(
+                                mode="json", by_alias=True, exclude_none=True
+                            )
+                        )
+                    )
                 )
+
+        if "structured_content" in type(result).model_fields:
+            structured = result.structured_content
+        else:
+            structured = getattr(result, "structuredContent", None)
+        if structured is not None and not native_content:
+            content.append(TextContent(text=json.dumps(structured)))
 
         return cls(
             content=content,
             is_error=result.is_error,
             tool_name=tool_name,
+            structured_content=structured,
+            mcp_content_blocks=raw_blocks,
         )
 
     @property
