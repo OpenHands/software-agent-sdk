@@ -6,7 +6,7 @@ description = "OpenHands SDK - Core functionality for building AI agents"
 requires-python = ">=3.12"
 dependencies = [
     "agent-client-protocol>=1.0.0,<1.1.0",  # 0.11.0 reordered prompt() args, broke the client (#4830)
-    "authlib>=1.9.9",  # imported by llm/auth/openai.py; only fastmcp's extras installed it until fastmcp 4.2.6 (#7139)
+    "authlib>=1.9.10",  # imported by llm/auth/openai.py; only fastmcp's extras installed it until fastmcp 4.2.6 (#7139)
     "certifi>=2026.10.19",  # eMudhra CA distrust: GHSA-6q48-6c7w-9gw2
     "deprecation>=2.1.0",
     "fakeredis[lua]>=2.40.0",  # Explicit dependency for docket/fastmcp background tasks
