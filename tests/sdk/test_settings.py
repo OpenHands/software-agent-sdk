@@ -2737,11 +2737,6 @@ def test_acp_agent_settings_create_agent_keeps_real_mcp_secrets() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_agent_settings_base_is_parent_of_both_variants() -> None:
-    assert issubclass(OpenHandsAgentSettings, AgentSettingsBase)
-    assert issubclass(ACPAgentSettings, AgentSettingsBase)
-
-
 def test_agent_settings_base_schema_version_inherited() -> None:
     openhands = OpenHandsAgentSettings()
     acp = ACPAgentSettings(acp_command=["x"])

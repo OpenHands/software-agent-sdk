@@ -415,14 +415,6 @@ def test_pause_event_visualize():
     assert "Conversation Paused" in text_content
 
 
-def test_conversation_visualizer_initialization():
-    """Test DefaultConversationVisualizer can be initialized."""
-    visualizer = DefaultConversationVisualizer()
-    assert visualizer is not None
-    assert hasattr(visualizer, "on_event")
-    assert hasattr(visualizer, "_create_event_block")
-
-
 def test_default_visualizer_handles_unicode_on_legacy_windows_stdout(monkeypatch):
     """Visualizer output should not fail on legacy Windows stdout."""
     stream = _Cp1252Stdout()

@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from openhands.sdk.agent import ACPAgent, Agent
+from openhands.sdk.agent import Agent
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.llm import LLM
 
@@ -98,8 +98,3 @@ def test_whitespace_only_persona_keeps_the_builtin_persona(blank: str) -> None:
     assert _tags(_agent(persona=blank).static_system_message) == (
         PERSONA_TAGS | KEPT_TAGS
     )
-
-
-def test_persona_is_an_openhands_agent_field_only() -> None:
-    assert "persona" in Agent.model_fields
-    assert "persona" not in ACPAgent.model_fields

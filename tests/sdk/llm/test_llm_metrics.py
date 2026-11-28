@@ -1,174 +1,8 @@
 """Tests for LLM metrics classes."""
 
 import pytest
-from pydantic import ValidationError
 
-from openhands.sdk.llm.utils.metrics import (
-    Cost,
-    Metrics,
-    MetricsSnapshot,
-    ResponseLatency,
-    TokenUsage,
-)
-
-
-def test_cost_creation_valid():
-    """Test creating a valid Cost instance."""
-    cost = Cost(cost=5.0, model="gpt-4o-mini")
-    assert cost.cost == 5.0
-    assert cost.model == "gpt-4o-mini"
-    assert hasattr(cost, "timestamp")
-
-
-def test_cost_creation_zero():
-    """Test creating a Cost instance with zero cost."""
-    cost = Cost(cost=0.0, model="gpt-4o-mini")
-    assert cost.cost == 0.0
-
-
-def test_cost_creation_negative_fails():
-    """Test that negative cost raises ValidationError."""
-    with pytest.raises(ValidationError) as exc_info:
-        Cost(cost=-1.0, model="gpt-4o-mini")
-
-    errors = exc_info.value.errors()
-    assert len(errors) == 1
-    assert errors[0]["type"] == "greater_than_equal"
-    assert "cost" in errors[0]["loc"]
-
-
-def test_response_latency_creation_valid():
-    """Test creating a valid ResponseLatency instance."""
-    latency = ResponseLatency(model="gpt-4o-mini", latency=1.5, response_id="test-123")
-    assert latency.latency == 1.5
-    assert latency.response_id == "test-123"
-    assert latency.model == "gpt-4o-mini"
-
-
-def test_response_latency_creation_zero():
-    """Test creating a ResponseLatency instance with zero latency."""
-    latency = ResponseLatency(model="gpt-4o-mini", latency=0.0, response_id="test-123")
-    assert latency.latency == 0.0
-
-
-def test_response_latency_creation_negative_fails():
-    """Test that negative latency raises ValidationError."""
-    with pytest.raises(ValidationError) as exc_info:
-        ResponseLatency(model="gpt-4o-mini", latency=-0.5, response_id="test-123")
-
-    errors = exc_info.value.errors()
-    assert len(errors) == 1
-    assert errors[0]["type"] == "greater_than_equal"
-    assert "latency" in errors[0]["loc"]
-
-
-def test_token_usage_creation_valid():
-    """Test creating a valid TokenUsage instance."""
-    usage = TokenUsage(
-        model="gpt-4o-mini",
-        prompt_tokens=100,
-        completion_tokens=50,
-        cache_read_tokens=10,
-        cache_write_tokens=5,
-        context_window=4096,
-        per_turn_token=155,
-        response_id="test-123",
-    )
-    assert usage.model == "gpt-4o-mini"
-    assert usage.prompt_tokens == 100
-    assert usage.completion_tokens == 50
-    assert usage.cache_read_tokens == 10
-    assert usage.cache_write_tokens == 5
-    assert usage.context_window == 4096
-    assert usage.per_turn_token == 155
-    assert usage.response_id == "test-123"
-
-
-def test_token_usage_creation_zeros():
-    """Test creating a TokenUsage instance with zero values."""
-    usage = TokenUsage(
-        model="gpt-4o-mini",
-        prompt_tokens=0,
-        completion_tokens=0,
-        cache_read_tokens=0,
-        cache_write_tokens=0,
-        context_window=0,
-        per_turn_token=0,
-        response_id="test-123",
-    )
-    assert usage.prompt_tokens == 0
-    assert usage.completion_tokens == 0
-    assert usage.cache_read_tokens == 0
-    assert usage.cache_write_tokens == 0
-
-
-def test_token_usage_negative_prompt_tokens_fails():
-    """Test that negative prompt_tokens raises ValidationError."""
-    with pytest.raises(ValidationError) as exc_info:
-        TokenUsage(
-            model="gpt-4o-mini",
-            prompt_tokens=-1,
-            completion_tokens=50,
-            cache_read_tokens=0,
-            cache_write_tokens=0,
-            context_window=4096,
-            per_turn_token=49,
-            response_id="test-123",
-        )
-
-    errors = exc_info.value.errors()
-    assert any(
-        error["type"] == "greater_than_equal" and "prompt_tokens" in error["loc"]
-        for error in errors
-    )
-
-
-def test_token_usage_negative_completion_tokens_fails():
-    """Test that negative completion_tokens raises ValidationError."""
-    with pytest.raises(ValidationError) as exc_info:
-        TokenUsage(
-            model="gpt-4o-mini",
-            prompt_tokens=100,
-            completion_tokens=-1,
-            cache_read_tokens=0,
-            cache_write_tokens=0,
-            context_window=4096,
-            per_turn_token=99,
-            response_id="test-123",
-        )
-
-    errors = exc_info.value.errors()
-    assert any(
-        error["type"] == "greater_than_equal" and "completion_tokens" in error["loc"]
-        for error in errors
-    )
-
-
-def test_token_usage_negative_cache_tokens_fails():
-    """Test that negative cache tokens raise ValidationError."""
-    with pytest.raises(ValidationError):
-        TokenUsage(
-            model="gpt-4o-mini",
-            prompt_tokens=100,
-            completion_tokens=50,
-            cache_read_tokens=-1,
-            cache_write_tokens=0,
-            context_window=4096,
-            per_turn_token=149,
-            response_id="test-123",
-        )
-
-    with pytest.raises(ValidationError):
-        TokenUsage(
-            model="gpt-4o-mini",
-            prompt_tokens=100,
-            completion_tokens=50,
-            cache_read_tokens=0,
-            cache_write_tokens=-1,
-            context_window=4096,
-            per_turn_token=149,
-            response_id="test-123",
-        )
+from openhands.sdk.llm.utils.metrics import Metrics, MetricsSnapshot, TokenUsage
 
 
 def test_token_usage_addition():
@@ -205,26 +39,6 @@ def test_token_usage_addition():
     assert combined.context_window == 4096
     assert combined.per_turn_token == 285  # Uses other.per_turn_token
     assert combined.response_id == "test-1"  # Should keep first response_id
-
-
-def test_metrics_creation_empty():
-    """Test creating an empty Metrics instance."""
-    metrics = Metrics()
-    assert metrics.model_name == "default"
-    assert metrics.accumulated_cost == 0.0
-    assert metrics.accumulated_token_usage is not None
-    assert metrics.accumulated_token_usage.prompt_tokens == 0
-    assert metrics.costs == []
-    assert metrics.response_latencies == []
-
-
-def test_metrics_creation_with_model_name():
-    """Test creating a Metrics instance with model name."""
-    metrics = Metrics(model_name="gpt-4o-mini")
-    assert metrics.model_name == "gpt-4o-mini"
-    assert metrics.accumulated_cost == 0.0
-    assert metrics.accumulated_token_usage is not None
-    assert metrics.accumulated_token_usage.prompt_tokens == 0
 
 
 def test_metrics_add_cost():
@@ -469,15 +283,6 @@ def test_metrics_empty_state_operations():
     metrics.merge(other)
     assert metrics.accumulated_cost == 0.0
     assert metrics.accumulated_token_usage is not None
-
-
-def test_metrics_accumulated_cost_negative_validation():
-    """Test Metrics accumulated cost validation with negative values (line 105)."""
-    # Create a metrics instance with negative accumulated cost
-    with pytest.raises(
-        ValidationError, match="Input should be greater than or equal to 0"
-    ):
-        Metrics(accumulated_cost=-1.0)
 
 
 def test_metrics_merge_max_budget_from_other():

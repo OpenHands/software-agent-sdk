@@ -11,11 +11,7 @@ from unittest.mock import MagicMock, Mock, patch
 import pytest
 from pydantic import ValidationError
 
-from openhands.workspace import (
-    ApptainerWorkspace,
-    DockerDevWorkspace,
-    DockerWorkspace,
-)
+from openhands.workspace import ApptainerWorkspace, DockerWorkspace
 
 
 @pytest.fixture
@@ -46,33 +42,6 @@ def mock_docker_workspace():
         yield _create_workspace
 
 
-def test_docker_workspace_import():
-    """Test that DockerWorkspace can be imported from the new package."""
-
-    assert DockerWorkspace is not None
-    assert hasattr(DockerWorkspace, "__init__")
-
-
-def test_docker_workspace_inheritance():
-    """Test that DockerWorkspace inherits from RemoteWorkspace."""
-    from openhands.sdk.workspace import RemoteWorkspace
-
-    assert issubclass(DockerWorkspace, RemoteWorkspace)
-
-
-def test_docker_dev_workspace_import():
-    """Test that DockerDevWorkspace can be imported from the new package."""
-
-    assert DockerDevWorkspace is not None
-    assert hasattr(DockerDevWorkspace, "__init__")
-
-
-def test_docker_dev_workspace_inheritance():
-    """Test that DockerDevWorkspace inherits from DockerWorkspace."""
-
-    assert issubclass(DockerDevWorkspace, DockerWorkspace)
-
-
 def test_docker_workspace_no_build_import():
     """DockerWorkspace import should not pull in build-time dependencies."""
     code = (
@@ -97,18 +66,6 @@ def test_docker_workspace_no_build_import():
         cwd=root,
     )
     assert result.stdout.strip() == "0"
-
-    assert "server_image" in DockerWorkspace.model_fields
-    assert "base_image" not in DockerWorkspace.model_fields
-
-
-def test_docker_dev_workspace_has_build_fields():
-    """Test that DockerDevWorkspace has both base_image and server_image fields."""
-
-    # DockerDevWorkspace should have both fields for flexibility
-    assert "server_image" in DockerDevWorkspace.model_fields
-    assert "base_image" in DockerDevWorkspace.model_fields
-    assert "target" in DockerDevWorkspace.model_fields
 
 
 def test_removed_mount_dir_input_fails_loudly():

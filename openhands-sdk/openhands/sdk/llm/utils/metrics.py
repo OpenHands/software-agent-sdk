@@ -2,20 +2,13 @@ import copy
 import time
 from typing import final
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 
 class Cost(BaseModel):
     model: str
     cost: float = Field(ge=0.0, description="Cost must be non-negative")
     timestamp: float = Field(default_factory=time.time)
-
-    @field_validator("cost")
-    @classmethod
-    def validate_cost(cls, v: float) -> float:
-        if v < 0:
-            raise ValueError("Cost cannot be negative")
-        return v
 
 
 class ResponseLatency(BaseModel):
@@ -24,11 +17,6 @@ class ResponseLatency(BaseModel):
     model: str
     latency: float = Field(ge=0.0, description="Latency must be non-negative")
     response_id: str
-
-    @field_validator("latency")
-    @classmethod
-    def validate_latency(cls, v: float) -> float:
-        return max(0.0, v)
 
 
 class TokenUsage(BaseModel):
@@ -135,13 +123,6 @@ class Metrics(MetricsSnapshot):
     token_usages: list[TokenUsage] = Field(
         default_factory=list, description="List of token usage records"
     )
-
-    @field_validator("accumulated_cost")
-    @classmethod
-    def validate_accumulated_cost(cls, v: float) -> float:
-        if v < 0:
-            raise ValueError("Total cost cannot be negative.")
-        return v
 
     @model_validator(mode="after")
     def initialize_accumulated_token_usage(self) -> "Metrics":
