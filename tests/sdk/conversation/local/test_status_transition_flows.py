@@ -24,8 +24,8 @@ def _llm() -> LLM:
 class StatusFlowErrorThenFinishAgent(AgentBase):
     """Reports a failed turn without raising, then finishes on the retry.
 
-    ACPAgent does this on a prompt timeout: it sets ERROR and returns, and the
-    sync run loop steps again.
+    ACPAgent does this on a prompt timeout: it sets ERROR and returns. The run
+    ends there (#6645), and the next run() steps again from ERROR.
     """
 
     def __init__(self) -> None:
@@ -68,7 +68,9 @@ def test_sync_run_finishes_after_a_turn_reported_error_without_raising():
     conversation.send_message("hi")
 
     conversation.run()
+    assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
 
+    conversation.run()
     assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
 
 
