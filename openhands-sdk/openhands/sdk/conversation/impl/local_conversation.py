@@ -405,6 +405,9 @@ class LocalConversation(BaseConversation):
         self._cleanup_complete = False
         self._arun_task = None
         self._cancel_token = None
+        # Counts pause() calls; run()/arun() compare it with the value they saw
+        # when called (see _start_running).
+        self._pause_requests = 0
         self._step_holds_state_lock = False
 
         # Store plugin specs for lazy loading (no IO in constructor)
@@ -933,6 +936,33 @@ class LocalConversation(BaseConversation):
             and self._state.execution_status == ConversationExecutionStatus.STUCK
         ):
             self._stuck_detector.mark_resumed()
+
+    def _start_running(self, pause_requests_at_call: int) -> None:
+        """Move the conversation to RUNNING as :meth:`run`/:meth:`arun` starts.
+
+        Caller holds the state lock, after the agent is ready.
+        ``pause_requests_at_call`` is ``self._pause_requests`` as the run was
+        called. ``PAUSED`` is resumed only when no :meth:`pause` (or
+        :meth:`interrupt` falling back to it) came after that. A stop that lands
+        while the agent is being made ready (plugins, MCP servers, an ACP
+        subprocess) stops this run instead of being taken for a resume, whether it
+        found the conversation ``IDLE`` or already ``PAUSED`` (a resumed or
+        restored conversation); the run loop returns before the first step.
+        """
+        status = self._state.execution_status
+        if (
+            status == ConversationExecutionStatus.PAUSED
+            and self._pause_requests != pause_requests_at_call
+        ):
+            logger.info("Pause requested while the run was starting; not resuming")
+            return
+        if status in [
+            ConversationExecutionStatus.IDLE,
+            ConversationExecutionStatus.PAUSED,
+            ConversationExecutionStatus.ERROR,
+            ConversationExecutionStatus.STUCK,
+        ]:
+            self._state.transition(ConversationExecutionStatus.RUNNING, "run started")
 
     @property
     def stuck_detector(self) -> StuckDetector | None:
@@ -2669,6 +2699,7 @@ class LocalConversation(BaseConversation):
 
     def _run(self) -> None:
         """Implement :meth:`run` inside the active LLM context scope."""
+        pause_requests_at_call = self._pause_requests
         # Ensure agent is fully initialized (loads plugins and initializes agent)
         self._ensure_agent_ready()
         self._wait_for_late_mcp_tools()
@@ -2676,15 +2707,7 @@ class LocalConversation(BaseConversation):
 
         with self._state:
             self._resume_if_stuck()
-            if self._state.execution_status in [
-                ConversationExecutionStatus.IDLE,
-                ConversationExecutionStatus.PAUSED,
-                ConversationExecutionStatus.ERROR,
-                ConversationExecutionStatus.STUCK,
-            ]:
-                self._state.transition(
-                    ConversationExecutionStatus.RUNNING, "run started"
-                )
+            self._start_running(pause_requests_at_call)
 
         iteration = 0
         _run_start_event_count = len(self._state.events)
@@ -2884,6 +2907,7 @@ class LocalConversation(BaseConversation):
         """Implement :meth:`arun` inside the active LLM context scope."""
         self._arun_task = asyncio.current_task()
         self._cancel_token = CancellationToken()
+        pause_requests_at_call = self._pause_requests
         # Off-load lazy init to a worker thread: init_state may block the loop
         # (an ACP agent resolves credentials via a synchronous LookupSecret
         # httpx.get). When the agent-server runs arun() on its event loop and
@@ -2911,15 +2935,7 @@ class LocalConversation(BaseConversation):
                     self._state.agent_state = updated_agent_state
 
             self._resume_if_stuck()
-            if self._state.execution_status in [
-                ConversationExecutionStatus.IDLE,
-                ConversationExecutionStatus.PAUSED,
-                ConversationExecutionStatus.ERROR,
-                ConversationExecutionStatus.STUCK,
-            ]:
-                self._state.transition(
-                    ConversationExecutionStatus.RUNNING, "run started"
-                )
+            self._start_running(pause_requests_at_call)
             last_acp_prompt_user_message_id = self._state.agent_state.get(
                 ACP_LAST_PROMPT_USER_MESSAGE_ID
             )
@@ -3524,6 +3540,11 @@ class LocalConversation(BaseConversation):
         Note: If called during an LLM completion, the pause will not take
         effect until the current LLM call completes.
         """
+        # Counted before the early return: a pause on an already-PAUSED
+        # conversation while run()/arun() is starting must still stop that run.
+        # Callers only check whether the count changed, so a lost update between
+        # two concurrent pauses does not matter.
+        self._pause_requests += 1
 
         if self._state.execution_status == ConversationExecutionStatus.PAUSED:
             return
