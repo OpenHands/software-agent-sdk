@@ -507,7 +507,8 @@ def render_report(runs: dict[str, dict[str, list[dict]]], meta: dict) -> str:
             "in the same job on the same runner, interleaved: "
             f"{meta['rounds']} server starts per side and scenario. Medians with "
             "95% bootstrap CIs. The LLM is a mock that answers instantly, so this "
-            "is agent-server overhead only.",
+            "measures agent-server overhead. First-event timings stop at WebSocket "
+            "receipt; they do not measure browser rendering.",
             "",
             "| | base | this PR | change | |",
             "|---|---|---|---|---|",
